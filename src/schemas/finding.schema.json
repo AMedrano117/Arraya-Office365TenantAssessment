@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "M365 Assessment Finding",
+  "type": "object",
+  "required": [
+    "Workload",
+    "Category",
+    "Control",
+    "Severity",
+    "Status",
+    "AssessedAt"
+  ],
+  "properties": {
+    "TenantId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "Workload": {
+      "type": "string"
+    },
+    "Category": {
+      "type": "string"
+    },
+    "Control": {
+      "type": "string"
+    },
+    "Severity": {
+      "enum": [
+        "Critical",
+        "High",
+        "Medium",
+        "Low",
+        "Info"
+      ]
+    },
+    "Status": {
+      "enum": [
+        "Compliant",
+        "NonCompliant",
+        "Informational",
+        "NotAssessed",
+        "NotLicensed",
+        "PermissionDenied",
+        "Error"
+      ]
+    },
+    "AssessedAt": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "Default": "Info",
+  "Examples": {
+    "GlobalAdminWithoutMFA": "Critical",
+    "LegacyAuthEnabled": "High"
+  }
+}

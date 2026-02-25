@@ -1,0 +1,9 @@
+pool:
+  vmImage: 'windows-latest'
+steps:
+- checkout: self
+- powershell: |
+    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+    Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+    ./tools/invoke-scriptanalyzer.ps1
+  displayName: PowerShell Lint

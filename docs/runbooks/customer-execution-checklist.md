@@ -1,0 +1,4 @@
+- Confirm scope
+- Confirm permissions
+- Pilot first
+- Review outputs

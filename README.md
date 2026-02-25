@@ -1,20 +1,13 @@
-# Introduction 
-TODO: Give a short introduction of your project. Let this section explain the objectives or the motivation behind this project. 
+# Microsoft 365 Tenant Automation (PowerShell + Graph) - Azure DevOps
 
-# Getting Started
-TODO: Guide users through getting your code up and running on their own system. In this section you can talk about:
-1.	Installation process
-2.	Software dependencies
-3.	Latest releases
-4.	API references
+PowerShell and Microsoft Graph automation for Microsoft 365 tenant assessments, reporting, and controlled remediation.
 
-# Build and Test
-TODO: Describe and show how to build your code and run the tests. 
+## Purpose
+This repository contains reusable modules, assessment scripts, remediation scripts, and prompt standards used by engineering teams to safely assess and manage customer Microsoft 365 tenants.
 
-# Contribute
-TODO: Explain how other users and developers can contribute to make your code better. 
-
-If you want to learn more about creating good readme files then refer the following [guidelines](https://docs.microsoft.com/en-us/azure/devops/repos/git/create-a-readme?view=azure-devops). You can also seek inspiration from the below readme files:
-- [ASP.NET Core](https://github.com/aspnet/Home)
-- [Visual Studio Code](https://github.com/Microsoft/vscode)
-- [Chakra Core](https://github.com/Microsoft/ChakraCore)
+## Getting Started
+1. Install PowerShell 7+
+2. Run `tools/bootstrap-dev.ps1`
+3. Review `prompts/skills.md` and `prompts/coding-standards.md`
+4. Use `prompts/task-prompt-template.md` when generating scripts with Codex
+5. Validate with `tools/invoke-scriptanalyzer.ps1` and `tools/run-pester.ps1`

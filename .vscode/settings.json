@@ -1,0 +1,6 @@
+{
+  "powershell.codeFormatting.preset": "OTBS",
+  "powershell.scriptAnalysis.enable": true,
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true
+}

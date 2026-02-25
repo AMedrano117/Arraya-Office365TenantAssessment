@@ -1,0 +1,14 @@
+*.psd1.bak
+*.psm1.bak
+output/**
+!output/.gitkeep
+reports/**
+exports/**
+raw/**
+logs/**
+.vscode/*.code-workspace
+*.env
+secrets.json
+local.settings.json
+TestResults/
+coverage.xml

@@ -1,0 +1,5 @@
+{
+  "TenantId": "<TenantId>",
+  "Cloud": "Commercial",
+  "DefaultOutputPath": "./output"
+}

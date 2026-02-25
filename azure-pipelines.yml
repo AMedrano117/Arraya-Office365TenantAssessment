@@ -1,0 +1,29 @@
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+
+pr:
+  branches:
+    include:
+      - '*'
+
+pool:
+  vmImage: 'windows-latest'
+
+stages:
+- stage: Validate
+  jobs:
+  - job: LintAndTest
+    steps:
+    - checkout: self
+    - powershell: |
+        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+        Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+        Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck
+      displayName: Install tooling
+    - powershell: ./tools/invoke-scriptanalyzer.ps1
+      displayName: Run ScriptAnalyzer
+    - powershell: ./tools/run-pester.ps1
+      displayName: Run Pester tests

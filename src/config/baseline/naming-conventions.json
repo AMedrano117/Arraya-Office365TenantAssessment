@@ -1,0 +1,6 @@
+{
+  "AssessmentScriptPrefix": "Get-M365",
+  "RemediationScriptPrefix": "Set-M365",
+  "ValidationScriptPrefix": "Test-M365",
+  "ExportScriptPrefix": "Export-M365"
+}

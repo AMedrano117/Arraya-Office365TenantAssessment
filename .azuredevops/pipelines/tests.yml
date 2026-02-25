@@ -1,0 +1,9 @@
+pool:
+  vmImage: 'windows-latest'
+steps:
+- checkout: self
+- powershell: |
+    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+    Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck
+    ./tools/run-pester.ps1
+  displayName: Pester Tests
