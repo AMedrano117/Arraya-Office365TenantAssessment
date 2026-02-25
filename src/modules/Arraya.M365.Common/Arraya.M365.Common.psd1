@@ -5,7 +5,7 @@
     Author            = 'Arraya Solutions'
     CompanyName       = 'Arraya Solutions'
     PowerShellVersion = '7.0'
-    FunctionsToExport = @()
+    FunctionsToExport = '*'
     CmdletsToExport   = @()
     VariablesToExport = '*'
     AliasesToExport   = @()

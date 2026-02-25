@@ -1,21 +1,35 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string]$OutputPath,
+    [ValidateSet(
+        'SharePointSites',
+        'MailboxUsage',
+        'SharePointUser',
+        'TeamsUser',
+        'OneDriveUsage',
+        'OneDriveActivity',
+        'EmailActivity',
+        'YammerActivity',
+        'BrowserUsage',
+        'SkypeForBusinessActivity',
+        'Office365ActiveUser',
+        'Office365ServicesUserCounts',
+        'Office365ActivationCounts',
+        'Office365ActivationUser',
+        'Office365ActiveUserCounts',
+        'Office365GroupsActivity',
+        'Office365GroupsActivityCounts',
+        'Office365GroupsActivityFileCounts',
+        'Office365GroupsActivityGroupCounts',
+        'Office365GroupsActivityStorage',
+        'Office365GroupsActivityUser'
+    )]
+    [string]$ServiceName,
     [Parameter(Mandatory = $false)]
-    [ValidateSet('Interactive', 'AppCertificate')]
-    [string]$AuthMode = 'Interactive',
+    [ValidateSet('D7', 'D30', 'D90', 'D180')]
+    [string]$PeriodDuration = 'D90',
     [Parameter(Mandatory = $false)]
-    [string]$TenantId,
-    [Parameter(Mandatory = $false)]
-    [string]$ClientId,
-    [Parameter(Mandatory = $false)]
-    [string]$CertificateThumbprint,
-    [Parameter(Mandatory = $false)]
-    [switch]$IncludeRaw,
-    [Parameter(Mandatory = $false)]
-    [ValidateSet('Minimum', 'Combined', 'All', 'Geek')]
-    [string]$ReportingMode
+    [switch]$UseBeta
 )
 
 function Resolve-ArrayaRepoRoot {
@@ -48,16 +62,4 @@ if (-not (Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction SilentlyC
     Import-Module -Name $runnerManifestPath -ErrorAction Stop
 }
 
-if ($AuthMode -ne 'Interactive' -or $TenantId -or $ClientId -or $CertificateThumbprint) {
-    Write-Warning 'AuthMode/TenantId/ClientId/CertificateThumbprint are ignored by this compatibility shim. Use the full tenant script for custom auth flows.'
-}
-if ($IncludeRaw) {
-    Write-Warning 'IncludeRaw is ignored by this compatibility shim.'
-}
-
-$invokeParams = @{ ExportPath = $OutputPath }
-if ($PSBoundParameters.ContainsKey('ReportingMode')) {
-    $invokeParams.ReportingMode = $ReportingMode
-}
-
-Invoke-M365TenantAssessment @invokeParams
+Invoke-GraphActivityAssessment -ServiceName $ServiceName -PeriodDuration $PeriodDuration -UseBeta:$UseBeta

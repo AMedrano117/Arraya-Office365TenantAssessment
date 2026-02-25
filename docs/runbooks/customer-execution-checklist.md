@@ -2,3 +2,4 @@
 - Confirm permissions
 - Pilot first
 - Review outputs
+- Use `src/scripts/operations/Start-M365TenantAssessment.ps1` for guided execution

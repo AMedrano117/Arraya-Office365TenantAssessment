@@ -1,1 +1,1 @@
-Invoke-Pester -Path ./tests -Output Detailed
+Invoke-Pester -Path ./tests

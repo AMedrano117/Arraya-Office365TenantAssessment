@@ -1,21 +1,12 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$OutputPath,
     [Parameter(Mandatory = $false)]
-    [ValidateSet('Interactive', 'AppCertificate')]
-    [string]$AuthMode = 'Interactive',
-    [Parameter(Mandatory = $false)]
-    [string]$TenantId,
-    [Parameter(Mandatory = $false)]
-    [string]$ClientId,
-    [Parameter(Mandatory = $false)]
-    [string]$CertificateThumbprint,
-    [Parameter(Mandatory = $false)]
-    [switch]$IncludeRaw,
+    [string]$ExportPath,
     [Parameter(Mandatory = $false)]
     [ValidateSet('Minimum', 'Combined', 'All', 'Geek')]
-    [string]$ReportingMode
+    [string]$ReportingMode,
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipHtmlReport
 )
 
 function Resolve-ArrayaRepoRoot {
@@ -48,16 +39,9 @@ if (-not (Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction SilentlyC
     Import-Module -Name $runnerManifestPath -ErrorAction Stop
 }
 
-if ($AuthMode -ne 'Interactive' -or $TenantId -or $ClientId -or $CertificateThumbprint) {
-    Write-Warning 'AuthMode/TenantId/ClientId/CertificateThumbprint are ignored by this compatibility shim. Use the full tenant script for custom auth flows.'
-}
-if ($IncludeRaw) {
-    Write-Warning 'IncludeRaw is ignored by this compatibility shim.'
-}
-
-$invokeParams = @{ ExportPath = $OutputPath }
-if ($PSBoundParameters.ContainsKey('ReportingMode')) {
-    $invokeParams.ReportingMode = $ReportingMode
-}
+$invokeParams = @{}
+if ($PSBoundParameters.ContainsKey('ExportPath')) { $invokeParams.ExportPath = $ExportPath }
+if ($PSBoundParameters.ContainsKey('ReportingMode')) { $invokeParams.ReportingMode = $ReportingMode }
+if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
 
 Invoke-M365TenantAssessment @invokeParams
