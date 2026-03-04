@@ -2,7 +2,20 @@
 param(
     [Parameter(Mandatory = $false)]
     [ValidateSet('M365', 'AD', 'Graph', 'Improve', 'Compare')]
-    [string]$Action
+    [string]$Action,
+    [Parameter(Mandatory = $false)]
+    [string]$TenantId,
+    [Parameter(Mandatory = $false)]
+    [string]$CertificateThumbprint,
+    [Parameter(Mandatory = $false)]
+    [string]$ClientId,
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('Lean', 'Standard', 'Full')]
+    [string]$OutputProfile,
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipPdfReport,
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipJsonReport
 )
 
 function Resolve-ArrayaRepoRoot {
@@ -63,13 +76,23 @@ if ([string]::IsNullOrWhiteSpace($Action)) {
 switch ($Action) {
     'M365' {
         $reportingMode = Read-Host 'Reporting mode (Minimum, Combined, All, Geek) - leave blank for prompt'
+        $outputProfileInput = Read-Host 'Output profile (Lean, Standard, Full) - default Standard'
         $exportPath = Read-Host 'Export path (.xlsx or folder) - leave blank for prompt'
-        $skipHtmlInput = Read-Host 'Skip HTML report? (Y/N, default N)'
+        $skipHtmlInput = Read-Host 'Skip full HTML report? (Y/N, default by profile)'
+        $skipPdfInput = Read-Host 'Skip PDF report? (Y/N, default by profile)'
+        $skipJsonInput = Read-Host 'Skip JSON snapshot? (Y/N, default by profile)'
 
         $invokeParams = @{}
         if (-not [string]::IsNullOrWhiteSpace($reportingMode)) { $invokeParams.ReportingMode = $reportingMode }
+        if (-not [string]::IsNullOrWhiteSpace($outputProfileInput)) { $invokeParams.OutputProfile = $outputProfileInput }
+        elseif (-not [string]::IsNullOrWhiteSpace($OutputProfile)) { $invokeParams.OutputProfile = $OutputProfile }
         if (-not [string]::IsNullOrWhiteSpace($exportPath)) { $invokeParams.ExportPath = $exportPath }
         if ($skipHtmlInput -match '^(y|yes)$') { $invokeParams.SkipHtmlReport = $true }
+        if ($skipPdfInput -match '^(y|yes)$' -or $SkipPdfReport) { $invokeParams.SkipPdfReport = $true }
+        if ($skipJsonInput -match '^(y|yes)$' -or $SkipJsonReport) { $invokeParams.SkipJsonReport = $true }
+        if (-not [string]::IsNullOrWhiteSpace($TenantId)) { $invokeParams.TenantId = $TenantId }
+        if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
+        if (-not [string]::IsNullOrWhiteSpace($ClientId)) { $invokeParams.ClientId = $ClientId }
 
         Invoke-M365TenantAssessment @invokeParams
     }

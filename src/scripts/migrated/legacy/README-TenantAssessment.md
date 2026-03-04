@@ -4,7 +4,7 @@
 Run one script and choose from the menu:
 
 ```powershell
-.\Start-TenantAssessment.ps1
+.\src\scripts\operations\Start-M365TenantAssessment.ps1
 ```
 
 Users do not need to import any module manually. The launcher imports the local runner module automatically.
@@ -12,21 +12,72 @@ The runner module then loads the local `Office365Custom` module (latest version 
 
 ## Direct actions (optional)
 ```powershell
-.\Start-TenantAssessment.ps1 -Action M365
-.\Start-TenantAssessment.ps1 -Action AD
-.\Start-TenantAssessment.ps1 -Action Graph
-.\Start-TenantAssessment.ps1 -Action Improve
-.\Start-TenantAssessment.ps1 -Action Compare
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action AD
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Graph
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Improve
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Compare
 ```
 
-## Module location
+## Current Output Set
+A Microsoft 365 assessment run now produces:
+
+- `*.xlsx`: the main assessment workbook
+- `*-Assessment.html`: the assessment-only HTML focused on best practices, detailed findings, migration readiness, and Secure Score actions
+- `*.html`: the browser-friendly full tenant assessment report
+- `*-TenantToTenantQuestionnaire.md`: the tenant-to-tenant migration questionnaire populated from discovered data
+- `*.json`: the reusable assessment snapshot when enabled
+- `*.pdf`: the fixed-layout PDF rendered from the full HTML report when enabled and Chrome or Edge is available
+
+The workbook is the primary assessment deliverable. The most important worksheets for assessment review are:
+
+- `BestPractices`
+- `BestPracticeFindings`
+- `MigrationReadiness`
+- `SecureScoreActions`
+
+## Current Script Locations
 Runner commands are in:
 
-`.\Arraya.TenantAssessment\Arraya.TenantAssessment.psm1`
+`src\modules\Arraya.M365.AssessmentRunner\`
 
 Shared helper functions (such as `Write-ProgressHelper`) are sourced from:
 
-`.\Office365Custom\<version>\`
+`src\vendor\Office365Custom\<version>\`
+
+The core M365 assessment engine is:
+
+`src\scripts\migrated\legacy\Get-FullTenantReportDetails.ps1`
+
+The tenant-to-tenant questionnaire exporter is:
+
+`src\scripts\migrated\legacy\Export-TenantToTenantQuestionnaireMarkdown.ps1`
+
+The HTML and PDF helper is:
+
+`src\scripts\migrated\legacy\New-TenantHtmlReport.ps1`
+
+The questionnaire template is:
+
+`docs\templates\Microsoft 365 Tenant to Tenant Questionnaire.md`
+
+## Output Profiles
+The assessment script supports:
+
+- `Lean`: workbook, assessment HTML, and questionnaire
+- `Standard`: workbook, assessment HTML, full HTML, and questionnaire
+- `Full`: workbook, assessment HTML, full HTML, questionnaire, JSON, and PDF
+
+`Standard` is the default profile.
+
+## HTML And PDF
+The assessment script now attempts to generate:
+
+- `*-Assessment.html` independently of the full HTML output
+- `*.html` unless `-SkipHtmlReport` is provided or `-OutputProfile Lean` is used
+- `*.pdf` from the full HTML unless `-SkipPdfReport` is provided or the selected profile disables it
+
+PDF rendering prefers Google Chrome and falls back to Microsoft Edge when available.
 
 Phase 3 alignment status:
 

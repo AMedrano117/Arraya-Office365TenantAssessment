@@ -53,7 +53,8 @@ function Import-ArrayaOffice365CustomLocal {
         } -Descending |
         Select-Object -First 1
 
-    Import-Module -Name $latestManifest.FullName -ErrorAction Stop
+    # Import globally so commands remain available after this helper function returns.
+    Import-Module -Name $latestManifest.FullName -Global -ErrorAction Stop
 
     if ($RequiredCommands.Count -gt 0) {
         $missingAfterImport = @(
