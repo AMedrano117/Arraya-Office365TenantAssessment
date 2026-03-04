@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cavehouse Brewery - Best Practices Analysis</title>
+    <style>
+        :root {
+            --bg: #f3f0e8;
+            --paper: #fffdf8;
+            --ink: #1f2933;
+            --muted: #5b6872;
+            --line: #ddd5c7;
+            --accent: #0f4c5c;
+            --accent-2: #d97706;
+            --critical: #b42318;
+            --warning: #b54708;
+            --good: #067647;
+            --neutral: #475467;
+        }
+        body { font-family: Georgia, 'Times New Roman', serif; margin: 0; background: radial-gradient(circle at top, #faf8f3 0%, var(--bg) 60%, #ece7db 100%); color: var(--ink); }
+        .wrap { max-width: 1320px; margin: 0 auto; padding: 34px 28px 40px; }
+        .hero { background: linear-gradient(145deg, #12343b 0%, #1e5160 55%, #c77d2b 140%); color: white; padding: 34px; border-radius: 24px; box-shadow: 0 20px 40px rgba(22, 34, 42, 0.18); }
+        .hero-top { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; }
+        .eyebrow { text-transform: uppercase; letter-spacing: 0.16em; font: 600 11px/1.4 Segoe UI, Arial, sans-serif; opacity: 0.85; margin-bottom: 10px; }
+        .hero h1 { margin: 0; font-size: 38px; line-height: 1.05; }
+        .hero-meta { font: 500 12px/1.5 Segoe UI, Arial, sans-serif; text-align: right; opacity: 0.9; }
+        .hero-subtitle { font: 500 15px/1.6 Segoe UI, Arial, sans-serif; margin: 14px 0 0; max-width: 840px; opacity: 0.96; }
+        .headline { margin-top: 18px; padding: 16px 18px; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.16); border-radius: 18px; font: 600 18px/1.4 Segoe UI, Arial, sans-serif; }
+        .grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 16px; margin: 24px 0; }
+        .card { background: var(--paper); border: 1px solid rgba(18, 52, 59, 0.08); border-radius: 18px; padding: 20px; box-shadow: 0 10px 24px rgba(29, 41, 57, 0.06); }
+        .card .label { font: 600 11px/1.4 Segoe UI, Arial, sans-serif; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); margin-bottom: 10px; }
+        .card .value { font-size: 34px; font-weight: 700; color: #111827; font-family: 'Segoe UI', Arial, sans-serif; }
+        .card .caption { margin-top: 6px; color: var(--muted); font: 500 12px/1.5 Segoe UI, Arial, sans-serif; }
+        .summary-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 18px; margin-top: 10px; }
+        .section { background: var(--paper); border: 1px solid rgba(18, 52, 59, 0.08); border-radius: 22px; padding: 24px; margin-top: 22px; box-shadow: 0 10px 24px rgba(29, 41, 57, 0.06); }
+        .section h2 { margin: 0 0 8px; font-size: 24px; }
+        .section p.note { color: var(--muted); margin: 0; font: 500 13px/1.6 Segoe UI, Arial, sans-serif; }
+        .section-header { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; margin-bottom: 14px; }
+        .section-kicker { color: var(--accent); font: 700 11px/1.4 Segoe UI, Arial, sans-serif; text-transform: uppercase; letter-spacing: 0.14em; }
+        table { width: 100%; border-collapse: collapse; margin-top: 16px; font-family: Segoe UI, Arial, sans-serif; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid var(--line); vertical-align: top; font-size: 13px; }
+        th { background: #f4efe5; color: #214654; font-weight: 700; }
+        tr:nth-child(even) td { background: #fffaf0; }
+        .empty-state { padding: 14px; border: 1px dashed #c7bfb0; border-radius: 14px; color: var(--muted); background: #fbf8f1; font: 500 13px/1.6 Segoe UI, Arial, sans-serif; }
+        .pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 4px 10px; font: 700 11px/1 Segoe UI, Arial, sans-serif; text-transform: uppercase; letter-spacing: 0.06em; white-space: nowrap; }
+        .pill-critical { background: #fef3f2; color: var(--critical); border: 1px solid #fecdca; }
+        .pill-warning { background: #fffaeb; color: var(--warning); border: 1px solid #fedf89; }
+        .pill-good { background: #ecfdf3; color: var(--good); border: 1px solid #abefc6; }
+        .pill-neutral { background: #f2f4f7; color: var(--neutral); border: 1px solid #d0d5dd; }
+        .takeaway-list { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 12px; }
+        .takeaway-list li { border: 1px solid var(--line); background: #fffaf2; border-radius: 16px; padding: 14px 16px; }
+        .takeaway-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font: 700 14px/1.5 Segoe UI, Arial, sans-serif; }
+        .takeaway-body { font: 500 13px/1.6 Segoe UI, Arial, sans-serif; color: var(--ink); }
+        .takeaway-action { margin-top: 8px; font: 600 12px/1.6 Segoe UI, Arial, sans-serif; color: var(--accent); }
+        .action-link { color: var(--accent); text-decoration: none; font-weight: 600; }
+        .action-link:hover { text-decoration: underline; }
+        @media (max-width: 1100px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .summary-grid { grid-template-columns: 1fr; } .hero-top { flex-direction: column; } .hero-meta { text-align: left; } }
+        @media (max-width: 720px) { .wrap { padding: 18px; } .grid { grid-template-columns: 1fr; } .hero h1 { font-size: 30px; } .section-header { display: block; } }
+        @media print {
+            body { background: white; }
+            .wrap { max-width: none; padding: 0; }
+            .hero, .card, .section { box-shadow: none; border: 1px solid #d7d1c4; }
+            .section, .card { break-inside: avoid; page-break-inside: avoid; }
+            th { position: static; }
+            a { color: inherit; text-decoration: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="hero">
+            <div class="hero-top">
+                <div>
+                    <div class="eyebrow">Microsoft 365 Best Practices Analysis</div>
+                    <h1>Cavehouse Brewery</h1>
+                    <p class="hero-subtitle"><strong>BestPractices</strong> is the area-level rollup. <strong>BestPracticeFindings</strong> is the detailed issue list behind that rollup. This summary is optimized for handoff and decision-making, not raw inventory review.</p>
+                </div>
+                <div class="hero-meta">
+                    <div>Generated: 2026-03-04 11:06:17</div>
+                    <div>Tenant ID: 25f736c7-f048-463b-8a7d-22fa1df3cc4e</div>
+                    <div>Artifact: Best Practices Analysis</div>
+                </div>
+            </div>
+            <div class="headline">3 assessment area(s) need immediate attention.</div>
+        </div>
+
+        <div class="grid">
+            <div class="card"><div class="label">Assessment Areas</div><div class="value">10</div><div class="caption">Area-level rollups evaluated</div></div>
+            <div class="card"><div class="label">Critical Areas</div><div class="value">3</div><div class="caption">Immediate remediation candidates</div></div>
+            <div class="card"><div class="label">Warning Areas</div><div class="value">3</div><div class="caption">Needs planned follow-up</div></div>
+            <div class="card"><div class="label">Risk Findings</div><div class="value">3</div><div class="caption">Detailed high-risk issues</div></div>
+            <div class="card"><div class="label">Migration Reviews</div><div class="value">10</div><div class="caption">Migration blockers or review items</div></div>
+        </div>
+
+        <div class="summary-grid">
+            <div class="section">
+                <div class="section-header">
+                    <div>
+                        <div class="section-kicker">Executive Summary</div>
+                        <h2>Top Priorities</h2>
+                    </div>
+                </div>
+                <p class="note">Highest-priority findings drawn from the detailed assessment table.</p>
+                <ul class='takeaway-list'><li><div class='takeaway-head'><span class='pill pill-critical'>Risk</span> <span>Domains</span></div><div class='takeaway-body'>Domain &#39;lab.com&#39; is not verified</div><div class='takeaway-action'>Verify all domains and confirm authoritative routing before migration sequencing.</div></li><li><div class='takeaway-head'><span class='pill pill-critical'>Risk</span> <span>Secure Score</span></div><div class='takeaway-body'>Microsoft Secure Score is 39.8%, which is below the target range for a mature tenant baseline.</div><div class='takeaway-action'>Use the mapped Microsoft Secure Score action to prioritize remediation with the highest security impact.</div></li><li><div class='takeaway-head'><span class='pill pill-critical'>Risk</span> <span>Devices</span></div><div class='takeaway-body'>Device compliance is only 0% (target: 80%)</div><div class='takeaway-action'>Review stale and non-compliant devices before identity and endpoint cutover.</div></li><li><div class='takeaway-head'><span class='pill pill-warning'>Warning</span> <span>Devices</span></div><div class='takeaway-body'>32 devices (78%) are stale (inactive &gt; 6 months)</div><div class='takeaway-action'>Review stale and non-compliant devices before identity and endpoint cutover.</div></li><li><div class='takeaway-head'><span class='pill pill-warning'>Warning</span> <span>Licensing</span></div><div class='takeaway-body'>License &#39;MCOCAP&#39; has 0 remaining (fully allocated)</div><div class='takeaway-action'>Review SKU capacity, reclaim unused assignments, and align target-tenant licensing before cutover.</div></li></ul>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <div>
+                        <div class="section-kicker">Migration Focus</div>
+                        <h2>Readiness Watchlist</h2>
+                    </div>
+                </div>
+                <p class="note">Migration items that still need design review, data collection, or remediation.</p>
+                <ul class='takeaway-list'><li><div class='takeaway-head'><span class='pill pill-warning'>Review</span> <span>Mail flow dependencies</span></div><div class='takeaway-body'>2 connector(s), 2 remote domain(s)</div><div class='takeaway-action'>Inventory connectors, relay paths, and remote domains before cutover design.</div></li><li><div class='takeaway-head'><span class='pill pill-warning'>Review</span> <span>Mail routing</span></div><div class='takeaway-body'>3 domain(s) with non-Microsoft 365 MX</div><div class='takeaway-action'>Document current MX and transport path before migration planning.</div></li><li><div class='takeaway-head'><span class='pill pill-warning'>Review</span> <span>Guests and external identities</span></div><div class='takeaway-body'>11 guest/external user(s)</div><div class='takeaway-action'>Decide whether guest objects are recreated, invited, or excluded from scope.</div></li><li><div class='takeaway-head'><span class='pill pill-warning'>Needs Data</span> <span>Teams workload data</span></div><div class='takeaway-body'>Teams inventory not collected in current run</div><div class='takeaway-action'>Collect Teams team/channel inventory before finalizing collaboration migration planning.</div></li><li><div class='takeaway-head'><span class='pill pill-warning'>Needs Data</span> <span>Voice workload readiness</span></div><div class='takeaway-body'>Voice users=10; source=GraphLicenseInference</div><div class='takeaway-action'>Add Teams voice/call record permissions or collect delegated Teams PowerShell data before final voice migration planning.</div></li></ul>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-header">
+                <div>
+                    <div class="section-kicker">Rollup</div>
+                    <h2>Best Practices</h2>
+                </div>
+            </div>
+            <p class="note">One row per assessment area. This is the rollup view used to understand overall tenant posture at a glance.</p>
+            <table><thead><tr><th>Area</th><th>Status</th><th>CriticalFindings</th><th>WarningFindings</th><th>TotalFindings</th><th>PrimaryFinding</th><th>RecommendedAction</th></tr></thead><tbody><tr><td>Secure Score</td><td><span class='pill pill-critical'>Critical</span></td><td>1</td><td>0</td><td>1</td><td>Microsoft Secure Score is 39.8%, which is below the target range for a mature tenant baseline.</td><td>Use the mapped Microsoft Secure Score action to prioritize remediation with the highest security impact.</td></tr><tr><td>Licensing</td><td><span class='pill pill-warning'>Warning</span></td><td>0</td><td>5</td><td>5</td><td>License &#39;MCOPSTN1&#39; has 0 remaining (fully allocated)</td><td>Review SKU capacity, reclaim unused assignments, and align target-tenant licensing before cutover.</td></tr><tr><td>Devices</td><td><span class='pill pill-critical'>Critical</span></td><td>1</td><td>1</td><td>2</td><td>Device compliance is only 0% (target: 80%)</td><td>Review stale and non-compliant devices before identity and endpoint cutover.</td></tr><tr><td>Mailboxes</td><td><span class='pill pill-good'>Healthy</span></td><td>0</td><td>0</td><td>0</td><td>No automated findings detected for this assessment area.</td><td>Use the detailed workload worksheets for validation and migration planning.</td></tr><tr><td>Hybrid / Federation</td><td><span class='pill pill-warning'>Warning</span></td><td>0</td><td>2</td><td>4</td><td>Partial hybrid indicators detected without full configuration (review mail flow connectors and org settings)</td><td>Validate hybrid, connectors, and migration endpoints because they affect tenant-to-tenant messaging strategy.</td></tr><tr><td>Domains</td><td><span class='pill pill-critical'>Critical</span></td><td>1</td><td>0</td><td>4</td><td>Domain &#39;lab.com&#39; is not verified</td><td>Verify all domains and confirm authoritative routing before migration sequencing.</td></tr><tr><td>SharePoint &amp; OneDrive</td><td><span class='pill pill-warning'>Warning</span></td><td>0</td><td>2</td><td>2</td><td>108 SharePoint sites exceed 1024 GB</td><td>Use site inventory, ownership, and storage metrics to prioritize high-risk collaboration workloads.</td></tr><tr><td>AD Connect / Sync</td><td><span class='pill pill-good'>Healthy</span></td><td>0</td><td>0</td><td>0</td><td>No automated findings detected for this assessment area.</td><td>Use the detailed workload worksheets for validation and migration planning.</td></tr><tr><td>Identity &amp; Admins</td><td><span class='pill pill-good'>Healthy</span></td><td>0</td><td>0</td><td>0</td><td>No automated findings detected for this assessment area.</td><td>Use the detailed workload worksheets for validation and migration planning.</td></tr><tr><td>Conditional Access &amp; MFA</td><td><span class='pill pill-good'>Healthy</span></td><td>0</td><td>0</td><td>0</td><td>No automated findings detected for this assessment area.</td><td>Use the detailed workload worksheets for validation and migration planning.</td></tr></tbody></table>
+        </div>
+
+        <div class="section">
+            <div class="section-header">
+                <div>
+                    <div class="section-kicker">Detail</div>
+                    <h2>Best Practice Findings</h2>
+                </div>
+            </div>
+            <p class="note">These are the individual findings that drive the rollup rows above.</p>
+            <table><thead><tr><th>Severity</th><th>Area</th><th>Category</th><th>Message</th><th>RecommendedAction</th></tr></thead><tbody><tr><td><span class='pill pill-critical'>Risk</span></td><td>Domains</td><td>Domain Verification</td><td>Domain &#39;lab.com&#39; is not verified</td><td>Verify all domains and confirm authoritative routing before migration sequencing.</td></tr><tr><td><span class='pill pill-critical'>Risk</span></td><td>Secure Score</td><td>Secure Score</td><td>Microsoft Secure Score is 39.8%, which is below the target range for a mature tenant baseline.</td><td>Use the mapped Microsoft Secure Score action to prioritize remediation with the highest security impact.</td></tr><tr><td><span class='pill pill-critical'>Risk</span></td><td>Devices</td><td>Device Compliance</td><td>Device compliance is only 0% (target: 80%)</td><td>Review stale and non-compliant devices before identity and endpoint cutover.</td></tr><tr><td><span class='pill pill-warning'>Warning</span></td><td>Devices</td><td>Stale Devices</td><td>32 devices (78%) are stale (inactive &gt; 6 months)</td><td>Review stale and non-compliant devices before identity and endpoint cutover.</td></tr><tr><td><span class='pill pill-warning'>Warning</span></td><td>Licensing</td><td>At Capacity</td><td>License &#39;MCOCAP&#39; has 0 remaining (fully allocated)</td><td>Review SKU capacity, reclaim unused assignments, and align target-tenant licensing before cutover.</td></tr><tr><td><span class='pill pill-warning'>Warning</span></td><td>SharePoint &amp; OneDrive</td><td>Large OneDrive Sites</td><td>5 OneDrive sites exceed 1024 GB</td><td>Use site inventory, ownership, and storage metrics to prioritize high-risk collaboration workloads.</td></tr><tr><td><span class='pill pill-warning'>Warning</span></td><td>Licensing</td><td>At Capacity</td><td>License &#39;POWERAPPS_PER_USER&#39; has 0 remaining (fully allocated)</td><td>Review SKU capacity, reclaim unused assignments, and align target-tenant licensing before cutover.</td></tr><tr><td><span class='pill pill-warning'>Warning</span></td><td>SharePoint &amp; OneDrive</td><td>Large SharePoint Sites</td><td>108 SharePoint sites exceed 1024 GB</td><td>Use site inventory, ownership, and storage metrics to prioritize high-risk collaboration workloads.</td></tr><tr><td><span class='pill pill-warning'>Warning</span></td><td>Hybrid / Federation</td><td>Exchange Hybrid</td><td>Partial hybrid indicators detected without full configuration (review mail flow connectors and org settings)</td><td>Validate hybrid, connectors, and migration endpoints because they affect tenant-to-tenant messaging strategy.</td></tr><tr><td><span class='pill pill-warning'>Warning</span></td><td>Hybrid / Federation</td><td>External Identities</td><td>B2B management policy not found; external identity settings may be default/unconfigured</td><td>Review cross-tenant and B2B settings for coexistence, external collaboration, and post-migration cleanup.</td></tr><tr><td><span class='pill pill-warning'>Warning</span></td><td>Licensing</td><td>At Capacity</td><td>License &#39;Office 365 E3&#39; has 0 remaining (fully allocated)</td><td>Review SKU capacity, reclaim unused assignments, and align target-tenant licensing before cutover.</td></tr><tr><td><span class='pill pill-warning'>Warning</span></td><td>Licensing</td><td>At Capacity</td><td>License &#39;SPE_E5&#39; has 0 remaining (fully allocated)</td><td>Review SKU capacity, reclaim unused assignments, and align target-tenant licensing before cutover.</td></tr><tr><td><span class='pill pill-warning'>Warning</span></td><td>Licensing</td><td>At Capacity</td><td>License &#39;MCOPSTN1&#39; has 0 remaining (fully allocated)</td><td>Review SKU capacity, reclaim unused assignments, and align target-tenant licensing before cutover.</td></tr><tr><td><span class='pill pill-neutral'>Info</span></td><td>Domains</td><td>DNS Configuration</td><td>Domain &#39;lab.com&#39; MX record does not point to Microsoft 365</td><td>Review MX, autodiscover, and mail-routing records to plan coexistence and cutover.</td></tr><tr><td><span class='pill pill-neutral'>Info</span></td><td>Domains</td><td>DNS Configuration</td><td>Domain &#39;jeffersondemo.cavehousebrewing.com&#39; MX record does not point to Microsoft 365</td><td>Review MX, autodiscover, and mail-routing records to plan coexistence and cutover.</td></tr><tr><td><span class='pill pill-neutral'>Info</span></td><td>Hybrid / Federation</td><td>Federation/Relationship</td><td>Exchange federation relationships detected (OrgRel: 1, IOC: 0)</td><td>Validate hybrid, connectors, and migration endpoints because they affect tenant-to-tenant messaging strategy.</td></tr><tr><td><span class='pill pill-neutral'>Info</span></td><td>Domains</td><td>DNS Configuration</td><td>Domain &#39;lvhndemo.cavehousebrewing.com&#39; MX record does not point to Microsoft 365</td><td>Review MX, autodiscover, and mail-routing records to plan coexistence and cutover.</td></tr><tr><td><span class='pill pill-neutral'>Info</span></td><td>Hybrid / Federation</td><td>Cross-Tenant Access</td><td>Cross-tenant access partners configured: 3</td><td>Review cross-tenant and B2B settings for coexistence, external collaboration, and post-migration cleanup.</td></tr></tbody></table>
+        </div>
+
+        <div class="section">
+            <div class="section-header">
+                <div>
+                    <div class="section-kicker">Migration</div>
+                    <h2>Migration Readiness</h2>
+                </div>
+            </div>
+            <p class="note">Migration-specific blockers, reviews, and readiness notes derived from the tenant inventory.</p>
+            <table><thead><tr><th>Category</th><th>Item</th><th>Status</th><th>Value</th><th>MigrationAction</th></tr></thead><tbody><tr><td>Messaging</td><td>Mail flow dependencies</td><td><span class='pill pill-warning'>Review</span></td><td>2 connector(s), 2 remote domain(s)</td><td>Inventory connectors, relay paths, and remote domains before cutover design.</td></tr><tr><td>Messaging</td><td>Inactive mailboxes</td><td><span class='pill pill-good'>Ready</span></td><td>0 inactive mailbox(es)</td><td>Confirm retention, restore, or exclusion decisions before migration scope is finalized.</td></tr><tr><td>Domains</td><td>Mail routing</td><td><span class='pill pill-warning'>Review</span></td><td>3 domain(s) with non-Microsoft 365 MX</td><td>Document current MX and transport path before migration planning.</td></tr><tr><td>Identity</td><td>Guests and external identities</td><td><span class='pill pill-warning'>Review</span></td><td>11 guest/external user(s)</td><td>Decide whether guest objects are recreated, invited, or excluded from scope.</td></tr><tr><td>Collaboration</td><td>Teams workload data</td><td><span class='pill pill-warning'>Needs Data</span></td><td>Teams inventory not collected in current run</td><td>Collect Teams team/channel inventory before finalizing collaboration migration planning.</td></tr><tr><td>Teams Voice</td><td>Voice workload readiness</td><td><span class='pill pill-warning'>Needs Data</span></td><td>Voice users=10; source=GraphLicenseInference</td><td>Add Teams voice/call record permissions or collect delegated Teams PowerShell data before final voice migration planning.</td></tr><tr><td>Licensing</td><td>Target licensing readiness</td><td><span class='pill pill-neutral'>Info</span></td><td>44.8% utilized; 20 licensed user(s)</td><td>Review paid SKU utilization and confirm target-tenant licensing for migration scope.</td></tr><tr><td>Domains</td><td>Verified custom domains</td><td><span class='pill pill-critical'>Blocker</span></td><td>5 verified / 1 unverified</td><td>Confirm domain ownership, cutover timing, and accepted domain strategy in the target tenant.</td></tr><tr><td>External Access</td><td>Cross-tenant and B2B settings</td><td><span class='pill pill-warning'>Review</span></td><td>3 partner relationship(s)</td><td>Review B2B and cross-tenant access settings as part of coexistence planning.</td></tr><tr><td>Identity</td><td>Directory synchronization</td><td><span class='pill pill-warning'>Review</span></td><td>On-prem sync enabled</td><td>Plan whether identities stay synced during migration or transition to cloud-managed.</td></tr><tr><td>Messaging</td><td>Mailbox inventory</td><td><span class='pill pill-neutral'>Info</span></td><td>0 mailbox(es), 0 archive-enabled</td><td>Use mailbox detail sheets to segment batches and identify oversized or special-case mailboxes.</td></tr><tr><td>Security</td><td>Conditional Access and MFA</td><td><span class='pill pill-neutral'>Info</span></td><td>10 CA policy/policies; MFA summary collected=Yes</td><td>Map CA, MFA, and authentication controls between source and target tenant.</td></tr><tr><td>Hybrid</td><td>Hybrid or coexistence indicators</td><td><span class='pill pill-warning'>Review</span></td><td>Hybrid signals detected; migration endpoints=0</td><td>Validate whether hybrid remains required during migration or can be removed from scope.</td></tr><tr><td>Collaboration</td><td>SharePoint and OneDrive</td><td><span class='pill pill-neutral'>Info</span></td><td>108 SharePoint site(s), 31 OneDrive site(s)</td><td>Use site inventory, size, and owner data to prioritize migration waves.</td></tr><tr><td>Messaging</td><td>Public folders</td><td><span class='pill pill-warning'>Review</span></td><td>2 public folder object(s)</td><td>Validate whether public folders remain in scope and determine their target-state strategy.</td></tr></tbody></table>
+        </div>
+
+        <div class="section">
+            <div class="section-header">
+                <div>
+                    <div class="section-kicker">Microsoft Guidance</div>
+                    <h2>Secure Score Actions</h2>
+                </div>
+            </div>
+            <p class="note">Top mapped Microsoft Secure Score actions included for security remediation prioritization.</p>
+            <table><thead><tr><th>RecommendationTitle</th><th>Status</th><th>Rank</th><th>ScoreGap</th><th>ActionUrl</th></tr></thead><tbody><tr><td>Limit external participants from having control in a Teams meeting</td><td><span class='pill pill-neutral'>Implemented</span></td><td></td><td>0</td><td><a class='action-link' href='https://admin.teams.microsoft.com/policies/meetings'>Open recommendation</a></td></tr><tr><td>Restrict anonymous users from starting Teams meetings</td><td><span class='pill pill-neutral'>Implemented</span></td><td></td><td>0</td><td><a class='action-link' href='https://admin.teams.microsoft.com/policies/meetings'>Open recommendation</a></td></tr><tr><td>Restrict dial-in users from bypassing a meeting lobby </td><td><span class='pill pill-neutral'>Implemented</span></td><td></td><td>0</td><td><a class='action-link' href='https://admin.teams.microsoft.com/policies/meetings'>Open recommendation</a></td></tr><tr><td>Restrict anonymous users from joining meetings</td><td><span class='pill pill-neutral'>Not Implemented</span></td><td></td><td>1</td><td><a class='action-link' href='https://admin.teams.microsoft.com/meetings/settings'>Open recommendation</a></td></tr><tr><td>Only invited users should be automatically admitted to Teams meetings</td><td><span class='pill pill-neutral'>Not Implemented</span></td><td></td><td>2</td><td><a class='action-link' href='https://admin.teams.microsoft.com/policies/meetings'>Open recommendation</a></td></tr><tr><td>Configure which users are allowed to present in Teams meetings</td><td><span class='pill pill-neutral'>Not Implemented</span></td><td></td><td>2</td><td><a class='action-link' href='https://admin.teams.microsoft.com/policies/meetings'>Open recommendation</a></td></tr><tr><td>Ensure multifactor authentication is enabled for all users in administrative roles</td><td><span class='pill pill-neutral'>Partially Implemented</span></td><td>1</td><td>8.57</td><td><a class='action-link' href='https://go.microsoft.com/fwlink/?linkid=2095010'>Open recommendation</a></td></tr><tr><td>Ensure that password hash sync is enabled for hybrid deployments</td><td><span class='pill pill-neutral'>Not Implemented</span></td><td>9</td><td>5</td><td><a class='action-link' href='https://go.microsoft.com/fwlink/?linkid=2094925'>Open recommendation</a></td></tr><tr><td>Ensure Microsoft Defender for Cloud Apps is enabled and configured</td><td><span class='pill pill-neutral'>Implemented</span></td><td>10</td><td>0</td><td><a class='action-link' href='https://learn.microsoft.com/en-us/defender-cloud-apps/get-started'>Open recommendation</a></td></tr><tr><td>Ensure internal phishing protection for Forms is enabled</td><td><span class='pill pill-neutral'>Implemented</span></td><td>10</td><td>0</td><td><a class='action-link' href='https://learn.microsoft.com/en-US/microsoft-forms/review-unblock-forms-users-detected-blocked-potential-phishing'>Open recommendation</a></td></tr><tr><td>Ensure Microsoft 365 audit log search is Enabled</td><td><span class='pill pill-neutral'>Implemented</span></td><td>10</td><td>0</td><td><a class='action-link' href='https://learn.microsoft.com/en-us/microsoft-365/compliance/audit-log-enable-disable?view=o365-worldwide&amp;tid=25f736c7-f048-463b-8a7d-22fa1df3cc4e'>Open recommendation</a></td></tr><tr><td>Ensure Safe Attachments policy is enabled</td><td><span class='pill pill-neutral'>Implemented</span></td><td>10</td><td>0</td><td><a class='action-link' href='https://learn.microsoft.com/en-us/microsoft-365/security/office-365-security/safe-attachments-policies-configure?view=o365-worldwide&amp;tid=25f736c7-f048-463b-8a7d-22fa1df3cc4e'>Open recommendation</a></td></tr><tr><td>Ensure DLP policies are enabled for Microsoft Teams</td><td><span class='pill pill-neutral'>Implemented</span></td><td>10</td><td>0</td><td><a class='action-link' href='https://learn.microsoft.com/en-us/microsoft-365/compliance/dlp-microsoft-teams?view=o365-worldwide&amp;tid=25f736c7-f048-463b-8a7d-22fa1df3cc4e'>Open recommendation</a></td></tr><tr><td>Ensure modern authentication for Exchange Online is enabled</td><td><span class='pill pill-neutral'>Implemented</span></td><td>10</td><td>0</td><td><a class='action-link' href='https://learn.microsoft.com/en-us/Exchange/clients-and-mobile-in-exchange-online/enable-or-disable-modern-authentication-in-exchange-online?redirectSourcePath=%252fen-us%252farticle%252fenable-or-disable-modern-authentication-in-exchange-online-58018196-f918-49cd-8238-56f57f38d662'>Open recommendation</a></td></tr><tr><td>Ensure that SharePoint guest users cannot share items they don&#39;t own</td><td><span class='pill pill-neutral'>Implemented</span></td><td>10</td><td>0</td><td><a class='action-link' href='https://learn.microsoft.com/en-us/microsoft-365/solutions/microsoft-365-guest-settings?view=o365-worldwide#sharepoint-and-onedrive-advanced-sharing-settings'>Open recommendation</a></td></tr><tr><td>Ensure that SPF records are published for all Exchange Domains</td><td><span class='pill pill-neutral'>Implemented</span></td><td>10</td><td>0</td><td><a class='action-link' href='https://learn.microsoft.com/en-us/microsoft-365/security/office-365-security/set-up-spf-in-office-365-to-help-prevent-spoofing?view=o365-worldwide'>Open recommendation</a></td></tr><tr><td>Ensure that an anti-phishing policy has been created</td><td><span class='pill pill-neutral'>Partially Implemented</span></td><td>10</td><td>2.97</td><td><a class='action-link' href='https://learn.microsoft.com/en-us/microsoft-365/security/office-365-security/anti-phishing-policies-about?view=o365-worldwide&amp;tid=25f736c7-f048-463b-8a7d-22fa1df3cc4e'>Open recommendation</a></td></tr><tr><td>Ensure Safe Links for Office Applications is Enabled</td><td><span class='pill pill-neutral'>Partially Implemented</span></td><td>10</td><td>2.97</td><td><a class='action-link' href='https://learn.microsoft.com/en-us/microsoft-365/security/office-365-security/safe-links-policies-configure?view=o365-worldwide&amp;tid=25f736c7-f048-463b-8a7d-22fa1df3cc4e'>Open recommendation</a></td></tr><tr><td>Ensure Exchange Online Spam Policies are set to notify administrators</td><td><span class='pill pill-neutral'>Not Implemented</span></td><td>10</td><td>3</td><td><a class='action-link' href='https://learn.microsoft.com/en-us/microsoft-365/security/office-365-security/anti-spam-policies-configure?view=o365-worldwide&amp;tid=25f736c7-f048-463b-8a7d-22fa1df3cc4e'>Open recommendation</a></td></tr><tr><td>Ensure SharePoint external sharing is managed through domain whitelist/blacklists</td><td><span class='pill pill-neutral'>Not Implemented</span></td><td>10</td><td>3</td><td><a class='action-link' href='https://learn.microsoft.com/en-us/sharepoint/restricted-domains-sharing'>Open recommendation</a></td></tr></tbody></table>
+        </div>
+    </div>
+</body>
+</html>
