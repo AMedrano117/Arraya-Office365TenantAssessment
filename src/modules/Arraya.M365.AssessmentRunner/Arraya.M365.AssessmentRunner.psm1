@@ -42,7 +42,7 @@ function Invoke-M365TenantAssessment {
         [string]$ReportingMode,
         [Parameter(Mandatory = $false)]
         [ValidateSet('Lean', 'Standard', 'Full')]
-        [string]$OutputProfile,
+        [string]$OutputProfile = 'Lean',
         [Parameter(Mandatory = $false)]
         [switch]$SkipHtmlReport,
         [Parameter(Mandatory = $false)]
@@ -54,7 +54,9 @@ function Invoke-M365TenantAssessment {
         [Parameter(Mandatory = $false)]
         [string]$CertificateThumbprint,
         [Parameter(Mandatory = $false)]
-        [string]$ClientId
+        [string]$ClientId,
+        [Parameter(Mandatory = $false)]
+        [string]$ClientSecret
     )
 
     $scriptPath = Get-LegacyScriptPath -Name 'Get-FullTenantReportDetails.ps1'
@@ -68,6 +70,7 @@ function Invoke-M365TenantAssessment {
     if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
     if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
     if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
+    if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
 
     & $scriptPath @invokeParams
 }
