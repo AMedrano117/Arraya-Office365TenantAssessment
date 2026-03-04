@@ -80,7 +80,6 @@ If a supported browser is unavailable, the workbook, questionnaire, and HTML out
 
 ## Repo Layout
 - `docs`: user-facing templates and questionnaires. The tenant-to-tenant questionnaire template lives under `docs/templates`.
-- `artifacts`: generated assessment outputs from validation and test runs.
 - `src/modules/Arraya.M365.Common`: shared helpers and Office365Custom local import function.
 - `src/modules/Arraya.M365.AssessmentRunner`: user-facing commands that execute assessment/report scripts.
 - `src/scripts/migrated/legacy`: migrated legacy scripts kept for compatibility, including the core M365 assessment engine, HTML/PDF helper, and questionnaire exporter.
@@ -90,3 +89,12 @@ If a supported browser is unavailable, the workbook, questionnaire, and HTML out
 1. Install PowerShell 7+.
 2. Run `tools/bootstrap-dev.ps1`.
 3. Validate with `tools/invoke-scriptanalyzer.ps1` and `tools/run-pester.ps1`.
+
+## Local Output Location
+Validation and test outputs should not be written into this repo.
+
+- Preferred local output root: `%LOCALAPPDATA%\Arraya\M365TenantAssessment\Outputs`
+- Example on this machine: `C:\Users\amedrano\AppData\Local\Arraya\M365TenantAssessment\Outputs`
+- Future ad hoc test runs should target that local folder instead of `artifacts/`
+
+Removing tracked artifacts from the repo prevents future growth, but it does not shrink existing git history by itself. If you want the repository size reduced retroactively, the next step is a history rewrite with `git filter-repo` or BFG.
