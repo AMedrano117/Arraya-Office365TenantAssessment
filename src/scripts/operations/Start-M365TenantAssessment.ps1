@@ -53,16 +53,35 @@ $runnerManifestPath = Join-Path $repoRoot 'src\modules\Arraya.M365.AssessmentRun
 if (-not (Test-Path -Path $commonManifestPath)) {
     throw "Common module manifest not found: $commonManifestPath"
 }
-if (-not (Get-Module -Name 'Arraya.M365.Common' -ErrorAction SilentlyContinue)) {
-    Import-Module -Name $commonManifestPath -ErrorAction Stop
+$resolvedCommonManifestPath = (Resolve-Path -Path $commonManifestPath).Path
+$loadedCommonModule = Get-Module -Name 'Arraya.M365.Common' -ErrorAction SilentlyContinue | Select-Object -First 1
+$requiredCommonCommands = @('Get-ArrayaAssessmentOutputRoot')
+$missingCommonCommands = @(
+    $requiredCommonCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
+)
+if (
+    -not $loadedCommonModule -or
+    $loadedCommonModule.Path -ne $resolvedCommonManifestPath -or
+    $missingCommonCommands.Count -gt 0
+) {
+    Import-Module -Name $resolvedCommonManifestPath -Force -ErrorAction Stop
 }
 
 if (-not (Test-Path -Path $runnerManifestPath)) {
     throw "Runner module manifest not found: $runnerManifestPath"
 }
-
-if (-not (Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction SilentlyContinue)) {
-    Import-Module -Name $runnerManifestPath -ErrorAction Stop
+$resolvedRunnerManifestPath = (Resolve-Path -Path $runnerManifestPath).Path
+$loadedRunnerModule = Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction SilentlyContinue | Select-Object -First 1
+$requiredRunnerCommands = @('Invoke-M365TenantAssessment')
+$missingRunnerCommands = @(
+    $requiredRunnerCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
+)
+if (
+    -not $loadedRunnerModule -or
+    $loadedRunnerModule.Path -ne $resolvedRunnerManifestPath -or
+    $missingRunnerCommands.Count -gt 0
+) {
+    Import-Module -Name $resolvedRunnerManifestPath -Force -ErrorAction Stop
 }
 
 if ([string]::IsNullOrWhiteSpace($Action)) {

@@ -28,8 +28,20 @@ if ($graphFallbackEnabled) {
         Write-Warning "Graph fallback requested but common module manifest was not found: $commonModuleManifestPath"
         $graphFallbackEnabled = $false
     }
-    elseif (-not (Get-Module -Name 'Arraya.M365.Common' -ErrorAction SilentlyContinue)) {
-        Import-Module -Name $commonModuleManifestPath -ErrorAction Stop
+    else {
+        $resolvedCommonManifestPath = (Resolve-Path -Path $commonModuleManifestPath).Path
+        $loadedCommonModule = Get-Module -Name 'Arraya.M365.Common' -ErrorAction SilentlyContinue | Select-Object -First 1
+        $requiredCommonCommands = @('Get-ArrayaGraphResource')
+        $missingCommonCommands = @(
+            $requiredCommonCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
+        )
+        if (
+            -not $loadedCommonModule -or
+            $loadedCommonModule.Path -ne $resolvedCommonManifestPath -or
+            $missingCommonCommands.Count -gt 0
+        ) {
+            Import-Module -Name $resolvedCommonManifestPath -Force -ErrorAction Stop
+        }
     }
 }
 
