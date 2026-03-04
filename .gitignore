@@ -2,6 +2,7 @@
 *.psm1.bak
 output/**
 !output/.gitkeep
+artifacts/**
 reports/**
 exports/**
 raw/**

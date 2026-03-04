@@ -102,6 +102,15 @@ The assessment script now attempts to generate:
 
 PDF rendering prefers Google Chrome and falls back to Microsoft Edge when available.
 
+## Local Output Location
+Validation and test outputs should not be written into this repo.
+
+- Preferred local output root: `%LOCALAPPDATA%\Arraya\M365TenantAssessment\Outputs`
+- Example on this machine: `C:\Users\amedrano\AppData\Local\Arraya\M365TenantAssessment\Outputs`
+- Future ad hoc test runs should target that local folder instead of `artifacts/`
+
+Removing tracked artifacts from the repo prevents future growth, but it does not shrink existing git history by itself. If you want the repository size reduced retroactively, the next step is a history rewrite with `git filter-repo` or BFG.
+
 Phase 3 alignment status:
 
 - Local Office365Custom import bootstrap is centralized in:
