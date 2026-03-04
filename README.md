@@ -89,12 +89,3 @@ If a supported browser is unavailable, the workbook, questionnaire, and HTML out
 1. Install PowerShell 7+.
 2. Run `tools/bootstrap-dev.ps1`.
 3. Validate with `tools/invoke-scriptanalyzer.ps1` and `tools/run-pester.ps1`.
-
-## Local Output Location
-Validation and test outputs should not be written into this repo.
-
-- Preferred local output root: `%LOCALAPPDATA%\Arraya\M365TenantAssessment\Outputs`
-- Example on this machine: `C:\Users\amedrano\AppData\Local\Arraya\M365TenantAssessment\Outputs`
-- Future ad hoc test runs should target that local folder instead of `artifacts/`
-
-Removing tracked artifacts from the repo prevents future growth, but it does not shrink existing git history by itself. If you want the repository size reduced retroactively, the next step is a history rewrite with `git filter-repo` or BFG.
