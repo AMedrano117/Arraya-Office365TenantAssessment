@@ -10,6 +10,29 @@ Run one script and choose from the menu:
 Users do not need to import any module manually. The launcher imports the local runner module automatically.
 The runner module then loads the local `Office365Custom` module (latest version folder) only if it is not already imported.
 
+## Auth Modes
+- `Delegated`: interactive sign-in for full module compatibility.
+- `Certificate`: noninteractive app auth for Graph and Exchange, with Graph-based SharePoint fallback in PowerShell 7.
+- `Client secret`: noninteractive app auth for Graph and Exchange app-only; Teams PowerShell remains limited in app-secret mode.
+
+Examples:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365
+
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365 `
+  -TenantId '<tenant-guid>' `
+  -ClientId '<app-id>' `
+  -CertificateThumbprint '<cert-thumbprint>'
+
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365 `
+  -TenantId '<tenant-guid>' `
+  -ClientId '<app-id>' `
+  -ClientSecret '<client-secret>'
+```
+
 ## Direct actions (optional)
 ```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365
@@ -23,7 +46,7 @@ The runner module then loads the local `Office365Custom` module (latest version 
 A Microsoft 365 assessment run now produces:
 
 - `*.xlsx`: the main assessment workbook
-- `*-Assessment.html`: the assessment-only HTML focused on best practices, detailed findings, migration readiness, and Secure Score actions
+- `*-BestPracticesAnalysis.html`: the assessment-only HTML focused on best practices, detailed findings, migration readiness, and Secure Score actions
 - `*.html`: the browser-friendly full tenant assessment report
 - `*-TenantToTenantQuestionnaire.md`: the tenant-to-tenant migration questionnaire populated from discovered data
 - `*.json`: the reusable assessment snapshot when enabled
@@ -64,16 +87,16 @@ The questionnaire template is:
 ## Output Profiles
 The assessment script supports:
 
-- `Lean`: workbook, assessment HTML, and questionnaire
-- `Standard`: workbook, assessment HTML, full HTML, and questionnaire
-- `Full`: workbook, assessment HTML, full HTML, questionnaire, JSON, and PDF
+- `Lean`: workbook, best practices analysis HTML, and questionnaire
+- `Standard`: workbook, best practices analysis HTML, full HTML, and questionnaire
+- `Full`: workbook, best practices analysis HTML, full HTML, questionnaire, JSON, and PDF
 
-`Standard` is the default profile.
+`Lean` is the default profile.
 
 ## HTML And PDF
 The assessment script now attempts to generate:
 
-- `*-Assessment.html` independently of the full HTML output
+- `*-BestPracticesAnalysis.html` independently of the full HTML output
 - `*.html` unless `-SkipHtmlReport` is provided or `-OutputProfile Lean` is used
 - `*.pdf` from the full HTML unless `-SkipPdfReport` is provided or the selected profile disables it
 

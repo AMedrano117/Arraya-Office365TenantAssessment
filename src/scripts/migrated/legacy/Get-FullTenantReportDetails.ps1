@@ -102,7 +102,7 @@ param(
     [string]$ReportingMode,
     [Parameter(Mandatory = $false)]
     [ValidateSet('Lean', 'Standard', 'Full')]
-    [string]$OutputProfile = 'Standard',
+    [string]$OutputProfile = 'Lean',
     [Parameter(Mandatory = $false)]
     [switch]$SkipHtmlReport,
     [Parameter(Mandatory = $false)]
@@ -114,7 +114,9 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$CertificateThumbprint,
     [Parameter(Mandatory = $false)]
-    [string]$ClientId
+    [string]$ClientId,
+    [Parameter(Mandatory = $false)]
+    [string]$ClientSecret
 )
 
 $effectiveSkipHtmlReport = $SkipHtmlReport.IsPresent
@@ -348,6 +350,10 @@ function Get-ExportPath {
     # Handle quotes in input
     $userInput = $userInput -replace '"', ''
 
+    if (-not [string]::IsNullOrWhiteSpace($userInput) -and -not [System.IO.Path]::IsPathRooted($userInput)) {
+        $userInput = Join-Path -Path (Get-Location).Path -ChildPath $userInput
+    }
+
     # If user input is empty, default to Desktop
     if ([string]::IsNullOrEmpty($userInput)) {
         $userInput = [Environment]::GetFolderPath("Desktop")
@@ -386,6 +392,10 @@ function Get-ExportPath {
                 $fileName = $FileName
             }
         }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($folderPath) -and -not (Test-Path $folderPath)) {
+        New-Item -Path $folderPath -ItemType Directory -Force | Out-Null
     }
 
     # If folderPath is empty or invalid, default to script root
@@ -3083,6 +3093,51 @@ function Connect-Office365 {
             throw "Certificate thumbprint '$Thumbprint' was not found in CurrentUser\\My or LocalMachine\\My with an accessible private key."
         }
 
+        function Get-PlainTextSecretFromCredential {
+            [CmdletBinding()]
+            param(
+                [Parameter(Mandatory = $true)]
+                [System.Management.Automation.PSCredential]$Credential
+            )
+
+            $networkCredential = $Credential.GetNetworkCredential()
+            if (-not $networkCredential -or [string]::IsNullOrWhiteSpace($networkCredential.Password)) {
+                throw "Client secret credential does not contain a usable secret."
+            }
+
+            return $networkCredential.Password
+        }
+
+        function Get-ClientSecretAccessToken {
+            [CmdletBinding()]
+            param(
+                [Parameter(Mandatory = $true)]
+                [string]$TenantId,
+                [Parameter(Mandatory = $true)]
+                [string]$ClientId,
+                [Parameter(Mandatory = $true)]
+                [System.Management.Automation.PSCredential]$ClientSecretCredential,
+                [Parameter(Mandatory = $true)]
+                [string]$Resource
+            )
+
+            $clientSecretPlainText = Get-PlainTextSecretFromCredential -Credential $ClientSecretCredential
+            $tokenEndpoint = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
+            $scope = if ($Resource.EndsWith('/')) { "$Resource.default" } else { "$Resource/.default" }
+            $tokenResponse = Invoke-RestMethod -Method POST -Uri $tokenEndpoint -ContentType 'application/x-www-form-urlencoded' -Body @{
+                client_id     = $ClientId
+                client_secret = $clientSecretPlainText
+                scope         = $scope
+                grant_type    = 'client_credentials'
+            } -ErrorAction Stop
+
+            if (-not $tokenResponse.access_token) {
+                throw "No access token was returned for resource '$Resource'."
+            }
+
+            return $tokenResponse.access_token
+        }
+
         $result = [ordered]@{
             Graph              = $false
             TenantName         = $null
@@ -3129,6 +3184,7 @@ function Connect-Office365 {
 
         $usingApplicationAuth = $false
         $authCertificate = $null
+        $exchangeAccessToken = $null
         $AuthenticationType = if ($CertificateThumbprint) { 
             'Certificate' 
         } elseif ($ClientSecretCredential) { 
@@ -3359,8 +3415,21 @@ function Connect-Office365 {
                         Connect-ExchangeOnline -AppId $ClientId -Organization $result.InitialDomain -CertificateThumbprint $CertificateThumbprint -ShowBanner:$false -ErrorAction Stop | Out-Null
                     }
                     elseif ($authenticationType -eq 'ClientSecret') {
-                        Write-Warning "Exchange Online does not support ClientSecretCredential (App/Secret) authentication. Falling back to delegated authentication."
-                        Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop | Out-Null
+                        Write-Verbose "Using client-secret app authentication for Exchange Online."
+                        if (-not $ClientId) {
+                            Write-Host "✗ Exchange Online: Exchange Online client secret auth requires -ClientId (AppId)." -ForegroundColor Red
+                            return
+                        }
+                        if (-not $TenantId) {
+                            Write-Host "✗ Exchange Online: Exchange Online client secret auth requires -TenantId." -ForegroundColor Red
+                            return
+                        }
+                        if (-not $result.InitialDomain) {
+                            Write-Host "✗ Exchange Online: Exchange Online client secret auth requires Organization (initial domain)." -ForegroundColor Red
+                            return
+                        }
+                        $exchangeAccessToken = Get-ClientSecretAccessToken -TenantId $TenantId -ClientId $ClientId -ClientSecretCredential $ClientSecretCredential -Resource 'https://outlook.office365.com'
+                        Connect-ExchangeOnline -AccessToken $exchangeAccessToken -Organization $result.InitialDomain -ShowBanner:$false -ErrorAction Stop | Out-Null
                     }
                     else {
                         Write-Verbose "Using delegated authentication for Exchange Online."
@@ -3507,8 +3576,21 @@ function Connect-Office365 {
                         Connect-ExchangeOnline -AppId $ClientId -Organization $result.InitialDomain -CertificateThumbprint $CertificateThumbprint -ShowBanner:$false -ErrorAction Stop | Out-Null
                     }
                     elseif ($authenticationType -eq 'ClientSecret') {
-                        Write-Warning "Exchange Online does not support ClientSecretCredential (App/Secret) authentication. Falling back to delegated authentication."
-                        Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop | Out-Null
+                        Write-Verbose "Using client-secret app authentication for Exchange Online."
+                        if (-not $ClientId) { 
+                            Write-Host "✗ Exchange Online: Exchange Online client secret auth requires -ClientId (AppId)." -ForegroundColor Red
+                            return
+                        }
+                        if (-not $TenantId) { 
+                            Write-Host "✗ Exchange Online: Exchange Online client secret auth requires -TenantId." -ForegroundColor Red
+                            return
+                        }
+                        if (-not $result.InitialDomain) { 
+                            Write-Host "✗ Exchange Online: Exchange Online client secret auth requires Organization (initial domain)." -ForegroundColor Red
+                            return
+                        }
+                        $exchangeAccessToken = Get-ClientSecretAccessToken -TenantId $TenantId -ClientId $ClientId -ClientSecretCredential $ClientSecretCredential -Resource 'https://outlook.office365.com'
+                        Connect-ExchangeOnline -AccessToken $exchangeAccessToken -Organization $result.InitialDomain -ShowBanner:$false -ErrorAction Stop | Out-Null
                     }
                     else {
                         Write-Verbose "Using delegated authentication for Exchange Online."
@@ -3529,6 +3611,10 @@ function Connect-Office365 {
         if ($selectedServices -contains "Teams") {
             if ($AuthenticationType -eq 'Certificate' -and $PSVersionTable.PSVersion.Major -ge 7) {
                 Write-Warning "Skipping Microsoft Teams PowerShell certificate connection in PowerShell 7. Teams PowerShell data will be unavailable."
+                $result.Teams = $false
+            }
+            elseif ($AuthenticationType -eq 'ClientSecret') {
+                Write-Warning "Skipping Microsoft Teams PowerShell client secret connection. Teams PowerShell data will be unavailable in app-secret mode."
                 $result.Teams = $false
             }
             else {
@@ -3621,6 +3707,21 @@ function Connect-Office365 {
         ) {
             $expected.Remove('Teams')
         }
+        if (
+            $AuthenticationType -eq 'ClientSecret' -and
+            $selectedServices -contains 'SharePointOnline' -and
+            -not $result.SharePointOnline -and
+            $result.Graph
+        ) {
+            $expected.Remove('SharePointOnline')
+        }
+        if (
+            $AuthenticationType -eq 'ClientSecret' -and
+            $selectedServices -contains 'Teams' -and
+            -not $result.Teams
+        ) {
+            $expected.Remove('Teams')
+        }
         $allGood = $true
         foreach ($svc in $expected.Keys) {
             if (-not $result[$svc]) { $allGood = $false }
@@ -3663,6 +3764,128 @@ function Get-FriendlyProductName {
         return $script:CommonProductNameMapStatic[$SkuPartNumber]
     }
     return $SkuPartNumber
+}
+
+function Get-LicenseClassification {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$License,
+        [int]$UserCount = 0
+    )
+
+    $skuPartNumber = [string]$License.SkuPartNumber
+    $appliesTo = [string]$License.AppliesTo
+    $isTrialFlag = [bool]($License.PSObject.Properties['IsTrial'] -and $License.IsTrial -eq $true)
+    $isFreeOrTrialFlag = [bool]($License.PSObject.Properties['IsFreeOrTrial'] -and $License.IsFreeOrTrial -eq $true)
+    $ignoreLifecycle = [bool]($License.PSObject.Properties['IgnoreLifecycle'] -and $License.IgnoreLifecycle -eq $true)
+    $purchased = 0
+    $consumed = 0
+
+    if ($License.PSObject.Properties['PurchasedUnits'] -and $null -ne $License.PurchasedUnits -and $License.PurchasedUnits -ne 'N/A' -and $License.PurchasedUnits -ne '') {
+        try { $purchased = [int64]$License.PurchasedUnits } catch { $purchased = 0 }
+    }
+    if ($License.PSObject.Properties['ConsumedUnits'] -and $null -ne $License.ConsumedUnits -and $License.ConsumedUnits -ne 'N/A' -and $License.ConsumedUnits -ne '') {
+        try { $consumed = [int64]$License.ConsumedUnits } catch { $consumed = 0 }
+    }
+
+    if ($isTrialFlag) {
+        return [pscustomobject]@{ IsPaid = $false; LicenseClass = 'FreeTrialBenefit'; Reason = 'Marked as trial by subscription metadata' }
+    }
+
+    if ($isFreeOrTrialFlag) {
+        return [pscustomobject]@{ IsPaid = $false; LicenseClass = 'FreeTrialBenefit'; Reason = 'Marked as free or trial by lifecycle metadata' }
+    }
+
+    if ($ignoreLifecycle) {
+        return [pscustomobject]@{ IsPaid = $false; LicenseClass = 'FreeTrialBenefit'; Reason = 'Ignored due to lifecycle metadata anomaly' }
+    }
+
+    $alwaysExcludeSkus = @(
+        'MCOPSTNC',
+        'STREAM',
+        'FORMS_PRO',
+        'POWER_BI_STANDARD',
+        'RIGHTSMANAGEMENT_ADHOC',
+        'PROJECT_MADEIRA_PREVIEW_IW_SKU',
+        'DYN365_ENTERPRISE_P1_IW',
+        'POWERAPPS_INDIVIDUAL_USER',
+        'POWERAPPS_DEV',
+        'POWERAPPS_VIRAL',
+        'FLOW_FREE',
+        'CCIBOTS_PRIVPREV_VIRAL',
+        'Power_Pages_vTrial_for_Makers',
+        'WINDOWS_STORE'
+    )
+
+    if ($alwaysExcludeSkus -contains $skuPartNumber) {
+        return [pscustomobject]@{ IsPaid = $false; LicenseClass = 'FreeTrialBenefit'; Reason = 'Excluded by known freemium or benefit SKU list' }
+    }
+
+    if ($skuPartNumber -match 'TRIAL|EXPLORATORY|FREE|VIRAL|_FACULTY|_STUDENT|PREVIEW|_IW($|_)|ADHOC|INDIVIDUAL|_DEV($|_)|_TRIAL($|_)|FOR_MAKERS') {
+        return [pscustomobject]@{ IsPaid = $false; LicenseClass = 'FreeTrialBenefit'; Reason = 'Excluded by SKU naming pattern' }
+    }
+
+    if ($UserCount -gt 0 -and $appliesTo -eq 'User') {
+        $seatThreshold = [math]::Max(($UserCount * 10), 5000)
+        $consumedThreshold = [math]::Max(($UserCount * 2), 250)
+        if ($purchased -ge $seatThreshold -and $consumed -le $consumedThreshold) {
+            return [pscustomobject]@{ IsPaid = $false; LicenseClass = 'FreeTrialBenefit'; Reason = "Excluded by tenant user-count heuristic ($purchased seats for $UserCount users)" }
+        }
+    }
+
+    return [pscustomobject]@{ IsPaid = $true; LicenseClass = 'Paid'; Reason = 'Included as paid license inventory' }
+}
+
+function Test-IsPaidLicenseSku {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$License,
+        [int]$UserCount = 0
+    )
+    return (Get-LicenseClassification -License $License -UserCount $UserCount).IsPaid
+}
+
+function Get-LicenseInventoryRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$License,
+        [int]$UserCount = 0
+    )
+
+    $purchased = 0
+    $consumed = 0
+
+    if ($null -ne $License.PurchasedUnits -and $License.PurchasedUnits -ne 'N/A' -and $License.PurchasedUnits -ne '') {
+        try { $purchased = [int64]$License.PurchasedUnits } catch { $purchased = 0 }
+    }
+
+    if ($null -ne $License.ConsumedUnits -and $License.ConsumedUnits -ne 'N/A' -and $License.ConsumedUnits -ne '') {
+        try { $consumed = [int64]$License.ConsumedUnits } catch { $consumed = 0 }
+    }
+
+    $friendlyName = if ($License.PSObject.Properties['SkuFriendlyName'] -and $License.SkuFriendlyName) {
+        $License.SkuFriendlyName
+    } else {
+        Get-FriendlyProductName -SkuPartNumber $License.SkuPartNumber
+    }
+
+    $classification = Get-LicenseClassification -License $License -UserCount $UserCount
+
+    [PSCustomObject]@{
+        SkuPartNumber    = $License.SkuPartNumber
+        SkuFriendlyName  = $friendlyName
+        PurchasedUnits   = $purchased
+        ConsumedUnits    = $consumed
+        RemainingUnits   = ($purchased - $consumed)
+        Utilization      = $(if ($purchased -gt 0) { ($consumed / $purchased) * 100 } else { 0 })
+        IsPaid           = $classification.IsPaid
+        LicenseClass     = $classification.LicenseClass
+        LicenseClassificationReason = $classification.Reason
+        ServicePlans     = $(if ($License.PSObject.Properties['ServicePlans']) { $License.ServicePlans } else { $null })
+    }
 }
 
 # License SKUs and Service Plan IDs to HASH - MGGraph
@@ -3805,6 +4028,11 @@ function Get-AllLicenseSKUs {
             $skuDetails | Add-Member -MemberType NoteProperty -Name IsFreeOrTrial -Value $isFreeOrTrial -Force
             $skuDetails | Add-Member -MemberType NoteProperty -Name IgnoreLifecycle -Value $isIgnoredLifecycle -Force
         }
+
+        $skuClassification = Get-LicenseClassification -License $skuDetails
+        $skuDetails | Add-Member -MemberType NoteProperty -Name IsPaid -Value $skuClassification.IsPaid -Force
+        $skuDetails | Add-Member -MemberType NoteProperty -Name LicenseClass -Value $skuClassification.LicenseClass -Force
+        $skuDetails | Add-Member -MemberType NoteProperty -Name LicenseClassificationReason -Value $skuClassification.Reason -Force
 
         Write-Log -Type DEBUG -Message "[Get-AllLicenseSKUs] Gathering License details for $($AccountSkuId)" -ExportFileLocation $ExportDetails
 
@@ -6893,59 +7121,19 @@ function Get-LicenseAnalysis {
         Warning: At capacity (0 remaining) or high utilization (>85% with licenses available)
         Info: Overall utilization summary
     #>
-    param([array]$Licenses)
+    param(
+        [array]$Licenses,
+        [int]$UserCount = 0
+    )
     
     $findings = @()
     $criticalFindings = @()
     $warningFindings = @()
     $infoFindings = @()
     
-    # Process licenses with forced recalculation
+    # Process licenses with consistent paid/free classification
     $processedLicenses = $Licenses | ForEach-Object {
-        $lic = $_
-        
-        $purchased = 0
-        $consumed = 0
-        
-        if ($null -ne $lic.PurchasedUnits -and $lic.PurchasedUnits -ne 'N/A' -and $lic.PurchasedUnits -ne '') {
-            try { $purchased = [int]$lic.PurchasedUnits } catch { $purchased = 0 }
-        }
-        
-        if ($null -ne $lic.ConsumedUnits -and $lic.ConsumedUnits -ne 'N/A' -and $lic.ConsumedUnits -ne '') {
-            try { $consumed = [int]$lic.ConsumedUnits } catch { $consumed = 0 }
-        }
-        
-        $remaining = $purchased - $consumed
-        $utilization = if ($purchased -gt 0) { ($consumed / $purchased) * 100 } else { 0 }
-        $friendlyName = $null
-        if ($lic.PSObject.Properties['SkuFriendlyName'] -and $lic.SkuFriendlyName) {
-            $friendlyName = $lic.SkuFriendlyName
-        } else {
-            $friendlyName = Get-FriendlyProductName -SkuPartNumber $lic.SkuPartNumber
-        }
-        $isTrialFlag = $false
-        if ($lic.PSObject.Properties['IsTrial'] -and $lic.IsTrial -eq $true) {
-            $isTrialFlag = $true
-        }
-        $isFreeOrTrialFlag = $false
-        if ($lic.PSObject.Properties['IsFreeOrTrial'] -and $lic.IsFreeOrTrial -eq $true) {
-            $isFreeOrTrialFlag = $true
-        }
-        $ignoreLifecycle = $false
-        if ($lic.PSObject.Properties['IgnoreLifecycle'] -and $lic.IgnoreLifecycle -eq $true) {
-            $ignoreLifecycle = $true
-        }
-        $isPaid = (-not $isTrialFlag) -and (-not $isFreeOrTrialFlag) -and (-not $ignoreLifecycle) -and ($lic.SkuPartNumber -notmatch 'TRIAL|EXPLORATORY|Windows_Store|FREE|VIRAL|_FACULTY|_STUDENT')
-        
-        [PSCustomObject]@{
-            SkuPartNumber = $lic.SkuPartNumber
-            SkuFriendlyName = $friendlyName
-            PurchasedUnits = $purchased
-            ConsumedUnits = $consumed
-            RemainingUnits = $remaining
-            Utilization = $utilization
-            IsPaid = $isPaid
-        }
+        Get-LicenseInventoryRecord -License $_ -UserCount $UserCount
     }
     
     # Filter paid licenses
@@ -7741,7 +7929,7 @@ function Update-AssessmentReportTables {
     }
 
     if ($context.Licenses.Count -gt 0) {
-        $licAnalysis = Get-LicenseAnalysis -Licenses $context.Licenses
+        $licAnalysis = Get-LicenseAnalysis -Licenses $context.Licenses -UserCount $context.Users.Count
         Add-AreaSummary -Area 'Licensing' -AreaFindings $licAnalysis.Findings -AssessmentType 'Assessment heuristic using Microsoft 365 license data' -RelatedWorksheet 'LicenseSKUs' -Notes 'Evaluates capacity, at-capacity SKUs, and high utilization.'
     }
 
@@ -7849,7 +8037,7 @@ function Update-AssessmentReportTables {
     $hybridDetected = [bool]($context.HybridInfo -and (($context.HybridInfo.IsHybridConfigured -eq $true) -or ($context.HybridInfo.MigrationEndpointCount -gt 0) -or ($context.HybridInfo.EvidenceCount -gt 0)))
     $crossTenantPartnerCount = if ($context.FederationCrossTenant) { [int]$context.FederationCrossTenant.PartnerCount } else { 0 }
     $teamsCollected = $TenantStatsHash.ContainsKey('AllTeams')
-    $paidLicenseAnalysis = if ($context.Licenses.Count -gt 0) { Get-LicenseAnalysis -Licenses $context.Licenses } else { $null }
+    $paidLicenseAnalysis = if ($context.Licenses.Count -gt 0) { Get-LicenseAnalysis -Licenses $context.Licenses -UserCount $context.Users.Count } else { $null }
     $overallLicenseUtilization = if ($paidLicenseAnalysis -and $paidLicenseAnalysis.TotalPurchased -gt 0) {
         [math]::Round((($paidLicenseAnalysis.TotalConsumed / $paidLicenseAnalysis.TotalPurchased) * 100), 1)
     } else {
@@ -7965,6 +8153,33 @@ function Update-ConfigurationSummaryTables {
 
     if ($TenantStatsHash.ContainsKey('TeamsVoice') -and $TenantStatsHash['TeamsVoice'].ContainsKey('Summary')) {
         $TenantStatsHash['TeamsVoiceSummary']['Summary'] = $TenantStatsHash['TeamsVoice']['Summary']
+    }
+}
+
+function Update-LicenseClassificationMetadata {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$TenantStatsHash
+    )
+
+    if (-not $TenantStatsHash.ContainsKey('LicenseSKUs') -or -not $TenantStatsHash['LicenseSKUs']) {
+        return
+    }
+
+    $userCount = 0
+    if ($TenantStatsHash.ContainsKey('Users') -and $TenantStatsHash['Users']) {
+        $userCount = @($TenantStatsHash['Users'].Values).Count
+    }
+
+    foreach ($licenseKey in @($TenantStatsHash['LicenseSKUs'].Keys)) {
+        $license = $TenantStatsHash['LicenseSKUs'][$licenseKey]
+        if (-not $license) { continue }
+
+        $classification = Get-LicenseClassification -License $license -UserCount $userCount
+        $license | Add-Member -MemberType NoteProperty -Name IsPaid -Value $classification.IsPaid -Force
+        $license | Add-Member -MemberType NoteProperty -Name LicenseClass -Value $classification.LicenseClass -Force
+        $license | Add-Member -MemberType NoteProperty -Name LicenseClassificationReason -Value $classification.Reason -Force
     }
 }
 
@@ -8607,7 +8822,10 @@ function Convert-ArrayToPieChart {
 
 # Updated Build-LicenseSection using your function
 function Build-LicenseSection {
-    param([array]$Licenses)
+    param(
+        [array]$Licenses,
+        [int]$UserCount = 0
+    )
     
     if ($Licenses.Count -eq 0) {
         return "<div class='empty-state'>No license data available</div>"
@@ -8616,7 +8834,7 @@ function Build-LicenseSection {
     #Write-Host "  Building License section..." -ForegroundColor Gray
     
     # Get analysis with processed licenses
-    $analysis = Get-LicenseAnalysis -Licenses $Licenses
+    $analysis = Get-LicenseAnalysis -Licenses $Licenses -UserCount $UserCount
     $paidLicenses = $analysis.PaidLicenses
     
     # Calculate totals
@@ -8626,7 +8844,7 @@ function Build-LicenseSection {
     
     # Build summary KPIs
     $kpiHtml = "<div class='kpi-grid'>"
-    $kpiHtml += New-KpiCard -Title "Total Licenses" -Value (Format-Number $totalPurchased) -Subtitle "Paid licenses only" -Theme 'default'
+    $kpiHtml += New-KpiCard -Title "Paid Licenses" -Value (Format-Number $totalPurchased) -Subtitle "Used for utilization only" -Theme 'default'
     $kpiHtml += New-KpiCard -Title "Consumed" -Value (Format-Number $totalConsumed) -Theme 'default'
     $kpiHtml += New-KpiCard -Title "Available" -Value (Format-Number $totalRemaining) -Theme 'default'
     
@@ -8733,22 +8951,9 @@ $tableHtml
     
     # Add note about trial/viral
     $allProcessed = $Licenses | ForEach-Object {
-        $trialFlag = $false
-        if ($_.PSObject.Properties['IsTrial'] -and $_.IsTrial -eq $true) {
-            $trialFlag = $true
-        }
-        $freeOrTrialFlag = $false
-        if ($_.PSObject.Properties['IsFreeOrTrial'] -and $_.IsFreeOrTrial -eq $true) {
-            $freeOrTrialFlag = $true
-        }
-        $ignoreLifecycle = $false
-        if ($_.PSObject.Properties['IgnoreLifecycle'] -and $_.IgnoreLifecycle -eq $true) {
-            $ignoreLifecycle = $true
-        }
-        $isPaid = (-not $trialFlag) -and (-not $freeOrTrialFlag) -and (-not $ignoreLifecycle) -and ($_.SkuPartNumber -notmatch 'TRIAL|EXPLORATORY|Windows_Store|FREE|VIRAL|_FACULTY|_STUDENT')
         [PSCustomObject]@{
             SKU = $_.SkuPartNumber
-            IsPaid = $isPaid
+            IsPaid = (Test-IsPaidLicenseSku -License $_ -UserCount $UserCount)
         }
     }
     $trialViralCount = ($allProcessed | Where-Object { -not $_.IsPaid }).Count
@@ -8756,7 +8961,7 @@ $tableHtml
     if ($trialViralCount -gt 0) {
         $tableHtml += @"
 <div style='margin-top: 15px; padding: 10px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;'>
-    <strong>ℹ️ Note:</strong> $trialViralCount trial, viral, or free licenses exist but are <strong>excluded from this table and calculations</strong>.
+    <strong>ℹ️ Note:</strong> $trialViralCount free, trial, preview, viral, or benefit licenses exist but are <strong>excluded from this table and utilization calculations</strong>. Very large user-based seat pools that greatly exceed tenant user count are also treated as likely freemium/benefit inventory.
 </div>
 "@
     }
@@ -9220,7 +9425,8 @@ function Build-TeamsSection {
     param(
         [array]$Teams,
         [array]$Licenses,
-        [object]$TeamsVoice
+        [object]$TeamsVoice,
+        [int]$UserCount = 0
     )
     
     if ($Teams.Count -eq 0) {
@@ -9231,15 +9437,7 @@ function Build-TeamsSection {
     $voicePlans = @('MCOEV','MCOPSTN1','MCOPSTN2','MCOEV_VIRTUALUSER','MCOEV_DOD','MCOPSTNC')
     $hasVoice = $false
     $voicePlanHits = @()
-    $paidLicenses = $Licenses | Where-Object {
-        $trialFlag = $false
-        if ($_.PSObject.Properties['IsTrial'] -and $_.IsTrial -eq $true) { $trialFlag = $true }
-        $freeOrTrialFlag = $false
-        if ($_.PSObject.Properties['IsFreeOrTrial'] -and $_.IsFreeOrTrial -eq $true) { $freeOrTrialFlag = $true }
-        $ignoreLifecycle = $false
-        if ($_.PSObject.Properties['IgnoreLifecycle'] -and $_.IgnoreLifecycle -eq $true) { $ignoreLifecycle = $true }
-        (-not $trialFlag) -and (-not $freeOrTrialFlag) -and (-not $ignoreLifecycle) -and ($_.SkuPartNumber -notmatch 'TRIAL|EXPLORATORY|Windows_Store|FREE|VIRAL|_FACULTY|_STUDENT')
-    }
+    $paidLicenses = $Licenses | Where-Object { Test-IsPaidLicenseSku -License $_ -UserCount $UserCount }
 
     foreach ($lic in $paidLicenses) {
         $plans = @()
@@ -10292,12 +10490,12 @@ function New-TenantHtmlReport {
     # Licenses - ALWAYS analyze first for findings
     if ($licenses.Count -gt 0) {
         #Write-Host "  Building Licenses section..." -ForegroundColor Gray
-        $licAnalysis = Get-LicenseAnalysis -Licenses $licenses
+        $licAnalysis = Get-LicenseAnalysis -Licenses $licenses -UserCount $users.Count
         $allFindings += $licAnalysis.Findings
         $sectionContents += @{
             Id = 'licenses'
             Name = 'License Overview'
-            Content = Build-LicenseSection -Licenses $licenses
+            Content = Build-LicenseSection -Licenses $licenses -UserCount $users.Count
         }
     }
 
@@ -10377,7 +10575,7 @@ function New-TenantHtmlReport {
         $sectionContents += @{
             Id = 'teams'
             Name = 'Teams Overview'
-            Content = Build-TeamsSection -Teams $teams -Licenses $licenses -TeamsVoice $teamsVoice
+            Content = Build-TeamsSection -Teams $teams -Licenses $licenses -TeamsVoice $teamsVoice -UserCount $users.Count
         }
     }
     
@@ -10640,6 +10838,14 @@ $connectOffice365Params = @{}
 if ($PSBoundParameters.ContainsKey('TenantId')) { $connectOffice365Params.TenantId = $TenantId }
 if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $connectOffice365Params.CertificateThumbprint = $CertificateThumbprint }
 if ($PSBoundParameters.ContainsKey('ClientId')) { $connectOffice365Params.ClientId = $ClientId }
+if ($PSBoundParameters.ContainsKey('ClientSecret')) {
+    if ([string]::IsNullOrWhiteSpace($ClientId)) {
+        throw "Client secret authentication requires -ClientId."
+    }
+
+    $secureClientSecret = ConvertTo-SecureString -String $ClientSecret -AsPlainText -Force
+    $connectOffice365Params.ClientSecretCredential = [System.Management.Automation.PSCredential]::new($ClientId, $secureClientSecret)
+}
 $connectionResult = Connect-Office365 @connectOffice365Params -ErrorAction Stop
 
 #Get Export Path
@@ -10746,6 +10952,7 @@ if ($reportingMode -eq "combined" -or $reportingMode -eq "all") {
     Report-UserAndMailboxStats
 }
 
+Update-LicenseClassificationMetadata -TenantStatsHash $global:tenantStatsHash
 Update-AssessmentReportTables -TenantStatsHash $global:tenantStatsHash
 Update-ConfigurationSummaryTables -TenantStatsHash $global:tenantStatsHash
 
@@ -10823,20 +11030,20 @@ Write-Host ""
 Write-Host "Generating HTML Report..." -ForegroundColor Black -BackgroundColor Yellow
 
 try {
-    if (Get-Command New-TenantAssessmentHtmlReport -ErrorAction SilentlyContinue) {
-        $assessmentHtmlPath = $ExportDetails -replace '\.xlsx$', '-Assessment.html'
-        $assessmentHtmlResult = New-TenantAssessmentHtmlReport -TenantStatsHash $global:tenantStatsHash -OutputPath $assessmentHtmlPath
-        if ($assessmentHtmlResult.Success) {
-            Write-Log -Type INFO -Message "Assessment HTML report generated: $($assessmentHtmlResult.OutputPath)" -ExportFileLocation $ExportDetails
+        if (Get-Command New-TenantAssessmentHtmlReport -ErrorAction SilentlyContinue) {
+            $assessmentHtmlPath = $ExportDetails -replace '\.xlsx$', '-BestPracticesAnalysis.html'
+            $assessmentHtmlResult = New-TenantAssessmentHtmlReport -TenantStatsHash $global:tenantStatsHash -OutputPath $assessmentHtmlPath
+            if ($assessmentHtmlResult.Success) {
+                Write-Log -Type INFO -Message "Best Practices Analysis HTML report generated: $($assessmentHtmlResult.OutputPath)" -ExportFileLocation $ExportDetails
+            } else {
+                Write-Log -Type WARNING -Message "Best Practices Analysis HTML report generation failed: $($assessmentHtmlResult.Error)" -ExportFileLocation $ExportDetails
+            }
         } else {
-            Write-Log -Type WARNING -Message "Assessment HTML report generation failed: $($assessmentHtmlResult.Error)" -ExportFileLocation $ExportDetails
+            Write-Log -Type WARNING -Message "Skipping Best Practices Analysis HTML generation because New-TenantAssessmentHtmlReport is unavailable." -ExportFileLocation $ExportDetails
         }
-    } else {
-        Write-Log -Type WARNING -Message "Skipping assessment HTML report generation because New-TenantAssessmentHtmlReport is unavailable." -ExportFileLocation $ExportDetails
+    } catch {
+        Write-Log -Type WARNING -Message "Error generating Best Practices Analysis HTML report: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
     }
-} catch {
-    Write-Log -Type WARNING -Message "Error generating assessment HTML report: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
-}
 
 if ($effectiveSkipHtmlReport) {
     Write-Host "Skipping full HTML report generation because -SkipHtmlReport was provided or the Lean output profile is active." -ForegroundColor Yellow

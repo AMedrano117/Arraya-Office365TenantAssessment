@@ -11,11 +11,34 @@ Run the launcher and pick an action from the menu:
 
 Users do not need to manually import modules. The launcher imports `Arraya.M365.AssessmentRunner`, which then loads `Office365Custom` only when needed and only if it is not already imported.
 
+## Auth Modes
+- `Delegated`: interactive sign-in for full module compatibility.
+- `Certificate`: noninteractive app auth for Graph and Exchange, with Graph-based SharePoint fallback in PowerShell 7.
+- `Client secret`: noninteractive app auth for Graph and Exchange app-only; Teams PowerShell remains limited in app-secret mode.
+
+Examples:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365
+
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365 `
+  -TenantId '<tenant-guid>' `
+  -ClientId '<app-id>' `
+  -CertificateThumbprint '<cert-thumbprint>'
+
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365 `
+  -TenantId '<tenant-guid>' `
+  -ClientId '<app-id>' `
+  -ClientSecret '<client-secret>'
+```
+
 ## Assessment Outputs
 For a Microsoft 365 tenant assessment run, the primary deliverables are:
 
 - `*.xlsx`: the main assessment workbook. This is the primary human-readable assessment artifact.
-- `*-Assessment.html`: the assessment-only HTML focused on `BestPractices`, `BestPracticeFindings`, `MigrationReadiness`, and top `SecureScoreActions`.
+- `*-BestPracticesAnalysis.html`: the assessment-only HTML focused on `BestPractices`, `BestPracticeFindings`, `MigrationReadiness`, and top `SecureScoreActions`.
 - `*.html`: the full styled tenant report for browser-based review.
 - `*-TenantToTenantQuestionnaire.md`: the migration questionnaire filled from discovered tenant data.
 - `*.json`: the machine-readable snapshot used for reuse, comparison, and downstream reporting when enabled.
@@ -33,14 +56,14 @@ The questionnaire Markdown is intended as a migration intake companion, not a re
 ## Output Profiles
 The assessment run supports three output profiles:
 
-- `Lean`: workbook, assessment HTML, and questionnaire only
-- `Standard`: workbook, assessment HTML, full HTML, and questionnaire
-- `Full`: workbook, assessment HTML, full HTML, questionnaire, JSON, and PDF
+- `Lean`: workbook, best practices analysis HTML, and questionnaire only
+- `Standard`: workbook, best practices analysis HTML, full HTML, and questionnaire
+- `Full`: workbook, best practices analysis HTML, full HTML, questionnaire, JSON, and PDF
 
-`Standard` is the default. Explicit skip switches still override the profile.
+`Lean` is the default. Explicit skip switches still override the profile.
 
 ## HTML And PDF
-- The assessment-only HTML is generated independently of the full HTML report.
+- The best practices analysis HTML is generated independently of the full HTML report.
 - The full HTML report is skipped when `-SkipHtmlReport` is used or the `Lean` profile is selected.
 - PDF is generated from the full HTML report unless `-SkipPdfReport` is used or the selected profile disables it.
 - PDF rendering uses a locally installed Chromium-based browser, preferring Google Chrome and falling back to Microsoft Edge.

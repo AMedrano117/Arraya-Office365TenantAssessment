@@ -10,8 +10,10 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$ClientId,
     [Parameter(Mandatory = $false)]
+    [string]$ClientSecret,
+    [Parameter(Mandatory = $false)]
     [ValidateSet('Lean', 'Standard', 'Full')]
-    [string]$OutputProfile,
+    [string]$OutputProfile = 'Lean',
     [Parameter(Mandatory = $false)]
     [switch]$SkipPdfReport,
     [Parameter(Mandatory = $false)]
@@ -76,7 +78,7 @@ if ([string]::IsNullOrWhiteSpace($Action)) {
 switch ($Action) {
     'M365' {
         $reportingMode = Read-Host 'Reporting mode (Minimum, Combined, All, Geek) - leave blank for prompt'
-        $outputProfileInput = Read-Host 'Output profile (Lean, Standard, Full) - default Standard'
+        $outputProfileInput = Read-Host 'Output profile (Lean, Standard, Full) - default Lean'
         $exportPath = Read-Host 'Export path (.xlsx or folder) - leave blank for prompt'
         $skipHtmlInput = Read-Host 'Skip full HTML report? (Y/N, default by profile)'
         $skipPdfInput = Read-Host 'Skip PDF report? (Y/N, default by profile)'
@@ -93,6 +95,7 @@ switch ($Action) {
         if (-not [string]::IsNullOrWhiteSpace($TenantId)) { $invokeParams.TenantId = $TenantId }
         if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
         if (-not [string]::IsNullOrWhiteSpace($ClientId)) { $invokeParams.ClientId = $ClientId }
+        if (-not [string]::IsNullOrWhiteSpace($ClientSecret)) { $invokeParams.ClientSecret = $ClientSecret }
 
         Invoke-M365TenantAssessment @invokeParams
     }
