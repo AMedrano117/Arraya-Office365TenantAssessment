@@ -119,6 +119,14 @@ param(
     [string]$ClientSecret
 )
 
+# Strict-mode safety: ensure legacy Graph globals exist even when SDK auth is used.
+if (-not (Get-Variable -Name GraphHeaders -Scope Global -ErrorAction SilentlyContinue)) {
+    $global:GraphHeaders = $null
+}
+if (-not (Get-Variable -Name GraphToken -Scope Global -ErrorAction SilentlyContinue)) {
+    $global:GraphToken = $null
+}
+
 $effectiveSkipHtmlReport = $SkipHtmlReport.IsPresent
 $effectiveSkipPdfReport = $SkipPdfReport.IsPresent
 $effectiveSkipJsonReport = $SkipJsonReport.IsPresent

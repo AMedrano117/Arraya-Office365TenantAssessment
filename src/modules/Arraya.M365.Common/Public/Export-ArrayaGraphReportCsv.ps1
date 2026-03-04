@@ -12,16 +12,18 @@ function Export-ArrayaGraphReportCsv {
 
     $tempCsvPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("arraya-graph-report-" + [guid]::NewGuid().ToString('N') + ".csv")
     $resolvedHeaders = @{}
+    $graphHeadersVar = Get-Variable -Name GraphHeaders -Scope Global -ErrorAction SilentlyContinue
+    $graphTokenVar = Get-Variable -Name GraphToken -Scope Global -ErrorAction SilentlyContinue
     if ($Headers) {
         $resolvedHeaders = $Headers.Clone()
     }
-    elseif ($global:GraphHeaders) {
-        $resolvedHeaders = $global:GraphHeaders.Clone()
+    elseif ($graphHeadersVar -and $graphHeadersVar.Value) {
+        $resolvedHeaders = $graphHeadersVar.Value.Clone()
     }
-    elseif ($global:GraphToken) {
+    elseif ($graphTokenVar -and -not [string]::IsNullOrWhiteSpace([string]$graphTokenVar.Value)) {
         $resolvedHeaders = @{
             'Content-Type'     = 'application/json'
-            'Authorization'    = "Bearer $global:GraphToken"
+            'Authorization'    = "Bearer $($graphTokenVar.Value)"
             'ConsistencyLevel' = 'eventual'
         }
     }
