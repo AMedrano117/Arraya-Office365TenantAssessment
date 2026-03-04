@@ -372,6 +372,51 @@ function Write-ConsoleArtifactSummary {
     }
 }
 
+function Initialize-AssessmentProgress {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [int]$TotalSteps
+    )
+
+    $script:AssessmentProgressState = [ordered]@{
+        Total   = [Math]::Max($TotalSteps, 1)
+        Current = 0
+    }
+
+    Write-Progress -Id 0 -Activity 'Assessment progress' -Status "[0/$($script:AssessmentProgressState.Total)] Starting" -PercentComplete 0
+}
+
+function Invoke-AssessmentProgressStep {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Name,
+        [Parameter(Mandatory)]
+        [scriptblock]$ScriptBlock
+    )
+
+    if (-not $script:AssessmentProgressState) {
+        return (& $ScriptBlock)
+    }
+
+    $script:AssessmentProgressState.Current++
+    $current = $script:AssessmentProgressState.Current
+    $total = $script:AssessmentProgressState.Total
+    $percent = [math]::Round(($current / $total) * 100, 2)
+
+    Write-Progress -Id 0 -Activity 'Assessment progress' -Status "[$current/$total] $Name" -PercentComplete $percent
+    & $ScriptBlock
+    Write-Host ("  Overall progress: {0}/{1} ({2}%) - {3}" -f $current, $total, $percent, $Name) -ForegroundColor DarkGray
+}
+
+function Complete-AssessmentProgress {
+    [CmdletBinding()]
+    param()
+
+    Write-Progress -Id 0 -Activity 'Assessment progress' -Completed
+}
+
 function Resolve-ExoStatisticsIdentity {
     [CmdletBinding()]
     param(
@@ -2108,7 +2153,7 @@ function Get-AllUnifiedGroups {
         $global:tenantStatsHash["UnifiedGroups"] = @{}
         Write-Host "Getting all unified groups (including soft deleted)..." -ForegroundColor Cyan -nonewline
         Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] START: Gathering all Unified with $($detailLevel) details" -ExportFileLocation $ExportDetails
-        Write-Progress -Activity "Getting all Unified Group data" -Status (((Get-Date) - $global:initialStart).ToString('hh\:mm\:ss'))
+        Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Querying unified groups from Exchange Online" -ExportFileLocation $ExportDetails
         switch ($detailLevel) {
             {$_ -in "minimum", "combined", "all"} { 
                 $DesiredProperties = @(
@@ -2125,12 +2170,20 @@ function Get-AllUnifiedGroups {
             geek {$allUnifiedGroups = Get-UnifiedGroup -resultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue}
         }
         
-        Write-Progress -Activity "Adding Unified Group data to Hash" -Status (((Get-Date) - $global:initialStart).ToString('hh\:mm\:ss'))
+        $allUnifiedGroups = @($allUnifiedGroups)
+        $totalUnifiedGroups = $allUnifiedGroups.Count
         Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Adding Unified Group data to Hash" -ExportFileLocation $ExportDetails
+        $progressId = 41
+        $progressTotal = [Math]::Max($totalUnifiedGroups, 1)
+        $progressIndex = 0
         foreach ($group in $allUnifiedGroups) {
+            $progressIndex++
+            $groupLabel = if ([string]::IsNullOrWhiteSpace([string]$group.DisplayName)) { [string]$group.PrimarySmtpAddress } else { [string]$group.DisplayName }
+            Write-ProgressHelper -Total $progressTotal -Id $progressId -Index $progressIndex -Activity "Adding Unified Group data to Hash" -Operation $groupLabel
             #$key = $group.ExchangeGuid.ToString()
             $global:tenantStatsHash["UnifiedGroups"][$group.PrimarySmtpAddress] = $group
         }
+        Write-ProgressHelper -Total $progressTotal -Id $progressId -Activity "Adding Unified Group data to Hash" -Completed
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
 
         # Get Unified Group Statistics
@@ -2150,8 +2203,7 @@ function Get-AllUnifiedGroups {
         Write-Log -Type ERROR -Message "[Get-AllUnifiedGroups] An error occurred in running Get-AllUnifiedGroups function. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
     }
     finally {
-        Write-Progress -Activity "Getting all Unified Group data" -Completed
-        Write-Progress -Activity "Adding Unified Group data to Hash" -Completed
+        Write-ProgressHelper -Total 1 -Id 41 -Activity "Adding Unified Group data to Hash" -Completed
         Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
         Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] COMPLETED: Gathering all Unified Groups in $($CompletedTime)" -ExportFileLocation $ExportDetails
     }
@@ -10949,53 +11001,59 @@ try {
     Write-Verbose "Skipping Clear-Host in non-interactive session: $($_.Exception.Message)"
 }
 Write-Host "Microsoft 365 Tenant Assessment" -ForegroundColor Cyan
-Write-ConsoleSection -Step '1/5' -Title 'Exchange inventory'
-Get-AllRecipientDetails -detailLevel $reportingMode
-Get-AllExchangeMailboxDetails -detailLevel $reportingMode
-Get-ExchangeGroupDetails -detailLevel $reportingMode
+Write-Host "Progress view: overall step completion is shown after each major task." -ForegroundColor DarkCyan
 
-Get-MailFlowRulesandConnectors -detailLevel $reportingMode
-Get-AllPublicFolderDetails -detailLevel $reportingMode
+$GraphTest = if (Get-MgContext -ErrorAction SilentlyContinue) { "SDK" } elseif ($global:GraphHeaders) { "REST" } else { "SDK" }
+$baseCollectionSteps = 11 # Exchange(5) + Hybrid(4) + Collaboration(2)
+$identitySteps = if ($GraphTest -eq 'REST') { 2 } else { 13 }
+$combineSteps = if ($reportingMode -eq "combined" -or $reportingMode -eq "all") { 1 } else { 0 }
+$postProcessingSteps = 3
+$overallCollectionSteps = $baseCollectionSteps + $identitySteps + $combineSteps + $postProcessingSteps
+Initialize-AssessmentProgress -TotalSteps $overallCollectionSteps
+
+Write-ConsoleSection -Step '1/5' -Title 'Exchange inventory'
+Invoke-AssessmentProgressStep -Name 'Exchange recipients' -ScriptBlock { Get-AllRecipientDetails -detailLevel $reportingMode }
+Invoke-AssessmentProgressStep -Name 'Exchange mailboxes' -ScriptBlock { Get-AllExchangeMailboxDetails -detailLevel $reportingMode }
+Invoke-AssessmentProgressStep -Name 'Exchange groups' -ScriptBlock { Get-ExchangeGroupDetails -detailLevel $reportingMode }
+Invoke-AssessmentProgressStep -Name 'Mail flow rules/connectors' -ScriptBlock { Get-MailFlowRulesandConnectors -detailLevel $reportingMode }
+Invoke-AssessmentProgressStep -Name 'Public folders' -ScriptBlock { Get-AllPublicFolderDetails -detailLevel $reportingMode }
 
 Write-ConsoleSection -Step '2/5' -Title 'Hybrid and configuration'
-Get-ExchangeHybridConfiguration -detailLevel $reportingMode
-Get-FederationAndCrossTenantConfiguration
-Get-ThirdPartySpamFilteringConfig
-Get-SMTPRelayConfiguration
+Invoke-AssessmentProgressStep -Name 'Exchange hybrid configuration' -ScriptBlock { Get-ExchangeHybridConfiguration -detailLevel $reportingMode }
+Invoke-AssessmentProgressStep -Name 'Federation/cross-tenant configuration' -ScriptBlock { Get-FederationAndCrossTenantConfiguration }
+Invoke-AssessmentProgressStep -Name 'Third-party spam filtering configuration' -ScriptBlock { Get-ThirdPartySpamFilteringConfig }
+Invoke-AssessmentProgressStep -Name 'SMTP relay configuration' -ScriptBlock { Get-SMTPRelayConfiguration }
 
 Write-ConsoleSection -Step '3/5' -Title 'Identity, devices, and licensing'
-$GraphTest = if (Get-MgContext -ErrorAction SilentlyContinue) { "SDK" } elseif ($global:GraphHeaders) { "API" }
 # Determine if using REST or SDK Graph API
 switch ($GraphTest) {
     "REST" {
         Write-Verbose "Attempting to use Microsoft Graph REST API for Tenant Object and License details"
-        Get-GraphUserStats
-        #Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName API
-        Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType REST
+        Invoke-AssessmentProgressStep -Name 'Graph user statistics' -ScriptBlock { Get-GraphUserStats }
+        Invoke-AssessmentProgressStep -Name 'Entra groups (REST)' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType REST }
      }
     "SDK" {
         Write-Verbose "Attempting to use Microsoft Graph SDK for Tenant Object and License details"
-        #Get-TeamsDetails -detailLevel $reportingMode
-        Get-ConditionalAccessPoliciesReport -detailLevel $reportingMode
-        Get-AllLicenseSKUs
-        Get-AllUserDetails -detailLevel $reportingMode
-        Get-TeamsVoiceDetails
-        Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType SDK
-        Get-AllOffice365Domains
-        Get-AllOffice365Admins
-        Get-AllDevicesReport -detailLevel $reportingMode
-        Get-TenantOverviewInfo
-        Get-AuthenticationConfiguration -detailLevel $reportingMode
-        Get-AdConnectSyncDetails
-        Get-MfaRegistrationDetails
-        Get-SecuritySecureScoreReport -detailLevel $reportingMode -MostRecent
+        Invoke-AssessmentProgressStep -Name 'Conditional Access policies' -ScriptBlock { Get-ConditionalAccessPoliciesReport -detailLevel $reportingMode }
+        Invoke-AssessmentProgressStep -Name 'License SKUs' -ScriptBlock { Get-AllLicenseSKUs }
+        Invoke-AssessmentProgressStep -Name 'Users' -ScriptBlock { Get-AllUserDetails -detailLevel $reportingMode }
+        Invoke-AssessmentProgressStep -Name 'Teams voice details' -ScriptBlock { Get-TeamsVoiceDetails }
+        Invoke-AssessmentProgressStep -Name 'Entra groups (SDK)' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType SDK }
+        Invoke-AssessmentProgressStep -Name 'Domains' -ScriptBlock { Get-AllOffice365Domains }
+        Invoke-AssessmentProgressStep -Name 'Admins' -ScriptBlock { Get-AllOffice365Admins }
+        Invoke-AssessmentProgressStep -Name 'Devices' -ScriptBlock { Get-AllDevicesReport -detailLevel $reportingMode }
+        Invoke-AssessmentProgressStep -Name 'Tenant overview' -ScriptBlock { Get-TenantOverviewInfo }
+        Invoke-AssessmentProgressStep -Name 'Authentication/SSO configuration' -ScriptBlock { Get-AuthenticationConfiguration -detailLevel $reportingMode }
+        Invoke-AssessmentProgressStep -Name 'AD Connect sync details' -ScriptBlock { Get-AdConnectSyncDetails }
+        Invoke-AssessmentProgressStep -Name 'MFA registration details' -ScriptBlock { Get-MfaRegistrationDetails }
+        Invoke-AssessmentProgressStep -Name 'Secure Score report' -ScriptBlock { Get-SecuritySecureScoreReport -detailLevel $reportingMode -MostRecent }
      }
 }
 
 Write-ConsoleSection -Step '4/5' -Title 'Collaboration and SharePoint'
-Get-AllUnifiedGroups -detailLevel $reportingMode
+Invoke-AssessmentProgressStep -Name 'Unified groups' -ScriptBlock { Get-AllUnifiedGroups -detailLevel $reportingMode }
 $sharePointDiscoveryService = if ($connectionResult -and $connectionResult.SharePointOnline) { 'SPO' } else { 'MGGraph' }
-Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName $sharePointDiscoveryService
+Invoke-AssessmentProgressStep -Name "SharePoint/OneDrive sites ($sharePointDiscoveryService)" -ScriptBlock { Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName $sharePointDiscoveryService }
 Write-Host
 
 
@@ -11004,12 +11062,13 @@ if ($reportingMode -eq "combined" -or $reportingMode -eq "all") {
     Write-Host
     Write-Host "Consolidating Discovery Report data for each user / object into one file" -ForegroundColor Black -BackgroundColor Green
     #Combine Reports
-    Report-UserAndMailboxStats
+    Invoke-AssessmentProgressStep -Name 'Combined user/mailbox reporting' -ScriptBlock { Report-UserAndMailboxStats }
 }
 
-Update-LicenseClassificationMetadata -TenantStatsHash $global:tenantStatsHash
-Update-AssessmentReportTables -TenantStatsHash $global:tenantStatsHash
-Update-ConfigurationSummaryTables -TenantStatsHash $global:tenantStatsHash
+Invoke-AssessmentProgressStep -Name 'License classification metadata' -ScriptBlock { Update-LicenseClassificationMetadata -TenantStatsHash $global:tenantStatsHash }
+Invoke-AssessmentProgressStep -Name 'Best-practice assessment tables' -ScriptBlock { Update-AssessmentReportTables -TenantStatsHash $global:tenantStatsHash }
+Invoke-AssessmentProgressStep -Name 'Configuration summary tables' -ScriptBlock { Update-ConfigurationSummaryTables -TenantStatsHash $global:tenantStatsHash }
+Complete-AssessmentProgress
 
 
 ########################################################
