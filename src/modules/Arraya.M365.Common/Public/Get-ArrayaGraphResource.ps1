@@ -66,7 +66,14 @@ function Get-ArrayaGraphResource {
                     $response = Invoke-MgGraphRequest -Uri $currentUri -Method GET -OutputType PSObject -ErrorAction Stop
                 }
                 else {
-                    $response = Invoke-RestMethod -Uri $currentUri -Headers $resolvedHeaders -Method GET -ContentType 'application/json' -ErrorAction Stop
+                    $savedProgressPreference = $ProgressPreference
+                    try {
+                        $ProgressPreference = 'SilentlyContinue'
+                        $response = Invoke-RestMethod -Uri $currentUri -Headers $resolvedHeaders -Method GET -ContentType 'application/json' -ErrorAction Stop
+                    }
+                    finally {
+                        $ProgressPreference = $savedProgressPreference
+                    }
                 }
                 $success = $true
             }

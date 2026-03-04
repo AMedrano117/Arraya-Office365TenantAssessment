@@ -54,7 +54,14 @@ function Export-ArrayaGraphReportCsv {
                 throw "No Graph authentication context is available for '$Activity'. Connect with Microsoft Graph SDK or provide REST headers."
             }
 
-            $response = Invoke-WebRequest -Uri $Uri -Headers $resolvedHeaders -Method GET -MaximumRedirection 5 -ErrorAction Stop
+            $savedProgressPreference = $ProgressPreference
+            try {
+                $ProgressPreference = 'SilentlyContinue'
+                $response = Invoke-WebRequest -Uri $Uri -Headers $resolvedHeaders -Method GET -MaximumRedirection 5 -ErrorAction Stop
+            }
+            finally {
+                $ProgressPreference = $savedProgressPreference
+            }
             if ($null -eq $response -or [string]::IsNullOrWhiteSpace($response.Content)) {
                 throw "No CSV content returned for '$Activity'."
             }
