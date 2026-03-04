@@ -3,7 +3,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$AssessmentJsonPath,
     [Parameter(Mandatory = $false)]
-    [string]$OutputFolder
+    [string]$OutputFolder,
+    [Parameter(Mandatory = $false)]
+    [switch]$UseGraphFallback
 )
 
 function Resolve-ArrayaRepoRoot {
@@ -38,4 +40,5 @@ if (-not (Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction SilentlyC
 
 $invokeParams = @{ AssessmentJsonPath = $AssessmentJsonPath }
 if ($PSBoundParameters.ContainsKey('OutputFolder')) { $invokeParams.OutputFolder = $OutputFolder }
+if ($PSBoundParameters.ContainsKey('UseGraphFallback')) { $invokeParams.UseGraphFallback = $UseGraphFallback }
 Invoke-M365ImprovementPlan @invokeParams

@@ -149,6 +149,14 @@ Import-Office365CustomLocal -RepoRoot $PSScriptRoot -RequiredCommands @(
     'Office365Custom\Get-ExportPath'
 ) | Out-Null
 
+$commonModuleManifestPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\modules\Arraya.M365.Common\Arraya.M365.Common.psd1'))
+if (-not (Test-Path -Path $commonModuleManifestPath)) {
+    throw "Required common module manifest not found: $commonModuleManifestPath"
+}
+if (-not (Get-Module -Name 'Arraya.M365.Common' -ErrorAction SilentlyContinue)) {
+    Import-Module -Name $commonModuleManifestPath -ErrorAction Stop
+}
+
 $tenantHtmlReportPath = Join-Path -Path $PSScriptRoot -ChildPath 'New-TenantHtmlReport.ps1'
 if (Test-Path $tenantHtmlReportPath) {
     . $tenantHtmlReportPath
@@ -162,19 +170,6 @@ if (Test-Path $tenantQuestionnairePath) {
 } else {
     Write-Warning "Optional questionnaire helper script not found: $tenantQuestionnairePath. Questionnaire export will be skipped."
 }
-
-function Get-DefaultAssessmentOutputRoot {
-    [CmdletBinding()]
-    param()
-
-    $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
-    if ([string]::IsNullOrWhiteSpace($localAppData)) {
-        return $PSScriptRoot
-    }
-
-    return (Join-Path -Path $localAppData -ChildPath 'Arraya\M365TenantAssessment\Outputs')
-}
-
 
 ########################################################
 # Functions
@@ -312,6 +307,190 @@ function Write-Log {
         Capture-ErrorHelper -ErrorRecordVar $null -errorMessage $Message | Out-Null
     }
 }
+
+function Write-ConsoleSection {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Step,
+        [Parameter(Mandatory)]
+        [string]$Title
+    )
+
+    Write-Host ""
+    Write-Host "[$Step] $Title" -ForegroundColor Cyan
+}
+
+function Write-ConsoleArtifactSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Artifacts,
+        [Parameter(Mandatory)]
+        [string]$DurationText,
+        [int]$CapturedErrorCount = 0
+    )
+
+    Write-Host ""
+    Write-Host "Assessment complete in $DurationText" -ForegroundColor Green
+
+    foreach ($entry in $Artifacts.GetEnumerator()) {
+        if ([string]::IsNullOrWhiteSpace([string]$entry.Value)) {
+            continue
+        }
+
+        Write-Host ("  {0}: {1}" -f $entry.Key, $entry.Value) -ForegroundColor Gray
+    }
+
+    if ($CapturedErrorCount -gt 0) {
+        Write-Host ("  Captured errors: {0} (see log/error reports)" -f $CapturedErrorCount) -ForegroundColor Yellow
+    }
+}
+
+function Resolve-ExoStatisticsIdentity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        $MailboxObject
+    )
+
+    if ($null -eq $MailboxObject) {
+        return $null
+    }
+
+    if ($MailboxObject -is [string]) {
+        return $MailboxObject
+    }
+
+    foreach ($propertyName in @('DistinguishedName', 'ExternalDirectoryObjectId', 'ExchangeGuid', 'Guid', 'Identity', 'PrimarySmtpAddress', 'UserPrincipalName', 'WindowsEmailAddress', 'Alias')) {
+        $property = $MailboxObject.PSObject.Properties[$propertyName]
+        if (-not $property) {
+            continue
+        }
+
+        $value = $property.Value
+        if ($null -eq $value) {
+            continue
+        }
+
+        $stringValue = [string]$value
+        if (-not [string]::IsNullOrWhiteSpace($stringValue)) {
+            return $stringValue
+        }
+    }
+
+    return $null
+}
+
+function Get-ExoMailboxStatisticsSafe {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        $MailboxObjects,
+        [switch]$Archive
+    )
+
+    $results = New-Object System.Collections.Generic.List[object]
+    $failures = New-Object System.Collections.Generic.List[object]
+    $normalizedMailboxObjects = New-Object System.Collections.Generic.List[object]
+
+    if ($null -ne $MailboxObjects) {
+        foreach ($mailboxItem in $MailboxObjects) {
+            $normalizedMailboxObjects.Add($mailboxItem)
+        }
+    }
+
+    foreach ($mailbox in $normalizedMailboxObjects) {
+        $identity = Resolve-ExoStatisticsIdentity -MailboxObject $mailbox
+        $displayName = $null
+        if ($null -ne $mailbox -and $mailbox.PSObject.Properties['DisplayName']) {
+            $displayName = [string]$mailbox.DisplayName
+        }
+
+        if ([string]::IsNullOrWhiteSpace($identity)) {
+            $failures.Add([PSCustomObject]@{
+                DisplayName = $displayName
+                Identity    = $null
+                Reason      = 'No supported mailbox identity was available.'
+            })
+            continue
+        }
+
+        try {
+            $statsParams = @{
+                Identity    = $identity
+                ErrorAction = 'Stop'
+            }
+
+            if ($Archive) {
+                $statsParams.Archive = $true
+                $statsParams.Properties = 'MailboxGuid'
+                $statsParams.IncludeSoftDeletedRecipients = $true
+            }
+            else {
+                $statsParams.IncludeSoftDeletedRecipient = $true
+            }
+
+            $statResults = Get-EXOMailboxStatistics @statsParams
+            if ($statResults.Count -eq 0) {
+                $failures.Add([PSCustomObject]@{
+                    DisplayName = $displayName
+                    Identity    = $identity
+                    Reason      = 'No mailbox statistics were returned.'
+                })
+                continue
+            }
+
+            foreach ($stat in $statResults) {
+                $results.Add($stat)
+            }
+        }
+        catch {
+            $failures.Add([PSCustomObject]@{
+                DisplayName = $displayName
+                Identity    = $identity
+                Reason      = $_.Exception.Message
+            })
+        }
+    }
+
+    return [PSCustomObject]@{
+        Results  = $results.ToArray()
+        Failures = $failures.ToArray()
+    }
+}
+
+function Write-ExoStatisticsFailureSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$OperationName,
+        [AllowNull()]
+        [array]$Failures
+    )
+
+    if (-not $Failures -or $Failures.Count -eq 0) {
+        return
+    }
+
+    $sampleText = @(
+        $Failures |
+            Select-Object -First 5 |
+            ForEach-Object {
+                $label = if ([string]::IsNullOrWhiteSpace([string]$_.DisplayName)) {
+                    if ([string]::IsNullOrWhiteSpace([string]$_.Identity)) { '<unknown>' } else { $_.Identity }
+                } else {
+                    $_.DisplayName
+                }
+                "$label ($($_.Reason))"
+            }
+    ) -join '; '
+
+    Write-Log -Type WARNING -Message "[$OperationName] Skipped $($Failures.Count) object(s). Sample failures: $sampleText" -ExportFileLocation $ExportDetails
+}
+
 #Level of Detail Reporting
 function Set-ReportMode {
 
@@ -368,7 +547,7 @@ function Get-ExportPath {
 
     # If user input is empty, default to the local non-repo output root
     if ([string]::IsNullOrEmpty($userInput)) {
-        $userInput = Get-DefaultAssessmentOutputRoot
+        $userInput = Get-ArrayaAssessmentOutputRoot -FallbackPath $PSScriptRoot
     }
 
     # File path processing
@@ -393,7 +572,7 @@ function Get-ExportPath {
             $fileName = $inputFileName
             # If no folder path (i.e., just a file name), use the local output root
             if ([string]::IsNullOrWhiteSpace($folderPath)) {
-                $folderPath = Get-DefaultAssessmentOutputRoot
+                $folderPath = Get-ArrayaAssessmentOutputRoot -FallbackPath $PSScriptRoot
             }
         } else {
             # User entered something ambiguous, fallback
@@ -822,69 +1001,7 @@ function Export-ErrorReports {
         [Parameter(Mandatory=$True)]
         [string]$logReportDirectory
     )
-
-    # Validate ErrorData
-    if ($ErrorData.Count -eq 0) {
-        Write-Log -Type WARNING -Message "No error data provided to export. Exiting function." -ExportFileLocation $ExportDetails
-        return
-    }
-
-    Write-Log -Type INFO -Message "START: Export all Errors" -ExportFileLocation $ExportDetails
-    # Handle quotes in input
-    $ExportFileLocation = $ExportFileLocation -replace '"', ''
-
-    if ($ExportFileLocation) {
-        $directory = [System.IO.Path]::GetDirectoryName($ExportFileLocation)
-        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($ExportFileLocation)
-        $errorReportFolderName = $baseName + " Error Reporting"
-        $errorReportFolderDirectory = Join-Path -Path $directory -ChildPath $errorReportFolderName
-    } else {
-        if ($ErrorReportFolderDirectory) {
-            $directory = $ErrorReportFolderDirectory
-        } else {
-            $directory = $env:TEMP
-        }
-        
-        if ($ErrorReportFolderName) {
-            $errorReportFolderName = $ErrorReportFolderName
-        } else {
-            $errorReportFolderName = "$BaseName Error Reporting"
-        }
-        $errorReportFolderDirectory = Join-Path -Path $directory -ChildPath $errorReportFolderName
-    }
-
-    Write-Log -Type INFO -Message "INFO: Exporting Error Logs to directory $($errorReportFolderDirectory)" -ExportFileLocation $ExportDetails
-
-    try {
-        if (-not (Test-Path $errorReportFolderDirectory)) {
-            $result = New-Item -Path $errorReportFolderDirectory -ItemType Directory
-            Write-Log -Type INFO -Message "INFO: Error Report Directory '$($errorReportFolderDirectory)' does not exist. Created Folder Directory" -ExportFileLocation $ExportDetails
-        }
-
-        $newBaseName = "$BaseName-ErrorLog"
-        
-        $paths = @{
-            'json' = Join-Path -Path $errorReportFolderDirectory -ChildPath "$newBaseName.json"
-            'txt'  = Join-Path -Path $errorReportFolderDirectory -ChildPath "$newBaseName.log"
-            'csv'  = Join-Path -Path $errorReportFolderDirectory -ChildPath "$newBaseName.csv"
-        }
-
-        $ErrorData | ConvertTo-Json -Depth 1 | Set-Content -Path $paths['json']
-        $ErrorData | Out-File $paths['txt']
-        $ErrorData | Export-Csv -Path $paths['csv'] -NoTypeInformation -Encoding UTF8
-
-        $paths.GetEnumerator() | ForEach-Object {
-            Write-Log -Type INFO -Message "INFO: Exported $($_.Key) Error Logs to directory $($_.Value)" -ExportFileLocation $ExportDetails
-        }
-            #Display Error Details
-            Write-Host "Error Reporting Details" -ForegroundColor Black -BackgroundColor Yellow
-            Write-Host "Check '$($errorReportFolderDirectory)' for error logs " -ForegroundColor Cyan
-            Write-Host "$($global:AllDiscoveryErrors.count) " -ForegroundColor Red -NoNewline
-            Write-Host "Error(s) encountered. "
-
-    } catch {
-        Write-Error "Failed to export error reports: $_"
-    }
+    return Export-ArrayaErrorReports @PSBoundParameters
 }
 
 # ----------------------------------
@@ -1087,40 +1204,35 @@ function Get-AllExchangeMailboxDetails {
         try {
             if (Get-MgContext -ErrorAction SilentlyContinue) {
                 $mailboxUsageUri = "https://graph.microsoft.com/v1.0/reports/getMailboxUsageDetail(period='D180')"
-                $tempCsvFile = Join-Path $env:TEMP "MailboxUsageReport-$(Get-Date -Format 'yyyyMMddHHmmss').csv"
-                Invoke-MgGraphRequest -Uri $mailboxUsageUri -Method GET -OutputFilePath $tempCsvFile -ErrorAction Stop | Out-Null
-                if (Test-Path $tempCsvFile) {
-                    $graphReportData = Import-Csv -Path $tempCsvFile -ErrorAction Stop
-                    Remove-Item -Path $tempCsvFile -Force -ErrorAction SilentlyContinue
-                    if ($graphReportData -and $graphReportData.Count -gt 0) {
-                        $graphMailboxHash = @{}
-                        foreach ($item in $graphReportData) {
-                            $upn = $item.'User Principal Name'
-                            if (-not [string]::IsNullOrWhiteSpace($upn)) {
-                                $graphMailboxHash[$upn] = $item
-                            }
+                $graphReportData = @(Export-ArrayaGraphReportCsv -Uri $mailboxUsageUri -Activity 'Mailbox usage detail report' -Headers $global:GraphHeaders)
+                if ($graphReportData -and $graphReportData.Count -gt 0) {
+                    $graphMailboxHash = @{}
+                    foreach ($item in $graphReportData) {
+                        $upn = $item.'User Principal Name'
+                        if (-not [string]::IsNullOrWhiteSpace($upn)) {
+                            $graphMailboxHash[$upn] = $item
                         }
-                        foreach ($mailbox in $activeMailboxes) {
-                            if (-not $graphMailboxHash.ContainsKey($mailbox.UserPrincipalName)) { continue }
-                            $graphData = $graphMailboxHash[$mailbox.UserPrincipalName]
-                            $storageBytes = 0
-                            $deletedBytes = 0
-                            $itemCount = "0"
-                            if ($graphData.'Storage Used (Byte)') { $storageBytes = [double]$graphData.'Storage Used (Byte)' }
-                            if ($graphData.'Deleted Item Size (Byte)') { $deletedBytes = [double]$graphData.'Deleted Item Size (Byte)' }
-                            if ($graphData.'Item Count') { $itemCount = $graphData.'Item Count' }
-                            $guidKey = if ($mailbox.ExchangeGuid) { $mailbox.ExchangeGuid.ToString() } elseif ($mailbox.Guid) { $mailbox.Guid.ToString() } else { $null }
-                            if (-not $guidKey) { continue }
-                            $stats = [PSCustomObject]@{
-                                DisplayName = $mailbox.DisplayName
-                                TotalItemSize = "$([math]::Round($storageBytes / 1GB, 4)) GB ($storageBytes bytes)"
-                                ItemCount = $itemCount
-                                TotalDeletedItemSize = "$([math]::Round($deletedBytes / 1GB, 4)) GB ($deletedBytes bytes)"
-                                MailboxType = $mailbox.RecipientTypeDetails
-                                MailboxGuid = $mailbox.ExchangeGuid
-                            }
-                            $global:tenantStatsHash["PrimaryMailboxStats"][$guidKey] = $stats
+                    }
+                    foreach ($mailbox in $activeMailboxes) {
+                        if (-not $graphMailboxHash.ContainsKey($mailbox.UserPrincipalName)) { continue }
+                        $graphData = $graphMailboxHash[$mailbox.UserPrincipalName]
+                        $storageBytes = 0
+                        $deletedBytes = 0
+                        $itemCount = "0"
+                        if ($graphData.'Storage Used (Byte)') { $storageBytes = [double]$graphData.'Storage Used (Byte)' }
+                        if ($graphData.'Deleted Item Size (Byte)') { $deletedBytes = [double]$graphData.'Deleted Item Size (Byte)' }
+                        if ($graphData.'Item Count') { $itemCount = $graphData.'Item Count' }
+                        $guidKey = if ($mailbox.ExchangeGuid) { $mailbox.ExchangeGuid.ToString() } elseif ($mailbox.Guid) { $mailbox.Guid.ToString() } else { $null }
+                        if (-not $guidKey) { continue }
+                        $stats = [PSCustomObject]@{
+                            DisplayName = $mailbox.DisplayName
+                            TotalItemSize = "$([math]::Round($storageBytes / 1GB, 4)) GB ($storageBytes bytes)"
+                            ItemCount = $itemCount
+                            TotalDeletedItemSize = "$([math]::Round($deletedBytes / 1GB, 4)) GB ($deletedBytes bytes)"
+                            MailboxType = $mailbox.RecipientTypeDetails
+                            MailboxGuid = $mailbox.ExchangeGuid
                         }
+                        $global:tenantStatsHash["PrimaryMailboxStats"][$guidKey] = $stats
                     }
                 }
             }
@@ -1139,6 +1251,7 @@ function Get-AllExchangeMailboxDetails {
                 $true
             }
         }
+        $exoFilledCount = 0
         if ($mailboxesNeedingStats.Count -gt 0) {
             #$inactiveMBXTest = ($global:tenantStatsHash['AllMailboxes'].Values | Where-Object { $_.IsInactiveMailbox -eq $true }).Count -gt 0
             Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Graph report covered $($global:tenantStatsHash['PrimaryMailboxStats'].Count) mailboxes; fetching EXO stats for $($mailboxesNeedingStats.Count) missing/inactive." -ExportFileLocation $ExportDetails
@@ -1152,18 +1265,23 @@ function Get-AllExchangeMailboxDetails {
             }
             #>
 
-            $allRemainingMBXStats = $mailboxesNeedingStats | Get-EXOMailboxStatistics -Identity $_.DistinguishedName -IncludeSoftDeletedRecipient
+            $allRemainingMBXStatsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $mailboxesNeedingStats
+            $allRemainingMBXStats = @($allRemainingMBXStatsResult.Results)
             $allRemainingMBXStats | ForEach-Object {
                 $key = $_.MailboxGuid.ToString()
                 if (-not $global:tenantStatsHash["PrimaryMailboxStats"].ContainsKey($key)) {
                     $global:tenantStatsHash["PrimaryMailboxStats"][$key] = $_
+                    $exoFilledCount++
                 }
             }
+            Write-ExoStatisticsFailureSummary -OperationName 'Get-AllExchangeMailboxDetails primary mailbox statistics' -Failures $allRemainingMBXStatsResult.Failures
         }
 
         $finalStatsCount = $global:tenantStatsHash["PrimaryMailboxStats"].Count
-        $exoStatsFilledCount = $finalStatsCount - $graphStatsCount
-        Write-Verbose "exoStatsFilledCount: $exoStatsFilledCount"
+        if ($exoFilledCount -eq 0 -and $finalStatsCount -gt $graphStatsCount) {
+            $exoFilledCount = $finalStatsCount - $graphStatsCount
+        }
+        Write-Verbose "exoStatsFilledCount: $exoFilledCount"
         Write-Verbose "graphStatsCount: $graphStatsCount"
         Write-Verbose "finalStatsCount: $finalStatsCount"
 
@@ -1190,7 +1308,9 @@ function Get-AllExchangeMailboxDetails {
             Write-Host "  Getting archive mailbox stats..." -ForegroundColor Cyan -nonewline
             Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Gathering All Archive Mailbox Statistics. Including Group and Inactive Mailboxes" -ExportFileLocation $ExportDetails
             Write-Progress -Activity "Gathering All Archive Mailbox Statistics" -Status (((Get-Date) - $global:initialStart).ToString('hh\:mm\:ss'))
-            $archiveMailboxStats = $global:tenantStatsHash['AllMailboxes'].Values | Where-Object {$_.ArchiveStatus -ne "None"} | Get-EXOMailboxStatistics -Archive -Properties MailboxGuid -IncludeSoftDeletedRecipients -ErrorAction SilentlyContinue
+            $archiveMailboxCandidates = @($global:tenantStatsHash['AllMailboxes'].Values | Where-Object {$_.ArchiveStatus -ne "None"})
+            $archiveMailboxStatsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $archiveMailboxCandidates -Archive
+            $archiveMailboxStats = @($archiveMailboxStatsResult.Results)
             if ($archiveMailboxStats) {
                 $global:tenantStatsHash["ArchiveMailboxStats"] = @{}
                 
@@ -1202,6 +1322,7 @@ function Get-AllExchangeMailboxDetails {
                     $global:tenantStatsHash["ArchiveMailboxStats"][$key] = $value
                 }
             }
+            Write-ExoStatisticsFailureSummary -OperationName 'Get-AllExchangeMailboxDetails archive mailbox statistics' -Failures $archiveMailboxStatsResult.Failures
             Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Adding Archive Mailbox Statistics to Tenant Stats Hash." -ExportFileLocation $ExportDetails
         }
         catch {
@@ -1326,17 +1447,33 @@ function Get-ExchangeGroupDetails {
                 # Conditional logic for different recipient types
                 switch ($object.RecipientTypeDetails) {
                     "DynamicDistributionGroup" {
-                        $groupDetails = Get-DynamicDistributionGroup $identity -ErrorAction SilentlyContinue
-                        $groupMembers = Get-DynamicDistributionGroupMember $identity -ErrorAction SilentlyContinue -ResultSize unlimited -warningaction silentlycontinue
+                        $groupDetails = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails details for $PrimarySMTPAddress" -DefaultValue $null -ExportFileLocation $ExportDetails -ScriptBlock {
+                            Get-DynamicDistributionGroup $identity -ErrorAction Stop
+                        }
+                        $groupMembers = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue @() -ExportFileLocation $ExportDetails -ScriptBlock {
+                            @(Get-DynamicDistributionGroupMember $identity -ErrorAction Stop -ResultSize unlimited -WarningAction SilentlyContinue)
+                        }
                     }
                     {$_ -in 'MailUniversalDistributionGroup', 'MailUniversalSecurityGroup', "MailNonUniversalGroup"} {
-                        $groupDetails = Get-DistributionGroup $identity -ErrorAction SilentlyContinue
-                        $groupMembers = Get-DistributionGroupMember $identity -ResultSize unlimited -ErrorAction SilentlyContinue
+                        $groupDetails = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails details for $PrimarySMTPAddress" -DefaultValue $null -ExportFileLocation $ExportDetails -ScriptBlock {
+                            Get-DistributionGroup $identity -ErrorAction Stop
+                        }
+                        $groupMembers = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue @() -ExportFileLocation $ExportDetails -ScriptBlock {
+                            @(Get-DistributionGroupMember $identity -ResultSize unlimited -ErrorAction Stop)
+                        }
                     }
                     "GroupMailbox" {
-                        $groupDetails = Get-UnifiedGroup $identity -ErrorAction SilentlyContinue
-                        $groupMembers = Get-UnifiedGroupLinks -Identity $identity -LinkType Member -ResultSize unlimited -ErrorAction SilentlyContinue
+                        $groupDetails = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails details for $PrimarySMTPAddress" -DefaultValue $null -ExportFileLocation $ExportDetails -ScriptBlock {
+                            Get-UnifiedGroup $identity -ErrorAction Stop
+                        }
+                        $groupMembers = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue @() -ExportFileLocation $ExportDetails -ScriptBlock {
+                            @(Get-UnifiedGroupLinks -Identity $identity -LinkType Member -ResultSize unlimited -ErrorAction Stop)
+                        }
                     }
+                }
+
+                if (-not $groupDetails) {
+                    $groupDetails = $object
                 }
     
                 #Check Group Owners Size and Get Owners Addresses
@@ -1973,11 +2110,16 @@ function Get-AllUnifiedGroups {
 
         # Get Unified Group Statistics
         Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Gathering all Unified Group Statistics" -ExportFileLocation $ExportDetails
-        $allUnifiedGroupStatistics = $allUnifiedGroups | Get-EXOMailboxStatistics -IncludeSoftDeletedRecipients
-        foreach ($groupStat in $allUnifiedGroupStatistics) {
+        if (-not $global:tenantStatsHash.ContainsKey("PrimaryMailboxStats")) {
+            $global:tenantStatsHash["PrimaryMailboxStats"] = @{}
+        }
+
+        $allUnifiedGroupStatisticsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $allUnifiedGroups
+        foreach ($groupStat in $allUnifiedGroupStatisticsResult.Results) {
             $key = $groupStat.MailboxGuid.ToString()
             $global:tenantStatsHash["PrimaryMailboxStats"][$key] = $groupStat
-        } 
+        }
+        Write-ExoStatisticsFailureSummary -OperationName 'Get-AllUnifiedGroups mailbox statistics' -Failures $allUnifiedGroupStatisticsResult.Failures
     }    
     catch {
         Write-Log -Type ERROR -Message "[Get-AllUnifiedGroups] An error occurred in running Get-AllUnifiedGroups function. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
@@ -2161,10 +2303,8 @@ function Get-SharePointAndOneDriveSites {
             [string]$LookupName
         )
 
-        $tempFilePath = Join-Path $env:TEMP ("{0}-{1}.csv" -f $LookupName, [guid]::NewGuid().ToString('N'))
         try {
-            Invoke-MgGraphRequest -Method GET -Uri $Uri -OutputFilePath $tempFilePath -ErrorAction Stop | Out-Null
-            $rows = @(Import-Csv -Path $tempFilePath -ErrorAction Stop)
+            $rows = @(Export-ArrayaGraphReportCsv -Uri $Uri -Activity "$LookupName report" -Headers $global:GraphHeaders)
             $lookup = @{}
             foreach ($row in $rows) {
                 $siteId = $row.'Site Id'
@@ -2176,10 +2316,6 @@ function Get-SharePointAndOneDriveSites {
         } catch {
             Write-Log -Type WARNING -Message "[Get-SharePointAndOneDriveSites] Unable to download $LookupName report: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
             return @{}
-        } finally {
-            if (Test-Path -Path $tempFilePath) {
-                Remove-Item -Path $tempFilePath -Force -ErrorAction SilentlyContinue
-            }
         }
     }
 
@@ -2830,198 +2966,86 @@ function Get-GraphData {
     )
 
     begin {
-        # Initialize progress tracking
-        $pageCount = 0
-        $totalRecordsRetrieved = 0
-
-        # Prepare authentication headers for REST fallback
-        $Headers = $null
+        $headers = $null
         if ($global:GraphHeaders) {
-            $Headers = $global:GraphHeaders
-        } elseif ($global:GraphToken) {
-            $Headers = @{
-                'Content-Type'     = "application/json"
+            $headers = $global:GraphHeaders
+        }
+        elseif ($global:GraphToken) {
+            $headers = @{
+                'Content-Type'     = 'application/json'
                 'Authorization'    = "Bearer $global:GraphToken"
-                'ConsistencyLevel' = "eventual"
+                'ConsistencyLevel' = 'eventual'
             }
-        } elseif ($AccessToken) {
-            $Headers = @{
-                'Content-Type'     = "application/json"
+        }
+        elseif ($AccessToken) {
+            $headers = @{
+                'Content-Type'     = 'application/json'
                 'Authorization'    = "Bearer $AccessToken"
-                'ConsistencyLevel' = "eventual"
+                'ConsistencyLevel' = 'eventual'
             }
         }
-
-        # Build query URI with pagination
-        $QueryUri = $Uri
-        if ($PageSize -and $QueryUri -notmatch "\`$top=") {
-            $separator = if ($QueryUri.Contains('?')) { '&' } else { '?' }
-            $QueryUri += "${separator}`$top=$PageSize"
-        }
-
-        # Initialize results collection
-        $QueryResults = [System.Collections.Generic.List[PSObject]]::new()
-        
-        Write-Verbose "Starting Get-GraphData for URI: $QueryUri"
     }
 
     process {
-        $CurrentUri = $QueryUri
-        $MorePages = $true
+        $result = Get-ArrayaGraphResource -Uri $Uri -PageSize $PageSize -Activity $Activity -PreferRest:$UseRestMethod -Headers $headers -MaxRetries $MaxRetries
+        Write-ProgressHelper -Total 1 -Activity $Activity -Operation $Operation -Id $Id -Completed
 
-        do {
-            $pageCount++
-            $Results = $null
-            $RetryCount = 0
-            $Success = $false
-
-            # Retry loop for handling throttling and transient errors
-            while (-not $Success -and $RetryCount -lt $MaxRetries) {
-                try {
-                    # Primary method: Use Microsoft Graph PowerShell SDK
-                    if (-not $UseRestMethod) {
-                        Write-Verbose "Page $pageCount : Invoke-MgGraphRequest => $CurrentUri"
-                        $Results = Invoke-MgGraphRequest -Uri $CurrentUri -Method GET -OutputType PSObject -ErrorAction Stop
-                        $Success = $true
-                    } else {
-                        # Fallback: Use REST method
-                        Write-Verbose "Page $pageCount : Invoke-RestMethod => $CurrentUri"
-                        if (-not $Headers) {
-                            throw "No authentication headers available for Invoke-RestMethod. Please ensure you're connected to Microsoft Graph."
-                        }
-                        $Results = Invoke-RestMethod -Uri $CurrentUri -Headers $Headers -Method GET -ContentType "application/json" -UseBasicParsing -ErrorAction Stop
-                        $Success = $true
-                    }
-                }
-                catch {
-                    $statusCode = $null
-                    $retryAfter = 5
-
-                    # Extract status code if available
-                    if ($_.Exception.Response) {
-                        $statusCode = $_.Exception.Response.StatusCode.value__
-                        # Check for Retry-After header
-                        if ($_.Exception.Response.Headers -and $_.Exception.Response.Headers['Retry-After']) {
-                            $retryAfter = [int]$_.Exception.Response.Headers['Retry-After']
-                        }
-                    }
-
-                    # Handle specific error codes
-                    switch ($statusCode) {
-                        429 {
-                            # Throttling - exponential backoff
-                            $waitTime = [math]::Min(($retryAfter * [math]::Pow(2, $RetryCount)), 300) # Max 5 minutes
-                            Write-Warning "Throttled (429). Waiting $waitTime seconds before retry $($RetryCount + 1)/$MaxRetries..."
-                            Start-Sleep -Seconds $waitTime
-                            $RetryCount++
-                        }
-                        401 {
-                            # Unauthorized - token might be expired
-                            Write-Warning "Authentication failed (401). Please reconnect to Microsoft Graph."
-                            throw $_
-                        }
-                        403 {
-                            # Forbidden - insufficient permissions
-                            Write-Warning "Access denied (403). Insufficient permissions for: $CurrentUri"
-                            throw $_
-                        }
-                        404 {
-                            # Not found - return empty
-                            Write-Warning "Resource not found (404): $CurrentUri"
-                            return @()
-                        }
-                        503 {
-                            # Service unavailable - retry with backoff
-                            $waitTime = [math]::Min((5 * [math]::Pow(2, $RetryCount)), 60)
-                            Write-Warning "Service unavailable (503). Waiting $waitTime seconds before retry $($RetryCount + 1)/$MaxRetries..."
-                            Start-Sleep -Seconds $waitTime
-                            $RetryCount++
-                        }
-                        default {
-                            # For SDK failure, try REST fallback once
-                            if (-not $UseRestMethod -and $Headers) {
-                                Write-Warning "Invoke-MgGraphRequest failed: $($_.Exception.Message). Falling back to Invoke-RestMethod..."
-                                $UseRestMethod = $true
-                                $RetryCount++
-                            } else {
-                                Write-Error "Graph API request failed: $($_.Exception.Message)"
-                                throw $_
-                            }
-                        }
-                    }
-                }
-            }
-
-            # Check if max retries exceeded
-            if (-not $Success) {
-                Write-Error "Failed to retrieve data after $MaxRetries attempts from: $CurrentUri"
-                break
-            }
-
-            # Process results
-            if ($Results.value) {
-                # Standard Graph response with value property
-                foreach ($item in $Results.value) {
-                    $QueryResults.Add([PSObject]$item)
-                }
-                $totalRecordsRetrieved += $Results.value.Count
-            } elseif ($Results -is [System.Collections.IEnumerable] -and -not $Results.PSObject.Properties['value']) {
-                # Collection without value property (some reports)
-                foreach ($item in $Results) {
-                    $QueryResults.Add([PSObject]$item)
-                }
-                $totalRecordsRetrieved += $Results.Count
-            } elseif ($Results) {
-                # Single object response
-                $QueryResults.Add([PSObject]$Results)
-                $totalRecordsRetrieved++
-            }
-
-            # Update progress
-            $progressParams = @{
-                Total     = [math]::Max($totalRecordsRetrieved, 1)  # Prevent divide by zero
-                Activity  = $Activity
-                Operation = "$Operation (Page $pageCount, $totalRecordsRetrieved records)"
-                Id        = $Id
-            }
-            if ($PSBoundParameters.ContainsKey('ParentId')) {
-                $progressParams.ParentId = $ParentId
-            }
-            Write-ProgressHelper @progressParams
-
-            # Check for next page
-            $NextLink = $null
-            if ($Results.'@odata.nextLink') {
-                $NextLink = $Results.'@odata.nextLink'
-            } elseif ($Results.PSObject.Properties['nextLink']) {
-                $NextLink = $Results.nextLink
-            }
-
-            if ($NextLink) {
-                $CurrentUri = $NextLink
-                Write-Verbose "Next page available: $NextLink"
-            } else {
-                $MorePages = $false
-                Write-Verbose "No more pages. Total records retrieved: $totalRecordsRetrieved"
-            }
-
-        } while ($MorePages)
-    }
-
-    end {
-        # Complete the progress bar
-        Write-ProgressHelper -Total 1 -Activity $Activity -Id $Id -Completed
-        $ProgressPreference = "SilentlyContinue"
-        $ProgressPreference = "Continue"
-
-        # Return results
-        Write-Verbose "Returning $($QueryResults.Count) total results"
-        if ($QueryResults.Count -eq 0) {
+        if ($null -eq $result) {
             return @()
-        } else {
-            return $QueryResults.ToArray()
         }
+
+        if ($Uri -match '/\$count(\?|$)') {
+            return $result
+        }
+
+        if ($result -is [array]) {
+            return $result
+        }
+        if ($result -is [System.Collections.IEnumerable] -and -not ($result -is [string]) -and -not ($result -is [System.Collections.IDictionary])) {
+            return @($result)
+        }
+
+        return @($result)
     }
+}
+
+$script:AssessmentTenantOrganization = $null
+$script:AssessmentTenantOrganizationResolved = $false
+
+function Get-AssessmentTenantOrganization {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$OrganizationId,
+        [Parameter(Mandatory = $false)]
+        [switch]$Refresh
+    )
+
+    if (-not $Refresh -and [string]::IsNullOrWhiteSpace($OrganizationId) -and $script:AssessmentTenantOrganizationResolved) {
+        return $script:AssessmentTenantOrganization
+    }
+
+    $organizationUri = if ([string]::IsNullOrWhiteSpace($OrganizationId)) {
+        'https://graph.microsoft.com/v1.0/organization'
+    } else {
+        "https://graph.microsoft.com/v1.0/organization/$OrganizationId"
+    }
+
+    $orgData = Get-ArrayaGraphResource -Uri $organizationUri -PageSize 50 -Activity 'Fetching tenant organization metadata' -Headers $global:GraphHeaders
+    $organization = $null
+    if ($orgData -is [array]) {
+        $organization = $orgData | Select-Object -First 1
+    }
+    else {
+        $organization = $orgData
+    }
+
+    if ([string]::IsNullOrWhiteSpace($OrganizationId)) {
+        $script:AssessmentTenantOrganization = $organization
+        $script:AssessmentTenantOrganizationResolved = $true
+    }
+
+    return $organization
 }
 
 
@@ -3368,7 +3392,10 @@ function Connect-Office365 {
                 }
                 
                 Write-Verbose "Retrieving organization info from Graph..."
-                $org = Get-MgOrganization -ErrorAction Stop
+                $org = Get-AssessmentTenantOrganization
+                if (-not $org) {
+                    throw "Unable to resolve tenant organization details from Microsoft Graph."
+                }
                 $result.OnPremisesSyncEnabled = $org.OnPremisesSyncEnabled
                 $result.OnPremisesLastSyncDateTime = $org.OnPremisesLastSyncDateTime
                 $result.Graph = $true
@@ -4303,11 +4330,24 @@ function Get-AllOffice365Admins {
             $roleName = $role.DisplayName
             Write-Log -Type DEBUG -Message "[Get-AllOffice365Admins] $($roleName): Gathering Admins in Role" -ExportFileLocation $ExportDetails
             Write-ProgressHelper -Total $totalCount -Id 1 -Activity "Gathering Admins in Roles" -Operation "Checking Role: $($roleName)" 
-            $roleMemberList = Get-MgDirectoryRoleMember -DirectoryRoleId $role.Id | ? {$null -ne $_.Id}
+            $roleMemberList = Invoke-ArrayaCollectionStepSafe -OperationName "Get-AllOffice365Admins role membership for $roleName" -DefaultValue @() -ExportFileLocation $ExportDetails -ScriptBlock {
+                @(Get-MgDirectoryRoleMember -DirectoryRoleId $role.Id -ErrorAction Stop | Where-Object { $null -ne $_.Id })
+            }
             if ($roleMemberList) {
                 $totalCount2 = $roleMemberList.count
                 Write-Log -Type INFO -Message "[Get-AllOffice365Admins] $($roleName) Users Found: $($roleMemberList.count)" -ExportFileLocation $ExportDetails
                 foreach ($roleMember in $roleMemberList) {
+                    $Name = $null
+                    $UPN = $null
+                    $mail = $null
+                    $jobTitle = $null
+                    $UserType = $null
+                    $AccountEnabled = $null
+                    $LastSignInDateTime = $null
+                    $CreatedDate = $null
+                    $GroupMailEnabled = $null
+                    $GroupMailNickname = $null
+                    $GroupType = $null
                     $Name = $roleMember.AdditionalProperties['displayName']
                     if ($roleMember.AdditionalProperties['@odata.type'] -eq "#microsoft.graph.group") {
                         # Group Specific Values
@@ -4346,8 +4386,8 @@ function Get-AllOffice365Admins {
                         JobTitle = if ($jobTitle) { $jobTitle } else { $null }
                         LastSignInDateTime = if ($LastSignInDateTime) { $LastSignInDateTime } else { $null }
                         # Group Specific Values
-                        GroupMailEnabled = if ($GroupMailEnabled) { $mailEnabled } else { $null }
-                        GroupMailNickname = if ($GroupMailNickname) { $mailNickname } else { $null }
+                        GroupMailEnabled = if ($null -ne $GroupMailEnabled) { $GroupMailEnabled } else { $null }
+                        GroupMailNickname = if ($GroupMailNickname) { $GroupMailNickname } else { $null }
                         GroupType = if ($GroupType) { $GroupType } else { $null }
                     })
                         
@@ -4359,9 +4399,9 @@ function Get-AllOffice365Admins {
             
         }
         
-        Write-Log -Type INFO -Message "[Get-AllOffice365Admins] Combined Group Roles for $($groupedResults)" -ExportFileLocation $ExportDetails
         #Group by DisplayName or UserPrincipalName and combine roles into a comma-separated list
         $groupedResults = $adminResults | Group-Object -Property DisplayName,UserPrincipalName
+        Write-Log -Type INFO -Message "[Get-AllOffice365Admins] Combining roles across $($groupedResults.Count) grouped admin entries" -ExportFileLocation $ExportDetails
         $finalResults = $groupedResults | ForEach-Object {
             $group = $_.Group
             $roles = ($group.Role -join ', ')
@@ -5777,31 +5817,11 @@ function Get-EntraIDGroups {
                     $GroupDetails = $GroupDetails | Select-Object -First 1
                     #$GroupDetails = $GroupDetails.value | Select-Object -First 1
                 }
-                # Determine group type with added check for Dynamic Distribution Groups
-                if ($GroupDetails.groupTypes -contains "DynamicMembership") {
-                    $MembershipType = "Dynamic Group"
-                    $MembershipRule = $GroupDetails.membershipRule
-                } else {
-                    $MembershipType = "Assigned"
-                    $MembershipRule = $null
-                }
+                $classification = Get-ArrayaEntraGroupClassification -GroupDetails $GroupDetails
+                $MembershipType = $classification.MembershipType
+                $MembershipRule = $classification.MembershipRule
                 Write-Log -Type INFO -Message "Group Type: $MembershipType" -ExportFileLocation $ExportDetails
-                # Determine group type based on mailEnabled and securityEnabled properties
-                if ($GroupDetails.groupTypes -contains "Unified") {
-                    $GroupType = "Microsoft 365"
-
-                } elseif ($GroupDetails.mailEnabled -eq $true -and $GroupDetails.securityEnabled -eq $true) {
-                    $GroupType = "Mail-enabled Security Group"
-
-                } elseif ($GroupDetails.mailEnabled -eq $false -and $GroupDetails.securityEnabled -eq $true) {
-                    $GroupType = "Security Group"
-
-                } elseif ($GroupDetails.mailEnabled -eq $true -and $GroupDetails.securityEnabled -eq $false) {
-                    $GroupType = "Distribution Group"
-
-                } else {
-                    $GroupType = "Unknown"
-                }
+                $GroupType = $classification.GroupType
                 Write-Log -Type INFO -Message "Group Type: $GroupType" -ExportFileLocation $ExportDetails
 
                 # Count members and owners using Graph $count endpoints
@@ -5831,30 +5851,16 @@ function Get-EntraIDGroups {
                 Write-Log -Type INFO -Message "Owner Count: $OwnerCount" -ExportFileLocation $ExportDetails
 
                 # Source of the group
-                $Source = if ($GroupDetails.onPremisesSyncEnabled) { "On-Premises" } else { "Cloud" }
+                $Source = $classification.Source
                 Write-Log -Type INFO -Message "Group Source: $Source" -ExportFileLocation $ExportDetails
              }
             SDK { # TBD
                 $GroupDetails = Get-MgGroup -GroupId $GroupIdentifier -ErrorAction Stop
-                if ($GroupDetails.groupTypes -contains "DynamicMembership") {
-                    $MembershipType = "Dynamic Group"
-                    $MembershipRule = $GroupDetails.membershipRule
-                } else {
-                    $MembershipType = "Assigned"
-                    $MembershipRule = $null
-                }
-                if ($GroupDetails.groupTypes -contains "Unified") {
-                    $GroupType = "Microsoft 365"
-                } elseif ($GroupDetails.mailEnabled -eq $true -and $GroupDetails.securityEnabled -eq $true) {
-                    $GroupType = "Mail-enabled Security Group"
-                } elseif ($GroupDetails.mailEnabled -eq $false -and $GroupDetails.securityEnabled -eq $true) {
-                    $GroupType = "Security Group"
-                } elseif ($GroupDetails.mailEnabled -eq $true -and $GroupDetails.securityEnabled -eq $false) {
-                    $GroupType = "Distribution Group"
-                } else {
-                    $GroupType = "Unknown"
-                }
-                $Source = if ($GroupDetails.onPremisesSyncEnabled) { "On-Premises" } else { "Cloud" }
+                $classification = Get-ArrayaEntraGroupClassification -GroupDetails $GroupDetails
+                $MembershipType = $classification.MembershipType
+                $MembershipRule = $classification.MembershipRule
+                $GroupType = $classification.GroupType
+                $Source = $classification.Source
                 $isManagingLicenses = $false
                 $MemberCount = 0
                 $OwnerCount = 0
@@ -5933,12 +5939,16 @@ function Get-EntraIDGroups {
         # Fetch detailed group information using Get-EntraGroupDetails
         #Write-Host "Checking group $($Group.displayName)"
         Write-Log -Type INFO -Message "Checking group $($Group.displayName)" -ExportFileLocation $ExportDetails
-        $GroupDetails = Get-EntraGroupDetails -GroupIdentifier $Group.id -GraphAuthType $GraphAuthType
+        $GroupDetails = Invoke-ArrayaCollectionStepSafe -OperationName "Get-EntraIDGroups details for $($Group.displayName)" -DefaultValue $null -ExportFileLocation $ExportDetails -ScriptBlock {
+            Get-EntraGroupDetails -GroupIdentifier $Group.id -GraphAuthType $GraphAuthType
+        }
         
         if ($GroupDetails) {
             # Store the detailed group information in the hash table
             $global:tenantStatsHash['EntraIDGroups'][$GroupDetails.ID] = $GroupDetails
-        } else { Write-Warning "Could not retrieve details for group $($Group.displayName)" }
+        } else {
+            Write-Log -Type WARNING -Message "[Get-EntraIDGroups] Could not retrieve details for group $($Group.displayName). Continuing." -ExportFileLocation $ExportDetails
+        }
     }
 
     Write-ProgressHelper -Total $totalGroups -Id 2 -Activity "Getting Group Details" -Completed
@@ -6122,7 +6132,7 @@ function Get-TenantOverviewInfo {
     Write-Log -Type INFO -Message "[Get-TenantOverviewInfo] START: Gathering tenant overview information" -ExportFileLocation $ExportDetails
 
     try {
-        $org = Get-MgOrganization -ErrorAction Stop | Select-Object -First 1
+        $org = Get-AssessmentTenantOrganization
 
         $initialDomain = $null
         $defaultDomain = $null
@@ -6251,7 +6261,7 @@ function Get-AdConnectSyncDetails {
     
     try {
         $org = $null
-        try { $org = Get-MgOrganization -ErrorAction SilentlyContinue | Select-Object -First 1 } catch {}
+        try { $org = Get-AssessmentTenantOrganization } catch {}
         
         $summary = [pscustomobject]@{
             OnPremisesSyncEnabled = if ($org) { $org.OnPremisesSyncEnabled } else { $null }
@@ -6551,7 +6561,7 @@ function Get-FederationAndCrossTenantConfiguration {
             
             # 5) Last resort - this often fails cross-tenant
             try {
-                $orgInfo = Get-MgOrganization -OrganizationId $TenantId -ErrorAction Stop
+                $orgInfo = Get-AssessmentTenantOrganization -OrganizationId $TenantId
                 if ($orgInfo) { return $orgInfo.DisplayName }
             } catch {
                 Write-Log -Type WARNING -Message "[Get-FederationAndCrossTenantConfiguration] Unable to resolve tenant name for $($TenantId): $($_.Exception.Message)" -ExportFileLocation $ExportDetails
@@ -10676,7 +10686,7 @@ function New-TenantHtmlReport {
     # Get tenant name
     $tenantName = "Microsoft 365 Tenant"
     try {
-        $org = Get-MgOrganization -ErrorAction SilentlyContinue | Select-Object -First 1
+        $org = Get-AssessmentTenantOrganization
         if ($org) {
             $tenantName = $org.DisplayName
         }
@@ -10868,7 +10878,12 @@ if ($PSBoundParameters.ContainsKey('ClientSecret')) {
 $connectionResult = Connect-Office365 @connectOffice365Params -ErrorAction Stop
 
 #Get Export Path
-$defaultReportFileName = ((Get-MgOrganization).DisplayName + " Tenant Discovery Report")
+$defaultOrganization = $null
+try {
+    $defaultOrganization = Get-AssessmentTenantOrganization
+} catch {}
+$defaultTenantDisplayName = if ($defaultOrganization -and $defaultOrganization.DisplayName) { $defaultOrganization.DisplayName } else { 'Tenant' }
+$defaultReportFileName = ($defaultTenantDisplayName + " Tenant Discovery Report")
 if ([string]::IsNullOrWhiteSpace($ExportPath)) {
     $ExportDetails = Get-ExportPath -FileName $defaultReportFileName
 } else {
@@ -10908,25 +10923,22 @@ try {
 } catch {
     Write-Verbose "Skipping Clear-Host in non-interactive session: $($_.Exception.Message)"
 }
-Write-Host "Starting Office 365 Discovery Script" -ForegroundColor Black -BackgroundColor Yellow
-Write-Host
-Write-Host "Gathering Exchange Online Objects and data" -ForegroundColor Black -BackgroundColor Yellow
+Write-Host "Microsoft 365 Tenant Assessment" -ForegroundColor Cyan
+Write-ConsoleSection -Step '1/5' -Title 'Exchange inventory'
 Get-AllRecipientDetails -detailLevel $reportingMode
 Get-AllExchangeMailboxDetails -detailLevel $reportingMode
 Get-ExchangeGroupDetails -detailLevel $reportingMode
 
 Get-MailFlowRulesandConnectors -detailLevel $reportingMode
 Get-AllPublicFolderDetails -detailLevel $reportingMode
-Write-Host
 
-Write-Host "Gathering Hybrid and Configuration Details" -ForegroundColor Black -BackgroundColor Yellow
+Write-ConsoleSection -Step '2/5' -Title 'Hybrid and configuration'
 Get-ExchangeHybridConfiguration -detailLevel $reportingMode
 Get-FederationAndCrossTenantConfiguration
 Get-ThirdPartySpamFilteringConfig
 Get-SMTPRelayConfiguration
-Write-Host
 
-Write-Host "Gathering Tenant Objects and License details" -ForegroundColor Black -BackgroundColor Yellow
+Write-ConsoleSection -Step '3/5' -Title 'Identity, devices, and licensing'
 $GraphTest = if (Get-MgContext -ErrorAction SilentlyContinue) { "SDK" } elseif ($global:GraphHeaders) { "API" }
 # Determine if using REST or SDK Graph API
 switch ($GraphTest) {
@@ -10954,9 +10966,8 @@ switch ($GraphTest) {
         Get-SecuritySecureScoreReport -detailLevel $reportingMode -MostRecent
      }
 }
-Write-Host
 
-Write-Host "Gathering Collaboration/SharePoint Objects and data" -ForegroundColor Black -BackgroundColor Yellow
+Write-ConsoleSection -Step '4/5' -Title 'Collaboration and SharePoint'
 Get-AllUnifiedGroups -detailLevel $reportingMode
 $sharePointDiscoveryService = if ($connectionResult -and $connectionResult.SharePointOnline) { 'SPO' } else { 'MGGraph' }
 Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName $sharePointDiscoveryService
@@ -10981,9 +10992,16 @@ Update-ConfigurationSummaryTables -TenantStatsHash $global:tenantStatsHash
 ########################################################
 
 #Exclude specific reports from Export
-Write-Host
-Write-Host "Exporting Tenant Statistics" -ForegroundColor Black -BackgroundColor Yellow
+Write-ConsoleSection -Step '5/5' -Title 'Exporting results'
 $ExportTenantStatsHash = Filter-TenantStatsHash -tenantStatsHash $global:tenantStatsHash -reportingMode $reportingMode -GraphTest $GraphTest
+$generatedArtifacts = [ordered]@{
+    Workbook                = $ExportDetails
+    'Best Practices HTML'   = $null
+    Questionnaire           = $null
+    'Full HTML'             = $null
+    PDF                     = $null
+    JSON                    = $null
+}
 
 #Export Reports: Exports each individual hashtable to own CSV file and then combines into Excel file
 Write-Log -Type INFO -Message "Exporting the Tenant Statistics to $($ExportDetails)." -ExportFileLocation $ExportDetails
@@ -10992,7 +11010,6 @@ try {
 }
 catch {
     Write-Log -Type ERROR -Message "An error occurred in Exporting the Tenant Statistics to $($ExportDetails). Please re-run the script and verify the location is valid and the file is not open in another application. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
-    Write-Log -Type ERROR -Message "An error occurred in Exporting the Tenant Statistics to $($ExportDetails). Please re-run the script and verify the location is valid and the file is not open in another application. $($_.Exception.Message)" -ExportFileLocation $ExportDetails
 }
 
 # Export JSON snapshot for reuse
@@ -11002,6 +11019,7 @@ if ($effectiveSkipJsonReport) {
     try {
         $jsonExportPath = $ExportDetails -replace '\.xlsx$', '.json'
         Export-TenantStatsJson -TenantStatsHash $ExportTenantStatsHash -Path $jsonExportPath
+        $generatedArtifacts['JSON'] = $jsonExportPath
         Write-Log -Type INFO -Message "Exported Tenant Statistics JSON to $jsonExportPath" -ExportFileLocation $ExportDetails
     } catch {
         Write-Log -Type WARNING -Message "Unable to export Tenant Statistics JSON: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
@@ -11020,6 +11038,7 @@ try {
         }
         $questionnaireExportPath = $ExportDetails -replace '\.xlsx$', '-TenantToTenantQuestionnaire.md'
         Export-TenantToTenantQuestionnaireMarkdown -TenantStatsHash $global:tenantStatsHash -TemplatePath $questionnaireTemplatePath -Path $questionnaireExportPath
+        $generatedArtifacts['Questionnaire'] = $questionnaireExportPath
         Write-Log -Type INFO -Message "Exported Tenant to Tenant Questionnaire to $questionnaireExportPath" -ExportFileLocation $ExportDetails
     } else {
         Write-Log -Type WARNING -Message "Skipping questionnaire export because Export-TenantToTenantQuestionnaireMarkdown is unavailable." -ExportFileLocation $ExportDetails
@@ -11034,11 +11053,13 @@ Write-Host ""
 if ($global:AllDiscoveryErrors.Count -gt 0) {
     #Write-Host "Exporting Error Reports" -ForegroundColor Black -BackgroundColor Yellow
     try {
-        Export-ErrorReports -ExportFileLocation $ExportDetails -ErrorData $global:AllDiscoveryErrors -logReportDirectory $ExportDetails
+        $errorReportSummary = Export-ErrorReports -ExportFileLocation $ExportDetails -ErrorData $global:AllDiscoveryErrors -logReportDirectory $ExportDetails
+        if ($errorReportSummary -and -not [string]::IsNullOrWhiteSpace([string]$errorReportSummary.FolderPath)) {
+            $generatedArtifacts['Error Reports'] = $errorReportSummary.FolderPath
+        }
         }
     catch {
         Write-Log -Type ERROR -Message "An error occurred in Exporting the Error Reports. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
-        Write-Log -Type ERROR -Message "An error occurred in Exporting the Error Reports. $($_.Exception.Message)" -ExportFileLocation $ExportDetails
     }
 }
 
@@ -11053,6 +11074,7 @@ try {
             $assessmentHtmlPath = $ExportDetails -replace '\.xlsx$', '-BestPracticesAnalysis.html'
             $assessmentHtmlResult = New-TenantAssessmentHtmlReport -TenantStatsHash $global:tenantStatsHash -OutputPath $assessmentHtmlPath
             if ($assessmentHtmlResult.Success) {
+                $generatedArtifacts['Best Practices HTML'] = $assessmentHtmlResult.OutputPath
                 Write-Log -Type INFO -Message "Best Practices Analysis HTML report generated: $($assessmentHtmlResult.OutputPath)" -ExportFileLocation $ExportDetails
             } else {
                 Write-Log -Type WARNING -Message "Best Practices Analysis HTML report generation failed: $($assessmentHtmlResult.Error)" -ExportFileLocation $ExportDetails
@@ -11101,6 +11123,7 @@ else {
         #$VerbosePreference = 'SilentlyContinue'
         
         if ($htmlResult.Success) {
+            $generatedArtifacts['Full HTML'] = $htmlResult.OutputPath
             ##Write-Host "   Location: $($htmlResult.OutputPath)" -ForegroundColor Cyan
             #Write-Host "   Sections: $($htmlResult.SectionCounts.TotalSections)" -ForegroundColor Gray
             #Write-Host "   Findings: $($htmlResult.SectionCounts.TotalFindings)" -ForegroundColor Gray
@@ -11123,6 +11146,7 @@ else {
                     $pdfResult = Export-TenantHtmlReportPdf -HtmlPath $htmlResult.OutputPath -PdfPath $pdfExportPath
 
                     if ($pdfResult.Success) {
+                        $generatedArtifacts['PDF'] = $pdfResult.PdfPath
                         Write-Log -Type INFO -Message "PDF report generated: $($pdfResult.PdfPath) using $($pdfResult.Renderer)" -ExportFileLocation $ExportDetails
                     } else {
                         Write-Warning "PDF report generation failed: $($pdfResult.Error)"
@@ -11161,9 +11185,7 @@ $timeString = if ($totalHours -gt 0) {
     "$totalSeconds second(s)"
 }
 
-Write-Host ""
-Write-Host "Report Generation Complete in $($timeString)" -ForegroundColor Black -BackgroundColor Green
-#Write-Host "Excel Report: $ExportDetails" -ForegroundColor Cyan
+Write-ConsoleArtifactSummary -Artifacts $generatedArtifacts -DurationText $timeString -CapturedErrorCount $global:AllDiscoveryErrors.Count
 
 ########################################################
 ### End of HTML Report Integration ###

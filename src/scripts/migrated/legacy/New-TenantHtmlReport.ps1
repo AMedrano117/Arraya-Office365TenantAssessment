@@ -269,17 +269,17 @@ function New-TenantAssessmentHtmlReport {
                     default { 9 }
                 }
             } }, Priority |
-            Select-Object -First 5
+            Select-Object -First 6
     )
     $priorityMigrationItems = @(
         $migrationReadiness |
             Where-Object { $_.Status -in @('Blocker', 'Review', 'Needs Data') } |
-            Select-Object -First 5
+            Select-Object -First 6
     )
 
     $bestPracticeRows = @(
         $bestPractices |
-            Select-Object Area, Status, CriticalFindings, WarningFindings, TotalFindings, PrimaryFinding, RecommendedAction
+            Select-Object Area, Status, PrimaryFinding, RecommendedAction
     )
     $findingRows = @(
         $findings |
@@ -291,17 +291,21 @@ function New-TenantAssessmentHtmlReport {
                     default { 9 }
                 }
             } }, Priority |
-            Select-Object Severity, Area, Category, Message, RecommendedAction
+            Select-Object Severity, Area, Message, RecommendedAction
     )
     $migrationRows = @(
         $migrationReadiness |
-            Select-Object Category, Item, Status, Value, MigrationAction
+            Where-Object { $_.Status -in @('Blocker', 'Review', 'Needs Data') } |
+            Select-Object Category, Item, Status, MigrationAction
     )
     $secureScoreRows = @(
         $secureScoreActions |
             Sort-Object Rank, ScoreGap |
-            Select-Object -First 20 RecommendationTitle, Status, Rank, ScoreGap, ActionUrl
+            Select-Object -First 8 RecommendationTitle, Status, ScoreGap, ActionUrl
     )
+
+    $displayFindingRows = @($findingRows | Select-Object -First 12)
+    $displayMigrationRows = @($migrationRows | Select-Object -First 12)
 
     $reportDate = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $tenantName = 'Tenant Assessment'
@@ -318,6 +322,7 @@ function New-TenantAssessmentHtmlReport {
         }
     }
 
+    $actionableAreas = $criticalAreas + $warningAreas
     $executiveHeadline = if ($criticalAreas -gt 0) {
         "$criticalAreas assessment area(s) need immediate attention."
     } elseif ($warningAreas -gt 0) {
@@ -374,12 +379,12 @@ function New-TenantAssessmentHtmlReport {
         .hero-meta { font: 500 12px/1.5 Segoe UI, Arial, sans-serif; text-align: right; opacity: 0.9; }
         .hero-subtitle { font: 500 15px/1.6 Segoe UI, Arial, sans-serif; margin: 14px 0 0; max-width: 840px; opacity: 0.96; }
         .headline { margin-top: 18px; padding: 16px 18px; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.16); border-radius: 18px; font: 600 18px/1.4 Segoe UI, Arial, sans-serif; }
-        .grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 16px; margin: 24px 0; }
+        .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin: 24px 0; }
         .card { background: var(--paper); border: 1px solid rgba(18, 52, 59, 0.08); border-radius: 18px; padding: 20px; box-shadow: 0 10px 24px rgba(29, 41, 57, 0.06); }
         .card .label { font: 600 11px/1.4 Segoe UI, Arial, sans-serif; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); margin-bottom: 10px; }
         .card .value { font-size: 34px; font-weight: 700; color: #111827; font-family: 'Segoe UI', Arial, sans-serif; }
         .card .caption { margin-top: 6px; color: var(--muted); font: 500 12px/1.5 Segoe UI, Arial, sans-serif; }
-        .summary-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 18px; margin-top: 10px; }
+        .summary-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 18px; margin-top: 10px; }
         .section { background: var(--paper); border: 1px solid rgba(18, 52, 59, 0.08); border-radius: 22px; padding: 24px; margin-top: 22px; box-shadow: 0 10px 24px rgba(29, 41, 57, 0.06); }
         .section h2 { margin: 0 0 8px; font-size: 24px; }
         .section p.note { color: var(--muted); margin: 0; font: 500 13px/1.6 Segoe UI, Arial, sans-serif; }
@@ -403,6 +408,7 @@ function New-TenantAssessmentHtmlReport {
         .action-link { color: var(--accent); text-decoration: none; font-weight: 600; }
         .action-link:hover { text-decoration: underline; }
         .methodology-note { margin-top: 16px; padding: 16px 18px; border-radius: 16px; background: #f8f3e8; border: 1px solid var(--line); font: 500 13px/1.7 Segoe UI, Arial, sans-serif; color: var(--muted); }
+        .footer-note { margin-top: 18px; color: var(--muted); font: 500 12px/1.6 Segoe UI, Arial, sans-serif; }
         @media (max-width: 1100px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .summary-grid { grid-template-columns: 1fr; } .hero-top { flex-direction: column; } .hero-meta { text-align: left; } }
         @media (max-width: 720px) { .wrap { padding: 18px; } .grid { grid-template-columns: 1fr; } .hero h1 { font-size: 30px; } .section-header { display: block; } }
         @media print {
@@ -422,7 +428,7 @@ function New-TenantAssessmentHtmlReport {
                 <div>
                     <div class="eyebrow">Microsoft 365 Best Practices Analysis</div>
                     <h1>$tenantName</h1>
-                    <p class="hero-subtitle"><strong>BestPractices</strong> is the area-level rollup. <strong>BestPracticeFindings</strong> is the detailed issue list behind that rollup. This summary is optimized for handoff and decision-making, not raw inventory review.</p>
+                    <p class="hero-subtitle">Short-form assessment for leadership review. Use the workbook for raw inventory and full worksheet detail.</p>
                 </div>
                 <div class="hero-meta">
                     <div>Generated: $reportDate</div>
@@ -436,8 +442,7 @@ function New-TenantAssessmentHtmlReport {
         <div class="grid">
             <div class="card"><div class="label">Assessment Areas</div><div class="value">$($bestPractices.Count)</div><div class="caption">Area-level rollups evaluated</div></div>
             <div class="card"><div class="label">Critical Areas</div><div class="value">$criticalAreas</div><div class="caption">Immediate remediation candidates</div></div>
-            <div class="card"><div class="label">Warning Areas</div><div class="value">$warningAreas</div><div class="caption">Needs planned follow-up</div></div>
-            <div class="card"><div class="label">Risk Findings</div><div class="value">$riskFindings</div><div class="caption">Detailed high-risk issues</div></div>
+            <div class="card"><div class="label">Actionable Areas</div><div class="value">$actionableAreas</div><div class="caption">Critical or warning areas</div></div>
             <div class="card"><div class="label">Migration Reviews</div><div class="value">$migrationReviews</div><div class="caption">Migration blockers or review items</div></div>
         </div>
 
@@ -478,14 +483,14 @@ function New-TenantAssessmentHtmlReport {
         </div>
 
         <div class="section">
-            <div class="section-header">
-                <div>
-                    <div class="section-kicker">Rollup</div>
-                    <h2>Best Practices</h2>
+                <div class="section-header">
+                    <div>
+                        <div class="section-kicker">Rollup</div>
+                        <h2>Best Practices</h2>
+                    </div>
                 </div>
-            </div>
-            <p class="note">One row per assessment area. This is the rollup view used to understand overall tenant posture at a glance.</p>
-            $(New-AssessmentTable -Rows $bestPracticeRows -Columns @('Area','Status','CriticalFindings','WarningFindings','TotalFindings','PrimaryFinding','RecommendedAction'))
+            <p class="note">One row per assessment area. This is the primary summary view for overall tenant posture.</p>
+            $(New-AssessmentTable -Rows $bestPracticeRows -Columns @('Area','Status','PrimaryFinding','RecommendedAction'))
         </div>
 
         <div class="section">
@@ -495,8 +500,8 @@ function New-TenantAssessmentHtmlReport {
                     <h2>Best Practice Findings</h2>
                 </div>
             </div>
-            <p class="note">These are the individual findings that drive the rollup rows above.</p>
-            $(New-AssessmentTable -Rows $findingRows -Columns @('Severity','Area','Category','Message','RecommendedAction'))
+            <p class="note">Top findings only. Showing $($displayFindingRows.Count) of $($findingRows.Count) detailed findings.</p>
+            $(New-AssessmentTable -Rows $displayFindingRows -Columns @('Severity','Area','Message','RecommendedAction'))
         </div>
 
         <div class="section">
@@ -506,8 +511,8 @@ function New-TenantAssessmentHtmlReport {
                     <h2>Migration Readiness</h2>
                 </div>
             </div>
-            <p class="note">Migration-specific blockers, reviews, and readiness notes derived from the tenant inventory.</p>
-            $(New-AssessmentTable -Rows $migrationRows -Columns @('Category','Item','Status','Value','MigrationAction'))
+            <p class="note">Open blockers, reviews, and missing-data items only. Showing $($displayMigrationRows.Count) of $($migrationRows.Count) actionable migration rows.</p>
+            $(New-AssessmentTable -Rows $displayMigrationRows -Columns @('Category','Item','Status','MigrationAction'))
         </div>
 
         <div class="section">
@@ -517,8 +522,9 @@ function New-TenantAssessmentHtmlReport {
                     <h2>Secure Score Actions</h2>
                 </div>
             </div>
-            <p class="note">Top mapped Microsoft Secure Score actions included for security remediation prioritization.</p>
-            $(New-AssessmentTable -Rows $secureScoreRows -Columns @('RecommendationTitle','Status','Rank','ScoreGap','ActionUrl'))
+            <p class="note">Top mapped Microsoft Secure Score actions for remediation planning.</p>
+            $(New-AssessmentTable -Rows $secureScoreRows -Columns @('RecommendationTitle','Status','ScoreGap','ActionUrl'))
+            <div class="footer-note">Use the workbook tabs for complete findings, raw inventory, and supporting worksheets.</div>
         </div>
     </div>
 </body>
