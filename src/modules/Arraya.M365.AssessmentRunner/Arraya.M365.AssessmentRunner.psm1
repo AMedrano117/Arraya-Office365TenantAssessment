@@ -3,6 +3,28 @@ Set-StrictMode -Version Latest
 $script:RepoRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $script:LegacyScriptRoot = Join-Path $script:RepoRoot 'src\scripts\migrated\legacy'
 
+function Invoke-LegacyScriptCompat {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ScriptPath,
+        [Parameter(Mandatory = $false)]
+        [hashtable]$Parameters
+    )
+
+    & {
+        # Legacy assessment scripts were authored without strict mode and expect nullable properties.
+        Set-StrictMode -Off
+
+        if ($Parameters) {
+            & $ScriptPath @Parameters
+        }
+        else {
+            & $ScriptPath
+        }
+    }
+}
+
 function Import-AssessmentRunnerDependencies {
     [CmdletBinding()]
     param(
@@ -85,7 +107,7 @@ function Invoke-M365TenantAssessment {
     if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
     if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
 
-    & $scriptPath @invokeParams
+    Invoke-LegacyScriptCompat -ScriptPath $scriptPath -Parameters $invokeParams
 }
 
 function Invoke-ADTenantAssessment {
@@ -93,7 +115,7 @@ function Invoke-ADTenantAssessment {
     param()
 
     $scriptPath = Get-LegacyScriptPath -Name 'Get-ActiveDirectoryReport.ps1'
-    & $scriptPath
+    Invoke-LegacyScriptCompat -ScriptPath $scriptPath
 }
 
 function Invoke-GraphActivityAssessment {
@@ -151,7 +173,7 @@ function Invoke-M365ImprovementPlan {
     if ($PSBoundParameters.ContainsKey('OutputFolder')) { $invokeParams.OutputFolder = $OutputFolder }
     if ($PSBoundParameters.ContainsKey('UseGraphFallback')) { $invokeParams.UseGraphFallback = $UseGraphFallback }
 
-    & $scriptPath @invokeParams
+    Invoke-LegacyScriptCompat -ScriptPath $scriptPath -Parameters $invokeParams
 }
 
 function Invoke-M365AssessmentComparison {
@@ -172,7 +194,7 @@ function Invoke-M365AssessmentComparison {
     }
     if ($PSBoundParameters.ContainsKey('OutputFolder')) { $invokeParams.OutputFolder = $OutputFolder }
 
-    & $scriptPath @invokeParams
+    Invoke-LegacyScriptCompat -ScriptPath $scriptPath -Parameters $invokeParams
 }
 
 Export-ModuleMember -Function @(
