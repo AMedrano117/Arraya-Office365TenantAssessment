@@ -101,8 +101,39 @@ param(
     [ValidateSet('Minimum', 'Combined', 'All', 'Geek')]
     [string]$ReportingMode,
     [Parameter(Mandatory = $false)]
-    [switch]$SkipHtmlReport
+    [ValidateSet('Lean', 'Standard', 'Full')]
+    [string]$OutputProfile = 'Standard',
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipHtmlReport,
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipPdfReport,
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipJsonReport,
+    [Parameter(Mandatory = $false)]
+    [string]$TenantId,
+    [Parameter(Mandatory = $false)]
+    [string]$CertificateThumbprint,
+    [Parameter(Mandatory = $false)]
+    [string]$ClientId
 )
+
+$effectiveSkipHtmlReport = $SkipHtmlReport.IsPresent
+$effectiveSkipPdfReport = $SkipPdfReport.IsPresent
+$effectiveSkipJsonReport = $SkipJsonReport.IsPresent
+
+switch ($OutputProfile) {
+    'Lean' {
+        if (-not $PSBoundParameters.ContainsKey('SkipHtmlReport')) { $effectiveSkipHtmlReport = $true }
+        if (-not $PSBoundParameters.ContainsKey('SkipPdfReport')) { $effectiveSkipPdfReport = $true }
+        if (-not $PSBoundParameters.ContainsKey('SkipJsonReport')) { $effectiveSkipJsonReport = $true }
+    }
+    'Standard' {
+        if (-not $PSBoundParameters.ContainsKey('SkipPdfReport')) { $effectiveSkipPdfReport = $true }
+        if (-not $PSBoundParameters.ContainsKey('SkipJsonReport')) { $effectiveSkipJsonReport = $true }
+    }
+    'Full' {
+    }
+}
 
 $officeModuleLoaderPath = Join-Path -Path $PSScriptRoot -ChildPath 'Import-Office365CustomLocal.ps1'
 if (-not (Test-Path -Path $officeModuleLoaderPath)) {
@@ -120,7 +151,14 @@ $tenantHtmlReportPath = Join-Path -Path $PSScriptRoot -ChildPath 'New-TenantHtml
 if (Test-Path $tenantHtmlReportPath) {
     . $tenantHtmlReportPath
 } else {
-    Write-Warning "Optional HTML helper script not found: $tenantHtmlReportPath. HTML report generation will be skipped."
+    Write-Warning "Optional HTML helper script not found: $tenantHtmlReportPath. Built-in HTML generation remains available, but PDF export helpers will be unavailable."
+}
+
+$tenantQuestionnairePath = Join-Path -Path $PSScriptRoot -ChildPath 'Export-TenantToTenantQuestionnaireMarkdown.ps1'
+if (Test-Path $tenantQuestionnairePath) {
+    . $tenantQuestionnairePath
+} else {
+    Write-Warning "Optional questionnaire helper script not found: $tenantQuestionnairePath. Questionnaire export will be skipped."
 }
 
 
@@ -459,8 +497,9 @@ function Filter-TenantStatsHash {
             @(
                 'InActiveMailboxes','ArchiveMailboxStats', 'NonUserMailboxes',
                 'PrimaryMailboxStats', 'AllMailboxes', 'LitigationHoldMailboxes',
-                'RemoteDomains','UnifiedGroups', 'MailFlowConnectors'
-                'SecuritySecureScore','PublicFolderPerms'
+                'RemoteDomains','UnifiedGroups', 'MailFlowConnectors',
+                'PublicFolderPerms', 'AuthenticationConfig', 'TenantInfo', 'SpamFilteringConfig',
+                'SMTPRelayConfig', 'FederationConfiguration', 'TeamsVoice', 'MfaRegistrationDetails'
             )
         }
         default {
@@ -486,6 +525,134 @@ function Filter-TenantStatsHash {
 
     # Return the filtered hash table
     return $filteredStatsHash
+}
+
+function ConvertTo-ExportFriendlyValue {
+    param(
+        $Value,
+        [int]$Depth = 0
+    )
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    if ($Depth -ge 3) {
+        return '[Nested]'
+    }
+
+    if (
+        $Value -is [string] -or
+        $Value -is [char] -or
+        $Value -is [bool] -or
+        $Value -is [byte] -or
+        $Value -is [sbyte] -or
+        $Value -is [int16] -or
+        $Value -is [uint16] -or
+        $Value -is [int32] -or
+        $Value -is [uint32] -or
+        $Value -is [int64] -or
+        $Value -is [uint64] -or
+        $Value -is [single] -or
+        $Value -is [double] -or
+        $Value -is [decimal]
+    ) {
+        return $Value
+    }
+
+    if ($Value -is [datetime] -or $Value -is [datetimeoffset]) {
+        return ([datetime]$Value).ToString('yyyy-MM-dd HH:mm:ss')
+    }
+
+    if ($Value -is [timespan] -or $Value -is [guid] -or $Value -is [uri] -or $Value -is [version] -or $Value -is [enum]) {
+        return $Value.ToString()
+    }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        $pairs = @()
+        foreach ($key in $Value.Keys) {
+            $pairs += "$key=$(ConvertTo-ExportFriendlyValue -Value $Value[$key] -Depth ($Depth + 1))"
+        }
+        return ($pairs -join '; ')
+    }
+
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        $items = @()
+        foreach ($item in $Value) {
+            if ($null -eq $item) { continue }
+
+            if (
+                $item -is [string] -or
+                $item -is [ValueType]
+            ) {
+                $items += $item.ToString()
+                continue
+            }
+
+            $identityValue = $null
+            foreach ($identityProperty in @('DisplayName', 'Name', 'Title', 'Domain', 'UserPrincipalName', 'Mail', 'AppId', 'Id', 'SkuFriendlyName', 'SkuPartNumber', 'Value')) {
+                $property = $item.PSObject.Properties[$identityProperty]
+                if ($property -and -not [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+                    $identityValue = $property.Value
+                    break
+                }
+            }
+
+            if ($null -ne $identityValue) {
+                $items += $identityValue.ToString()
+            } else {
+                $items += (ConvertTo-ExportFriendlyValue -Value $item -Depth ($Depth + 1))
+            }
+        }
+        return ($items -join '; ')
+    }
+
+    $properties = @(
+        $Value.PSObject.Properties |
+            Where-Object { $_.MemberType -in @('NoteProperty', 'AliasProperty') }
+    )
+
+    if ($properties.Count -gt 0) {
+        $pairs = @()
+        foreach ($property in $properties) {
+            $pairs += "$($property.Name)=$(ConvertTo-ExportFriendlyValue -Value $property.Value -Depth ($Depth + 1))"
+        }
+        return ($pairs -join '; ')
+    }
+
+    return $Value.ToString()
+}
+
+function ConvertTo-ExportFriendlyRecord {
+    param($InputObject)
+
+    if ($null -eq $InputObject) {
+        return [pscustomobject]@{ Value = $null }
+    }
+
+    if ($InputObject -is [hashtable] -or $InputObject -is [System.Collections.Specialized.OrderedDictionary]) {
+        $result = [ordered]@{}
+        foreach ($key in $InputObject.Keys) {
+            $result[[string]$key] = ConvertTo-ExportFriendlyValue -Value $InputObject[$key]
+        }
+        return [pscustomobject]$result
+    }
+
+    $properties = @(
+        $InputObject.PSObject.Properties |
+            Where-Object { $_.MemberType -in @('NoteProperty', 'AliasProperty', 'Property') }
+    )
+
+    if ($properties.Count -eq 0) {
+        return [pscustomobject]@{ Value = ConvertTo-ExportFriendlyValue -Value $InputObject }
+    }
+
+    $result = [ordered]@{}
+    foreach ($property in $properties) {
+        $result[$property.Name] = ConvertTo-ExportFriendlyValue -Value $property.Value
+    }
+
+    return [pscustomobject]$result
 }
 
 ## Export Hash Table to Excel
@@ -515,11 +682,23 @@ function Export-HashTableToExcel {
             return $true
         }
     }
+
+    $optionalEmptySheets = @(
+        'AuthenticationSSOApplications',
+        'SpamFilteringSummary',
+        'SMTPRelaySummary',
+        'FederationSummary',
+        'TeamsVoiceSummary',
+        'MfaRegistrationSummary'
+    )
     
     # === Sheet ordering ===
     $desiredOrder = @(
+        # Assessment Outputs
+        "BestPractices", "BestPracticeFindings", "MigrationReadiness", "SecureScoreActions",
+
         # Licensing & Tenant Info
-        "LicenseSKUs", "Domains", "AuthenticationConfig", "Admins",
+        "TenantInfoSummary", "LicenseSKUs", "Domains", "AuthenticationConfigSummary", "AuthenticationMethods", "AuthenticationSSOApplications", "AuthenticationConfig", "Admins",
 
         # Users
         "Users", "UserFullDetails", "DeviceDetails",
@@ -537,14 +716,14 @@ function Export-HashTableToExcel {
         "MailFlowRules", "MailFlowConnectors", "RemoteDomains", "SMTPRelayConfig",
 
         # Security & Compliance
-        "SecuritySecureScore", "ConditionalAccessPolicies", "SpamFilteringConfig",
+        "SecuritySecureScore", "ConditionalAccessPolicies", "SpamFilteringSummary", "SMTPRelaySummary", "FederationSummary", "TeamsVoiceSummary", "SpamFilteringConfig",
 
         # Cloud Services
         "OneDrive",
         "SharePoint",
 
         # Hybrid / Infra
-        "HybridConfiguration"
+        "HybridConfiguration", "TenantInfo"
     )
 
     $orderedTables = @()
@@ -572,6 +751,7 @@ function Export-HashTableToExcel {
             }
 
             if ($exportData.Count -gt 0) {
+                $exportData = @($exportData | ForEach-Object { ConvertTo-ExportFriendlyRecord -InputObject $_ })
                 $attempt = 0
                 $maxAttempts = 3
                 $saved = $false
@@ -595,7 +775,8 @@ function Export-HashTableToExcel {
                     }
                 }
             } else {
-                Write-Log -Type WARNING -Message "No data found for $($table) to export to Excel" -ExportFileLocation $ExportDetails
+                $logType = if ($optionalEmptySheets -contains $table) { 'INFO' } else { 'WARNING' }
+                Write-Log -Type $logType -Message "No data found for $($table) to export to Excel" -ExportFileLocation $ExportDetails
             }
         }
         catch {
@@ -1949,40 +2130,283 @@ function Get-SharePointAndOneDriveSites {
     Write-Host "Getting all $($ServiceName) SharePoint Online and OneDrive Sites with $($detailLevel) ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type Info -Message "[Get-SharePointAndOneDriveSites] START: Getting all SharePoint Online and OneDrive $($detailLevel) details ($($ServiceName))" -ExportFileLocation $ExportDetails
 
-    <# Option 1: Use Microsoft Graph PowerShell SDK - Doesn't work
-    Known issue where Get-MgSite doesn't return all SharePoint sites.
+    function Get-GraphCsvReportLookup {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Uri,
+            [Parameter(Mandatory = $true)]
+            [string]$LookupName
+        )
+
+        $tempFilePath = Join-Path $env:TEMP ("{0}-{1}.csv" -f $LookupName, [guid]::NewGuid().ToString('N'))
+        try {
+            Invoke-MgGraphRequest -Method GET -Uri $Uri -OutputFilePath $tempFilePath -ErrorAction Stop | Out-Null
+            $rows = @(Import-Csv -Path $tempFilePath -ErrorAction Stop)
+            $lookup = @{}
+            foreach ($row in $rows) {
+                $siteId = $row.'Site Id'
+                if (-not [string]::IsNullOrWhiteSpace($siteId) -and -not $lookup.ContainsKey($siteId)) {
+                    $lookup[$siteId] = $row
+                }
+            }
+            return $lookup
+        } catch {
+            Write-Log -Type WARNING -Message "[Get-SharePointAndOneDriveSites] Unable to download $LookupName report: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+            return @{}
+        } finally {
+            if (Test-Path -Path $tempFilePath) {
+                Remove-Item -Path $tempFilePath -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    function Get-GraphSiteReportId {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$CompositeSiteId
+        )
+
+        $siteIdParts = $CompositeSiteId -split ','
+        if ($siteIdParts.Count -ge 2) {
+            return $siteIdParts[1]
+        }
+
+        return $CompositeSiteId
+    }
+
+    function ConvertTo-OneDriveOwnerKey {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $false)]
+            [string]$Owner,
+            [Parameter(Mandatory = $false)]
+            [string]$Url
+        )
+
+        if (-not [string]::IsNullOrWhiteSpace($Owner)) {
+            return $Owner.ToLowerInvariant()
+        }
+
+        if ([string]::IsNullOrWhiteSpace($Url)) {
+            return $null
+        }
+
+        $pathSegment = ($Url.TrimEnd('/') -split '/')[-1]
+        if ([string]::IsNullOrWhiteSpace($pathSegment)) {
+            return $null
+        }
+
+        $firstSeparatorIndex = $pathSegment.IndexOf('_')
+        if ($firstSeparatorIndex -lt 1) {
+            return $pathSegment.ToLowerInvariant()
+        }
+
+        $localPart = $pathSegment.Substring(0, $firstSeparatorIndex)
+        $domainPart = $pathSegment.Substring($firstSeparatorIndex + 1) -replace '_', '.'
+        return ("{0}@{1}" -f $localPart, $domainPart).ToLowerInvariant()
+    }
+
+    function ConvertTo-NormalizedSiteData {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [object]$Site,
+            [Parameter(Mandatory = $true)]
+            [bool]$IsOneDrive,
+            [Parameter(Mandatory = $false)]
+            [ValidateSet('SPO', 'MGGraph', 'API')]
+            [string]$Source = 'MGGraph',
+            [Parameter(Mandatory = $false)]
+            [psobject]$UsageReport
+        )
+
+        $storageUsageCurrent = 0
+        $owner = $null
+        $groupId = $null
+        $isTeamsChannelConnected = $false
+        $isTeamsConnected = $false
+        $title = $null
+        $url = $null
+        $template = $null
+        $lastContentModifiedDate = $null
+        $status = $null
+        $archiveStatus = $null
+        $lockState = $null
+        $storageQuota = $null
+
+        switch ($Source) {
+            'SPO' {
+                $storageUsageCurrent = [int]($Site.StorageUsageCurrent ?? 0)
+                $owner = $Site.Owner
+                $groupId = $Site.GroupId
+                $isTeamsChannelConnected = ($Site.IsTeamsChannelConnected -eq $true)
+                $isTeamsConnected = ($Site.IsTeamsConnected -eq $true)
+                $title = $Site.Title
+                $url = $Site.Url
+                $template = $Site.Template
+                $lastContentModifiedDate = $Site.LastContentModifiedDate
+                $status = $Site.Status
+                $archiveStatus = $Site.ArchiveStatus
+                $lockState = $Site.LockState
+                $storageQuota = $Site.StorageQuota
+            }
+            'API' {
+                $additionalProperties = $Site.additionalProperties
+                $storageUsageCurrent = [int]($additionalProperties.storageUsage ?? 0)
+                $owner = $additionalProperties.owner
+                $groupId = $Site.groupId
+                $isTeamsChannelConnected = ($additionalProperties.isTeamsChannelConnected -eq $true)
+                $isTeamsConnected = ($additionalProperties.isTeamsConnected -eq $true)
+                $title = $Site.displayName
+                $url = $Site.webUrl
+                $template = $additionalProperties.template
+                $lastContentModifiedDate = $Site.lastModifiedDateTime
+                $status = $additionalProperties.status
+                $archiveStatus = $additionalProperties.archiveStatus
+                $lockState = $additionalProperties.lockState
+                $storageQuota = $additionalProperties.storageQuota
+            }
+            default {
+                $storageUsageCurrent = [int]($Site.Usage.Storage ?? 0)
+                if (-not $storageUsageCurrent -and $Site.Drive -and $Site.Drive.Quota) {
+                    $storageUsageCurrent = [int]($Site.Drive.Quota.Used ?? 0)
+                }
+
+                $owner = $Site.Owner.UserPrincipalName
+                if (-not $owner -and $Site.CreatedByUser) {
+                    $owner = $Site.CreatedByUser.UserPrincipalName
+                }
+                if (-not $owner -and $Site.CreatedBy -and $Site.CreatedBy.User) {
+                    $owner = $Site.CreatedBy.User.UserPrincipalName
+                }
+
+                $groupId = $Site.GroupId
+                if (-not $groupId -and $Site.SharepointIds -and $Site.SharepointIds.SiteId) {
+                    $groupId = $null
+                }
+
+                $isTeamsChannelConnected = ($Site.AdditionalProperties.IsTeamsChannelConnected -eq $true)
+                $isTeamsConnected = ($Site.AdditionalProperties.IsTeamsConnected -eq $true) -or [bool]$groupId
+                $title = if ($Site.DisplayName) { $Site.DisplayName } else { $Site.Name }
+                $url = $Site.WebUrl
+                $template = $Site.AdditionalProperties.Template
+                $lastContentModifiedDate = $Site.LastModifiedDateTime
+                $status = $Site.AdditionalProperties.Status
+                $archiveStatus = $Site.AdditionalProperties.ArchiveStatus
+                $lockState = $Site.AdditionalProperties.LockState
+                $storageQuota = $Site.AdditionalProperties.StorageQuota
+            }
+        }
+
+        if ($UsageReport) {
+            if ($UsageReport.'Storage Used (Byte)') {
+                $storageUsageCurrent = [int64]$UsageReport.'Storage Used (Byte)'
+            }
+            if ($UsageReport.'Storage Allocated (Byte)') {
+                $storageQuota = [int64]$UsageReport.'Storage Allocated (Byte)'
+            }
+            if ($UsageReport.'Owner Principal Name') {
+                $owner = $UsageReport.'Owner Principal Name'
+            }
+            if (-not $lastContentModifiedDate -and $UsageReport.'Last Activity Date') {
+                $lastContentModifiedDate = $UsageReport.'Last Activity Date'
+            }
+            if (-not $template -and $UsageReport.'Root Web Template') {
+                $template = switch ($UsageReport.'Root Web Template') {
+                    'Group' { 'GROUP#0' }
+                    'TeamChannel' { 'TEAMCHANNEL#0' }
+                    default { $UsageReport.'Root Web Template' }
+                }
+            }
+        }
+
+        if (-not $template) {
+            if ($IsOneDrive) {
+                $template = 'SPSPERS#10'
+            }
+            elseif ($isTeamsChannelConnected) {
+                $template = 'TEAMCHANNEL#0'
+            }
+            elseif ($groupId -and $groupId -ne '00000000-0000-0000-0000-000000000000') {
+                $template = 'GROUP#0'
+            }
+            else {
+                $template = 'STS#3'
+            }
+        }
+
+        if (-not $url) {
+            $url = if ($Site.WebUrl) { $Site.WebUrl } else { $Site.webUrl }
+        }
+
+        if (-not $title) {
+            $title = if ($Site.DisplayName) { $Site.DisplayName } else { $url }
+        }
+
+        if (-not $owner -and $IsOneDrive -and $url) {
+            $owner = (($url -split '/')[-1] -replace '_', '@')
+        }
+
+        return [PSCustomObject]@{
+            Template                  = $template
+            IsHubSite                 = ($Site.IsHubSite -eq $true)
+            Title                     = $title
+            LastContentModifiedDate   = $lastContentModifiedDate
+            Status                    = $status
+            ArchiveStatus             = $archiveStatus
+            StorageUsageCurrent       = $storageUsageCurrent
+            LockState                 = $lockState
+            Url                       = $url
+            WebUrl                    = $url
+            Owner                     = $owner
+            StorageQuota              = $storageQuota
+            GroupId                   = $groupId
+            IsTeamsConnected          = $isTeamsConnected
+            IsTeamsChannelConnected   = $isTeamsChannelConnected
+            StorageUsedGB             = [math]::Round(($storageUsageCurrent / 1024), 3)
+            IsOffice365GroupsConnected = ($groupId -and $groupId -ne '00000000-0000-0000-0000-000000000000')
+            IsOneDrive                = $IsOneDrive
+        }
+    }
+
+    $sharePointUsageBySiteId = @{}
+    $oneDriveUsageBySiteId = @{}
+    if ($ServiceName -eq 'MGGraph') {
+        $sharePointUsageBySiteId = Get-GraphCsvReportLookup -Uri "https://graph.microsoft.com/v1.0/reports/getSharePointSiteUsageDetail(period='D7')" -LookupName 'SharePointSiteUsageDetail'
+        $oneDriveUsageBySiteId = Get-GraphCsvReportLookup -Uri "https://graph.microsoft.com/v1.0/reports/getOneDriveUsageAccountDetail(period='D7')" -LookupName 'OneDriveUsageAccountDetail'
+    }
+
+    # Option 1: Use Microsoft Graph PowerShell SDK
     function Get-SharePointAndOneDriveSitesFromGraphSdk {
         try {
             Write-Verbose "Fetching SharePoint and OneDrive sites using Microsoft Graph SDK"
-            $sitesPage = Get-MgSite -All | ForEach-Object {
-                # Determine if the site is a OneDrive or a standard SharePoint site
-                $isOneDrive = ($_.WebUrl -like "*-my.sharepoint.com*")
+            $sites = @(Get-MgSite -All -ErrorAction Stop)
+            $totalCount = $sites.Count
+            $progressCounter = 0
+            foreach ($site in $sites) {
+                $progressCounter++
+                $isOneDrive = ($site.WebUrl -like "*-my.sharepoint.com*")
+                $reportSiteId = Get-GraphSiteReportId -CompositeSiteId $site.Id
+                $usageReport = if ($isOneDrive) { $oneDriveUsageBySiteId[$reportSiteId] } else { $sharePointUsageBySiteId[$reportSiteId] }
+                Write-ProgressHelper -Total $totalCount -Index $progressCounter -Activity "Gather Additional Site Details" -Operation "Gathering Site Details for $($site.DisplayName)"
+                $siteData = ConvertTo-NormalizedSiteData -Site $site -IsOneDrive:$isOneDrive -Source MGGraph -UsageReport $usageReport
 
-                # Initialize site data hashtable
-                $siteData = @{
-                    DisplayName             = $_.DisplayName
-                    WebUrl                  = $_.WebUrl
-                    StorageUsageCurrent     = $_.Usage.Storage -as [int]
-                    Owner                   = $_.Owner.UserPrincipalName
-                    IsTeamsChannelConnected = ($_.AdditionalProperties.'IsTeamsChannelConnected' -eq $true)
-                    GroupId                 = $_.GroupId
-                }
-
-                # Add custom attributes
-                $siteData = Add-SiteAttributes -siteData $siteData -site $_ -isOneDrive $isOneDrive
-
-                # Store data in appropriate hashtable
                 if ($isOneDrive) {
-                    $global:tenantStatsHash['OneDrive'][$_.WebUrl] = $siteData
+                    $oneDriveKey = ConvertTo-OneDriveOwnerKey -Owner $siteData.Owner -Url $siteData.Url
+                    if ($oneDriveKey) {
+                        $global:tenantStatsHash['OneDrive'][$oneDriveKey] = $siteData
+                    }
                 } else {
-                    $global:tenantStatsHash['SharePoint'][$_.WebUrl] = $siteData
+                    $global:tenantStatsHash['SharePoint'][$siteData.Url] = $siteData
                 }
             }
+            Write-ProgressHelper -Total $totalCount -Activity "Gather Additional Site Details" -Completed
         } catch {
             Write-Error "Error fetching SharePoint and OneDrive sites with Graph SDK: $($_.Exception.Message)"
         }
     }
-    #>
 
     # Option 2: Use SharePoint Online PowerShell Module
     function Get-SharePointAndOneDriveSitesFromSPO {
@@ -2009,21 +2433,16 @@ function Get-SharePointAndOneDriveSites {
                 Write-ProgressHelper -Total $totalCount -Activity "Gather Additional Site Details" -Operation "Gathering Site Details for $($site.Title)"
                 # Determine if the site is a OneDrive or a standard SharePoint site
                 $isOneDrive = ($site.Url -like "*-my.sharepoint.com*")
-
-                $siteData = [PSCustomObject]@{}
-                foreach ($property in $site.PSObject.Properties) {
-                    $siteData | Add-Member -MemberType NoteProperty -Name $property.Name -Value $property.Value
-                }
-
-                # Add custom attributes
-                $siteData | Add-Member -MemberType NoteProperty -Name "StorageUsedGB" -Value ([math]::Round(($site.StorageUsageCurrent / 1024), 3))
-                $siteData | Add-Member -MemberType NoteProperty -Name "IsOffice365GroupsConnected" -Value ($site.GroupId -and $site.GroupId -ne '00000000-0000-0000-0000-000000000000')
+                $siteData = ConvertTo-NormalizedSiteData -Site $site -IsOneDrive:$isOneDrive -Source SPO
 
                 # Store data in appropriate hashtable
                 if ($isOneDrive) {
-                    $global:tenantStatsHash['OneDrive'][$site.Owner] = $siteData
+                    $oneDriveKey = ConvertTo-OneDriveOwnerKey -Owner $siteData.Owner -Url $siteData.Url
+                    if ($oneDriveKey) {
+                        $global:tenantStatsHash['OneDrive'][$oneDriveKey] = $siteData
+                    }
                 } else {
-                    $global:tenantStatsHash['SharePoint'][$site.Url] = $siteData
+                    $global:tenantStatsHash['SharePoint'][$siteData.Url] = $siteData
                 }
             }
             Write-Progress -Activity "Gather Additional Site Details" -Completed
@@ -2058,25 +2477,16 @@ function Get-SharePointAndOneDriveSites {
             foreach ($site in $sites) {
                 # Determine if the site is a OneDrive or a standard SharePoint site
                 $isOneDrive = ($site.webUrl -like "*-my.sharepoint.com*")
-
-                # Initialize site data hashtable
-                $siteData = @{
-                    DisplayName             = $site.displayName
-                    WebUrl                  = $site.webUrl
-                    StorageUsageCurrent     = $site.additionalProperties.'storageUsage' -as [int]
-                    Owner                   = $site.additionalProperties.'owner'
-                    IsTeamsChannelConnected = ($site.additionalProperties.'isTeamsChannelConnected' -eq $true)
-                    GroupId                 = $site.groupId
-                }
-
-                # Add custom attributes
-                $siteData = Add-SiteAttributes -siteData $siteData -site $site -isOneDrive $isOneDrive
+                $siteData = ConvertTo-NormalizedSiteData -Site $site -IsOneDrive:$isOneDrive -Source API
 
                 # Store data in appropriate hashtable
                 if ($isOneDrive) {
-                    $global:tenantStatsHash['OneDrive'][$site.webUrl] = $siteData
+                    $oneDriveKey = ConvertTo-OneDriveOwnerKey -Owner $siteData.Owner -Url $siteData.Url
+                    if ($oneDriveKey) {
+                        $global:tenantStatsHash['OneDrive'][$oneDriveKey] = $siteData
+                    }
                 } else {
-                    $global:tenantStatsHash['SharePoint'][$site.webUrl] = $siteData
+                    $global:tenantStatsHash['SharePoint'][$siteData.Url] = $siteData
                 }
             }
         } catch {
@@ -2238,6 +2648,12 @@ function Get-TeamsVoiceDetails {
     Write-Host "Gathering Teams Voice details ..." -ForegroundColor Cyan -NoNewline
     Write-Log -Type INFO -Message "[Get-TeamsVoiceDetails] START: Gathering Teams Voice details" -ExportFileLocation $ExportDetails
 
+    $teamsConnected = $false
+    $scriptConnectionResult = Get-Variable -Name connectionResult -Scope Script -ErrorAction SilentlyContinue
+    if ($scriptConnectionResult -and $scriptConnectionResult.Value) {
+        $teamsConnected = [bool]$scriptConnectionResult.Value.Teams
+    }
+
     $pstnUsage = @()
     $callingPolicies = @()
     $phoneAssignments = @()
@@ -2249,6 +2665,51 @@ function Get-TeamsVoiceDetails {
         CallingPolicyCount = 0
         PhoneNumberCount = 0
         VoiceUserCount = 0
+        DataSource = 'TeamsPowerShell'
+        Notes = $null
+    }
+
+    if (-not $teamsConnected) {
+        $voicePlans = @('MCOEV','MCOPSTN1','MCOPSTN2','MCOEV_VIRTUALUSER','MCOEV_DOD','MCOPSTNC')
+        $users = @()
+        if ($global:tenantStatsHash.ContainsKey('Users')) {
+            $users = @($global:tenantStatsHash['Users'].Values)
+        }
+
+        $voiceLicensedUsers = @(
+            $users | Where-Object {
+                $assignedLicenses = @()
+                $enabledServicePlans = @()
+                if ($_.PSObject.Properties['AssignedLicenses'] -and $_.AssignedLicenses) {
+                    $assignedLicenses = @($_.AssignedLicenses -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+                }
+                if ($_.PSObject.Properties['EnabledServicePlans'] -and $_.EnabledServicePlans) {
+                    $enabledServicePlans = @($_.EnabledServicePlans -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+                }
+
+                (@($assignedLicenses + $enabledServicePlans) | Where-Object { $voicePlans -contains $_ }).Count -gt 0
+            }
+        )
+
+        $summary.PstnTotalMinutes = 'Unavailable'
+        $summary.PstnTotalCalls = 'Unavailable'
+        $summary.CallingPolicyCount = 'Unavailable'
+        $summary.PhoneNumberCount = 'Unavailable'
+        $summary.VoiceUserCount = $voiceLicensedUsers.Count
+        $summary.DataSource = 'GraphLicenseInference'
+        $summary.Notes = 'Teams PowerShell is not connected. Voice-enabled users are inferred from assigned voice licenses and enabled service plans.'
+
+        $global:tenantStatsHash["TeamsVoice"]["Summary"] = $summary
+        $global:tenantStatsHash["TeamsVoice"]["PstnUsage"] = $pstnUsage
+        $global:tenantStatsHash["TeamsVoice"]["CallingPolicies"] = $callingPolicies
+        $global:tenantStatsHash["TeamsVoice"]["PhoneNumbers"] = $phoneAssignments
+        $global:tenantStatsHash["TeamsVoice"]["VoiceUsers"] = $voiceUsers
+
+        $elapsed = ((Get-Date) - $start).ToString('hh\:mm\:ss')
+        Write-Host " Skipped in $elapsed" -ForegroundColor Yellow
+        Write-Log -Type INFO -Message "[Get-TeamsVoiceDetails] Skipped because Teams PowerShell is not connected in the current session. Inferred $($voiceLicensedUsers.Count) voice-licensed users from Graph user licensing." -ExportFileLocation $ExportDetails
+        Write-Log -Type INFO -Message "[Get-TeamsVoiceDetails] COMPLETED in $elapsed" -ExportFileLocation $ExportDetails
+        return
     }
 
     try {
@@ -2597,6 +3058,31 @@ function Connect-Office365 {
     )
 
     begin {
+        function Resolve-AuthCertificate {
+            [CmdletBinding()]
+            param(
+                [Parameter(Mandatory = $true)]
+                [string]$Thumbprint
+            )
+
+            $normalizedThumbprint = $Thumbprint.Replace(' ', '').ToUpperInvariant()
+            foreach ($storePath in @('Cert:\CurrentUser\My', 'Cert:\LocalMachine\My')) {
+                $certificate = Get-ChildItem -Path $storePath -ErrorAction SilentlyContinue |
+                    Where-Object {
+                        $_.Thumbprint -eq $normalizedThumbprint -and
+                        $_.HasPrivateKey
+                    } |
+                    Sort-Object -Property NotAfter -Descending |
+                    Select-Object -First 1
+
+                if ($certificate) {
+                    return $certificate
+                }
+            }
+
+            throw "Certificate thumbprint '$Thumbprint' was not found in CurrentUser\\My or LocalMachine\\My with an accessible private key."
+        }
+
         $result = [ordered]@{
             Graph              = $false
             TenantName         = $null
@@ -2642,6 +3128,7 @@ function Connect-Office365 {
         }
 
         $usingApplicationAuth = $false
+        $authCertificate = $null
         $AuthenticationType = if ($CertificateThumbprint) { 
             'Certificate' 
         } elseif ($ClientSecretCredential) { 
@@ -2654,7 +3141,10 @@ function Connect-Office365 {
         if ($AuthenticationType -eq 'ClientSecret' -or $AuthenticationType -eq 'Certificate') {
             $usingApplicationAuth = $true
 
-            if ($AuthenticationType -eq 'ClientSecret') {
+            if ($AuthenticationType -eq 'Certificate') {
+                $authCertificate = Resolve-AuthCertificate -Thumbprint $CertificateThumbprint
+            }
+            elseif ($AuthenticationType -eq 'ClientSecret') {
                 # Ensure PSCredential is present, prompt if absent/invalid
                 if (
                     ($null -eq $ClientSecretCredential) -or
@@ -2840,12 +3330,65 @@ function Connect-Office365 {
             #endregion Get Tenant Name from Graph if needed
         }
 
+        # ===== CONNECT TO EXCHANGE ONLINE BEFORE SPO CERT AUTH =====
+        if ($selectedServices -contains "ExchangeOnline" -and -not $result.ExchangeOnline) {
+            try {
+                $existingEXOOrg = $null
+                try {
+                    Write-Verbose "Checking if already connected to Exchange Online..."
+                    $existingEXOOrg = (Get-OrganizationConfig -ErrorAction Stop).Name
+                } catch {}
+
+                if ($existingEXOOrg -and -not $Force) {
+                    Write-Host "✓ Exchange Online (already connected)" -ForegroundColor Green
+                    Write-Verbose "Existing Exchange Online session detected for '$existingEXOOrg', skipping reconnect."
+                    $result.ExchangeOnline = $true
+                } else {
+                    Write-Host "Connecting to Exchange Online..." -ForegroundColor Cyan
+                    if ($authenticationType -eq 'Certificate') {
+                        Write-Verbose "Using certificate-based authentication for Exchange Online."
+                        if (-not $ClientId) {
+                            Write-Host "✗ Exchange Online: ExchangeOnline certificate auth requires -ClientId (AppId)." -ForegroundColor Red
+                            return
+                        }
+                        if (-not $result.InitialDomain) {
+                            Write-Host "✗ Exchange Online: ExchangeOnline certificate auth requires Organization (initial domain)." -ForegroundColor Red
+                            return
+                        }
+                        Write-Verbose "Running Connect-ExchangeOnline -AppId $ClientId -Organization $($result.InitialDomain) -CertificateThumbprint $CertificateThumbprint"
+                        Connect-ExchangeOnline -AppId $ClientId -Organization $result.InitialDomain -CertificateThumbprint $CertificateThumbprint -ShowBanner:$false -ErrorAction Stop | Out-Null
+                    }
+                    elseif ($authenticationType -eq 'ClientSecret') {
+                        Write-Warning "Exchange Online does not support ClientSecretCredential (App/Secret) authentication. Falling back to delegated authentication."
+                        Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop | Out-Null
+                    }
+                    else {
+                        Write-Verbose "Using delegated authentication for Exchange Online."
+                        Write-Verbose "Running Connect-ExchangeOnline with ShowBanner disabled"
+                        Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop | Out-Null
+                    }
+                    $result.ExchangeOnline = $true
+                    Write-Host "✓ Exchange Online connected" -ForegroundColor Green
+                }
+            }
+            catch {
+                Write-Host "✗ Exchange Online: $($_.Exception.Message)" -ForegroundColor Red
+                return
+            }
+        }
+
         # ===== CONNECT TO SHAREPOINT ONLINE (ADMIN) =====
         if ($selectedServices -contains "SharePointOnline") {
             # Graph is required for tenant name/initial domain for SharePointOnline
             if (-not $TenantName) {
                 Throw "Unable to proceed: TenantName could not be determined (Graph connection required)."
             }
+            if ($AuthenticationType -eq 'Certificate' -and $PSVersionTable.PSVersion.Major -ge 7) {
+                Write-Warning "Skipping SharePoint Online PowerShell certificate connection in PowerShell 7. Microsoft Graph will be used for site discovery."
+                $result.SharePointOnline = $false
+                $result.SharePointAdmin = $null
+            }
+            else {
             try {
                 Write-Verbose "Checking for SharePoint module 'Microsoft.Online.SharePoint.PowerShell'..."
                 if (-not (Get-Module -ListAvailable -Name 'Microsoft.Online.SharePoint.PowerShell')) {
@@ -2854,7 +3397,7 @@ function Connect-Office365 {
                 }
                 if (-not (Get-Module -Name 'Microsoft.Online.SharePoint.PowerShell')) {
                     Write-Host "Importing SharePoint module..." -ForegroundColor Cyan
-                    if ($PSVersionTable.PSVersion.Major -ge 7) {
+                    if ($PSVersionTable.PSVersion.Major -ge 7 -and $AuthenticationType -ne 'Certificate') {
                         Write-Verbose "Importing SharePoint module using Windows PowerShell context (for PS7+ compatibility)..."
                         Import-Module 'Microsoft.Online.SharePoint.PowerShell' -UseWindowsPowerShell -ErrorAction Stop -WarningAction SilentlyContinue
                     } else {
@@ -2894,8 +3437,8 @@ function Connect-Office365 {
                                     return
                                 }
                                 Write-Host "Connecting to SharePoint Online (certificate)..." -ForegroundColor Cyan
-                                Write-Verbose "Running Connect-SPOService with -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint"
-                                Connect-SPOService -Url $spoAdminUrl -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -ErrorAction Stop
+                                Write-Verbose "Running Connect-SPOService with -ClientId $ClientId -TenantId $TenantId -Certificate <resolved certificate>"
+                                Connect-SPOService -Url $spoAdminUrl -ClientId $ClientId -TenantId $TenantId -Certificate $authCertificate -ErrorAction Stop
                                 $result.SharePointOnline = $true
                             }
                             'ClientSecret' {
@@ -2914,18 +3457,29 @@ function Connect-Office365 {
                         Write-Host "✓ SharePoint Online connected" -ForegroundColor Green
                     } catch {
                         Write-Host "✗ SharePoint Online: $($_.Exception.Message)" -ForegroundColor Red
-                        return
+                        if ($AuthenticationType -eq 'Certificate' -and $result.Graph) {
+                            Write-Warning "SharePoint Online certificate connection failed. Continuing with Microsoft Graph for site discovery."
+                            $result.SharePointOnline = $false
+                        } else {
+                            return
+                        }
                     }
                 }
             }
             catch { 
                 Write-Host "✗ SharePoint Online: $($_.Exception.Message)" -ForegroundColor Red
-                return 
+                if ($AuthenticationType -eq 'Certificate' -and $result.Graph) {
+                    Write-Warning "SharePoint Online certificate connection failed. Continuing with Microsoft Graph for site discovery."
+                    $result.SharePointOnline = $false
+                } else {
+                    return 
+                }
+            }
             }
         }
 
         # ===== CONNECT TO EXCHANGE ONLINE =====
-        if ($selectedServices -contains "ExchangeOnline") {
+        if ($selectedServices -contains "ExchangeOnline" -and -not $result.ExchangeOnline) {
             try {
                 $existingEXOOrg = $null
                 try {
@@ -2973,12 +3527,17 @@ function Connect-Office365 {
 
         # ===== CONNECT TO TEAMS =====
         if ($selectedServices -contains "Teams") {
-            if (-not (Get-Module -ListAvailable -Name 'MicrosoftTeams')) {
-                Write-Host "✗ Microsoft Teams: The module 'MicrosoftTeams' is not installed. Please install it before proceeding." -ForegroundColor Red
-                return
-            } else {
+            if ($AuthenticationType -eq 'Certificate' -and $PSVersionTable.PSVersion.Major -ge 7) {
+                Write-Warning "Skipping Microsoft Teams PowerShell certificate connection in PowerShell 7. Teams PowerShell data will be unavailable."
+                $result.Teams = $false
+            }
+            else {
+            try {
+                if (-not (Get-Module -ListAvailable -Name 'MicrosoftTeams')) {
+                    throw "The module 'MicrosoftTeams' is not installed. Please install it before proceeding."
+                }
                 if (-not (Get-Module -Name 'MicrosoftTeams')) {
-                    if ($PSVersionTable.PSVersion.Major -ge 7) {
+                    if ($PSVersionTable.PSVersion.Major -ge 7 -and $AuthenticationType -ne 'Certificate') {
                         Write-Verbose "Importing MicrosoftTeams module using Windows PowerShell context (for PS7+ compatibility)..."
                         Import-Module 'MicrosoftTeams' -UseWindowsPowerShell -ErrorAction Stop
                     } else {
@@ -2989,32 +3548,54 @@ function Connect-Office365 {
                 } else {
                     Write-Verbose "MicrosoftTeams module already imported."
                 }
-            }
-            try {
-                $existingTeamsOrg = $null
-                try {
-                    Write-Verbose "Checking if already connected to Microsoft Teams..."
-                    $existingTeamsOrg = (Get-CsTenant -ErrorAction Stop).DisplayName
-                } catch {}
-                
-                if ($existingTeamsOrg -and -not $Force) {
-                    Write-Host "✓ Microsoft Teams (already connected)" -ForegroundColor Green
-                    Write-Verbose "Existing Microsoft Teams session detected for '$existingTeamsOrg', skipping reconnect."
-                    $result.Teams = $true
-                } else {
-                    Write-Verbose "Connecting to Microsoft Teams (delegate authentication only)..."
-                    Write-Host "Connecting to Microsoft Teams..." -ForegroundColor Cyan
-                    if ($CertificateThumbprint -or $usingApplicationAuth) {
-                        Write-Warning "Microsoft Teams connection currently supports delegate authentication only. Attempting connection..."
+
+                if ($AuthenticationType -eq 'Certificate') {
+                    if (-not $TenantId) {
+                        Write-Host "✗ Microsoft Teams: Teams certificate auth requires -TenantId." -ForegroundColor Red
+                        return
                     }
-                    Connect-MicrosoftTeams -ErrorAction Stop | Out-Null
+                    if (-not $ClientId) {
+                        Write-Host "✗ Microsoft Teams: Teams certificate auth requires -ClientId (ApplicationId)." -ForegroundColor Red
+                        return
+                    }
+
+                    Write-Verbose "Connecting to Microsoft Teams with certificate authentication..."
+                    Write-Host "Connecting to Microsoft Teams (certificate)..." -ForegroundColor Cyan
+                    Connect-MicrosoftTeams -TenantId $TenantId -ApplicationId $ClientId -Certificate $authCertificate -ErrorAction Stop | Out-Null
                     $result.Teams = $true
                     Write-Host "✓ Microsoft Teams connected" -ForegroundColor Green
+                } else {
+                    $existingTeamsOrg = $null
+                    try {
+                        Write-Verbose "Checking if already connected to Microsoft Teams..."
+                        $existingTeamsOrg = (Get-CsTenant -ErrorAction Stop).DisplayName
+                    } catch {}
+                    
+                    if ($existingTeamsOrg -and -not $Force) {
+                        Write-Host "✓ Microsoft Teams (already connected)" -ForegroundColor Green
+                        Write-Verbose "Existing Microsoft Teams session detected for '$existingTeamsOrg', skipping reconnect."
+                        $result.Teams = $true
+                    } else {
+                        Write-Verbose "Connecting to Microsoft Teams (delegate authentication only)..."
+                        Write-Host "Connecting to Microsoft Teams..." -ForegroundColor Cyan
+                        if ($CertificateThumbprint -or $usingApplicationAuth) {
+                            Write-Warning "Microsoft Teams connection currently supports delegate authentication only. Attempting connection..."
+                        }
+                        Connect-MicrosoftTeams -ErrorAction Stop | Out-Null
+                        $result.Teams = $true
+                        Write-Host "✓ Microsoft Teams connected" -ForegroundColor Green
+                    }
                 }
             }
             catch { 
                 Write-Host "✗ Microsoft Teams: $($_.Exception.Message)" -ForegroundColor Red
-                return 
+                if ($AuthenticationType -eq 'Certificate') {
+                    Write-Warning "Microsoft Teams certificate connection failed. Continuing without Teams PowerShell data."
+                    $result.Teams = $false
+                } else {
+                    return 
+                }
+            }
             }
         }
     }
@@ -3024,6 +3605,21 @@ function Connect-Office365 {
         $expected = @{}
         foreach ($svc in @('Graph','SharePointOnline','ExchangeOnline','Teams')) {
             if ($selectedServices -contains $svc) { $expected[$svc] = $true }
+        }
+        if (
+            $AuthenticationType -eq 'Certificate' -and
+            $selectedServices -contains 'SharePointOnline' -and
+            -not $result.SharePointOnline -and
+            $result.Graph
+        ) {
+            $expected.Remove('SharePointOnline')
+        }
+        if (
+            $AuthenticationType -eq 'Certificate' -and
+            $selectedServices -contains 'Teams' -and
+            -not $result.Teams
+        ) {
+            $expected.Remove('Teams')
         }
         $allGood = $true
         foreach ($svc in $expected.Keys) {
@@ -3052,7 +3648,7 @@ function Connect-Office365 {
                 Write-Host "  Teams: $($result.Teams)" -ForegroundColor White
             }
         }
-        #return [pscustomobject]$result
+        return [pscustomobject]$result
     }
 }
 
@@ -3132,6 +3728,8 @@ function Get-AllLicenseSKUs {
     Write-Log -Type Info -Message "[Get-AllLicenseSKUs] Gathering all License SKUs from tenant" -ExportFileLocation $ExportDetails
     # Get License SKUs using MGGraph   
     $skus = Get-MgSubscribedSku -ErrorAction Continue | ? {$_.AppliesTo}
+    $script:SkuLookupById = @{}
+    $script:ServicePlanLookupById = @{}
 
     # Get subscription metadata to identify trials
     $subscriptions = @()
@@ -3150,12 +3748,25 @@ function Get-AllLicenseSKUs {
     #Add License SKUs to Hash Table and Service Plans under each SKU to another Hash Table
     Write-Log -Type Info -Message "[Get-AllLicenseSKUs] START: Add License SKUs and Service Plans under each SKU to Tenant Hash Table" -ExportFileLocation $ExportDetails
     foreach ($sku in $skus) {
+        $skuIdText = $sku.SkuId.ToString()
         $subMatch = $null
-        if ($subscriptionLookup.ContainsKey($sku.SkuId.ToString())) {
-            $subMatch = $subscriptionLookup[$sku.SkuId.ToString()]
+        if ($subscriptionLookup.ContainsKey($skuIdText)) {
+            $subMatch = $subscriptionLookup[$skuIdText]
         }
 
         $friendlySkuName = Get-FriendlyProductName -SkuPartNumber $sku.SkuPartNumber
+        $script:SkuLookupById[$skuIdText] = [PSCustomObject]@{
+            SkuId = $skuIdText
+            SkuPartNumber = $sku.SkuPartNumber
+            FriendlyName = $friendlySkuName
+            ServicePlans = @($sku.ServicePlans)
+        }
+        foreach ($servicePlan in @($sku.ServicePlans)) {
+            if ($servicePlan.ServicePlanId) {
+                $script:ServicePlanLookupById[$servicePlan.ServicePlanId.ToString()] = $servicePlan.ServicePlanName
+            }
+        }
+
         $skuDetails = [PSCustomObject]@{
             AccountSkuId = $sku.AccountSkuId
             AccountName = $sku.AccountName
@@ -3294,6 +3905,10 @@ function Get-AllUserDetails {
     Write-Log -Type Info -Message "[Get-allUserDetails] Adding Additional Properties for $($allTenantUsers.count) Users" -ExportFileLocation $ExportDetails
     try {
         $totalCount = $allTenantUsers.count
+        $licensedUserCount = 0
+        $unlicensedUserCount = 0
+        $licenseFallbackUserCount = 0
+        $unresolvedSkuCount = 0
         foreach ($user in $allTenantUsers) {
             try {
                 # Create Hash Table for each user
@@ -3323,20 +3938,74 @@ function Get-AllUserDetails {
                 }
                 else {
                     Write-Log -Type DEBUG -Message ("[Get-allUserDetails] Gather '{0}' License Friendly Names" -f $user.UserPrincipalName) -ExportFileLocation $ExportDetails
-                    $licenseDetails = $null
                     $assignedLicenses = $null
                     $assignedLicensesFriendly = $null
                     $disabledPlans = $null
                     $enabledServicePlans = $null
-                    $licenseDetails = Get-MgUserLicenseDetail -UserId $user.ID -ErrorAction SilentlyContinue
-                    if ($null -ne $licenseDetails) {
-                        $disabledPlans = $licenseDetails.ServicePlans | Where-Object { $_.ProvisioningStatus -eq "Disabled" } | Select-Object -ExpandProperty ServicePlanName
-                        $AssignedLicenses = $licenseDetails.SKUPartNumber -join ","
-                        $AssignedLicensesFriendly = ($licenseDetails.SkuPartNumber | ForEach-Object { Get-FriendlyProductName -SkuPartNumber $_ }) -join ","
-                        $EnabledServicePlans = ($licenseDetails.ServicePlans | ? {$_.ProvisioningStatus -eq 'Success'}).ServicePlanName -join ","
+                    $assignedLicenseEntries = @($user.AssignedLicenses)
+                    if ($assignedLicenseEntries.Count -gt 0) {
+                        $licensedUserCount++
+                        $resolvedSkuParts = New-Object System.Collections.Generic.List[string]
+                        $resolvedFriendlyNames = New-Object System.Collections.Generic.List[string]
+                        $resolvedDisabledPlans = New-Object System.Collections.Generic.List[string]
+                        $resolvedEnabledPlans = New-Object System.Collections.Generic.List[string]
+
+                        foreach ($assignedLicenseEntry in $assignedLicenseEntries) {
+                            $skuId = $null
+                            if ($assignedLicenseEntry.PSObject.Properties['SkuId']) {
+                                $skuId = $assignedLicenseEntry.SkuId
+                            } elseif ($assignedLicenseEntry -is [guid]) {
+                                $skuId = $assignedLicenseEntry
+                            }
+
+                            $skuIdText = if ($skuId) { $skuId.ToString() } else { $null }
+                            $skuLookup = if ($skuIdText -and $script:SkuLookupById.ContainsKey($skuIdText)) { $script:SkuLookupById[$skuIdText] } else { $null }
+                            if ($skuLookup) {
+                                $resolvedSkuParts.Add($skuLookup.SkuPartNumber)
+                                $resolvedFriendlyNames.Add($skuLookup.FriendlyName)
+
+                                $disabledPlanIds = @()
+                                if ($assignedLicenseEntry.PSObject.Properties['DisabledPlans'] -and $assignedLicenseEntry.DisabledPlans) {
+                                    $disabledPlanIds = @($assignedLicenseEntry.DisabledPlans | ForEach-Object { $_.ToString() })
+                                }
+
+                                $disabledPlanNamesForSku = @()
+                                foreach ($disabledPlanId in $disabledPlanIds) {
+                                    if ($script:ServicePlanLookupById.ContainsKey($disabledPlanId)) {
+                                        $disabledPlanName = $script:ServicePlanLookupById[$disabledPlanId]
+                                        $disabledPlanNamesForSku += $disabledPlanName
+                                        $resolvedDisabledPlans.Add($disabledPlanName)
+                                    }
+                                }
+
+                                $enabledPlanNamesForSku = @(
+                                    @($skuLookup.ServicePlans) |
+                                        Where-Object {
+                                            $_.ServicePlanName -and
+                                            ($disabledPlanNamesForSku -notcontains $_.ServicePlanName)
+                                        } |
+                                        ForEach-Object { $_.ServicePlanName }
+                                )
+                                foreach ($enabledPlanName in $enabledPlanNamesForSku) {
+                                    $resolvedEnabledPlans.Add($enabledPlanName)
+                                }
+                            } else {
+                                $unresolvedSkuCount++
+                                if ($skuIdText) {
+                                    $resolvedSkuParts.Add($skuIdText)
+                                    $resolvedFriendlyNames.Add($skuIdText)
+                                }
+                            }
+                        }
+
+                        $licenseFallbackUserCount++
+                        $AssignedLicenses = ($resolvedSkuParts | Select-Object -Unique) -join ","
+                        $AssignedLicensesFriendly = ($resolvedFriendlyNames | Select-Object -Unique) -join ","
+                        $disabledPlans = $resolvedDisabledPlans | Select-Object -Unique
+                        $EnabledServicePlans = ($resolvedEnabledPlans | Select-Object -Unique) -join ","
                     }
                     else {
-                        Write-Log -Type WARNING -Message ("[Get-allUserDetails] No license details found for user '{0}'" -f $user.UserPrincipalName) -ExportFileLocation $ExportDetails
+                        $unlicensedUserCount++
                     }
                     # Create Current User Object - Additional Attributes custom object
                     #$customUserDetails | Add-Member -MemberType NoteProperty -Name "UserType" -Value $user.UserType
@@ -3359,6 +4028,7 @@ function Get-AllUserDetails {
         Write-ProgressHelper -Total $totalCount -Activity "Gathering Tenant User Details" -Completed
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
         Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+        Write-Log -Type INFO -Message "[Get-allUserDetails] Licensing summary: LicensedUsers=$licensedUserCount UnlicensedUsers=$unlicensedUserCount LicenseLookupUsers=$licenseFallbackUserCount UnresolvedSkuReferences=$unresolvedSkuCount" -ExportFileLocation $ExportDetails
         Write-Log -Type Info -Message "[Get-allUserDetails] COMPLETED: Gathering all  User Details in $($CompletedTime)" -ExportFileLocation $ExportDetails
     }     
     catch {
@@ -4644,10 +5314,24 @@ function Get-SecuritySecureScoreReport {
         $global:tenantStatsHash = @{}
     }
     $global:tenantStatsHash["SecuritySecureScore"] = @{}
+    $global:tenantStatsHash["SecureScoreActions"] = @{}
 
     Write-Host "Getting Security Score Details ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] START: Gathering all Security Score details" -ExportFileLocation $ExportDetails
     try {
+        $controlProfileLookup = @{}
+        try {
+            $controlProfiles = @(Get-MgSecuritySecureScoreControlProfile -All -ErrorAction Stop)
+            foreach ($profile in $controlProfiles) {
+                if ($profile.Id) {
+                    $controlProfileLookup[$profile.Id] = $profile
+                }
+            }
+            Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] Loaded $($controlProfileLookup.Count) Secure Score control profile mappings" -ExportFileLocation $ExportDetails
+        } catch {
+            Write-Log -Type WARNING -Message "[Get-SecuritySecureScoreReport] Unable to load Secure Score control profiles for source mapping: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        }
+
         if ($MostRecent) {
             $secureScore = Get-MgSecuritySecureScore -Top 1 -ErrorAction Stop | Where-Object {$null -ne $_.ID}
         } else {
@@ -4701,6 +5385,71 @@ function Get-SecuritySecureScoreReport {
             #Add to Hash Table
             Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] Gathering Score Details for $($score.ID): Add Score to Tenant Stats Hash Table" -ExportFileLocation $ExportDetails
             $global:tenantStatsHash["SecuritySecureScore"][$score.ID] = $currentSecurityScores
+        }
+
+        $latestScore = @($secureScore | Sort-Object CreatedDateTime -Descending | Select-Object -First 1)
+        if ($latestScore.Count -gt 0) {
+            $actionIndex = 0
+            foreach ($controlScore in @($latestScore[0].ControlScores)) {
+                $actionIndex++
+                $controlName = $controlScore.ControlName
+                if ([string]::IsNullOrWhiteSpace($controlName)) {
+                    continue
+                }
+
+                $profile = $null
+                if ($controlProfileLookup.ContainsKey($controlName)) {
+                    $profile = $controlProfileLookup[$controlName]
+                }
+
+                $currentControlScore = 0
+                try { $currentControlScore = [double]$controlScore.Score } catch { $currentControlScore = 0 }
+
+                $maxControlScore = 0
+                if ($null -ne $controlScore.MaxScore -and $controlScore.MaxScore -ne '') {
+                    try { $maxControlScore = [double]$controlScore.MaxScore } catch { $maxControlScore = 0 }
+                } elseif ($profile -and $null -ne $profile.MaxScore -and $profile.MaxScore -ne '') {
+                    try { $maxControlScore = [double]$profile.MaxScore } catch { $maxControlScore = 0 }
+                }
+
+                $scoreGap = [math]::Round(($maxControlScore - $currentControlScore), 2)
+                $implementationStatus = if ($maxControlScore -gt 0 -and $scoreGap -le 0) {
+                    'Implemented'
+                } elseif ($currentControlScore -gt 0) {
+                    'Partially Implemented'
+                } else {
+                    'Not Implemented'
+                }
+
+                $threats = @()
+                if ($profile -and $profile.Threats) {
+                    $threats = @($profile.Threats)
+                }
+
+                $actionRow = [PSCustomObject]@{
+                    SecureScoreSnapshotId = $latestScore[0].Id
+                    ControlId             = $controlName
+                    RecommendationTitle   = if ($profile -and $profile.Title) { $profile.Title } else { $controlName }
+                    Status                = $implementationStatus
+                    CurrentScore          = $currentControlScore
+                    MaxScore              = $maxControlScore
+                    ScoreGap              = $scoreGap
+                    Rank                  = if ($profile -and $profile.Rank) { $profile.Rank } else { $controlScore.Rank }
+                    Category              = if ($profile -and $profile.ControlCategory) { $profile.ControlCategory } else { $controlScore.ControlCategory }
+                    Service               = if ($profile -and $profile.Service) { $profile.Service } else { $controlScore.Service }
+                    ActionUrl             = if ($profile) { $profile.ActionUrl } else { $null }
+                    Remediation           = if ($profile) { $profile.Remediation } else { $null }
+                    Description           = if ($profile -and $profile.Description) { $profile.Description } else { $controlScore.Description }
+                    Threats               = if ($threats.Count -gt 0) { $threats -join ', ' } else { $null }
+                    UserImpact            = if ($profile) { $profile.UserImpact } else { $null }
+                    ImplementationCost    = if ($profile) { $profile.ImplementationCost } else { $null }
+                    Tier                  = if ($profile) { $profile.Tier } else { $null }
+                    SourceMapping         = if ($profile) { 'Microsoft Secure Score Control Profile' } else { 'Secure Score Snapshot Only' }
+                }
+
+                $global:tenantStatsHash["SecureScoreActions"][("{0:D3}-{1}" -f $actionIndex, $controlName)] = $actionRow
+            }
+            Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] Added $($global:tenantStatsHash['SecureScoreActions'].Count) Secure Score recommendation mappings" -ExportFileLocation $ExportDetails
         }
 
     }
@@ -4964,6 +5713,9 @@ function Get-AuthenticationConfiguration {
         $global:tenantStatsHash = @{}
     }
     $global:tenantStatsHash["AuthenticationConfig"] = @{}
+    $global:tenantStatsHash["AuthenticationConfigSummary"] = @{}
+    $global:tenantStatsHash["AuthenticationMethods"] = @{}
+    $global:tenantStatsHash["AuthenticationSSOApplications"] = @{}
     
     Write-Host "Checking Authentication and SSO Configuration ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] START: Checking Authentication Configuration" -ExportFileLocation $ExportDetails
@@ -5060,6 +5812,49 @@ function Get-AuthenticationConfiguration {
         }
         
         $global:tenantStatsHash["AuthenticationConfig"]["Configuration"] = $authMethodsPolicy
+
+        $ssoAppNames = @($authMethodsPolicy.SSOApplications | ForEach-Object { $_.DisplayName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $global:tenantStatsHash["AuthenticationConfigSummary"]["Summary"] = [PSCustomObject]@{
+            MFAEnabled                   = $authMethodsPolicy.MFAEnabled
+            MFAMethods                   = ($authMethodsPolicy.MFAMethods -join ', ')
+            SSOEnabled                   = $authMethodsPolicy.SSOEnabled
+            SSOApplicationsCount         = @($authMethodsPolicy.SSOApplications).Count
+            SSOApplications              = ($ssoAppNames -join ', ')
+            FederatedDomains             = ($authMethodsPolicy.FederatedDomains -join ', ')
+            PasswordlessMethods          = ($authMethodsPolicy.PasswordlessMethods -join ', ')
+            MFAConditionalAccessPolicies = $(if ($authMethodsPolicy.PSObject.Properties['MFAConditionalAccessPolicies']) { $authMethodsPolicy.MFAConditionalAccessPolicies } else { 0 })
+        }
+
+        $methodIndex = 0
+        foreach ($method in @($authMethodsPolicy.MFAMethods)) {
+            $methodIndex++
+            $global:tenantStatsHash["AuthenticationMethods"][("{0:D3}-MFA" -f $methodIndex)] = [PSCustomObject]@{
+                Category = 'MFA Method'
+                Value    = $method
+            }
+        }
+
+        foreach ($method in @($authMethodsPolicy.PasswordlessMethods)) {
+            $methodIndex++
+            $global:tenantStatsHash["AuthenticationMethods"][("{0:D3}-Passwordless" -f $methodIndex)] = [PSCustomObject]@{
+                Category = 'Passwordless Method'
+                Value    = $method
+            }
+        }
+
+        foreach ($domainName in @($authMethodsPolicy.FederatedDomains)) {
+            $methodIndex++
+            $global:tenantStatsHash["AuthenticationMethods"][("{0:D3}-Federated" -f $methodIndex)] = [PSCustomObject]@{
+                Category = 'Federated Domain'
+                Value    = $domainName
+            }
+        }
+
+        $ssoIndex = 0
+        foreach ($app in @($authMethodsPolicy.SSOApplications)) {
+            $ssoIndex++
+            $global:tenantStatsHash["AuthenticationSSOApplications"][("{0:D3}-{1}" -f $ssoIndex, $app.DisplayName)] = $app
+        }
         
     } catch {
         Write-Log -Type ERROR -Message "An error occurred checking authentication configuration. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
@@ -5385,7 +6180,19 @@ function Get-FederationAndCrossTenantConfiguration {
         try {
             $b2bPolicy = Get-MgPolicyB2BManagementPolicy -ErrorAction Stop
         } catch {
-            Write-Log -Type WARNING -Message "[Get-FederationAndCrossTenantConfiguration] Unable to retrieve B2B management policy: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+            if (Get-Command Invoke-MgGraphRequest -ErrorAction SilentlyContinue) {
+                try {
+                    $b2bPolicy = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/policies/b2bManagementPolicy' -ErrorAction Stop
+                } catch {
+                    $b2bMessage = $_.Exception.Message
+                    $b2bLogType = if ($b2bMessage -match 'BadRequest') { 'INFO' } else { 'WARNING' }
+                    Write-Log -Type $b2bLogType -Message "[Get-FederationAndCrossTenantConfiguration] Unable to retrieve B2B management policy: $b2bMessage" -ExportFileLocation $ExportDetails
+                }
+            } else {
+                $b2bMessage = $_.Exception.Message
+                $b2bLogType = if ($b2bMessage -match 'BadRequest') { 'INFO' } else { 'WARNING' }
+                Write-Log -Type $b2bLogType -Message "[Get-FederationAndCrossTenantConfiguration] Unable to retrieve B2B management policy: $b2bMessage" -ExportFileLocation $ExportDetails
+            }
         }
 
         $defaultInboundMfa = if ($crossTenantPolicy -and $crossTenantPolicy.Default -and $crossTenantPolicy.Default.InboundTrust) {
@@ -5566,8 +6373,166 @@ function Get-FederationAndCrossTenantConfiguration {
     Write-Log -Type INFO -Message "[Get-FederationAndCrossTenantConfiguration] COMPLETED in $elapsed" -ExportFileLocation $ExportDetails
 }
 
+function Export-TenantStatsJson {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$TenantStatsHash,
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    function ConvertTo-JsonFriendlyValue {
+        param(
+            [Parameter(Mandatory = $false)]
+            $Value,
+            [Parameter(Mandatory = $false)]
+            [int]$Depth = 0,
+            [Parameter(Mandatory = $false)]
+            [System.Collections.Generic.HashSet[int]]$Visited
+        )
+
+        if ($null -eq $Value) {
+            return $null
+        }
+
+        if ($null -eq $Visited) {
+            $Visited = [System.Collections.Generic.HashSet[int]]::new()
+        }
+
+        if ($Depth -ge 20) {
+            return '[MaxDepthExceeded]'
+        }
+
+        $valueType = $Value.GetType()
+        $isReferenceType = -not $valueType.IsValueType -and $Value -isnot [string]
+        $referenceId = $null
+        if ($isReferenceType) {
+            $referenceId = [System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($Value)
+            if (-not $Visited.Add($referenceId)) {
+                return '[CircularReference]'
+            }
+        }
+
+        try {
+            if (
+                $Value -is [string] -or
+                $Value -is [char] -or
+                $Value -is [bool] -or
+                $Value -is [byte] -or
+                $Value -is [sbyte] -or
+                $Value -is [int16] -or
+                $Value -is [uint16] -or
+                $Value -is [int32] -or
+                $Value -is [uint32] -or
+                $Value -is [int64] -or
+                $Value -is [uint64] -or
+                $Value -is [single] -or
+                $Value -is [double] -or
+                $Value -is [decimal]
+            ) {
+                return $Value
+            }
+
+            if ($Value -is [datetime]) {
+                return $Value.ToString('o')
+            }
+
+            if ($Value -is [datetimeoffset]) {
+                return $Value.ToString('o')
+            }
+
+            if ($Value -is [timespan] -or $Value -is [guid] -or $Value -is [uri] -or $Value -is [version]) {
+                return $Value.ToString()
+            }
+
+            if ($Value -is [enum]) {
+                return $Value.ToString()
+            }
+
+            if ($Value -is [securestring]) {
+                return '[SecureString]'
+            }
+
+            if ($Value -is [System.Management.Automation.SwitchParameter]) {
+                return [bool]$Value
+            }
+
+            if ($Value -is [System.Collections.IDictionary]) {
+                $result = [ordered]@{}
+                foreach ($key in $Value.Keys) {
+                    $result[[string]$key] = ConvertTo-JsonFriendlyValue -Value $Value[$key] -Depth ($Depth + 1) -Visited $Visited
+                }
+                return $result
+            }
+
+            if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
+                $items = New-Object System.Collections.Generic.List[object]
+                foreach ($item in $Value) {
+                    $items.Add((ConvertTo-JsonFriendlyValue -Value $item -Depth ($Depth + 1) -Visited $Visited))
+                }
+                return $items.ToArray()
+            }
+
+            $serializableProperties = @(
+                $Value.PSObject.Properties |
+                    Where-Object {
+                        $_.MemberType -in @('NoteProperty', 'AliasProperty') -and
+                        $_.Name -ne 'SyncRoot'
+                    }
+            )
+
+            if ($serializableProperties.Count -gt 0) {
+                $result = [ordered]@{}
+                foreach ($property in $serializableProperties) {
+                    try {
+                        $result[$property.Name] = ConvertTo-JsonFriendlyValue -Value $property.Value -Depth ($Depth + 1) -Visited $Visited
+                    } catch {
+                        $result[$property.Name] = "[PropertyReadError] $($_.Exception.Message)"
+                    }
+                }
+                return $result
+            }
+
+            return $Value.ToString()
+        } finally {
+            if ($isReferenceType -and $null -ne $referenceId) {
+                $Visited.Remove($referenceId) | Out-Null
+            }
+        }
+    }
+
+    $visited = [System.Collections.Generic.HashSet[int]]::new()
+    $payload = [ordered]@{
+        SchemaVersion = 1
+        GeneratedAt   = (Get-Date).ToString("o")
+        Data          = ConvertTo-JsonFriendlyValue -Value $TenantStatsHash -Visited $visited
+    }
+
+    $jsonOptions = [System.Text.Json.JsonSerializerOptions]::new()
+    $jsonOptions.WriteIndented = $true
+    $jsonOptions.ReferenceHandler = [System.Text.Json.Serialization.ReferenceHandler]::IgnoreCycles
+    $json = [System.Text.Json.JsonSerializer]::Serialize($payload, $jsonOptions)
+    [System.IO.File]::WriteAllText($Path, $json, [System.Text.UTF8Encoding]::new($false))
+}
+
+function Import-TenantStatsJson {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path -Path $Path)) {
+        return $null
+    }
+
+    $json = Get-Content -Raw -Path $Path | ConvertFrom-Json
+    return $json.Data
+}
+
 #region HTML Report Helpers
-if ($false) {
+if ($true) {
     # HTML helper implementations are maintained in New-TenantHtmlReport.ps1
 #region Configuration and Defaults
 
@@ -5615,29 +6580,6 @@ $script:SectionMapping = @{
 #endregion
 
 #region Helper Functions
-
-function Export-TenantStatsJson {
-    param(
-        [Parameter(Mandatory)] [hashtable]$TenantStatsHash,
-        [Parameter(Mandatory)] [string]$Path
-    )
-
-    $payload = [PSCustomObject]@{
-        SchemaVersion = 1
-        GeneratedAt   = (Get-Date).ToString("o")
-        Data          = $TenantStatsHash
-    }
-
-    $payload | ConvertTo-Json -Depth 8 | Set-Content -Path $Path -Encoding UTF8
-}
-
-function Import-TenantStatsJson {
-    param([Parameter(Mandatory)] [string]$Path)
-
-    if (-not (Test-Path $Path)) { return $null }
-    $json = Get-Content -Raw -Path $Path | ConvertFrom-Json
-    return $json.Data
-}
 
 function Get-FromHash {
     <#
@@ -5692,7 +6634,7 @@ function Format-Number {
         Formats numbers with thousand separators and optional decimal places.
     #>
     param(
-        [Parameter(Mandatory)]
+        [AllowNull()]
         $Number,
         
         [int]$DecimalPlaces = 0
@@ -5713,7 +6655,14 @@ function Format-Number {
 }
 
 function Format-DataSize {
-    param([double]$SizeInGB)
+    param(
+        [AllowNull()]
+        [double]$SizeInGB = 0
+    )
+
+    if ($null -eq $SizeInGB) {
+        return 'N/A'
+    }
     
     # If over 1000 GB (1 TB), show in TB
     if ($SizeInGB -ge 1000) {
@@ -5731,7 +6680,7 @@ function Format-Percentage {
         Formats a value as percentage.
     #>
     param(
-        [Parameter(Mandatory)]
+        [AllowNull()]
         $Value,
         
         [int]$DecimalPlaces = 1
@@ -5780,7 +6729,7 @@ function New-HtmlTable {
         Generates HTML table from array of objects with optional risk highlighting.
     #>
     param(
-        [Parameter(Mandatory)]
+        [AllowNull()]
         [array]$Data,
         
         [Parameter(Mandatory)]
@@ -5795,7 +6744,7 @@ function New-HtmlTable {
         [string]$CssClass = 'data-table'
     )
     
-    if ($Data.Count -eq 0) {
+    if ($null -eq $Data -or $Data.Count -eq 0) {
         return "<div class='empty-state'>$EmptyMessage</div>"
     }
     
@@ -5859,7 +6808,7 @@ function New-KpiCard {
         [string]$Title,
         
         [Parameter(Mandatory)]
-        [string]$Value,
+        [object]$Value,
         
         [string]$Subtitle,
         
@@ -5880,11 +6829,19 @@ function New-KpiCard {
     $subtitleHtml = if ($Subtitle) {
         "<div class='kpi-subtitle'>$Subtitle</div>"
     } else { '' }
+
+    $displayValue = if ($null -eq $Value) {
+        'N/A'
+    } elseif ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        (($Value | ForEach-Object { $_.ToString() }) -join ', ')
+    } else {
+        $Value.ToString()
+    }
     
     return @"
 <div class="kpi-card kpi-$Theme">
     <div class="kpi-title">$Title</div>
-    <div class="kpi-value">$Value $trendIcon</div>
+    <div class="kpi-value">$displayValue $trendIcon</div>
     $subtitleHtml
 </div>
 "@
@@ -6527,6 +7484,487 @@ function Get-FederationAnalysis {
     
     return @{
         Findings = $findings
+    }
+}
+
+function Get-TenantAssessmentContext {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$TenantStatsHash
+    )
+
+    function Get-ContextArray {
+        param([string]$Key)
+
+        if (-not $TenantStatsHash.ContainsKey($Key)) {
+            return @()
+        }
+
+        $value = $TenantStatsHash[$Key]
+        if ($null -eq $value) {
+            return @()
+        }
+
+        if ($value -is [hashtable] -or $value -is [System.Collections.Specialized.OrderedDictionary]) {
+            return @($value.Values)
+        }
+
+        if ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
+            return @($value)
+        }
+
+        return @($value)
+    }
+
+    $authConfig = $null
+    if ($TenantStatsHash.ContainsKey('AuthenticationConfig')) {
+        $authContainer = $TenantStatsHash['AuthenticationConfig']
+        if ($authContainer -is [hashtable] -and $authContainer.ContainsKey('Configuration')) {
+            $authConfig = $authContainer['Configuration']
+        }
+    }
+
+    $adConnect = $null
+    if ($TenantStatsHash.ContainsKey('AdConnectConfiguration')) {
+        $adConnect = $TenantStatsHash['AdConnectConfiguration']
+    }
+
+    $mfaRegistrationSummary = $null
+    if ($TenantStatsHash.ContainsKey('MfaRegistrationSummary')) {
+        $mfaRegistrationSummary = $TenantStatsHash['MfaRegistrationSummary']
+    }
+
+    $hybridInfo = $null
+    if ($TenantStatsHash.ContainsKey('HybridConfiguration')) {
+        $hybridContainer = $TenantStatsHash['HybridConfiguration']
+        if ($hybridContainer -is [hashtable] -and $hybridContainer.ContainsKey('ExchangeHybrid')) {
+            $hybridInfo = $hybridContainer['ExchangeHybrid']
+        }
+    }
+
+    $federationExchange = $null
+    $federationCrossTenant = $null
+    $federationExternal = $null
+    if ($TenantStatsHash.ContainsKey('FederationConfiguration')) {
+        $fedContainer = $TenantStatsHash['FederationConfiguration']
+        if ($fedContainer -is [hashtable]) {
+            if ($fedContainer.ContainsKey('ExchangeFederation')) { $federationExchange = $fedContainer['ExchangeFederation'] }
+            if ($fedContainer.ContainsKey('CrossTenantAccess')) { $federationCrossTenant = $fedContainer['CrossTenantAccess'] }
+            if ($fedContainer.ContainsKey('ExternalIdentities')) { $federationExternal = $fedContainer['ExternalIdentities'] }
+        }
+    }
+
+    $teamsVoice = $null
+    if ($TenantStatsHash.ContainsKey('TeamsVoice')) {
+        $teamsVoice = $TenantStatsHash['TeamsVoice']
+    }
+
+    return [PSCustomObject]@{
+        Licenses               = Get-ContextArray -Key 'LicenseSKUs'
+        Recipients             = Get-ContextArray -Key 'AllRecipients'
+        Mailboxes              = Get-ContextArray -Key 'MailboxFullDetails'
+        InactiveMailboxes      = Get-ContextArray -Key 'InactiveMailboxDetails'
+        PublicFolders          = Get-ContextArray -Key 'PublicFolderDetails'
+        SharePoint             = Get-ContextArray -Key 'SharePoint'
+        OneDrive               = Get-ContextArray -Key 'OneDrive'
+        Domains                = Get-ContextArray -Key 'Domains'
+        Devices                = Get-ContextArray -Key 'DeviceDetails'
+        SecureScore            = Get-ContextArray -Key 'SecuritySecureScore'
+        SecureScoreActions     = Get-ContextArray -Key 'SecureScoreActions'
+        Teams                  = Get-ContextArray -Key 'AllTeams'
+        Users                  = Get-ContextArray -Key 'Users'
+        Admins                 = Get-ContextArray -Key 'Admins'
+        Groups                 = Get-ContextArray -Key 'EntraIDGroups'
+        ExchangeGroups         = Get-ContextArray -Key 'AllExchangeGroups'
+        ConditionalAccess      = Get-ContextArray -Key 'ConditionalAccessPolicies'
+        MailFlowConnectors     = Get-ContextArray -Key 'MailFlowConnectors'
+        RemoteDomains          = Get-ContextArray -Key 'RemoteDomains'
+        AuthConfig             = $authConfig
+        MfaRegistrationSummary = $mfaRegistrationSummary
+        AdConnect              = $adConnect
+        HybridInfo             = $hybridInfo
+        FederationExchange     = $federationExchange
+        FederationCrossTenant  = $federationCrossTenant
+        FederationExternal     = $federationExternal
+        TeamsVoice             = $teamsVoice
+    }
+}
+
+function Get-AssessmentWorksheetName {
+    [CmdletBinding()]
+    param([string]$Anchor)
+
+    switch ($Anchor) {
+        'licenses' { return 'LicenseSKUs' }
+        'domains' { return 'Domains' }
+        'domains-dns' { return 'Domains' }
+        'identity-admins' { return 'Users' }
+        'mailboxes' { return 'MailboxFullDetails' }
+        'inactive-mailboxes' { return 'InactiveMailboxDetails' }
+        'sharepoint-onedrive' { return 'SharePoint / OneDrive' }
+        'devices' { return 'DeviceDetails' }
+        'ad-connect' { return 'AdConnectConfiguration' }
+        'conditional-access-mfa' { return 'ConditionalAccessPolicies' }
+        'exchange-hybrid' { return 'HybridConfiguration' }
+        'cross-tenant-access' { return 'FederationConfiguration' }
+        'secure-score' { return 'SecureScoreActions' }
+        default { return $null }
+    }
+}
+
+function Get-AssessmentRecommendationText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Finding
+    )
+
+    switch ($Finding.Anchor) {
+        'licenses' { return 'Review SKU capacity, reclaim unused assignments, and align target-tenant licensing before cutover.' }
+        'domains' { return 'Verify all domains and confirm authoritative routing before migration sequencing.' }
+        'domains-dns' { return 'Review MX, autodiscover, and mail-routing records to plan coexistence and cutover.' }
+        'identity-admins' { return 'Validate admin access, guest usage, and group ownership before identity migration activities.' }
+        'mailboxes' { return 'Identify oversized or specialized mailboxes early to plan batching, archives, and exception handling.' }
+        'inactive-mailboxes' { return 'Decide whether inactive mailboxes need retention, restore, or exclusion from scope.' }
+        'sharepoint-onedrive' { return 'Use site inventory, ownership, and storage metrics to prioritize high-risk collaboration workloads.' }
+        'devices' { return 'Review stale and non-compliant devices before identity and endpoint cutover.' }
+        'ad-connect' { return 'Document synchronization dependencies and plan cloud identity cutover or staged decommissioning.' }
+        'conditional-access-mfa' { return 'Review CA and MFA design to avoid post-migration lockouts or authentication regressions.' }
+        'exchange-hybrid' { return 'Validate hybrid, connectors, and migration endpoints because they affect tenant-to-tenant messaging strategy.' }
+        'cross-tenant-access' { return 'Review cross-tenant and B2B settings for coexistence, external collaboration, and post-migration cleanup.' }
+        'secure-score' { return 'Use the mapped Microsoft Secure Score action to prioritize remediation with the highest security impact.' }
+        default { return 'Review the related worksheet and validate whether remediation is required for your migration or security objectives.' }
+    }
+}
+
+function Update-AssessmentReportTables {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$TenantStatsHash
+    )
+
+    if (-not $TenantStatsHash) {
+        return
+    }
+
+    $context = Get-TenantAssessmentContext -TenantStatsHash $TenantStatsHash
+
+    $TenantStatsHash['BestPractices'] = @{}
+    $TenantStatsHash['BestPracticeFindings'] = @{}
+    $TenantStatsHash['MigrationReadiness'] = @{}
+
+    $summaryRows = New-Object System.Collections.Generic.List[object]
+    $findingRows = New-Object System.Collections.Generic.List[object]
+    $migrationRows = New-Object System.Collections.Generic.List[object]
+    $summaryIndex = 0
+    $findingIndex = 0
+    $migrationIndex = 0
+
+    function Add-AreaSummary {
+        param(
+            [string]$Area,
+            [array]$AreaFindings,
+            [string]$AssessmentType,
+            [string]$RelatedWorksheet,
+            [string]$Notes
+        )
+
+        $criticalCount = @($AreaFindings | Where-Object { $_.Type -eq 'Risk' }).Count
+        $warningCount = @($AreaFindings | Where-Object { $_.Type -eq 'Warning' }).Count
+        $infoCount = @($AreaFindings | Where-Object { $_.Type -eq 'Info' }).Count
+
+        $status = if ($criticalCount -gt 0) {
+            'Critical'
+        } elseif ($warningCount -gt 0) {
+            'Warning'
+        } elseif ($AreaFindings.Count -gt 0) {
+            'Informational'
+        } else {
+            'Healthy'
+        }
+
+        $topFinding = @($AreaFindings | Sort-Object Priority | Select-Object -First 1)
+        $primaryFindingText = if ($topFinding.Count -gt 0) { $topFinding[0].Message } else { 'No automated findings detected for this assessment area.' }
+        $recommendedAction = if ($topFinding.Count -gt 0) { Get-AssessmentRecommendationText -Finding $topFinding[0] } else { 'Use the detailed workload worksheets for validation and migration planning.' }
+
+        $summaryRows.Add([PSCustomObject]@{
+            Area               = $Area
+            Status             = $status
+            CriticalFindings   = $criticalCount
+            WarningFindings    = $warningCount
+            InfoFindings       = $infoCount
+            TotalFindings      = $AreaFindings.Count
+            PrimaryFinding     = $primaryFindingText
+            RecommendedAction  = $recommendedAction
+            RelatedWorksheet   = $RelatedWorksheet
+            AssessmentType     = $AssessmentType
+            Notes              = $Notes
+        }) | Out-Null
+
+        foreach ($finding in $AreaFindings) {
+            $findingRows.Add([PSCustomObject]@{
+                Area               = $Area
+                Severity           = $finding.Type
+                Category           = $finding.Category
+                Message            = $finding.Message
+                Priority           = $finding.Priority
+                RelatedSection     = $finding.Anchor
+                RelatedWorksheet   = Get-AssessmentWorksheetName -Anchor $finding.Anchor
+                RecommendedAction  = Get-AssessmentRecommendationText -Finding $finding
+                SourceType         = $AssessmentType
+            }) | Out-Null
+        }
+    }
+
+    function Add-MigrationRow {
+        param(
+            [string]$Category,
+            [string]$Item,
+            [string]$Status,
+            [string]$Value,
+            [string]$Notes,
+            [string]$MigrationAction,
+            [string]$SourceWorksheet
+        )
+
+        $migrationRows.Add([PSCustomObject]@{
+            Category         = $Category
+            Item             = $Item
+            Status           = $Status
+            Value            = $Value
+            Notes            = $Notes
+            MigrationAction  = $MigrationAction
+            SourceWorksheet  = $SourceWorksheet
+        }) | Out-Null
+    }
+
+    if ($context.Licenses.Count -gt 0) {
+        $licAnalysis = Get-LicenseAnalysis -Licenses $context.Licenses
+        Add-AreaSummary -Area 'Licensing' -AreaFindings $licAnalysis.Findings -AssessmentType 'Assessment heuristic using Microsoft 365 license data' -RelatedWorksheet 'LicenseSKUs' -Notes 'Evaluates capacity, at-capacity SKUs, and high utilization.'
+    }
+
+    if ($context.Domains.Count -gt 0) {
+        $domainAnalysis = Get-DomainAnalysis -Domains $context.Domains
+        Add-AreaSummary -Area 'Domains' -AreaFindings $domainAnalysis.Findings -AssessmentType 'Assessment heuristic using Microsoft 365 domain state' -RelatedWorksheet 'Domains' -Notes 'Highlights verification and mail-routing concerns relevant to migration cutover.'
+    }
+
+    if ($context.Users.Count -gt 0 -or $context.Admins.Count -gt 0 -or $context.Groups.Count -gt 0) {
+        $identityAnalysis = Get-IdentityAdminAnalysis -Users $context.Users -Admins $context.Admins -Groups $context.Groups
+        Add-AreaSummary -Area 'Identity & Admins' -AreaFindings $identityAnalysis.Findings -AssessmentType 'Assessment heuristic using Entra users, groups, and admin assignments' -RelatedWorksheet 'Users' -Notes 'Surfaces admin and group inventory signals that affect migration readiness.'
+    }
+
+    if ($context.Mailboxes.Count -gt 0 -or $context.PublicFolders.Count -gt 0) {
+        $mailboxAnalysis = Get-MailboxAnalysis -Mailboxes $context.Mailboxes
+        Add-AreaSummary -Area 'Mailboxes' -AreaFindings $mailboxAnalysis.Findings -AssessmentType 'Assessment heuristic using Exchange mailbox inventory' -RelatedWorksheet 'MailboxFullDetails' -Notes 'Flags mailbox sizing and archive patterns that influence batch and exception planning.'
+    }
+
+    if ($context.InactiveMailboxes.Count -gt 0) {
+        $inactiveAnalysis = Get-InactiveMailboxAnalysis -InactiveMailboxes $context.InactiveMailboxes
+        Add-AreaSummary -Area 'Inactive Mailboxes' -AreaFindings $inactiveAnalysis.Findings -AssessmentType 'Assessment heuristic using inactive mailbox inventory' -RelatedWorksheet 'InactiveMailboxDetails' -Notes 'Supports retention and scope decisions for mailbox migration.'
+    }
+
+    if ($context.SharePoint.Count -gt 0 -or $context.OneDrive.Count -gt 0) {
+        $spodAnalysis = Get-SharePointOneDriveAnalysis -SharePointSites $context.SharePoint -OneDriveSites $context.OneDrive
+        Add-AreaSummary -Area 'SharePoint & OneDrive' -AreaFindings $spodAnalysis.Findings -AssessmentType 'Assessment heuristic using collaboration site inventory' -RelatedWorksheet 'SharePoint / OneDrive' -Notes 'Flags oversized sites and owner-linked OneDrive inventory for migration planning.'
+    }
+
+    if ($context.Devices.Count -gt 0) {
+        $deviceAnalysis = Get-DeviceAnalysis -Devices $context.Devices
+        Add-AreaSummary -Area 'Devices' -AreaFindings $deviceAnalysis.Findings -AssessmentType 'Assessment heuristic using Entra device inventory' -RelatedWorksheet 'DeviceDetails' -Notes 'Highlights stale and non-compliant devices that can affect user cutover readiness.'
+    }
+
+    if ($context.AdConnect) {
+        $adAnalysis = Get-AdConnectAnalysis -AdConnect $context.AdConnect
+        Add-AreaSummary -Area 'AD Connect / Sync' -AreaFindings $adAnalysis.Findings -AssessmentType 'Assessment heuristic using directory synchronization signals' -RelatedWorksheet 'AdConnectConfiguration' -Notes 'Identifies synchronization dependencies and recent sync issues.'
+    }
+
+    if ($context.ConditionalAccess.Count -gt 0 -or $context.AuthConfig) {
+        $caAnalysis = Get-ConditionalAccessMfaAnalysis -ConditionalAccessPolicies $context.ConditionalAccess -AuthConfig $context.AuthConfig -TotalUsers $context.Users.Count
+        Add-AreaSummary -Area 'Conditional Access & MFA' -AreaFindings $caAnalysis.Findings -AssessmentType 'Assessment heuristic using Entra protection settings' -RelatedWorksheet 'ConditionalAccessPolicies' -Notes 'Evaluates MFA and Conditional Access coverage with a Microsoft best-practice orientation.'
+    }
+
+    if ($context.HybridInfo) {
+        $hybridAnalysis = Get-ExchangeHybridAnalysis -HybridInfo $context.HybridInfo
+        $fedAnalysis = Get-FederationAnalysis -ExchangeFederation $context.FederationExchange -CrossTenantAccess $context.FederationCrossTenant -ExternalIdentities $context.FederationExternal
+        $hybridFindings = @($hybridAnalysis.Findings + $fedAnalysis.Findings)
+        Add-AreaSummary -Area 'Hybrid / Federation' -AreaFindings $hybridFindings -AssessmentType 'Assessment heuristic using Exchange hybrid and federation signals' -RelatedWorksheet 'HybridConfiguration' -Notes 'Highlights hybrid dependencies, federation, and cross-tenant settings relevant to coexistence and migration.'
+    }
+
+    if ($context.SecureScore.Count -gt 0) {
+        $latestScore = @($context.SecureScore | Sort-Object CreatedDateTime -Descending | Select-Object -First 1)
+        $secureScoreFindings = @()
+        if ($latestScore.Count -gt 0) {
+            $scorePct = 0
+            try { $scorePct = [double]$latestScore[0].SecurityScorePercentage } catch { $scorePct = 0 }
+            if ($scorePct -lt 60) {
+                $secureScoreFindings += @{
+                    Type = 'Risk'
+                    Category = 'Secure Score'
+                    Message = "Microsoft Secure Score is $([math]::Round($scorePct,1))%, which is below the target range for a mature tenant baseline."
+                    Anchor = 'secure-score'
+                    Priority = 1
+                }
+            } elseif ($scorePct -lt 80) {
+                $secureScoreFindings += @{
+                    Type = 'Warning'
+                    Category = 'Secure Score'
+                    Message = "Microsoft Secure Score is $([math]::Round($scorePct,1))%; prioritize high-rank actions to raise baseline security."
+                    Anchor = 'secure-score'
+                    Priority = 2
+                }
+            } else {
+                $secureScoreFindings += @{
+                    Type = 'Info'
+                    Category = 'Secure Score'
+                    Message = "Microsoft Secure Score is $([math]::Round($scorePct,1))%, indicating a relatively strong security baseline."
+                    Anchor = 'secure-score'
+                    Priority = 3
+                }
+            }
+        }
+        Add-AreaSummary -Area 'Secure Score' -AreaFindings $secureScoreFindings -AssessmentType 'Microsoft Secure Score recommendation mapping' -RelatedWorksheet 'SecureScoreActions' -Notes 'Uses Microsoft Secure Score snapshots and control profile metadata, including Microsoft Learn action URLs.'
+    }
+
+    foreach ($summaryRow in $summaryRows) {
+        $summaryIndex++
+        $TenantStatsHash['BestPractices'][("{0:D3}-{1}" -f $summaryIndex, $summaryRow.Area)] = $summaryRow
+    }
+
+    foreach ($findingRow in $findingRows) {
+        $findingIndex++
+        $TenantStatsHash['BestPracticeFindings'][("{0:D3}-{1}" -f $findingIndex, $findingRow.Area)] = $findingRow
+    }
+
+    $verifiedDomains = @($context.Domains | Where-Object { $_.Verified -eq $true }).Count
+    $unverifiedDomains = @($context.Domains | Where-Object { $_.Verified -ne $true }).Count
+    $nonM365MxDomains = @($context.Domains | Where-Object { $_.Office365MailExchanger -eq $false }).Count
+    $dirSyncEnabled = [bool]($context.AdConnect -and $context.AdConnect.Summary -and $context.AdConnect.Summary.OnPremisesSyncEnabled -eq $true)
+    $guestCount = @($context.Users | Where-Object { $_.UserType -match 'Guest' -or $_.UserPrincipalName -like '*#EXT#*' }).Count
+    $licensedUsers = @($context.Users | Where-Object { $_.AssignedLicenses }).Count
+    $archiveMailboxCount = @($context.Mailboxes | Where-Object { $_.ArchiveStatus -and $_.ArchiveStatus -ne 'None' }).Count
+    $publicFolderCount = @($context.PublicFolders).Count
+    $connectorCount = @($context.MailFlowConnectors).Count
+    $hybridDetected = [bool]($context.HybridInfo -and (($context.HybridInfo.IsHybridConfigured -eq $true) -or ($context.HybridInfo.MigrationEndpointCount -gt 0) -or ($context.HybridInfo.EvidenceCount -gt 0)))
+    $crossTenantPartnerCount = if ($context.FederationCrossTenant) { [int]$context.FederationCrossTenant.PartnerCount } else { 0 }
+    $teamsCollected = $TenantStatsHash.ContainsKey('AllTeams')
+    $paidLicenseAnalysis = if ($context.Licenses.Count -gt 0) { Get-LicenseAnalysis -Licenses $context.Licenses } else { $null }
+    $overallLicenseUtilization = if ($paidLicenseAnalysis -and $paidLicenseAnalysis.TotalPurchased -gt 0) {
+        [math]::Round((($paidLicenseAnalysis.TotalConsumed / $paidLicenseAnalysis.TotalPurchased) * 100), 1)
+    } else {
+        $null
+    }
+    $voiceSummary = if ($context.TeamsVoice -and $context.TeamsVoice.ContainsKey('Summary')) { $context.TeamsVoice['Summary'] } else { $null }
+
+    Add-MigrationRow -Category 'Domains' -Item 'Verified custom domains' -Status $(if ($unverifiedDomains -gt 0) { 'Blocker' } else { 'Ready' }) -Value "$verifiedDomains verified / $unverifiedDomains unverified" -Notes 'All accepted domains should be validated and sequenced for migration and cutover.' -MigrationAction 'Confirm domain ownership, cutover timing, and accepted domain strategy in the target tenant.' -SourceWorksheet 'Domains'
+    Add-MigrationRow -Category 'Domains' -Item 'Mail routing' -Status $(if ($nonM365MxDomains -gt 0) { 'Review' } else { 'Ready' }) -Value "$nonM365MxDomains domain(s) with non-Microsoft 365 MX" -Notes 'Non-M365 MX routing can indicate third-party filtering, staged coexistence, or non-standard cutover requirements.' -MigrationAction 'Document current MX and transport path before migration planning.' -SourceWorksheet 'Domains'
+    Add-MigrationRow -Category 'Identity' -Item 'Directory synchronization' -Status $(if ($dirSyncEnabled) { 'Review' } else { 'Ready' }) -Value $(if ($dirSyncEnabled) { 'On-prem sync enabled' } else { 'Cloud-only identity model' }) -Notes 'Hybrid identity affects object authority and user cutover sequencing.' -MigrationAction 'Plan whether identities stay synced during migration or transition to cloud-managed.' -SourceWorksheet 'AdConnectConfiguration'
+    Add-MigrationRow -Category 'Identity' -Item 'Guests and external identities' -Status $(if ($guestCount -gt 0) { 'Review' } else { 'Info' }) -Value "$guestCount guest/external user(s)" -Notes 'Guest access usually requires separate planning from member user migration.' -MigrationAction 'Decide whether guest objects are recreated, invited, or excluded from scope.' -SourceWorksheet 'Users'
+    Add-MigrationRow -Category 'Messaging' -Item 'Mailbox inventory' -Status 'Info' -Value "$($context.Mailboxes.Count) mailbox(es), $archiveMailboxCount archive-enabled" -Notes 'Mailbox and archive counts drive migration batch sizing and exception planning.' -MigrationAction 'Use mailbox detail sheets to segment batches and identify oversized or special-case mailboxes.' -SourceWorksheet 'MailboxFullDetails'
+    Add-MigrationRow -Category 'Messaging' -Item 'Inactive mailboxes' -Status $(if ($context.InactiveMailboxes.Count -gt 0) { 'Review' } else { 'Ready' }) -Value "$($context.InactiveMailboxes.Count) inactive mailbox(es)" -Notes 'Inactive mailboxes may be retained for compliance rather than migrated.' -MigrationAction 'Confirm retention, restore, or exclusion decisions before migration scope is finalized.' -SourceWorksheet 'InactiveMailboxDetails'
+    Add-MigrationRow -Category 'Messaging' -Item 'Public folders' -Status $(if ($publicFolderCount -gt 0) { 'Review' } else { 'Ready' }) -Value "$publicFolderCount public folder object(s)" -Notes 'Public folders frequently require separate migration tooling or remediation.' -MigrationAction 'Validate whether public folders remain in scope and determine their target-state strategy.' -SourceWorksheet 'PublicFolderDetails'
+    Add-MigrationRow -Category 'Messaging' -Item 'Mail flow dependencies' -Status $(if ($connectorCount -gt 0) { 'Review' } else { 'Ready' }) -Value "$connectorCount connector(s), $($context.RemoteDomains.Count) remote domain(s)" -Notes 'Connectors and remote domains can indicate coexistence, partner routing, or relay dependencies.' -MigrationAction 'Inventory connectors, relay paths, and remote domains before cutover design.' -SourceWorksheet 'MailFlowConnectors'
+    Add-MigrationRow -Category 'Collaboration' -Item 'SharePoint and OneDrive' -Status 'Info' -Value "$($context.SharePoint.Count) SharePoint site(s), $($context.OneDrive.Count) OneDrive site(s)" -Notes 'Collaboration workload size and ownership patterns influence tooling and wave planning.' -MigrationAction 'Use site inventory, size, and owner data to prioritize migration waves.' -SourceWorksheet 'SharePoint / OneDrive'
+    Add-MigrationRow -Category 'Collaboration' -Item 'Teams workload data' -Status $(if ($teamsCollected) { 'Info' } else { 'Needs Data' }) -Value $(if ($teamsCollected) { "$($context.Teams.Count) team(s) collected" } else { 'Teams inventory not collected in current run' }) -Notes 'Teams topology may require delegated or expanded app permissions beyond this cert-auth path.' -MigrationAction 'Collect Teams team/channel inventory before finalizing collaboration migration planning.' -SourceWorksheet $(if ($teamsCollected) { 'AllTeams' } else { 'N/A' })
+    Add-MigrationRow -Category 'Security' -Item 'Conditional Access and MFA' -Status $(if ($context.ConditionalAccess.Count -gt 0 -or $context.AuthConfig) { 'Info' } else { 'Review' }) -Value "$($context.ConditionalAccess.Count) CA policy/policies; MFA summary collected=$(if ($null -ne $context.MfaRegistrationSummary) { 'Yes' } else { 'No' })" -Notes 'Security controls need parity planning to avoid cutover lockouts.' -MigrationAction 'Map CA, MFA, and authentication controls between source and target tenant.' -SourceWorksheet 'ConditionalAccessPolicies'
+    Add-MigrationRow -Category 'Hybrid' -Item 'Hybrid or coexistence indicators' -Status $(if ($hybridDetected) { 'Review' } else { 'Ready' }) -Value $(if ($hybridDetected) { "Hybrid signals detected; migration endpoints=$($context.HybridInfo.MigrationEndpointCount)" } else { 'No hybrid indicators detected' }) -Notes 'Hybrid configuration affects mailbox authority, routing, and migration tooling choices.' -MigrationAction 'Validate whether hybrid remains required during migration or can be removed from scope.' -SourceWorksheet 'HybridConfiguration'
+    Add-MigrationRow -Category 'External Access' -Item 'Cross-tenant and B2B settings' -Status $(if ($crossTenantPartnerCount -gt 0) { 'Review' } else { 'Info' }) -Value "$crossTenantPartnerCount partner relationship(s)" -Notes 'Cross-tenant policies may affect coexistence and post-migration collaboration behavior.' -MigrationAction 'Review B2B and cross-tenant access settings as part of coexistence planning.' -SourceWorksheet 'FederationConfiguration'
+    Add-MigrationRow -Category 'Licensing' -Item 'Target licensing readiness' -Status $(if ($null -ne $overallLicenseUtilization -and $overallLicenseUtilization -ge 85) { 'Review' } else { 'Info' }) -Value $(if ($null -ne $overallLicenseUtilization) { "$overallLicenseUtilization% utilized; $licensedUsers licensed user(s)" } else { 'License utilization unavailable' }) -Notes 'Target tenant licensing should be aligned before user and workload onboarding.' -MigrationAction 'Review paid SKU utilization and confirm target-tenant licensing for migration scope.' -SourceWorksheet 'LicenseSKUs'
+    Add-MigrationRow -Category 'Teams Voice' -Item 'Voice workload readiness' -Status $(if ($voiceSummary -and $voiceSummary.PSObject.Properties['DataSource'] -and $voiceSummary.DataSource -eq 'GraphLicenseInference') { 'Needs Data' } else { 'Info' }) -Value $(if ($voiceSummary) { "Voice users=$($voiceSummary.VoiceUserCount); source=$($voiceSummary.DataSource)" } else { 'No Teams voice summary collected' }) -Notes 'Current app-auth path infers voice licensing but does not capture full PSTN or number-assignment state.' -MigrationAction 'Add Teams voice/call record permissions or collect delegated Teams PowerShell data before final voice migration planning.' -SourceWorksheet 'TeamsVoice'
+
+    foreach ($migrationRow in $migrationRows) {
+        $migrationIndex++
+        $TenantStatsHash['MigrationReadiness'][("{0:D3}-{1}" -f $migrationIndex, $migrationRow.Item)] = $migrationRow
+    }
+
+    Write-Log -Type INFO -Message "[Update-AssessmentReportTables] Created $($TenantStatsHash['BestPractices'].Count) best-practice summary rows, $($TenantStatsHash['BestPracticeFindings'].Count) detailed findings, and $($TenantStatsHash['MigrationReadiness'].Count) migration readiness rows" -ExportFileLocation $ExportDetails
+}
+
+function Update-ConfigurationSummaryTables {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$TenantStatsHash
+    )
+
+    if (-not $TenantStatsHash) {
+        return
+    }
+
+    $TenantStatsHash['TenantInfoSummary'] = @{}
+    $TenantStatsHash['SpamFilteringSummary'] = @{}
+    $TenantStatsHash['SMTPRelaySummary'] = @{}
+    $TenantStatsHash['FederationSummary'] = @{}
+    $TenantStatsHash['TeamsVoiceSummary'] = @{}
+
+    if ($TenantStatsHash.ContainsKey('TenantInfo') -and $TenantStatsHash['TenantInfo']) {
+        $tenantInfo = $TenantStatsHash['TenantInfo']
+        $selfService = $tenantInfo.SelfServicePurchase
+        $azureUsage = $tenantInfo.AzureResourceUsage
+        $TenantStatsHash['TenantInfoSummary']['Summary'] = [PSCustomObject]@{
+            DisplayName             = $tenantInfo.DisplayName
+            TenantId                = $tenantInfo.TenantId
+            InitialDomain           = $tenantInfo.InitialDomain
+            DefaultDomain           = $tenantInfo.DefaultDomain
+            Country                 = $tenantInfo.Country
+            CountryLetterCode       = $tenantInfo.CountryLetterCode
+            PreferredDataLocation   = $tenantInfo.PreferredDataLocation
+            MultiGeoEnabled         = $tenantInfo.MultiGeoEnabled
+            MultiGeoAllowed         = $(if ($tenantInfo.MultiGeoAllowed) { $tenantInfo.MultiGeoAllowed -join ', ' } else { $null })
+            MultiGeoCentral         = $tenantInfo.MultiGeoCentral
+            SelfServicePurchase     = $(if ($selfService) { $selfService.Answer } else { $null })
+            SelfServicePurchaseNotes = $(if ($selfService) { $selfService.Notes } else { $null })
+            AzureResourceUsage      = $(if ($azureUsage) { $azureUsage.Answer } else { $null })
+            AzureResourceUsageNotes = $(if ($azureUsage) { $azureUsage.Notes } else { $null })
+        }
+    }
+
+    if ($TenantStatsHash.ContainsKey('SpamFilteringConfig') -and $TenantStatsHash['SpamFilteringConfig'].ContainsKey('Configuration')) {
+        $spamConfig = $TenantStatsHash['SpamFilteringConfig']['Configuration']
+        $TenantStatsHash['SpamFilteringSummary']['Summary'] = [PSCustomObject]@{
+            Uses3rdPartyFiltering      = $spamConfig.Uses3rdPartyFiltering
+            InboundConnectorCount      = $spamConfig.InboundConnectorCount
+            OutboundConnectorCount     = $spamConfig.OutboundConnectorCount
+            TransportRuleCount         = $spamConfig.TransportRuleCount
+            TransportRulesWithTrustedIPs = $spamConfig.TransportRulesWithTrustedIPs
+            PotentialSpamFilters       = $(if ($spamConfig.PotentialSpamFilters) { $spamConfig.PotentialSpamFilters -join '; ' } else { $null })
+            TransportRuleIndicators    = $(if ($spamConfig.TransportRuleIndicators) { $spamConfig.TransportRuleIndicators -join '; ' } else { $null })
+        }
+    }
+
+    if ($TenantStatsHash.ContainsKey('SMTPRelayConfig') -and $TenantStatsHash['SMTPRelayConfig'].ContainsKey('Configuration')) {
+        $smtpConfig = $TenantStatsHash['SMTPRelayConfig']['Configuration']
+        $TenantStatsHash['SMTPRelaySummary']['Summary'] = [PSCustomObject]@{
+            SMTPAuthEnabled                  = $smtpConfig.SMTPAuthEnabled
+            SMTPAuthUsers                    = $smtpConfig.SMTPAuthUsers
+            ConnectorBasedRelay              = $smtpConfig.ConnectorBasedRelay
+            RelayConnectorCount              = @($smtpConfig.RelayConnectors).Count
+            DirectSendEnabled                = $smtpConfig.DirectSendEnabled
+            AuthoritativeDomains             = $(if ($smtpConfig.PSObject.Properties['AuthoritativeDomains']) { $smtpConfig.AuthoritativeDomains } else { $null })
+            SmtpClientAuthenticationDisabled = $(if ($smtpConfig.PSObject.Properties['SmtpClientAuthenticationDisabled']) { $smtpConfig.SmtpClientAuthenticationDisabled } else { $null })
+        }
+    }
+
+    if ($TenantStatsHash.ContainsKey('FederationConfiguration') -and $TenantStatsHash['FederationConfiguration']) {
+        $fedConfig = $TenantStatsHash['FederationConfiguration']
+        $exchangeFed = if ($fedConfig.ContainsKey('ExchangeFederation')) { $fedConfig['ExchangeFederation'] } else { $null }
+        $crossTenant = if ($fedConfig.ContainsKey('CrossTenantAccess')) { $fedConfig['CrossTenantAccess'] } else { $null }
+        $externalIds = if ($fedConfig.ContainsKey('ExternalIdentities')) { $fedConfig['ExternalIdentities'] } else { $null }
+
+        $TenantStatsHash['FederationSummary']['Summary'] = [PSCustomObject]@{
+            OrganizationRelationshipCount = $(if ($exchangeFed) { $exchangeFed.OrganizationRelationshipCount } else { 0 })
+            IntraOrgConnectorCount        = $(if ($exchangeFed) { $exchangeFed.IntraOrgConnectorCount } else { 0 })
+            CrossTenantPartnerCount       = $(if ($crossTenant) { $crossTenant.PartnerCount } else { 0 })
+            CrossTenantPartners           = $(if ($crossTenant) { $crossTenant.PartnerTenantNames } else { $null })
+            B2BManagementPolicyPresent    = $(if ($externalIds) { $externalIds.B2BManagementPolicyPresent } else { $null })
+            GuestUserRole                 = $(if ($externalIds) { $externalIds.GuestUserRole } else { $null })
+            InvitationsAllowed            = $(if ($externalIds) { $externalIds.InvitationsAllowed } else { $null })
+        }
+    }
+
+    if ($TenantStatsHash.ContainsKey('TeamsVoice') -and $TenantStatsHash['TeamsVoice'].ContainsKey('Summary')) {
+        $TenantStatsHash['TeamsVoiceSummary']['Summary'] = $TenantStatsHash['TeamsVoice']['Summary']
     }
 }
 
@@ -7858,6 +9296,12 @@ function Build-TeamsSection {
             [PSCustomObject]@{ Metric = 'Assigned Phone Numbers'; Value = $voiceSummary.PhoneNumberCount },
             [PSCustomObject]@{ Metric = 'Voice-Enabled Users'; Value = $voiceSummary.VoiceUserCount }
         )
+        if ($voiceSummary.PSObject.Properties['DataSource'] -and $voiceSummary.DataSource) {
+            $voiceRows += [PSCustomObject]@{ Metric = 'Data Source'; Value = $voiceSummary.DataSource }
+        }
+        if ($voiceSummary.PSObject.Properties['Notes'] -and $voiceSummary.Notes) {
+            $voiceRows += [PSCustomObject]@{ Metric = 'Notes'; Value = $voiceSummary.Notes }
+        }
         $voiceSummaryTable = "<h3 style='margin-top:20px;'>Teams Voice Summary</h3>" +
             (New-HtmlTable -Data $voiceRows -Columns @('Metric','Value') -ColumnHeaders @{ Metric='Metric'; Value='Value' })
     }
@@ -8734,10 +10178,21 @@ function New-TenantHtmlReport {
     $recipients = ConvertTo-Array (Get-FromHash $TenantStatsHash 'AllRecipients')
     Write-Verbose "Recipients: Found $($recipients.Count) items"
     
-    $mailboxes = ConvertTo-Array (Get-FromHash $TenantStatsHash 'MailboxFullDetails')
+    $mailboxSourceKey = if ($TenantStatsHash.ContainsKey('MailboxFullDetails')) {
+        'MailboxFullDetails'
+    } elseif ($TenantStatsHash.ContainsKey('AllMailboxes')) {
+        'AllMailboxes'
+    } else {
+        $null
+    }
+    $mailboxes = if ($mailboxSourceKey) { ConvertTo-Array (Get-FromHash $TenantStatsHash $mailboxSourceKey) } else { @() }
     Write-Verbose "Mailboxes: Found $($mailboxes.Count) items"
     
-    $inactiveMailboxes = ConvertTo-Array (Get-FromHash $TenantStatsHash 'InactiveMailboxDetails')
+    if ($TenantStatsHash.ContainsKey('InactiveMailboxDetails')) {
+        $inactiveMailboxes = ConvertTo-Array (Get-FromHash $TenantStatsHash 'InactiveMailboxDetails')
+    } else {
+        $inactiveMailboxes = @($mailboxes | Where-Object { $_.PSObject.Properties['IsInactiveMailbox'] -and $_.IsInactiveMailbox -eq $true })
+    }
     Write-Verbose "Inactive Mailboxes: Found $($inactiveMailboxes.Count) items"
 
     $publicFolders = ConvertTo-Array (Get-FromHash $TenantStatsHash 'PublicFolderDetails')
@@ -8758,7 +10213,7 @@ function New-TenantHtmlReport {
     $secureScore = ConvertTo-Array (Get-FromHash $TenantStatsHash 'SecuritySecureScore')
     Write-Verbose "Secure Score: Found $($secureScore.Count) items"
 
-    $teams = ConvertTo-Array (Get-FromHash $TenantStatsHash 'AllTeams')
+    $teams = if ($TenantStatsHash.ContainsKey('AllTeams')) { ConvertTo-Array (Get-FromHash $TenantStatsHash 'AllTeams') } else { @() }
     Write-Verbose "Teams: Found $($teams.Count) items"
     $teamsVoice = $null
     if ($TenantStatsHash.ContainsKey('TeamsVoice')) {
@@ -9181,7 +10636,11 @@ catch {
 }
 
 # Connect to Microsoft Office 365 Services
-Connect-Office365 -ErrorAction Stop
+$connectOffice365Params = @{}
+if ($PSBoundParameters.ContainsKey('TenantId')) { $connectOffice365Params.TenantId = $TenantId }
+if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $connectOffice365Params.CertificateThumbprint = $CertificateThumbprint }
+if ($PSBoundParameters.ContainsKey('ClientId')) { $connectOffice365Params.ClientId = $ClientId }
+$connectionResult = Connect-Office365 @connectOffice365Params -ErrorAction Stop
 
 #Get Export Path
 $defaultReportFileName = ((Get-MgOrganization).DisplayName + " Tenant Discovery Report")
@@ -9201,6 +10660,7 @@ if ([string]::IsNullOrWhiteSpace($ReportingMode)) {
     $reportingMode = $ReportingMode.ToLower()
     Write-Host "You selected: $reportingMode reporting mode" -ForegroundColor Green
 }
+Write-Host "Output profile: $OutputProfile" -ForegroundColor Green
 
 #Hash Table to hold final report data
 $global:tenantStatsHash = @{}
@@ -9211,7 +10671,18 @@ $global:InitialStart = Get-Date
 ########################################################
 # Main Execution (Main Block)
 ########################################################
-cls
+try {
+    if (
+        $Host.Name -eq 'ConsoleHost' -and
+        -not [Console]::IsInputRedirected -and
+        -not [Console]::IsOutputRedirected -and
+        -not [Console]::IsErrorRedirected
+    ) {
+        Clear-Host
+    }
+} catch {
+    Write-Verbose "Skipping Clear-Host in non-interactive session: $($_.Exception.Message)"
+}
 Write-Host "Starting Office 365 Discovery Script" -ForegroundColor Black -BackgroundColor Yellow
 Write-Host
 Write-Host "Gathering Exchange Online Objects and data" -ForegroundColor Black -BackgroundColor Yellow
@@ -9243,10 +10714,10 @@ switch ($GraphTest) {
     "SDK" {
         Write-Verbose "Attempting to use Microsoft Graph SDK for Tenant Object and License details"
         #Get-TeamsDetails -detailLevel $reportingMode
-        Get-TeamsVoiceDetails
         Get-ConditionalAccessPoliciesReport -detailLevel $reportingMode
         Get-AllLicenseSKUs
         Get-AllUserDetails -detailLevel $reportingMode
+        Get-TeamsVoiceDetails
         Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType SDK
         Get-AllOffice365Domains
         Get-AllOffice365Admins
@@ -9262,7 +10733,8 @@ Write-Host
 
 Write-Host "Gathering Collaboration/SharePoint Objects and data" -ForegroundColor Black -BackgroundColor Yellow
 Get-AllUnifiedGroups -detailLevel $reportingMode
-Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName SPO
+$sharePointDiscoveryService = if ($connectionResult -and $connectionResult.SharePointOnline) { 'SPO' } else { 'MGGraph' }
+Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName $sharePointDiscoveryService
 Write-Host
 
 
@@ -9273,6 +10745,9 @@ if ($reportingMode -eq "combined" -or $reportingMode -eq "all") {
     #Combine Reports
     Report-UserAndMailboxStats
 }
+
+Update-AssessmentReportTables -TenantStatsHash $global:tenantStatsHash
+Update-ConfigurationSummaryTables -TenantStatsHash $global:tenantStatsHash
 
 
 ########################################################
@@ -9295,12 +10770,36 @@ catch {
 }
 
 # Export JSON snapshot for reuse
+if ($effectiveSkipJsonReport) {
+    Write-Log -Type INFO -Message "Skipping JSON report generation because -SkipJsonReport was provided." -ExportFileLocation $ExportDetails
+} else {
+    try {
+        $jsonExportPath = $ExportDetails -replace '\.xlsx$', '.json'
+        Export-TenantStatsJson -TenantStatsHash $ExportTenantStatsHash -Path $jsonExportPath
+        Write-Log -Type INFO -Message "Exported Tenant Statistics JSON to $jsonExportPath" -ExportFileLocation $ExportDetails
+    } catch {
+        Write-Log -Type WARNING -Message "Unable to export Tenant Statistics JSON: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+    }
+}
+
 try {
-    $jsonExportPath = $ExportDetails -replace '\.xlsx$', '.json'
-    Export-TenantStatsJson -TenantStatsHash $global:tenantStatsHash -Path $jsonExportPath
-    Write-Log -Type INFO -Message "Exported Tenant Statistics JSON to $jsonExportPath" -ExportFileLocation $ExportDetails
+    if (Get-Command -Name Export-TenantToTenantQuestionnaireMarkdown -ErrorAction SilentlyContinue) {
+        $questionnaireTemplateCandidates = @(
+            [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\..\docs\Microsoft 365 Tenant to Tenant Questionnaire.md')),
+            [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\..\docs\templates\Microsoft 365 Tenant to Tenant Questionnaire.md'))
+        )
+        $questionnaireTemplatePath = $questionnaireTemplateCandidates | Where-Object { Test-Path -Path $_ } | Select-Object -First 1
+        if (-not $questionnaireTemplatePath) {
+            throw "Questionnaire template not found in expected locations: $($questionnaireTemplateCandidates -join '; ')"
+        }
+        $questionnaireExportPath = $ExportDetails -replace '\.xlsx$', '-TenantToTenantQuestionnaire.md'
+        Export-TenantToTenantQuestionnaireMarkdown -TenantStatsHash $global:tenantStatsHash -TemplatePath $questionnaireTemplatePath -Path $questionnaireExportPath
+        Write-Log -Type INFO -Message "Exported Tenant to Tenant Questionnaire to $questionnaireExportPath" -ExportFileLocation $ExportDetails
+    } else {
+        Write-Log -Type WARNING -Message "Skipping questionnaire export because Export-TenantToTenantQuestionnaireMarkdown is unavailable." -ExportFileLocation $ExportDetails
+    }
 } catch {
-    Write-Log -Type WARNING -Message "Unable to export Tenant Statistics JSON: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+    Write-Log -Type WARNING -Message "Unable to export Tenant to Tenant Questionnaire: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
 }
 
 Write-Host ""
@@ -9323,13 +10822,29 @@ if ($global:AllDiscoveryErrors.Count -gt 0) {
 Write-Host ""
 Write-Host "Generating HTML Report..." -ForegroundColor Black -BackgroundColor Yellow
 
-if ($SkipHtmlReport) {
-    Write-Host "Skipping HTML report generation because -SkipHtmlReport was provided." -ForegroundColor Yellow
-    Write-Log -Type INFO -Message "Skipping HTML report generation because -SkipHtmlReport was provided." -ExportFileLocation $ExportDetails
+try {
+    if (Get-Command New-TenantAssessmentHtmlReport -ErrorAction SilentlyContinue) {
+        $assessmentHtmlPath = $ExportDetails -replace '\.xlsx$', '-Assessment.html'
+        $assessmentHtmlResult = New-TenantAssessmentHtmlReport -TenantStatsHash $global:tenantStatsHash -OutputPath $assessmentHtmlPath
+        if ($assessmentHtmlResult.Success) {
+            Write-Log -Type INFO -Message "Assessment HTML report generated: $($assessmentHtmlResult.OutputPath)" -ExportFileLocation $ExportDetails
+        } else {
+            Write-Log -Type WARNING -Message "Assessment HTML report generation failed: $($assessmentHtmlResult.Error)" -ExportFileLocation $ExportDetails
+        }
+    } else {
+        Write-Log -Type WARNING -Message "Skipping assessment HTML report generation because New-TenantAssessmentHtmlReport is unavailable." -ExportFileLocation $ExportDetails
+    }
+} catch {
+    Write-Log -Type WARNING -Message "Error generating assessment HTML report: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+}
+
+if ($effectiveSkipHtmlReport) {
+    Write-Host "Skipping full HTML report generation because -SkipHtmlReport was provided or the Lean output profile is active." -ForegroundColor Yellow
+    Write-Log -Type INFO -Message "Skipping full HTML report generation because -SkipHtmlReport was provided or the Lean output profile is active." -ExportFileLocation $ExportDetails
 }
 elseif (-not (Get-Command New-TenantHtmlReport -ErrorAction SilentlyContinue)) {
-    Write-Warning "New-TenantHtmlReport function is not available. Skipping HTML report generation."
-    Write-Log -Type WARNING -Message "Skipping HTML report generation because New-TenantHtmlReport is unavailable." -ExportFileLocation $ExportDetails
+    Write-Warning "New-TenantHtmlReport function is not available. Skipping full HTML report generation."
+    Write-Log -Type WARNING -Message "Skipping full HTML report generation because New-TenantHtmlReport is unavailable." -ExportFileLocation $ExportDetails
 }
 else {
     try {
@@ -9367,9 +10882,31 @@ else {
             Write-Log -Type INFO -Message "HTML report generated: $($htmlResult.OutputPath)" -ExportFileLocation $ExportDetails
             #Write-Log -Type INFO -Message "HTML report sections: $($htmlResult.SectionCounts.TotalSections)" -ExportFileLocation $ExportDetails
             #Write-Log -Type INFO -Message "HTML report findings: $($htmlResult.SectionCounts.TotalFindings)" -ExportFileLocation $ExportDetails
-            
-            # Optionally auto-open in browser (uncomment if desired)
-            # Start-Process $htmlResult.OutputPath
+
+            if ($effectiveSkipPdfReport) {
+                Write-Host "Skipping PDF report generation because -SkipPdfReport was provided or the selected output profile disables it." -ForegroundColor Yellow
+                Write-Log -Type INFO -Message "Skipping PDF report generation because -SkipPdfReport was provided or the selected output profile disables it." -ExportFileLocation $ExportDetails
+            }
+            elseif (-not (Get-Command Export-TenantHtmlReportPdf -ErrorAction SilentlyContinue)) {
+                Write-Warning "PDF report helper is unavailable. HTML report was generated, but PDF export was skipped."
+                Write-Log -Type WARNING -Message "Skipping PDF report generation because Export-TenantHtmlReportPdf is unavailable." -ExportFileLocation $ExportDetails
+            }
+            else {
+                try {
+                    $pdfExportPath = $htmlResult.OutputPath -replace '\.html$', '.pdf'
+                    $pdfResult = Export-TenantHtmlReportPdf -HtmlPath $htmlResult.OutputPath -PdfPath $pdfExportPath
+
+                    if ($pdfResult.Success) {
+                        Write-Log -Type INFO -Message "PDF report generated: $($pdfResult.PdfPath) using $($pdfResult.Renderer)" -ExportFileLocation $ExportDetails
+                    } else {
+                        Write-Warning "PDF report generation failed: $($pdfResult.Error)"
+                        Write-Log -Type WARNING -Message "PDF report generation failed: $($pdfResult.Error)" -ExportFileLocation $ExportDetails
+                    }
+                } catch {
+                    Write-Warning "Error generating PDF report: $($_.Exception.Message)"
+                    Write-Log -Type WARNING -Message "Error generating PDF report: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+                }
+            }
         } else {
             Write-Warning "HTML report generation failed: $($htmlResult.Error)"
             Write-Log -Type ERROR -Message "HTML report generation failed: $($htmlResult.Error)" -ExportFileLocation $ExportDetails

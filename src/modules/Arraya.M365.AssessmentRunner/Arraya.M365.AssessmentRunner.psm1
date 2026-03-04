@@ -41,14 +41,33 @@ function Invoke-M365TenantAssessment {
         [ValidateSet('Minimum', 'Combined', 'All', 'Geek')]
         [string]$ReportingMode,
         [Parameter(Mandatory = $false)]
-        [switch]$SkipHtmlReport
+        [ValidateSet('Lean', 'Standard', 'Full')]
+        [string]$OutputProfile,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipHtmlReport,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipPdfReport,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipJsonReport,
+        [Parameter(Mandatory = $false)]
+        [string]$TenantId,
+        [Parameter(Mandatory = $false)]
+        [string]$CertificateThumbprint,
+        [Parameter(Mandatory = $false)]
+        [string]$ClientId
     )
 
     $scriptPath = Get-LegacyScriptPath -Name 'Get-FullTenantReportDetails.ps1'
     $invokeParams = @{}
     if ($PSBoundParameters.ContainsKey('ExportPath')) { $invokeParams.ExportPath = $ExportPath }
     if ($PSBoundParameters.ContainsKey('ReportingMode')) { $invokeParams.ReportingMode = $ReportingMode }
+    if ($PSBoundParameters.ContainsKey('OutputProfile')) { $invokeParams.OutputProfile = $OutputProfile }
     if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
+    if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
+    if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
+    if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
+    if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
+    if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
 
     & $scriptPath @invokeParams
 }
