@@ -128,12 +128,15 @@ function Invoke-M365ImprovementPlan {
         [Parameter(Mandatory = $true)]
         [string]$AssessmentJsonPath,
         [Parameter(Mandatory = $false)]
-        [string]$OutputFolder
+        [string]$OutputFolder,
+        [Parameter(Mandatory = $false)]
+        [switch]$UseGraphFallback
     )
 
     $scriptPath = Get-LegacyScriptPath -Name 'New-M365TenantImprovementPlan.ps1'
     $invokeParams = @{ AssessmentJsonPath = $AssessmentJsonPath }
     if ($PSBoundParameters.ContainsKey('OutputFolder')) { $invokeParams.OutputFolder = $OutputFolder }
+    if ($PSBoundParameters.ContainsKey('UseGraphFallback')) { $invokeParams.UseGraphFallback = $UseGraphFallback }
 
     & $scriptPath @invokeParams
 }

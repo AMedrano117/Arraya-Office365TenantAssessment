@@ -14,6 +14,14 @@ Import-Office365CustomLocal -RepoRoot $PSScriptRoot -RequiredCommands @(
     'Office365Custom\Get-ExportPath'
 ) | Out-Null
 
+$commonModuleManifestPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\modules\Arraya.M365.Common\Arraya.M365.Common.psd1'))
+if (-not (Test-Path -Path $commonModuleManifestPath)) {
+    throw "Required common module manifest not found: $commonModuleManifestPath"
+}
+if (-not (Get-Module -Name 'Arraya.M365.Common' -ErrorAction SilentlyContinue)) {
+    Import-Module -Name $commonModuleManifestPath -ErrorAction Stop
+}
+
 #region - Default Script Helper Functions
 # ----------------------------------
 
@@ -357,62 +365,7 @@ function Export-ErrorReports {
         [Parameter(Mandatory=$True)]
         [string]$logReportDirectory
     )
-
-    # Validate ErrorData
-    if ($ErrorData.Count -eq 0) {
-        Write-Log -Type WARNING -Message "No error data provided to export. Exiting function." -ExportFileLocation $ExportDetails[0]
-        return
-    }
-
-    Write-Log -Type INFO -Message "START: Export all Errors" -ExportFileLocation $ExportDetails[0]
-
-    if ($ExportFileLocation) {
-        $directory = [System.IO.Path]::GetDirectoryName($ExportFileLocation)
-        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($ExportFileLocation)
-        $errorReportFolderName = $baseName + " Error Reporting"
-        $errorReportFolderDirectory = Join-Path -Path $directory -ChildPath $errorReportFolderName
-    } else {
-        if ($ErrorReportFolderDirectory) {
-            $directory = $ErrorReportFolderDirectory
-        } else {
-            $directory = $env:TEMP
-        }
-        
-        if ($ErrorReportFolderName) {
-            $errorReportFolderName = $ErrorReportFolderName
-        } else {
-            $errorReportFolderName = "$BaseName Error Reporting"
-        }
-        $errorReportFolderDirectory = Join-Path -Path $directory -ChildPath $errorReportFolderName
-    }
-
-    Write-Log -Type INFO -Message "INFO: Exporting Error Logs to directory $($errorReportFolderDirectory)" -ExportFileLocation $ExportDetails[0]
-
-    try {
-        if (-not (Test-Path $errorReportFolderDirectory)) {
-            $result = New-Item -Path $errorReportFolderDirectory -ItemType Directory
-            Write-Log -Type INFO -Message "INFO: Error Report Directory '$($errorReportFolderDirectory)' does not exist. Created Folder Directory" -ExportFileLocation $ExportDetails[0]
-        }
-
-        $newBaseName = "$BaseName-ErrorLog"
-        
-        $paths = @{
-            'json' = Join-Path -Path $errorReportFolderDirectory -ChildPath "$newBaseName.json"
-            'txt'  = Join-Path -Path $errorReportFolderDirectory -ChildPath "$newBaseName.log"
-            'csv'  = Join-Path -Path $errorReportFolderDirectory -ChildPath "$newBaseName.csv"
-        }
-
-        $ErrorData | ConvertTo-Json -Depth 1 | Set-Content -Path $paths['json']
-        $ErrorData | Out-File $paths['txt']
-        $ErrorData | Export-Csv -Path $paths['csv'] -NoTypeInformation -Encoding UTF8
-
-        $paths.GetEnumerator() | ForEach-Object {
-            Write-Log -Type INFO -Message "INFO: Exported $($_.Key) Error Logs to directory $($_.Value)" -ExportFileLocation $ExportDetails[0]
-        }
-
-    } catch {
-        Write-Error "Failed to export error reports: $_"
-    }
+    return Export-ArrayaErrorReports @PSBoundParameters
 }
 
 #endregion - Export Script Functions
@@ -1551,13 +1504,15 @@ Write-Host ""
 #Export Errors
 try {
     #silence error reporting locations
-    Export-ErrorReports -ExportFileLocation $ExportDetails[0] -ErrorData $global:AllDiscoveryErrors -logReportDirectory $ExportDetails[0]
+    $errorReportSummary = Export-ErrorReports -ExportFileLocation $ExportDetails[0] -ErrorData $global:AllDiscoveryErrors -logReportDirectory $ExportDetails[0]
 
-    #Display Error Details
-    Write-Host "Error Reporting Details" -ForegroundColor Black -BackgroundColor Yellow
-    Write-Host "Check '$($errorReportFolderDirectory)' for error logs " -ForegroundColor Cyan
-    Write-Host "$($global:AllDiscoveryErrors.count) " -ForegroundColor Red -NoNewline
-    Write-Host "Error(s) encountered. "
+    if ($errorReportSummary) {
+        #Display Error Details
+        Write-Host "Error Reporting Details" -ForegroundColor Black -BackgroundColor Yellow
+        Write-Host "Check '$($errorReportSummary.FolderPath)' for error logs " -ForegroundColor Cyan
+        Write-Host "$($errorReportSummary.ErrorCount) " -ForegroundColor Red -NoNewline
+        Write-Host "Error(s) encountered. "
+    }
     }
 catch {
     if ($_.Exception.Message -like '*because it is an empty collection*') {

@@ -13,10 +13,25 @@ param(
     [ValidateRange(1, 50)]
     [int]$MaxGlobalAdmins = 5,
     [Parameter(Mandatory = $false)]
+    [switch]$UseGraphFallback,
+    [Parameter(Mandatory = $false)]
     [switch]$PassThru
 )
 
 $ErrorActionPreference = 'Stop'
+$graphFallbackEnabled = $UseGraphFallback.IsPresent
+$graphFallbackUnavailableMessageShown = $false
+
+if ($graphFallbackEnabled) {
+    $commonModuleManifestPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\modules\Arraya.M365.Common\Arraya.M365.Common.psd1'))
+    if (-not (Test-Path -Path $commonModuleManifestPath)) {
+        Write-Warning "Graph fallback requested but common module manifest was not found: $commonModuleManifestPath"
+        $graphFallbackEnabled = $false
+    }
+    elseif (-not (Get-Module -Name 'Arraya.M365.Common' -ErrorAction SilentlyContinue)) {
+        Import-Module -Name $commonModuleManifestPath -ErrorAction Stop
+    }
+}
 
 function ConvertTo-Array {
     param($InputObject)
@@ -85,6 +100,45 @@ function New-Finding {
     }
 }
 
+function Get-ImprovementPlanDataset {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $DataRoot,
+        [Parameter(Mandatory = $true)]
+        [string[]]$Names,
+        [Parameter(Mandatory = $false)]
+        [string]$GraphUri,
+        [Parameter(Mandatory = $false)]
+        [string]$Activity = 'Graph fallback dataset fetch',
+        [Parameter(Mandatory = $false)]
+        [switch]$UseGraphFallback
+    )
+
+    $rows = ConvertTo-Array (Get-Value -Object $DataRoot -Names $Names)
+    if ($rows.Count -gt 0 -or -not $UseGraphFallback -or [string]::IsNullOrWhiteSpace($GraphUri)) {
+        return $rows
+    }
+
+    $graphHelper = Get-Command -Name 'Get-ArrayaGraphResource' -ErrorAction SilentlyContinue
+    if (-not $graphHelper) {
+        if (-not $script:graphFallbackUnavailableMessageShown) {
+            Write-Warning 'Graph fallback requested but Get-ArrayaGraphResource is unavailable in the current session.'
+            $script:graphFallbackUnavailableMessageShown = $true
+        }
+        return @()
+    }
+
+    try {
+        $graphResult = Get-ArrayaGraphResource -Uri $GraphUri -Activity $Activity -PageSize 999
+        return ConvertTo-Array $graphResult
+    }
+    catch {
+        Write-Warning "Graph fallback failed for '$Activity': $($_.Exception.Message)"
+        return @()
+    }
+}
+
 if (-not (Test-Path -Path $AssessmentJsonPath)) {
     throw "Assessment JSON not found: $AssessmentJsonPath"
 }
@@ -106,7 +160,7 @@ if ([string]::IsNullOrWhiteSpace($OutputPrefix)) {
 $findings = New-Object System.Collections.Generic.List[object]
 
 # Rule: Secure Score
-$secureScoreRows = ConvertTo-Array (Get-Value -Object $tenantData -Names @('SecuritySecureScore', 'SecureScore'))
+$secureScoreRows = Get-ImprovementPlanDataset -DataRoot $tenantData -Names @('SecuritySecureScore', 'SecureScore') -GraphUri '/v1.0/security/secureScores?$top=10' -Activity 'Secure Score fallback' -UseGraphFallback:$graphFallbackEnabled
 if ($secureScoreRows.Count -gt 0) {
     $latestSecureScore = $secureScoreRows |
         Sort-Object { Convert-ToDate (Get-Value -Object $_ -Names @('CreatedDateTime', 'createdDateTime')) } -Descending |
@@ -130,7 +184,7 @@ if ($secureScoreRows.Count -gt 0) {
 }
 
 # Rule: Conditional Access baseline
-$caPolicies = ConvertTo-Array (Get-Value -Object $tenantData -Names @('ConditionalAccessPolicies', 'ConditionalAccess'))
+$caPolicies = Get-ImprovementPlanDataset -DataRoot $tenantData -Names @('ConditionalAccessPolicies', 'ConditionalAccess') -GraphUri '/v1.0/identity/conditionalAccess/policies' -Activity 'Conditional Access policy fallback' -UseGraphFallback:$graphFallbackEnabled
 $enabledCaPolicies = @(
     $caPolicies | Where-Object {
         $state = (Get-Value -Object $_ -Names @('State', 'state'))
@@ -177,7 +231,7 @@ if ($globalAdminCount -gt $MaxGlobalAdmins) {
 }
 
 # Rule: Domain verification
-$domainRows = ConvertTo-Array (Get-Value -Object $tenantData -Names @('Domains'))
+$domainRows = Get-ImprovementPlanDataset -DataRoot $tenantData -Names @('Domains') -GraphUri '/v1.0/domains' -Activity 'Domain fallback' -UseGraphFallback:$graphFallbackEnabled
 $unverifiedDomains = @(
     $domainRows | Where-Object {
         $isVerified = Get-Value -Object $_ -Names @('IsVerified', 'Verified', 'isVerified')
@@ -191,7 +245,7 @@ if ($unverifiedDomains.Count -gt 0) {
 }
 
 # Rule: License pressure
-$licenseRows = ConvertTo-Array (Get-Value -Object $tenantData -Names @('LicenseSKUs', 'Licenses'))
+$licenseRows = Get-ImprovementPlanDataset -DataRoot $tenantData -Names @('LicenseSKUs', 'Licenses') -GraphUri '/v1.0/subscribedSkus' -Activity 'Subscribed SKU fallback' -UseGraphFallback:$graphFallbackEnabled
 $highUtilSkus = New-Object System.Collections.Generic.List[string]
 foreach ($sku in $licenseRows) {
     $skuName = (Get-Value -Object $sku -Names @('SkuPartNumber', 'DisplayName', 'ProductName', 'SkuId'))
@@ -219,7 +273,7 @@ if ($highUtilSkus.Count -gt 0) {
 }
 
 # Rule: Stale devices
-$deviceRows = ConvertTo-Array (Get-Value -Object $tenantData -Names @('DeviceDetails', 'Devices'))
+$deviceRows = Get-ImprovementPlanDataset -DataRoot $tenantData -Names @('DeviceDetails', 'Devices') -GraphUri '/v1.0/devices?$select=id,displayName,approximateLastSignInDateTime' -Activity 'Device fallback' -UseGraphFallback:$graphFallbackEnabled
 if ($deviceRows.Count -gt 0) {
     $staleCutoff = (Get-Date).AddDays(-1 * $StaleDeviceDays)
     $staleDevices = @(

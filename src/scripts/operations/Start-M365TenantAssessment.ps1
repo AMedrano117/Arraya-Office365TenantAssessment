@@ -15,22 +15,12 @@ param(
     [ValidateSet('Lean', 'Standard', 'Full')]
     [string]$OutputProfile = 'Lean',
     [Parameter(Mandatory = $false)]
+    [switch]$UseGraphFallback,
+    [Parameter(Mandatory = $false)]
     [switch]$SkipPdfReport,
     [Parameter(Mandatory = $false)]
     [switch]$SkipJsonReport
 )
-
-function Get-DefaultAssessmentOutputRoot {
-    [CmdletBinding()]
-    param()
-
-    $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
-    if ([string]::IsNullOrWhiteSpace($localAppData)) {
-        return (Join-Path $PSScriptRoot '..\..\..')
-    }
-
-    return (Join-Path $localAppData 'Arraya\M365TenantAssessment\Outputs')
-}
 
 function Resolve-ArrayaRepoRoot {
     [CmdletBinding()]
@@ -57,7 +47,16 @@ function Resolve-ArrayaRepoRoot {
 }
 
 $repoRoot = Resolve-ArrayaRepoRoot -StartPath $PSScriptRoot
+$commonManifestPath = Join-Path $repoRoot 'src\modules\Arraya.M365.Common\Arraya.M365.Common.psd1'
 $runnerManifestPath = Join-Path $repoRoot 'src\modules\Arraya.M365.AssessmentRunner\Arraya.M365.AssessmentRunner.psd1'
+
+if (-not (Test-Path -Path $commonManifestPath)) {
+    throw "Common module manifest not found: $commonManifestPath"
+}
+if (-not (Get-Module -Name 'Arraya.M365.Common' -ErrorAction SilentlyContinue)) {
+    Import-Module -Name $commonManifestPath -ErrorAction Stop
+}
+
 if (-not (Test-Path -Path $runnerManifestPath)) {
     throw "Runner module manifest not found: $runnerManifestPath"
 }
@@ -89,7 +88,7 @@ if ([string]::IsNullOrWhiteSpace($Action)) {
 
 switch ($Action) {
     'M365' {
-        $defaultOutputRoot = Get-DefaultAssessmentOutputRoot
+        $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
         $reportingModeInput = Read-Host 'Reporting scope (Minimum, Combined, All, Geek) - default Minimum'
         $outputProfileInput = Read-Host 'Output set (Lean, Standard, Full) - default Lean'
         $exportPathInput = Read-Host "Export path (.xlsx or folder) - default $defaultOutputRoot"
@@ -126,6 +125,7 @@ switch ($Action) {
 
         $invokeParams = @{ AssessmentJsonPath = $jsonPath }
         if (-not [string]::IsNullOrWhiteSpace($outputFolder)) { $invokeParams.OutputFolder = $outputFolder }
+        if ($UseGraphFallback) { $invokeParams.UseGraphFallback = $true }
 
         Invoke-M365ImprovementPlan @invokeParams
     }
