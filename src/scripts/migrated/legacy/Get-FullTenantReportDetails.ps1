@@ -153,8 +153,25 @@ $commonModuleManifestPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSSc
 if (-not (Test-Path -Path $commonModuleManifestPath)) {
     throw "Required common module manifest not found: $commonModuleManifestPath"
 }
-if (-not (Get-Module -Name 'Arraya.M365.Common' -ErrorAction SilentlyContinue)) {
-    Import-Module -Name $commonModuleManifestPath -ErrorAction Stop
+$resolvedCommonManifestPath = (Resolve-Path -Path $commonModuleManifestPath).Path
+$loadedCommonModule = Get-Module -Name 'Arraya.M365.Common' -ErrorAction SilentlyContinue | Select-Object -First 1
+$requiredCommonCommands = @(
+    'Get-ArrayaAssessmentOutputRoot',
+    'Get-ArrayaGraphResource',
+    'Export-ArrayaGraphReportCsv',
+    'Get-ArrayaEntraGroupClassification',
+    'Invoke-ArrayaCollectionStepSafe',
+    'Export-ArrayaErrorReports'
+)
+$missingCommonCommands = @(
+    $requiredCommonCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
+)
+if (
+    -not $loadedCommonModule -or
+    $loadedCommonModule.Path -ne $resolvedCommonManifestPath -or
+    $missingCommonCommands.Count -gt 0
+) {
+    Import-Module -Name $resolvedCommonManifestPath -Force -ErrorAction Stop
 }
 
 $tenantHtmlReportPath = Join-Path -Path $PSScriptRoot -ChildPath 'New-TenantHtmlReport.ps1'
