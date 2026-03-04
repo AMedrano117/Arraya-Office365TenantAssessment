@@ -20,6 +20,18 @@ param(
     [switch]$SkipJsonReport
 )
 
+function Get-DefaultAssessmentOutputRoot {
+    [CmdletBinding()]
+    param()
+
+    $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
+    if ([string]::IsNullOrWhiteSpace($localAppData)) {
+        return (Join-Path $PSScriptRoot '..\..\..')
+    }
+
+    return (Join-Path $localAppData 'Arraya\M365TenantAssessment\Outputs')
+}
+
 function Resolve-ArrayaRepoRoot {
     [CmdletBinding()]
     param(
@@ -77,21 +89,17 @@ if ([string]::IsNullOrWhiteSpace($Action)) {
 
 switch ($Action) {
     'M365' {
-        $reportingMode = Read-Host 'Reporting mode (Minimum, Combined, All, Geek) - leave blank for prompt'
-        $outputProfileInput = Read-Host 'Output profile (Lean, Standard, Full) - default Lean'
-        $exportPath = Read-Host 'Export path (.xlsx or folder) - leave blank for prompt'
-        $skipHtmlInput = Read-Host 'Skip full HTML report? (Y/N, default by profile)'
-        $skipPdfInput = Read-Host 'Skip PDF report? (Y/N, default by profile)'
-        $skipJsonInput = Read-Host 'Skip JSON snapshot? (Y/N, default by profile)'
+        $defaultOutputRoot = Get-DefaultAssessmentOutputRoot
+        $reportingModeInput = Read-Host 'Reporting scope (Minimum, Combined, All, Geek) - default Minimum'
+        $outputProfileInput = Read-Host 'Output set (Lean, Standard, Full) - default Lean'
+        $exportPathInput = Read-Host "Export path (.xlsx or folder) - default $defaultOutputRoot"
 
         $invokeParams = @{}
-        if (-not [string]::IsNullOrWhiteSpace($reportingMode)) { $invokeParams.ReportingMode = $reportingMode }
-        if (-not [string]::IsNullOrWhiteSpace($outputProfileInput)) { $invokeParams.OutputProfile = $outputProfileInput }
-        elseif (-not [string]::IsNullOrWhiteSpace($OutputProfile)) { $invokeParams.OutputProfile = $OutputProfile }
-        if (-not [string]::IsNullOrWhiteSpace($exportPath)) { $invokeParams.ExportPath = $exportPath }
-        if ($skipHtmlInput -match '^(y|yes)$') { $invokeParams.SkipHtmlReport = $true }
-        if ($skipPdfInput -match '^(y|yes)$' -or $SkipPdfReport) { $invokeParams.SkipPdfReport = $true }
-        if ($skipJsonInput -match '^(y|yes)$' -or $SkipJsonReport) { $invokeParams.SkipJsonReport = $true }
+        $invokeParams.ReportingMode = if ([string]::IsNullOrWhiteSpace($reportingModeInput)) { 'Minimum' } else { $reportingModeInput }
+        $invokeParams.OutputProfile = if (-not [string]::IsNullOrWhiteSpace($outputProfileInput)) { $outputProfileInput } else { $OutputProfile }
+        $invokeParams.ExportPath = if (-not [string]::IsNullOrWhiteSpace($exportPathInput)) { $exportPathInput } else { $defaultOutputRoot }
+        if ($SkipPdfReport) { $invokeParams.SkipPdfReport = $true }
+        if ($SkipJsonReport) { $invokeParams.SkipJsonReport = $true }
         if (-not [string]::IsNullOrWhiteSpace($TenantId)) { $invokeParams.TenantId = $TenantId }
         if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
         if (-not [string]::IsNullOrWhiteSpace($ClientId)) { $invokeParams.ClientId = $ClientId }

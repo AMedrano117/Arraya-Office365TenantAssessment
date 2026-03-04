@@ -163,6 +163,18 @@ if (Test-Path $tenantQuestionnairePath) {
     Write-Warning "Optional questionnaire helper script not found: $tenantQuestionnairePath. Questionnaire export will be skipped."
 }
 
+function Get-DefaultAssessmentOutputRoot {
+    [CmdletBinding()]
+    param()
+
+    $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
+    if ([string]::IsNullOrWhiteSpace($localAppData)) {
+        return $PSScriptRoot
+    }
+
+    return (Join-Path -Path $localAppData -ChildPath 'Arraya\M365TenantAssessment\Outputs')
+}
+
 
 ########################################################
 # Functions
@@ -354,9 +366,9 @@ function Get-ExportPath {
         $userInput = Join-Path -Path (Get-Location).Path -ChildPath $userInput
     }
 
-    # If user input is empty, default to Desktop
+    # If user input is empty, default to the local non-repo output root
     if ([string]::IsNullOrEmpty($userInput)) {
-        $userInput = [Environment]::GetFolderPath("Desktop")
+        $userInput = Get-DefaultAssessmentOutputRoot
     }
 
     # File path processing
@@ -379,9 +391,9 @@ function Get-ExportPath {
         if (-not [string]::IsNullOrEmpty($inputFileName)) {
             # User is overriding the FileName via path
             $fileName = $inputFileName
-            # If no folder path (i.e., just a file name), use Desktop
+            # If no folder path (i.e., just a file name), use the local output root
             if ([string]::IsNullOrWhiteSpace($folderPath)) {
-                $folderPath = [Environment]::GetFolderPath("Desktop")
+                $folderPath = Get-DefaultAssessmentOutputRoot
             }
         } else {
             # User entered something ambiguous, fallback
@@ -3324,8 +3336,8 @@ function Connect-Office365 {
                                 if (-not $TenantId) { throw "Graph Certificate auth requires -TenantId." }
                                 if (-not $ClientId) { throw "Graph Certificate auth requires -ClientId." }
                                 Write-Host "Connecting to Graph (certificate)..." -ForegroundColor Cyan
-                                Write-Verbose "Running Connect-MgGraph with -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint"
-                                Connect-MgGraph -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -NoWelcome -ErrorAction Stop | Out-Null
+                                Write-Verbose "Running Connect-MgGraph with -TenantId $TenantId -ClientId $ClientId -Certificate <resolved certificate>"
+                                Connect-MgGraph -TenantId $TenantId -ClientId $ClientId -Certificate $authCertificate -NoWelcome -ErrorAction Stop | Out-Null
                             }
                             'ClientSecret' {
                                 Write-Verbose "Using application secret authentication for Graph."
@@ -3344,7 +3356,12 @@ function Connect-Office365 {
                         Write-Host "✓ Graph connected" -ForegroundColor Green
                     }
                     catch {
-                        Write-Host "✗ Graph: $($_.Exception.Message)" -ForegroundColor Red
+                        if ($AuthenticationType -eq 'Certificate') {
+                            Write-Host "✗ Graph: $($_.Exception.Message)" -ForegroundColor Red
+                            Write-Warning "Verify the certificate thumbprint is installed in CurrentUser\\My or LocalMachine\\My on this machine, includes the private key, and that the app registration allows certificate auth for ClientId $ClientId."
+                        } else {
+                            Write-Host "✗ Graph: $($_.Exception.Message)" -ForegroundColor Red
+                        }
                         $result.Graph = $false
                         return
                     }
@@ -6779,7 +6796,9 @@ $script:DefaultThresholds = @{
 }
 
 # Merge custom thresholds if provided
-if ($Thresholds) {
+$thresholdsVariable = Get-Variable -Name Thresholds -ErrorAction SilentlyContinue
+if ($thresholdsVariable -and $null -ne $thresholdsVariable.Value) {
+    $Thresholds = $thresholdsVariable.Value
     foreach ($key in $Thresholds.Keys) {
         $script:DefaultThresholds[$key] = $Thresholds[$key]
     }
