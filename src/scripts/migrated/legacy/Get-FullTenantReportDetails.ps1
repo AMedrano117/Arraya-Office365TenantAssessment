@@ -2355,8 +2355,12 @@ function Get-AllUnifiedGroups {
         [string]$detailLevel     
     )
     #Get Office 365 Group / Group Mailbox data with SharePoint URL data
+    $start = Get-Date
+    $CompletedTime = $null
+    $fetchProgressId = 40
+    $hashProgressId = 41
+    $statsProgressId = 42
     try {
-        $start = Get-Date
         # Ensure global hash table structure
         if (-not $global:tenantStatsHash) {
             $global:tenantStatsHash = @{}
@@ -2365,6 +2369,8 @@ function Get-AllUnifiedGroups {
         Write-Host "Getting all unified groups (including soft deleted)..." -ForegroundColor Cyan -nonewline
         Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] START: Gathering all Unified with $($detailLevel) details" -ExportFileLocation $ExportDetails
         Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Querying unified groups from Exchange Online" -ExportFileLocation $ExportDetails
+        Write-Host "  Phase 1/3: Querying unified groups from Exchange Online..." -ForegroundColor DarkGray
+        Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Status "Starting query"
         switch ($detailLevel) {
             {$_ -in "minimum", "combined", "all"} { 
                 $DesiredProperties = @(
@@ -2376,46 +2382,81 @@ function Get-AllUnifiedGroups {
                     @{Name="Description"; Expression={$_.Description -join ','}}, "WhenCreated"
                 )
 
-                $allUnifiedGroups = Get-UnifiedGroup -resultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue| Select $DesiredProperties
+                $allUnifiedGroups = @()
+                $fetchedGroups = 0
+                Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue |
+                    Select-Object $DesiredProperties |
+                    ForEach-Object {
+                        $allUnifiedGroups += $_
+                        $fetchedGroups++
+                        if ($fetchedGroups -eq 1 -or ($fetchedGroups % 50) -eq 0) {
+                            Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Status "Fetched $fetchedGroups groups (continuing...)"
+                        }
+                    }
             }
-            geek {$allUnifiedGroups = Get-UnifiedGroup -resultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue}
+            geek {
+                $allUnifiedGroups = @()
+                $fetchedGroups = 0
+                Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue |
+                    ForEach-Object {
+                        $allUnifiedGroups += $_
+                        $fetchedGroups++
+                        if ($fetchedGroups -eq 1 -or ($fetchedGroups % 50) -eq 0) {
+                            Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Status "Fetched $fetchedGroups groups (continuing...)"
+                        }
+                    }
+            }
         }
+        Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Completed
+        Write-Host ("  Phase 1/3 complete: fetched {0} unified groups" -f @($allUnifiedGroups).Count) -ForegroundColor DarkGray
         
         $allUnifiedGroups = @($allUnifiedGroups)
         $totalUnifiedGroups = $allUnifiedGroups.Count
         Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Adding Unified Group data to Hash" -ExportFileLocation $ExportDetails
-        $progressId = 41
+        Write-Host "  Phase 2/3: Adding unified group data to hash..." -ForegroundColor DarkGray
         $progressTotal = [Math]::Max($totalUnifiedGroups, 1)
         $progressIndex = 0
         foreach ($group in $allUnifiedGroups) {
             $progressIndex++
             $groupLabel = if ([string]::IsNullOrWhiteSpace([string]$group.DisplayName)) { [string]$group.PrimarySmtpAddress } else { [string]$group.DisplayName }
-            Write-ProgressHelper -Total $progressTotal -Id $progressId -Index $progressIndex -Activity "Adding Unified Group data to Hash" -Operation $groupLabel
+            Write-ProgressHelper -Total $progressTotal -Id $hashProgressId -Index $progressIndex -Activity "Adding Unified Group data to Hash" -Operation $groupLabel
             #$key = $group.ExchangeGuid.ToString()
             $global:tenantStatsHash["UnifiedGroups"][$group.PrimarySmtpAddress] = $group
         }
-        Write-ProgressHelper -Total $progressTotal -Id $progressId -Activity "Adding Unified Group data to Hash" -Completed
-        $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
+        Write-ProgressHelper -Total $progressTotal -Id $hashProgressId -Activity "Adding Unified Group data to Hash" -Completed
+        Write-Host "  Phase 2/3 complete: unified group hash populated" -ForegroundColor DarkGray
 
         # Get Unified Group Statistics
         Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Gathering all Unified Group Statistics" -ExportFileLocation $ExportDetails
         if (-not $global:tenantStatsHash.ContainsKey("PrimaryMailboxStats")) {
             $global:tenantStatsHash["PrimaryMailboxStats"] = @{}
         }
+        Write-Host "  Phase 3/3: Gathering unified group mailbox statistics..." -ForegroundColor DarkGray
 
-        $allUnifiedGroupStatisticsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $allUnifiedGroups -ProgressActivity "Gathering Unified Group Mailbox Statistics" -ProgressId 42
-        foreach ($groupStat in $allUnifiedGroupStatisticsResult.Results) {
-            $key = $groupStat.MailboxGuid.ToString()
-            $global:tenantStatsHash["PrimaryMailboxStats"][$key] = $groupStat
+        if ($totalUnifiedGroups -gt 0) {
+            $allUnifiedGroupStatisticsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $allUnifiedGroups -ProgressActivity "Gathering Unified Group Mailbox Statistics" -ProgressId $statsProgressId
+            foreach ($groupStat in $allUnifiedGroupStatisticsResult.Results) {
+                $key = $groupStat.MailboxGuid.ToString()
+                $global:tenantStatsHash["PrimaryMailboxStats"][$key] = $groupStat
+            }
+            Write-ExoStatisticsFailureSummary -OperationName 'Get-AllUnifiedGroups mailbox statistics' -Failures $allUnifiedGroupStatisticsResult.Failures
+            Write-Host ("  Phase 3/3 complete: mailbox statistics processed ({0} records)" -f @($allUnifiedGroupStatisticsResult.Results).Count) -ForegroundColor DarkGray
         }
-        Write-ExoStatisticsFailureSummary -OperationName 'Get-AllUnifiedGroups mailbox statistics' -Failures $allUnifiedGroupStatisticsResult.Failures
+        else {
+            Write-Host "  Phase 3/3 skipped: no unified groups found" -ForegroundColor DarkGray
+        }
+        $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
     }    
     catch {
         Write-Log -Type ERROR -Message "[Get-AllUnifiedGroups] An error occurred in running Get-AllUnifiedGroups function. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
     }
     finally {
-        Write-ProgressHelper -Total 1 -Id 41 -Activity "Adding Unified Group data to Hash" -Completed
-        Write-Progress -Id 42 -Activity "Gathering Unified Group Mailbox Statistics" -Completed
+        if (-not $CompletedTime) {
+            $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
+        }
+        Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Completed
+        Write-ProgressHelper -Total 1 -Id $hashProgressId -Activity "Adding Unified Group data to Hash" -Completed
+        Write-Progress -Id $statsProgressId -Activity "Gathering Unified Group Mailbox Statistics" -Completed
         Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
         Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] COMPLETED: Gathering all Unified Groups in $($CompletedTime)" -ExportFileLocation $ExportDetails
     }
@@ -2604,7 +2645,9 @@ function Get-SharePointAndOneDriveSites {
             [Parameter(Mandatory = $true)]
             [string]$Uri,
             [Parameter(Mandatory = $true)]
-            [string]$LookupName
+            [string]$LookupName,
+            [Parameter(Mandatory = $false)]
+            [hashtable]$UrlLookup
         )
 
         try {
@@ -2614,6 +2657,23 @@ function Get-SharePointAndOneDriveSites {
                 $siteId = $row.'Site Id'
                 if (-not [string]::IsNullOrWhiteSpace($siteId) -and -not $lookup.ContainsKey($siteId)) {
                     $lookup[$siteId] = $row
+                }
+
+                if ($UrlLookup) {
+                    $siteUrl = $row.'Site URL'
+                    if ([string]::IsNullOrWhiteSpace($siteUrl)) {
+                        $siteUrl = $row.'Site Url'
+                    }
+                    if ([string]::IsNullOrWhiteSpace($siteUrl)) {
+                        $siteUrl = $row.URL
+                    }
+
+                    if (-not [string]::IsNullOrWhiteSpace($siteUrl)) {
+                        $normalizedSiteUrl = $siteUrl.Trim().TrimEnd('/').ToLowerInvariant()
+                        if (-not $UrlLookup.ContainsKey($normalizedSiteUrl)) {
+                            $UrlLookup[$normalizedSiteUrl] = $row
+                        }
+                    }
                 }
             }
             return $lookup
@@ -2849,12 +2909,11 @@ function Get-SharePointAndOneDriveSites {
 
     $sharePointUsageBySiteId = @{}
     $oneDriveUsageBySiteId = @{}
-    if ($ServiceName -eq 'MGGraph' -and -not $depthPolicy.IsMinimum) {
-        $sharePointUsageBySiteId = Get-GraphCsvReportLookup -Uri "https://graph.microsoft.com/v1.0/reports/getSharePointSiteUsageDetail(period='D7')" -LookupName 'SharePointSiteUsageDetail'
-        $oneDriveUsageBySiteId = Get-GraphCsvReportLookup -Uri "https://graph.microsoft.com/v1.0/reports/getOneDriveUsageAccountDetail(period='D7')" -LookupName 'OneDriveUsageAccountDetail'
-    }
-    elseif ($ServiceName -eq 'MGGraph' -and $depthPolicy.IsMinimum) {
-        Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSites] Minimum mode optimization active. Skipping Graph usage CSV downloads and collecting sites directly from Microsoft Graph." -ExportFileLocation $ExportDetails
+    $sharePointUsageByUrl = @{}
+    $oneDriveUsageByUrl = @{}
+    if ($ServiceName -in @('MGGraph', 'API')) {
+        $sharePointUsageBySiteId = Get-GraphCsvReportLookup -Uri "https://graph.microsoft.com/v1.0/reports/getSharePointSiteUsageDetail(period='D7')" -LookupName 'SharePointSiteUsageDetail' -UrlLookup $sharePointUsageByUrl
+        $oneDriveUsageBySiteId = Get-GraphCsvReportLookup -Uri "https://graph.microsoft.com/v1.0/reports/getOneDriveUsageAccountDetail(period='D7')" -LookupName 'OneDriveUsageAccountDetail' -UrlLookup $oneDriveUsageByUrl
     }
 
     # Option 1: Use Microsoft Graph PowerShell SDK
@@ -2871,7 +2930,11 @@ function Get-SharePointAndOneDriveSites {
                     $totalCount++
                     $isOneDrive = ($site.WebUrl -like "*-my.sharepoint.com*")
                     $reportSiteId = Get-GraphSiteReportId -CompositeSiteId $site.Id
+                    $siteUrlKey = if ($site.WebUrl) { $site.WebUrl.TrimEnd('/').ToLowerInvariant() } else { $null }
                     $usageReport = if ($isOneDrive) { $oneDriveUsageBySiteId[$reportSiteId] } else { $sharePointUsageBySiteId[$reportSiteId] }
+                    if (-not $usageReport -and $siteUrlKey) {
+                        $usageReport = if ($isOneDrive) { $oneDriveUsageByUrl[$siteUrlKey] } else { $sharePointUsageByUrl[$siteUrlKey] }
+                    }
 
                     Write-Progress -Id $siteDetailsProgressId -Activity "Gather Additional Site Details" -Status "Processed $totalCount site(s): $($site.DisplayName)"
                     $siteData = ConvertTo-NormalizedSiteData -Site $site -IsOneDrive:$isOneDrive -Source MGGraph -UsageReport $usageReport
@@ -2944,25 +3007,54 @@ function Get-SharePointAndOneDriveSites {
 
     # Option 3: Use REST API
     function Get-SharePointAndOneDriveSitesFromRESTAPI {
-        $allSitesUri = "https://graph.microsoft.com/v1.0/sites?search=*"
+        $allSitesUri = "https://graph.microsoft.com/v1.0/sites/getAllSites?`$top=200"
         $pageCount = 0
-        
-        try {
-            Write-Verbose "Fetching initial SharePoint and OneDrive sites via REST API"
-            $pageCount++
-            $response = Invoke-QuietRestMethod -Parameters @{
-                Uri         = $allSitesUri
+        $useSdkForPaging = (-not $global:GraphHeaders) -and (Get-Command Invoke-MgGraphRequest -ErrorAction SilentlyContinue) -and (Get-MgContext -ErrorAction SilentlyContinue)
+
+        function Get-SitePageResponse {
+            [CmdletBinding()]
+            param(
+                [Parameter(Mandatory = $true)]
+                [string]$Uri
+            )
+
+            if ($useSdkForPaging) {
+                $savedProgressPreference = $ProgressPreference
+                try {
+                    $ProgressPreference = 'SilentlyContinue'
+                    return Invoke-MgGraphRequest -Uri $Uri -Method GET -OutputType PSObject -ErrorAction Stop
+                }
+                finally {
+                    $ProgressPreference = $savedProgressPreference
+                }
+            }
+
+            return Invoke-QuietRestMethod -Parameters @{
+                Uri         = $Uri
                 Headers     = $global:GraphHeaders
                 Method      = 'Get'
                 ContentType = 'application/json'
                 ErrorAction = 'Stop'
             }
+        }
+        
+        try {
+            Write-Verbose "Fetching initial SharePoint and OneDrive sites via Graph getAllSites API"
+            $pageCount++
+            $response = Get-SitePageResponse -Uri $allSitesUri
             Write-Progress -Activity "Fetching Sites" -Id $restSitesProgressId -Status "Processing page $pageCount"
 
             while ($true) {
                 foreach ($site in @($response.value)) {
                     $isOneDrive = ($site.webUrl -like "*-my.sharepoint.com*")
-                    $siteData = ConvertTo-NormalizedSiteData -Site $site -IsOneDrive:$isOneDrive -Source API
+                    $reportSiteId = if ($site.id) { Get-GraphSiteReportId -CompositeSiteId $site.id } else { $null }
+                    $siteUrlKey = if ($site.webUrl) { $site.webUrl.TrimEnd('/').ToLowerInvariant() } else { $null }
+                    $usageReport = if ($isOneDrive) { $oneDriveUsageBySiteId[$reportSiteId] } else { $sharePointUsageBySiteId[$reportSiteId] }
+                    if (-not $usageReport -and $siteUrlKey) {
+                        $usageReport = if ($isOneDrive) { $oneDriveUsageByUrl[$siteUrlKey] } else { $sharePointUsageByUrl[$siteUrlKey] }
+                    }
+
+                    $siteData = ConvertTo-NormalizedSiteData -Site $site -IsOneDrive:$isOneDrive -Source API -UsageReport $usageReport
 
                     if ($isOneDrive) {
                         $oneDriveKey = ConvertTo-OneDriveOwnerKey -Owner $siteData.Owner -Url $siteData.Url
@@ -2982,16 +3074,14 @@ function Get-SharePointAndOneDriveSites {
                 $pageCount++
                 Write-Verbose "Fetching next page of sites via REST API. Page $pageCount"
                 Write-Progress -Activity "Fetching Sites" -Id $restSitesProgressId -Status "Processing page $pageCount"
-                $response = Invoke-QuietRestMethod -Parameters @{
-                    Uri         = $allSitesUri
-                    Headers     = $global:GraphHeaders
-                    Method      = 'Get'
-                    ContentType = 'application/json'
-                    ErrorAction = 'Stop'
-                }
+                $response = Get-SitePageResponse -Uri $allSitesUri
             }
         } catch {
-            if ($_.Exception.Response.StatusCode -eq 429) {
+            $statusCode = $null
+            if ($_.Exception.PSObject.Properties['Response'] -and $_.Exception.Response) {
+                $statusCode = $_.Exception.Response.StatusCode
+            }
+            if ($statusCode -eq 429) {
                 Write-Host "Throttling detected. Please try again later." -ForegroundColor Yellow
             } else {
                 Write-Host "Error fetching sites via REST API: $($_.Exception.Message)" -ForegroundColor Red
@@ -3009,9 +3099,13 @@ function Get-SharePointAndOneDriveSites {
     }
     if ($sharePointUsageBySiteId) { $sharePointUsageBySiteId.Clear() }
     if ($oneDriveUsageBySiteId) { $oneDriveUsageBySiteId.Clear() }
+    if ($sharePointUsageByUrl) { $sharePointUsageByUrl.Clear() }
+    if ($oneDriveUsageByUrl) { $oneDriveUsageByUrl.Clear() }
     $sharePointUsageBySiteId = $null
     $oneDriveUsageBySiteId = $null
-    if ($ServiceName -eq 'MGGraph') {
+    $sharePointUsageByUrl = $null
+    $oneDriveUsageByUrl = $null
+    if ($ServiceName -in @('MGGraph', 'API')) {
         [GC]::Collect()
         [GC]::WaitForPendingFinalizers()
     }
@@ -3531,6 +3625,57 @@ function Connect-Office365 {
             return $tokenResponse.access_token
         }
 
+        function Initialize-GraphRestHeaders {
+            [CmdletBinding()]
+            param(
+                [Parameter(Mandatory = $true)]
+                [ValidateSet('Delegate', 'Certificate', 'ClientSecret')]
+                [string]$AuthenticationType,
+                [Parameter(Mandatory = $false)]
+                [string]$TenantId,
+                [Parameter(Mandatory = $false)]
+                [string]$ClientId,
+                [Parameter(Mandatory = $false)]
+                [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
+                [Parameter(Mandatory = $false)]
+                [System.Management.Automation.PSCredential]$ClientSecretCredential
+            )
+
+            $global:GraphToken = $null
+            $global:GraphHeaders = $null
+
+            if ($AuthenticationType -eq 'Delegate') {
+                return
+            }
+
+            try {
+                $graphAccessToken = $null
+                if ($AuthenticationType -eq 'Certificate') {
+                    # Avoid loading MSAL.PS in-session to prevent assembly version conflicts with ExchangeOnlineManagement.
+                    Write-Verbose "Skipping certificate-based Graph REST header initialization. SDK context will be used for Graph requests."
+                    return
+                }
+                elseif ($AuthenticationType -eq 'ClientSecret') {
+                    $graphAccessToken = Get-ClientSecretAccessToken -TenantId $TenantId -ClientId $ClientId -ClientSecretCredential $ClientSecretCredential -Resource 'https://graph.microsoft.com'
+                }
+
+                if ([string]::IsNullOrWhiteSpace($graphAccessToken)) {
+                    throw "Graph access token was empty."
+                }
+
+                $global:GraphToken = $graphAccessToken
+                $global:GraphHeaders = @{
+                    'Content-Type'     = 'application/json'
+                    'Authorization'    = "Bearer $graphAccessToken"
+                    'ConsistencyLevel' = 'eventual'
+                }
+                Write-Verbose "Initialized Graph REST headers for application authentication."
+            }
+            catch {
+                Write-Log -Type WARNING -Message "[Connect-Office365] Unable to initialize Graph REST headers: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+            }
+        }
+
         $result = [ordered]@{
             Graph              = $false
             TenantName         = $null
@@ -3747,6 +3892,8 @@ function Connect-Office365 {
                         return
                     }
                 }
+
+                Initialize-GraphRestHeaders -AuthenticationType $AuthenticationType -TenantId $TenantId -ClientId $ClientId -Certificate $authCertificate -ClientSecretCredential $ClientSecretCredential
                 
                 Write-Verbose "Retrieving organization info from Graph..."
                 $org = Get-AssessmentTenantOrganization
@@ -10583,7 +10730,6 @@ function Build-SecureScoreSection {
     $scoreTheme = if ($scorePct -ge 80) { 'success' } elseif ($scorePct -ge 60) { 'warning' } else { 'danger' }
     $kpiHtml = "<div class='kpi-grid'>"
     $kpiHtml += New-KpiCard -Title "Current Score" -Value "$currentScore / $maxScore" -Subtitle "$(Format-Number $scorePct -DecimalPlaces 1)%" -Theme $scoreTheme
-    $kpiHtml += New-KpiCard -Title "Licensed Users" -Value (Format-Number $latest.LicensedUserCount)
     $kpiHtml += New-KpiCard -Title "Enabled Services" -Value $latest.EnabledServicesCount
     $kpiHtml += "</div>"
     
@@ -11825,7 +11971,7 @@ Invoke-AssessmentProgressStep -Name 'Unified groups' -ScriptBlock { Get-AllUnifi
 $sharePointDiscoveryService = if ($connectionResult -and $connectionResult.SharePointOnline) {
     'SPO'
 }
-elseif ($script:CollectionDepthPolicy -and $script:CollectionDepthPolicy.IsMinimum -and $global:GraphHeaders) {
+elseif ($script:CollectionDepthPolicy -and $script:CollectionDepthPolicy.IsMinimum) {
     'API'
 }
 else {
