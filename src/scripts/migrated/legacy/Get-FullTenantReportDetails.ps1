@@ -4631,6 +4631,15 @@ function Get-FriendlyProductName {
         '^MICROSOFT_TEAMS_ENTERPRISE_NEW$' { return 'Microsoft Teams Enterprise' }
         '^POWERAPPS_PER_USER$' { return 'Power Apps Premium' }
         '^EXCHANGEENTERPRISE$' { return 'Exchange Online (Plan 2)' }
+        '^CPC_E_(\d+)C_(\d+)GB_(\d+)GB$' { return "Windows 365 Enterprise $($Matches[1]) vCPU $($Matches[2]) GB $($Matches[3]) GB" }
+        '^WINDOWS_365_S_(\d+)VCPU_(\d+)GB_(\d+)GB$' { return "Windows 365 Shared Use $($Matches[1]) vCPU $($Matches[2]) GB $($Matches[3]) GB" }
+        '^CPC_LVL_1$' { return 'Windows 365 Enterprise 2 vCPU 4 GB 128 GB (Preview)' }
+        '^CPC_LVL_3$' { return 'Windows 365 Enterprise 4 vCPU 16 GB 256 GB (Preview)' }
+        '^WIN10_PRO_ENT_SUB$' { return 'Windows 10/11 Enterprise E3' }
+        '^WIN10_VDA_E3$' { return 'Windows 10/11 Enterprise VDA E3' }
+        '^WIN10_VDA_E5$' { return 'Windows 10/11 Enterprise VDA E5' }
+        '^WINE5_GCC_COMPAT$' { return 'Windows 10/11 Enterprise E5 Commercial (GCC Compatible)' }
+        '^E3_VDA_ONLY$' { return 'Windows 10/11 Enterprise VDA E3 (VDA only)' }
     }
 
     $friendly = $normalizedSkuPartNumber -replace '[_\-]+', ' '
@@ -4847,6 +4856,20 @@ function Get-AllLicenseSKUs {
         'VISIO_PLAN1_DEPT'               = 'Visio Plan 1'
         'MICROSOFT_365_COPILOT'          = 'Microsoft 365 Copilot'
         'MICROSOFT_365_BUSINESS_PREMIUM_(NO_TEAMS)' = 'Microsoft 365 Business Premium (No Teams)'
+        'CPC_LVL_1'                      = 'Windows 365 Enterprise 2 vCPU 4 GB 128 GB (Preview)'
+        'CPC_LVL_3'                      = 'Windows 365 Enterprise 4 vCPU 16 GB 256 GB (Preview)'
+        'CPC_E_4C_16GB_512GB'            = 'Windows 365 Enterprise 4 vCPU 16 GB 512 GB'
+        'CPC_E_8C_32GB_128GB'            = 'Windows 365 Enterprise 8 vCPU 32 GB 128 GB'
+        'CPC_E_8C_32GB_256GB'            = 'Windows 365 Enterprise 8 vCPU 32 GB 256 GB'
+        'CPC_E_8C_32GB_512GB'            = 'Windows 365 Enterprise 8 vCPU 32 GB 512 GB'
+        'WINDOWS_365_S_2VCPU_4GB_64GB'   = 'Windows 365 Shared Use 2 vCPU 4 GB 64 GB'
+        'WINDOWS_365_S_2VCPU_4GB_128GB'  = 'Windows 365 Shared Use 2 vCPU 4 GB 128 GB'
+        'WINDOWS_365_S_2VCPU_4GB_256GB'  = 'Windows 365 Shared Use 2 vCPU 4 GB 256 GB'
+        'WIN10_PRO_ENT_SUB'              = 'Windows 10/11 Enterprise E3'
+        'WIN10_VDA_E3'                   = 'Windows 10/11 Enterprise VDA E3'
+        'WIN10_VDA_E5'                   = 'Windows 10/11 Enterprise VDA E5'
+        'WINE5_GCC_COMPAT'               = 'Windows 10/11 Enterprise E5 Commercial (GCC Compatible)'
+        'E3_VDA_ONLY'                    = 'Windows 10/11 Enterprise VDA E3 (VDA only)'
     }
 
     # Build a hashtable for license sku. Create start time of the function
