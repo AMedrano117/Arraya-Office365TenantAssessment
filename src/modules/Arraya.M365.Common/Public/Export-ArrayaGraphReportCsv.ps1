@@ -39,7 +39,14 @@ function Export-ArrayaGraphReportCsv {
     try {
         if ($useSdk) {
             try {
-                Invoke-MgGraphRequest -Method GET -Uri $Uri -OutputFilePath $tempCsvPath -ErrorAction Stop | Out-Null
+                $savedProgressPreference = $ProgressPreference
+                try {
+                    $ProgressPreference = 'SilentlyContinue'
+                    Invoke-MgGraphRequest -Method GET -Uri $Uri -OutputFilePath $tempCsvPath -ErrorAction Stop | Out-Null
+                }
+                finally {
+                    $ProgressPreference = $savedProgressPreference
+                }
             }
             catch {
                 if ($resolvedHeaders.Count -eq 0) {

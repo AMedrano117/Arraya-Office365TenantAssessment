@@ -346,6 +346,40 @@ function Write-ConsoleSection {
     Write-Host "[$Step] $Title" -ForegroundColor Cyan
 }
 
+function Invoke-QuietRestMethod {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parameters
+    )
+
+    $savedProgressPreference = $ProgressPreference
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        return Invoke-RestMethod @Parameters
+    }
+    finally {
+        $ProgressPreference = $savedProgressPreference
+    }
+}
+
+function Invoke-QuietWebRequest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parameters
+    )
+
+    $savedProgressPreference = $ProgressPreference
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        return Invoke-WebRequest @Parameters
+    }
+    finally {
+        $ProgressPreference = $savedProgressPreference
+    }
+}
+
 function Write-ConsoleArtifactSummary {
     [CmdletBinding()]
     param(
@@ -379,12 +413,21 @@ function Initialize-AssessmentProgress {
         [int]$TotalSteps
     )
 
+    $script:AssessmentProgressId = 90
     $script:AssessmentProgressState = [ordered]@{
         Total   = [Math]::Max($TotalSteps, 1)
         Current = 0
     }
 
-    Write-Progress -Id 0 -Activity 'Assessment progress' -Status "[0/$($script:AssessmentProgressState.Total)] Starting" -PercentComplete 0
+    Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Status "[0/$($script:AssessmentProgressState.Total)] Starting" -PercentComplete 0
+}
+
+function Clear-TransientGraphProgress {
+    [CmdletBinding()]
+    param()
+
+    try { Write-Progress -Id 0 -Activity 'Graph Request' -Completed } catch {}
+    try { Write-Progress -Id 0 -Activity 'WriteRequestProgressActivity' -Completed } catch {}
 }
 
 function Invoke-AssessmentProgressStep {
@@ -405,16 +448,22 @@ function Invoke-AssessmentProgressStep {
     $total = $script:AssessmentProgressState.Total
     $percent = [math]::Round(($current / $total) * 100, 2)
 
-    Write-Progress -Id 0 -Activity 'Assessment progress' -Status "[$current/$total] $Name" -PercentComplete $percent
-    & $ScriptBlock
-    Write-Host ("  Overall progress: {0}/{1} ({2}%) - {3}" -f $current, $total, $percent, $Name) -ForegroundColor DarkGray
+    Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Status "[$current/$total] $Name" -PercentComplete $percent
+    try {
+        & $ScriptBlock
+        Write-Host ("  Overall progress: {0}/{1} ({2}%) - {3}" -f $current, $total, $percent, $Name) -ForegroundColor DarkGray
+    }
+    finally {
+        Clear-TransientGraphProgress
+    }
 }
 
 function Complete-AssessmentProgress {
     [CmdletBinding()]
     param()
 
-    Write-Progress -Id 0 -Activity 'Assessment progress' -Completed
+    Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Completed
+    Clear-TransientGraphProgress
 }
 
 function Resolve-ExoStatisticsIdentity {
@@ -2458,6 +2507,7 @@ function Get-SharePointAndOneDriveSites {
         )
 
         $storageUsageCurrent = 0
+        $storageUsageCurrentGB = 0
         $owner = $null
         $groupId = $null
         $isTeamsChannelConnected = $false
@@ -2557,6 +2607,19 @@ function Get-SharePointAndOneDriveSites {
             }
         }
 
+        if ($UsageReport -and $UsageReport.'Storage Used (Byte)') {
+            # Graph usage reports return bytes.
+            $storageUsageCurrentGB = [double]$storageUsageCurrent / 1GB
+        }
+        elseif ($Source -eq 'SPO') {
+            # SPO cmdlets return storage in MB.
+            $storageUsageCurrentGB = [double]$storageUsageCurrent / 1024
+        }
+        else {
+            # Graph site usage and drive quota values are bytes.
+            $storageUsageCurrentGB = [double]$storageUsageCurrent / 1GB
+        }
+
         if (-not $template) {
             if ($IsOneDrive) {
                 $template = 'SPSPERS#10'
@@ -2600,7 +2663,7 @@ function Get-SharePointAndOneDriveSites {
             GroupId                   = $groupId
             IsTeamsConnected          = $isTeamsConnected
             IsTeamsChannelConnected   = $isTeamsChannelConnected
-            StorageUsedGB             = [math]::Round(($storageUsageCurrent / 1024), 3)
+            StorageUsedGB             = [math]::Round($storageUsageCurrentGB, 3)
             IsOffice365GroupsConnected = ($groupId -and $groupId -ne '00000000-0000-0000-0000-000000000000')
             IsOneDrive                = $IsOneDrive
         }
@@ -2694,7 +2757,13 @@ function Get-SharePointAndOneDriveSites {
         try {
             Write-Verbose "Fetching initial SharePoint and OneDrive sites via REST API"
             $pageCount++
-            $initialResponse = Invoke-RestMethod -Uri $allSitesUri -Headers $global:GraphHeaders -Method Get -ContentType "application/json" -ErrorAction Stop
+            $initialResponse = Invoke-QuietRestMethod -Parameters @{
+                Uri         = $allSitesUri
+                Headers     = $global:GraphHeaders
+                Method      = 'Get'
+                ContentType = 'application/json'
+                ErrorAction = 'Stop'
+            }
             $sites = $initialResponse.value
             Write-Progress -Activity "Fetching Sites" -ID 1 -Status "Processing page $pageCount"
 
@@ -2702,7 +2771,13 @@ function Get-SharePointAndOneDriveSites {
             while ($allSitesUri) {
                 $pageCount++
                 Write-Verbose "Fetching next page of sites via REST API. Page $pageCount"
-                $response = Invoke-RestMethod -Uri $allSitesUri -Headers $global:GraphHeaders -Method Get -ContentType "application/json" -ErrorAction Stop
+                $response = Invoke-QuietRestMethod -Parameters @{
+                    Uri         = $allSitesUri
+                    Headers     = $global:GraphHeaders
+                    Method      = 'Get'
+                    ContentType = 'application/json'
+                    ErrorAction = 'Stop'
+                }
                 $sites += $response.value
                 $allSitesUri = $response.'@odata.nextLink'
                 Write-Progress -Activity "Fetching Sites" -ID 1 -Status "Processing page $pageCount"
@@ -3237,12 +3312,18 @@ function Connect-Office365 {
             $clientSecretPlainText = Get-PlainTextSecretFromCredential -Credential $ClientSecretCredential
             $tokenEndpoint = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
             $scope = if ($Resource.EndsWith('/')) { "$Resource.default" } else { "$Resource/.default" }
-            $tokenResponse = Invoke-RestMethod -Method POST -Uri $tokenEndpoint -ContentType 'application/x-www-form-urlencoded' -Body @{
-                client_id     = $ClientId
-                client_secret = $clientSecretPlainText
-                scope         = $scope
-                grant_type    = 'client_credentials'
-            } -ErrorAction Stop
+            $tokenResponse = Invoke-QuietRestMethod -Parameters @{
+                Method      = 'POST'
+                Uri         = $tokenEndpoint
+                ContentType = 'application/x-www-form-urlencoded'
+                Body        = @{
+                    client_id     = $ClientId
+                    client_secret = $clientSecretPlainText
+                    scope         = $scope
+                    grant_type    = 'client_credentials'
+                }
+                ErrorAction = 'Stop'
+            }
 
             if (-not $tokenResponse.access_token) {
                 throw "No access token was returned for resource '$Resource'."
@@ -6585,7 +6666,13 @@ function Get-FederationAndCrossTenantConfiguration {
                     $lookupItem = $lookup | Select-Object -First 1
                     if ($lookupItem.displayName) { return $lookupItem.displayName }
                 } elseif ($global:GraphHeaders) {
-                    $lookup = Invoke-RestMethod -Uri $tenantLookupUri -Headers $global:GraphHeaders -Method GET -ContentType "application/json" -ErrorAction Stop
+                    $lookup = Invoke-QuietRestMethod -Parameters @{
+                        Uri         = $tenantLookupUri
+                        Headers     = $global:GraphHeaders
+                        Method      = 'GET'
+                        ContentType = 'application/json'
+                        ErrorAction = 'Stop'
+                    }
                     if ($lookup.displayName) { return $lookup.displayName }
                 }
             } catch {
@@ -6600,7 +6687,11 @@ function Get-FederationAndCrossTenantConfiguration {
                 )
                 foreach ($uri in $tenantInfoAppUris) {
                     try {
-                        $response = Invoke-WebRequest -Uri $uri -UseBasicParsing -ErrorAction Stop
+                        $response = Invoke-QuietWebRequest -Parameters @{
+                            Uri           = $uri
+                            UseBasicParsing = $true
+                            ErrorAction   = 'Stop'
+                        }
                         if ($response -and $response.Content) {
                             # Try JSON first
                             $json = $null
@@ -6629,7 +6720,13 @@ function Get-FederationAndCrossTenantConfiguration {
                     $lookupItem = $lookup | Select-Object -First 1
                     if ($lookupItem.displayName) { return $lookupItem.displayName }
                 } elseif ($global:GraphHeaders) {
-                    $lookup = Invoke-RestMethod -Uri $tenantLookupUri -Headers $global:GraphHeaders -Method GET -ContentType "application/json" -ErrorAction Stop
+                    $lookup = Invoke-QuietRestMethod -Parameters @{
+                        Uri         = $tenantLookupUri
+                        Headers     = $global:GraphHeaders
+                        Method      = 'GET'
+                        ContentType = 'application/json'
+                        ErrorAction = 'Stop'
+                    }
                     if ($lookup.displayName) { return $lookup.displayName }
                 }
             } catch {
@@ -6997,15 +7094,26 @@ function Format-DataSize {
     if ($null -eq $SizeInGB) {
         return 'N/A'
     }
-    
-    # If over 1000 GB (1 TB), show in TB
-    if ($SizeInGB -ge 1000) {
-        $sizeInTB = [math]::Round($SizeInGB / 1024, 2)
-        return "$sizeInTB TB"
+
+    if ($SizeInGB -lt 0) {
+        return 'N/A'
     }
-    else {
-        return "$([math]::Round($SizeInGB, 2)) GB"
+
+    if ($SizeInGB -ge 1048576) {
+        $sizeInPB = $SizeInGB / 1048576
+        return "$(Format-Number $sizeInPB -DecimalPlaces 2) PB"
     }
+
+    if ($SizeInGB -ge 1024) {
+        $sizeInTB = $SizeInGB / 1024
+        return "$(Format-Number $sizeInTB -DecimalPlaces 2) TB"
+    }
+
+    if ($SizeInGB -ge 1) {
+        return "$(Format-Number $SizeInGB -DecimalPlaces 2) GB"
+    }
+
+    return "$(Format-Number ($SizeInGB * 1024) -DecimalPlaces 2) MB"
 }
 
 function Format-Percentage {
@@ -7072,6 +7180,8 @@ function New-HtmlTable {
         [hashtable]$ColumnHeaders,
         
         [hashtable]$RiskColumns,
+
+        [hashtable]$ValueFormatters,
         
         [string]$EmptyMessage = 'No data available',
         
@@ -7102,7 +7212,16 @@ function New-HtmlTable {
             $value = $row.$col
             
             # Format value
-            if ($null -eq $value -or $value -eq '') {
+            if ($ValueFormatters -and $ValueFormatters.ContainsKey($col)) {
+                $formatter = $ValueFormatters[$col]
+                if ($formatter -is [scriptblock]) {
+                    $formattedValue = & $formatter $value $row
+                    $displayValue = [System.Web.HttpUtility]::HtmlEncode([string]$formattedValue)
+                }
+                else {
+                    $displayValue = [System.Web.HttpUtility]::HtmlEncode([string]$value)
+                }
+            } elseif ($null -eq $value -or $value -eq '') {
                 $displayValue = 'N/A'
             } elseif ($value -is [datetime]) {
                 $displayValue = $value.ToString('yyyy-MM-dd')
@@ -8428,10 +8547,13 @@ function Get-HtmlStyle {
     }
     
     .kpi-value {
-        font-size: 2em;
+        font-size: clamp(1.3rem, 2vw, 2em);
         font-weight: 600;
         color: var(--text-primary);
         margin-bottom: 5px;
+        line-height: 1.25;
+        overflow-wrap: anywhere;
+        font-variant-numeric: tabular-nums;
     }
     
     .kpi-subtitle {
@@ -9503,17 +9625,25 @@ function Build-SharePointOneDriveSection {
     $tableHeaders = @{
         'Category' = 'Site Type'
         'Quantity' = 'Count'
-        'TotalStorageGB' = 'Total (GB)'
-        'AverageStorageGB' = 'Avg (GB)'
+        'TotalStorageGB' = 'Total Size'
+        'AverageStorageGB' = 'Avg Size'
         'Over1TB' = 'Over 1 TB'
-        'LargestSizeGB' = 'Largest (GB)'
+        'LargestSizeGB' = 'Largest Site'
     }
     
     $riskColumns = @{
         'Over1TB' = { param($val) [int]$val -gt 0 }
     }
+
+    $valueFormatters = @{
+        'Quantity' = { param($val) Format-Number $val }
+        'TotalStorageGB' = { param($val) Format-DataSize $val }
+        'AverageStorageGB' = { param($val) Format-DataSize $val }
+        'Over1TB' = { param($val) Format-Number $val }
+        'LargestSizeGB' = { param($val) Format-DataSize $val }
+    }
     
-    $tableHtml = New-HtmlTable -Data $summaries -Columns $tableColumns -ColumnHeaders $tableHeaders -RiskColumns $riskColumns
+    $tableHtml = New-HtmlTable -Data $summaries -Columns $tableColumns -ColumnHeaders $tableHeaders -RiskColumns $riskColumns -ValueFormatters $valueFormatters
     
     $footerHtml = @"
 <div class='section-footer'>
