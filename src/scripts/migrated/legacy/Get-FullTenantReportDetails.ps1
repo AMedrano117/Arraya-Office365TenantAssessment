@@ -1349,7 +1349,7 @@ function Get-ResolvedEmailAddresses {
     }
 }
 
-#Gather all Mailboxes, Group Mailboxes, Unified Groups, and Public Folders
+#Gather all Exchange mailboxes and mailbox statistics
 function Get-AllExchangeMailboxDetails {
     [CmdletBinding()]
     param (
@@ -1473,7 +1473,7 @@ function Get-AllExchangeMailboxDetails {
         $start = Get-Date
         Write-Progress -Id $primaryStatsProgressId -Activity "Gathering All Primary Mailbox Statistics" -Status (((Get-Date) - $global:initialStart).ToString('hh\:mm\:ss'))
         Write-Host "  Getting primary mailbox stats..." -ForegroundColor Cyan -nonewline
-        Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Gathering All Primary Mailbox Statistics including Group Mailboxes and Inactive Mailboxes" -ExportFileLocation $ExportDetails
+        Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Gathering all primary mailbox statistics for collected mailboxes (including inactive where available)." -ExportFileLocation $ExportDetails
 
         $global:tenantStatsHash["PrimaryMailboxStats"] = @{}
         $activeMailboxes = $global:tenantStatsHash['AllMailboxes'].Values | Where-Object { $_.IsInactiveMailbox -ne $true }
@@ -2382,12 +2382,12 @@ function Get-AllUnifiedGroups {
                     @{Name="Description"; Expression={$_.Description -join ','}}, "WhenCreated"
                 )
 
-                $allUnifiedGroups = @()
+                $allUnifiedGroups = New-Object System.Collections.Generic.List[object]
                 $fetchedGroups = 0
                 Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue |
                     Select-Object $DesiredProperties |
                     ForEach-Object {
-                        $allUnifiedGroups += $_
+                        [void]$allUnifiedGroups.Add($_)
                         $fetchedGroups++
                         if ($fetchedGroups -eq 1 -or ($fetchedGroups % 50) -eq 0) {
                             Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Status "Fetched $fetchedGroups groups (continuing...)"
@@ -2395,11 +2395,11 @@ function Get-AllUnifiedGroups {
                     }
             }
             geek {
-                $allUnifiedGroups = @()
+                $allUnifiedGroups = New-Object System.Collections.Generic.List[object]
                 $fetchedGroups = 0
                 Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue |
                     ForEach-Object {
-                        $allUnifiedGroups += $_
+                        [void]$allUnifiedGroups.Add($_)
                         $fetchedGroups++
                         if ($fetchedGroups -eq 1 -or ($fetchedGroups % 50) -eq 0) {
                             Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Status "Fetched $fetchedGroups groups (continuing...)"
@@ -2408,9 +2408,8 @@ function Get-AllUnifiedGroups {
             }
         }
         Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Completed
-        Write-Host ("  Phase 1/3 complete: fetched {0} unified groups" -f @($allUnifiedGroups).Count) -ForegroundColor DarkGray
+        Write-Host ("  Phase 1/3 complete: fetched {0} unified groups" -f $allUnifiedGroups.Count) -ForegroundColor DarkGray
         
-        $allUnifiedGroups = @($allUnifiedGroups)
         $totalUnifiedGroups = $allUnifiedGroups.Count
         Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Adding Unified Group data to Hash" -ExportFileLocation $ExportDetails
         Write-Host "  Phase 2/3: Adding unified group data to hash..." -ForegroundColor DarkGray
@@ -2434,13 +2433,53 @@ function Get-AllUnifiedGroups {
         Write-Host "  Phase 3/3: Gathering unified group mailbox statistics..." -ForegroundColor DarkGray
 
         if ($totalUnifiedGroups -gt 0) {
-            $allUnifiedGroupStatisticsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $allUnifiedGroups -ProgressActivity "Gathering Unified Group Mailbox Statistics" -ProgressId $statsProgressId
-            foreach ($groupStat in $allUnifiedGroupStatisticsResult.Results) {
-                $key = $groupStat.MailboxGuid.ToString()
-                $global:tenantStatsHash["PrimaryMailboxStats"][$key] = $groupStat
+            $cachedStatsCount = 0
+            $fetchedStatsCount = 0
+            $groupsNeedingStats = New-Object System.Collections.Generic.List[object]
+
+            foreach ($group in $allUnifiedGroups) {
+                $groupGuidKey = $null
+                if ($group -and $group.PSObject.Properties['ExchangeGuid'] -and $group.ExchangeGuid) {
+                    $groupGuidKey = [string]$group.ExchangeGuid
+                }
+
+                if (-not [string]::IsNullOrWhiteSpace($groupGuidKey) -and $global:tenantStatsHash["PrimaryMailboxStats"].ContainsKey($groupGuidKey)) {
+                    $cachedStatsCount++
+                    continue
+                }
+
+                [void]$groupsNeedingStats.Add($group)
             }
-            Write-ExoStatisticsFailureSummary -OperationName 'Get-AllUnifiedGroups mailbox statistics' -Failures $allUnifiedGroupStatisticsResult.Failures
-            Write-Host ("  Phase 3/3 complete: mailbox statistics processed ({0} records)" -f @($allUnifiedGroupStatisticsResult.Results).Count) -ForegroundColor DarkGray
+
+            if ($groupsNeedingStats.Count -gt 0) {
+                $isMinimumMode = $false
+                if ($script:CollectionDepthPolicy -and $script:CollectionDepthPolicy.PSObject.Properties['IsMinimum']) {
+                    $isMinimumMode = ($script:CollectionDepthPolicy.IsMinimum -eq $true)
+                }
+                elseif ($detailLevel -eq 'minimum') {
+                    $isMinimumMode = $true
+                }
+
+                if ($isMinimumMode) {
+                    Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Minimum mode optimization active. Reused $cachedStatsCount cached mailbox stat(s) and skipped EXO mailbox stats for $($groupsNeedingStats.Count) unified group(s)." -ExportFileLocation $ExportDetails
+                    Write-Host ("  Phase 3/3 optimization: skipped EXO mailbox stats for {0} unified group(s) in Minimum mode" -f $groupsNeedingStats.Count) -ForegroundColor DarkGray
+                }
+                else {
+                    Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Reusing $cachedStatsCount cached mailbox stat(s); fetching EXO stats for $($groupsNeedingStats.Count) unified group(s) missing stats." -ExportFileLocation $ExportDetails
+                    $allUnifiedGroupStatisticsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $groupsNeedingStats.ToArray() -ProgressActivity "Gathering Unified Group Mailbox Statistics" -ProgressId $statsProgressId
+                    foreach ($groupStat in $allUnifiedGroupStatisticsResult.Results) {
+                        $key = $groupStat.MailboxGuid.ToString()
+                        $global:tenantStatsHash["PrimaryMailboxStats"][$key] = $groupStat
+                    }
+                    $fetchedStatsCount = @($allUnifiedGroupStatisticsResult.Results).Count
+                    Write-ExoStatisticsFailureSummary -OperationName 'Get-AllUnifiedGroups mailbox statistics' -Failures $allUnifiedGroupStatisticsResult.Failures
+                }
+            }
+            else {
+                Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] All unified group mailbox stats were already available in PrimaryMailboxStats; skipping EXO stats retrieval." -ExportFileLocation $ExportDetails
+            }
+
+            Write-Host ("  Phase 3/3 complete: mailbox statistics reused {0}, fetched {1}" -f $cachedStatsCount, $fetchedStatsCount) -ForegroundColor DarkGray
         }
         else {
             Write-Host "  Phase 3/3 skipped: no unified groups found" -ForegroundColor DarkGray
