@@ -1693,6 +1693,12 @@ function Get-ExchangeGroupDetails {
 
     $exchangeGroupProgressId = 36
     $exchangeGroupProgressTotal = 1
+    $depthPolicy = if ($script:CollectionDepthPolicy) {
+        $script:CollectionDepthPolicy
+    } else {
+        Get-ArrayaCollectionDepthPolicy -ReportingMode ((Get-Culture).TextInfo.ToTitleCase($detailLevel.ToLowerInvariant()))
+    }
+    $collectExchangeGroupDeepDetails = (-not $depthPolicy.IsMinimum)
     try {
         $start = Get-Date
         # Ensure global hash table structure
@@ -1703,6 +1709,9 @@ function Get-ExchangeGroupDetails {
         
         Write-Host "Getting all Exchange Online Groups ..." -ForegroundColor Cyan -nonewline
         Write-Log -Type INFO -Message "[Get-ExchangeGroupDetails] START: Gathering all Exchange Online Groups with $($detailLevel) details" -ExportFileLocation $ExportDetails
+        if (-not $collectExchangeGroupDeepDetails) {
+            Write-Log -Type INFO -Message "[Get-ExchangeGroupDetails] Minimum mode optimization active. Reusing recipient inventory and skipping deep group member expansion where possible." -ExportFileLocation $ExportDetails
+        }
 
         # gather All Exchange Online Groups
         $allMailGroups = $global:tenantStatsHash['AllRecipients'].Values | Where-Object { $_.RecipientTypeDetails -like "*group" } | Sort-Object DisplayName
@@ -1722,31 +1731,69 @@ function Get-ExchangeGroupDetails {
                 foreach ($attribute in $attributesToClear) {
                     Set-Variable -Name $attribute -Value @()
                 }
+                $groupMembersCount = 0
+                $cachedUnifiedGroup = $null
+                $usedUnifiedGroupCache = $false
+
+                if (
+                    $global:tenantStatsHash.ContainsKey('UnifiedGroups') -and
+                    $global:tenantStatsHash['UnifiedGroups'] -and
+                    $global:tenantStatsHash['UnifiedGroups'].ContainsKey($PrimarySMTPAddress)
+                ) {
+                    $cachedUnifiedGroup = $global:tenantStatsHash['UnifiedGroups'][$PrimarySMTPAddress]
+                }
                 
                 # Conditional logic for different recipient types
                 switch ($object.RecipientTypeDetails) {
                     "DynamicDistributionGroup" {
-                        $groupDetails = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails details for $PrimarySMTPAddress" -DefaultValue $null -ExportFileLocation $ExportDetails -ScriptBlock {
-                            Get-DynamicDistributionGroup $identity -ErrorAction Stop
+                        if ($collectExchangeGroupDeepDetails) {
+                            $groupDetails = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails details for $PrimarySMTPAddress" -DefaultValue $null -ExportFileLocation $ExportDetails -ScriptBlock {
+                                Get-DynamicDistributionGroup $identity -ErrorAction Stop
+                            }
+                            $groupMembers = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue @() -ExportFileLocation $ExportDetails -ScriptBlock {
+                                @(Get-DynamicDistributionGroupMember $identity -ErrorAction Stop -ResultSize unlimited -WarningAction SilentlyContinue)
+                            }
                         }
-                        $groupMembers = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue @() -ExportFileLocation $ExportDetails -ScriptBlock {
-                            @(Get-DynamicDistributionGroupMember $identity -ErrorAction Stop -ResultSize unlimited -WarningAction SilentlyContinue)
+                        else {
+                            $groupDetails = $object
+                            $groupMembers = @()
                         }
                     }
                     {$_ -in 'MailUniversalDistributionGroup', 'MailUniversalSecurityGroup', "MailNonUniversalGroup"} {
-                        $groupDetails = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails details for $PrimarySMTPAddress" -DefaultValue $null -ExportFileLocation $ExportDetails -ScriptBlock {
-                            Get-DistributionGroup $identity -ErrorAction Stop
+                        if ($collectExchangeGroupDeepDetails) {
+                            $groupDetails = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails details for $PrimarySMTPAddress" -DefaultValue $null -ExportFileLocation $ExportDetails -ScriptBlock {
+                                Get-DistributionGroup $identity -ErrorAction Stop
+                            }
+                            $groupMembers = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue @() -ExportFileLocation $ExportDetails -ScriptBlock {
+                                @(Get-DistributionGroupMember $identity -ResultSize unlimited -ErrorAction Stop)
+                            }
                         }
-                        $groupMembers = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue @() -ExportFileLocation $ExportDetails -ScriptBlock {
-                            @(Get-DistributionGroupMember $identity -ResultSize unlimited -ErrorAction Stop)
+                        else {
+                            $groupDetails = $object
+                            $groupMembers = @()
                         }
                     }
                     "GroupMailbox" {
-                        $groupDetails = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails details for $PrimarySMTPAddress" -DefaultValue $null -ExportFileLocation $ExportDetails -ScriptBlock {
-                            Get-UnifiedGroup $identity -ErrorAction Stop
+                        if ($cachedUnifiedGroup) {
+                            $groupDetails = $cachedUnifiedGroup
+                            $usedUnifiedGroupCache = $true
+                            if ($cachedUnifiedGroup.PSObject.Properties['GroupMemberCount'] -and $cachedUnifiedGroup.GroupMemberCount -ne $null -and $cachedUnifiedGroup.GroupMemberCount -ne '') {
+                                try { $groupMembersCount = [int]$cachedUnifiedGroup.GroupMemberCount } catch { $groupMembersCount = 0 }
+                            }
+                            $groupMembers = @()
                         }
-                        $groupMembers = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue @() -ExportFileLocation $ExportDetails -ScriptBlock {
-                            @(Get-UnifiedGroupLinks -Identity $identity -LinkType Member -ResultSize unlimited -ErrorAction Stop)
+
+                        if ($collectExchangeGroupDeepDetails -and -not $usedUnifiedGroupCache) {
+                            $groupDetails = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails details for $PrimarySMTPAddress" -DefaultValue $null -ExportFileLocation $ExportDetails -ScriptBlock {
+                                Get-UnifiedGroup $identity -ErrorAction Stop
+                            }
+                            $groupMembers = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue @() -ExportFileLocation $ExportDetails -ScriptBlock {
+                                @(Get-UnifiedGroupLinks -Identity $identity -LinkType Member -ResultSize unlimited -ErrorAction Stop)
+                            }
+                        }
+                        elseif (-not $collectExchangeGroupDeepDetails -and -not $groupDetails) {
+                            $groupDetails = $object
+                            $groupMembers = @()
                         }
                     }
                 }
@@ -1765,6 +1812,9 @@ function Get-ExchangeGroupDetails {
                 if ($groupMembers.count -ge 1) {
                     Write-Log -Type DEBUG -Message ("[Get-ExchangeGroupDetails] '{0}' Members Found for '{1}' '{2}'" -f $groupMembers.count, $object.RecipientTypeDetails, $PrimarySMTPAddress) -ExportFileLocation $ExportDetails
                 }
+                if ($groupMembersCount -le 0) {
+                    $groupMembersCount = ($groupMembers | Measure-Object).Count
+                }
                 Write-Log -Type DEBUG -Message ("[Get-ExchangeGroupDetails] Create Group Output Details for '{0}' '{1}'" -f $object.RecipientTypeDetails, $PrimarySMTPAddress) -ExportFileLocation $ExportDetails
     
                 #Output Group Details
@@ -1781,7 +1831,7 @@ function Get-ExchangeGroupDetails {
                     IsMailboxConfigured                      = $groupDetails.IsMailboxConfigured
                     EmailAddresses                           = $object.EmailAddresses
                     OwnersCount                              = ($groupOwners | measure-object).count
-                    MembersCount                             = ($groupMembers | measure-object).count
+                    MembersCount                             = $groupMembersCount
                     HiddenGroupMembershipEnabled             = ($groupDetails.HiddenGroupMembershipEnabled -join ",")
                     ModeratedBy                              = ($ModeratedByRecipients -join ",")
                     RequireSenderAuthenticationEnabled       = $groupDetails.RequireSenderAuthenticationEnabled
@@ -4340,6 +4390,73 @@ function Connect-Office365 {
     }
 }
 
+function Initialize-MicrosoftLicenseReferenceMap {
+    [CmdletBinding()]
+    param()
+
+    if ($script:MicrosoftProductNameMapFromReferenceInitialized -and $script:MicrosoftProductNameMapFromReference) {
+        return $script:MicrosoftProductNameMapFromReference
+    }
+
+    $script:MicrosoftProductNameMapFromReference = @{}
+    $script:MicrosoftProductNameMapFromReferenceInitialized = $true
+
+    $knownCsvUri = 'https://download.microsoft.com/download/e/3/e/e3e9faf2-f28b-490a-9ada-c6089a1fc5b0/Product%20names%20and%20service%20plan%20identifiers%20for%20licensing.csv'
+    $docsUri = 'https://learn.microsoft.com/en-us/entra/identity/users/licensing-service-plan-reference'
+    $cacheFile = Join-Path -Path $env:TEMP -ChildPath 'arraya-license-service-plan-reference.csv'
+
+    try {
+        $useCachedCsv = $false
+        if (Test-Path -Path $cacheFile) {
+            $cacheAge = (Get-Date) - (Get-Item -Path $cacheFile).LastWriteTime
+            if ($cacheAge.TotalDays -lt 7) {
+                $useCachedCsv = $true
+            }
+        }
+
+        if (-not $useCachedCsv) {
+            $csvUri = $knownCsvUri
+            try {
+                $docsResponse = Invoke-WebRequest -Uri $docsUri -UseBasicParsing -ErrorAction Stop
+                $pattern = "https://download\.microsoft\.com/download/[^\s""'<>]+Product%20names%20and%20service%20plan%20identifiers%20for%20licensing\.csv"
+                $match = [regex]::Match($docsResponse.Content, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                if ($match.Success -and -not [string]::IsNullOrWhiteSpace($match.Value)) {
+                    $csvUri = $match.Value
+                }
+            }
+            catch {
+                $csvUri = $knownCsvUri
+            }
+
+            Invoke-WebRequest -Uri $csvUri -OutFile $cacheFile -UseBasicParsing -ErrorAction Stop
+        }
+
+        $csvRows = Import-Csv -Path $cacheFile -ErrorAction Stop
+        foreach ($row in $csvRows) {
+            $stringId = [string]$row.String_Id
+            $displayName = [string]$row.Product_Display_Name
+            if ([string]::IsNullOrWhiteSpace($stringId) -or [string]::IsNullOrWhiteSpace($displayName)) {
+                continue
+            }
+
+            if (-not $script:MicrosoftProductNameMapFromReference.ContainsKey($stringId)) {
+                $script:MicrosoftProductNameMapFromReference[$stringId] = $displayName
+            }
+
+            $normalizedStringId = ($stringId -replace '\s*_\s*', '_').Trim()
+            if (-not [string]::IsNullOrWhiteSpace($normalizedStringId) -and -not $script:MicrosoftProductNameMapFromReference.ContainsKey($normalizedStringId)) {
+                $script:MicrosoftProductNameMapFromReference[$normalizedStringId] = $displayName
+            }
+        }
+    }
+    catch {
+        # Keep map empty on failure; caller falls back to static mappings and heuristics.
+        $script:MicrosoftProductNameMapFromReference = @{}
+    }
+
+    return $script:MicrosoftProductNameMapFromReference
+}
+
 function Get-FriendlyProductName {
     param(
         [string]$SkuPartNumber
@@ -4347,10 +4464,63 @@ function Get-FriendlyProductName {
     if ([string]::IsNullOrWhiteSpace($SkuPartNumber)) {
         return $SkuPartNumber
     }
-    if ($script:CommonProductNameMapStatic -and $script:CommonProductNameMapStatic.ContainsKey($SkuPartNumber)) {
-        return $script:CommonProductNameMapStatic[$SkuPartNumber]
+
+    $normalizedSkuPartNumber = ($SkuPartNumber -replace '\s*_\s*', '_').Trim()
+
+    if (-not $script:MicrosoftProductNameMapFromReferenceInitialized) {
+        Initialize-MicrosoftLicenseReferenceMap | Out-Null
     }
-    return $SkuPartNumber
+
+    if ($script:CommonProductNameMapStatic) {
+        if ($script:CommonProductNameMapStatic.ContainsKey($SkuPartNumber)) {
+            return $script:CommonProductNameMapStatic[$SkuPartNumber]
+        }
+        if ($script:CommonProductNameMapStatic.ContainsKey($normalizedSkuPartNumber)) {
+            return $script:CommonProductNameMapStatic[$normalizedSkuPartNumber]
+        }
+    }
+
+    if ($script:MicrosoftProductNameMapFromReference) {
+        if ($script:MicrosoftProductNameMapFromReference.ContainsKey($SkuPartNumber)) {
+            return $script:MicrosoftProductNameMapFromReference[$SkuPartNumber]
+        }
+        if ($script:MicrosoftProductNameMapFromReference.ContainsKey($normalizedSkuPartNumber)) {
+            return $script:MicrosoftProductNameMapFromReference[$normalizedSkuPartNumber]
+        }
+    }
+
+    switch -Regex ($normalizedSkuPartNumber.ToUpperInvariant()) {
+        '^SPE_E([35])$' { return "Microsoft 365 E$($Matches[1])" }
+        '^SPE_F([13])$' { return "Microsoft 365 F$($Matches[1])" }
+        '^MCOPSTN1$' { return 'Microsoft Teams Phone Standard' }
+        '^MCOCAP$' { return 'Microsoft Teams Shared Space' }
+        '^TEAMS_SHARED_SPACE$' { return 'Microsoft Teams Shared Space' }
+        '^MICROSOFT_TEAMS_ENTERPRISE_NEW$' { return 'Microsoft Teams Enterprise' }
+        '^POWERAPPS_PER_USER$' { return 'Power Apps Premium' }
+        '^EXCHANGEENTERPRISE$' { return 'Exchange Online (Plan 2)' }
+    }
+
+    $friendly = $normalizedSkuPartNumber -replace '[_\-]+', ' '
+    $friendly = $friendly -replace '\bM365\b', 'Microsoft 365'
+    $friendly = $friendly -replace '\bO365\b', 'Office 365'
+    $friendly = $friendly -replace '\bEXCHANGE\b', 'Exchange'
+    $friendly = $friendly -replace '\bPOWERAPPS\b', 'Power Apps'
+
+    $tokens = $friendly -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object {
+        if ($_ -match '^[A-Z0-9]{2,}$' -or $_ -match '^[EF]\d$') {
+            $_
+        }
+        else {
+            (Get-Culture).TextInfo.ToTitleCase($_.ToLowerInvariant())
+        }
+    }
+
+    $friendly = ($tokens -join ' ').Trim()
+    if ([string]::IsNullOrWhiteSpace($friendly)) {
+        return $normalizedSkuPartNumber
+    }
+
+    return $friendly
 }
 
 function Get-LicenseClassification {
@@ -4526,10 +4696,29 @@ function Get-AllLicenseSKUs {
         'CCIBOTS_PRIVPREV_VIRAL'         = 'CCI Bots Private Preview'
         'PROJECT_MADEIRA_PREVIEW_IW_SKU' = 'Project Madeira Preview IW SKU'
         'RIGHTSMANAGEMENT_ADHOC'         = 'Rights Management Adhoc'
+        'SPE_E5'                         = 'Microsoft 365 E5'
+        'SPE_E3'                         = 'Microsoft 365 E3'
+        'SPE_F3'                         = 'Microsoft 365 F3'
+        'SPE_F1'                         = 'Microsoft 365 F1'
+        'MCOPSTN1'                       = 'Microsoft Teams Phone Standard'
+        'MCOCAP'                         = 'Microsoft Teams Shared Space'
+        'TEAMS_SHARED_SPACE'             = 'Microsoft Teams Shared Space'
+        'MICROSOFT_TEAMS_ENTERPRISE_NEW' = 'Microsoft Teams Enterprise'
+        'POWERAPPS_PER_USER'             = 'Power Apps Premium'
+        'EXCHANGEENTERPRISE'             = 'Exchange Online (Plan 2)'
+        'EXCHANGEDESKLESS'               = 'Exchange Online Kiosk'
+        'EMSPREMIUM'                     = 'Enterprise Mobility + Security E5'
+        'MCOEV'                          = 'Microsoft Teams Phone Resource Account'
+        'PROJECTPLAN3'                   = 'Planner and Project Plan 3'
+        'PROJECTPLAN5'                   = 'Planner and Project Plan 5'
+        'VISIO_PLAN1_DEPT'               = 'Visio Plan 1'
+        'MICROSOFT_365_COPILOT'          = 'Microsoft 365 Copilot'
+        'MICROSOFT_365_BUSINESS_PREMIUM_(NO_TEAMS)' = 'Microsoft 365 Business Premium (No Teams)'
     }
 
     # Build a hashtable for license sku. Create start time of the function
     $start = Get-Date
+    Initialize-MicrosoftLicenseReferenceMap | Out-Null
     # Ensure global hash table structure
     if (-not $global:tenantStatsHash) {
         $global:tenantStatsHash = @{}
@@ -9944,7 +10133,11 @@ function Build-LicenseSection {
     
     # Prepare table data
     $tableData = $paidLicenses | ForEach-Object {
-        $licenseName = if ($_.PSObject.Properties['SkuFriendlyName'] -and $_.SkuFriendlyName) { $_.SkuFriendlyName } else { $_.SkuPartNumber }
+        $licenseName = if ($_.PSObject.Properties['SkuFriendlyName'] -and $_.SkuFriendlyName) {
+            $_.SkuFriendlyName
+        } else {
+            Get-FriendlyProductName -SkuPartNumber $_.SkuPartNumber
+        }
         [PSCustomObject]@{
             LicenseName = $licenseName
             AppliesTo = 'User'
@@ -10013,7 +10206,11 @@ $tableHtml
     # Add note about trial/viral
     $allProcessed = $Licenses | ForEach-Object {
         [PSCustomObject]@{
-            SKU = $_.SkuPartNumber
+            SKU = if ($_.PSObject.Properties['SkuFriendlyName'] -and $_.SkuFriendlyName) {
+                $_.SkuFriendlyName
+            } else {
+                Get-FriendlyProductName -SkuPartNumber $_.SkuPartNumber
+            }
             IsPaid = (Test-IsPaidLicenseSku -License $_ -UserCount $UserCount)
         }
     }
