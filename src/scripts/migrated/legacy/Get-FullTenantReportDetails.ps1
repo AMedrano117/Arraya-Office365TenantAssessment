@@ -382,6 +382,73 @@ function Invoke-QuietWebRequest {
     }
 }
 
+function Invoke-QuietCommand {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$ScriptBlock
+    )
+
+    $savedProgressPreference = $ProgressPreference
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        return (& $ScriptBlock)
+    }
+    finally {
+        $ProgressPreference = $savedProgressPreference
+    }
+}
+
+function Convert-DataSizeToBytes {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Value
+    )
+
+    if ($null -eq $Value) {
+        return [int64]0
+    }
+
+    if ($Value -is [int64] -or $Value -is [int32] -or $Value -is [double] -or $Value -is [decimal]) {
+        try { return [int64]$Value } catch { return [int64]0 }
+    }
+
+    foreach ($propertyName in @('Bytes', 'ByteCount', 'Value')) {
+        if ($Value.PSObject -and $Value.PSObject.Properties[$propertyName]) {
+            $nestedValue = $Value.PSObject.Properties[$propertyName].Value
+            if ($nestedValue -is [int64] -or $nestedValue -is [int32] -or $nestedValue -is [double] -or $nestedValue -is [decimal]) {
+                try { return [int64]$nestedValue } catch {}
+            }
+        }
+    }
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return [int64]0
+    }
+
+    if ($text -match '\((?<bytes>[0-9,]+)\s+bytes\)') {
+        try { return [int64](($Matches['bytes'] -replace ',', '')) } catch {}
+    }
+
+    if ($text -match '^\s*(?<number>[0-9]+(?:\.[0-9]+)?)\s*(?<unit>KB|MB|GB|TB|PB)\b') {
+        $number = [double]$Matches['number']
+        $multiplier = switch ($Matches['unit'].ToUpperInvariant()) {
+            'KB' { 1KB }
+            'MB' { 1MB }
+            'GB' { 1GB }
+            'TB' { 1TB }
+            'PB' { 1PB }
+            default { 1 }
+        }
+        try { return [int64]($number * $multiplier) } catch { return [int64]0 }
+    }
+
+    return [int64]0
+}
+
 function Write-ConsoleArtifactSummary {
     [CmdletBinding()]
     param(
@@ -512,6 +579,20 @@ function Complete-AssessmentProgress {
     Clear-TransientGraphProgress
 }
 
+function Test-ShowCollectorDiagnostics {
+    [CmdletBinding()]
+    param()
+
+    if ($env:ARRAYA_SHOW_COLLECTOR_DIAGNOSTICS -match '^(1|true|yes)$') {
+        return $true
+    }
+
+    return (
+        $DebugPreference -ne [System.Management.Automation.ActionPreference]::SilentlyContinue -or
+        $VerbosePreference -ne [System.Management.Automation.ActionPreference]::SilentlyContinue
+    )
+}
+
 function Write-AssessmentStepMetricsSummary {
     [CmdletBinding()]
     param(
@@ -525,18 +606,27 @@ function Write-AssessmentStepMetricsSummary {
 
     $topSlow = @($script:AssessmentStepMetrics | Sort-Object DurationSeconds -Descending | Select-Object -First 10)
     $topMemory = @($script:AssessmentStepMetrics | Sort-Object PrivateDeltaMB -Descending | Select-Object -First 10)
+    $showConsoleDiagnostics = Test-ShowCollectorDiagnostics
 
-    Write-Host ""
-    Write-Host "Collector performance (top 10 by duration):" -ForegroundColor DarkCyan
+    if ($showConsoleDiagnostics) {
+        Write-Host ""
+        Write-Host "Collector performance (top 10 by duration):" -ForegroundColor DarkCyan
+    }
     foreach ($item in $topSlow) {
-        Write-Host ("  {0}: {1}s (Private Δ {2} MB, Heap Δ {3} MB)" -f $item.StepName, $item.DurationSeconds, $item.PrivateDeltaMB, $item.ManagedHeapDeltaMB) -ForegroundColor DarkGray
+        if ($showConsoleDiagnostics) {
+            Write-Host ("  {0}: {1}s (Private Δ {2} MB, Heap Δ {3} MB)" -f $item.StepName, $item.DurationSeconds, $item.PrivateDeltaMB, $item.ManagedHeapDeltaMB) -ForegroundColor DarkGray
+        }
         Write-Log -Type INFO -Message ("[CollectorMetrics][Duration] Step='{0}' DurationSeconds={1} PrivateDeltaMB={2} ManagedHeapDeltaMB={3}" -f $item.StepName, $item.DurationSeconds, $item.PrivateDeltaMB, $item.ManagedHeapDeltaMB) -ExportFileLocation $ExportFileLocation
     }
 
-    Write-Host ""
-    Write-Host "Collector memory impact (top 10 by private delta):" -ForegroundColor DarkCyan
+    if ($showConsoleDiagnostics) {
+        Write-Host ""
+        Write-Host "Collector memory impact (top 10 by private delta):" -ForegroundColor DarkCyan
+    }
     foreach ($item in $topMemory) {
-        Write-Host ("  {0}: Private Δ {1} MB (Duration {2}s, Heap Δ {3} MB)" -f $item.StepName, $item.PrivateDeltaMB, $item.DurationSeconds, $item.ManagedHeapDeltaMB) -ForegroundColor DarkGray
+        if ($showConsoleDiagnostics) {
+            Write-Host ("  {0}: Private Δ {1} MB (Duration {2}s, Heap Δ {3} MB)" -f $item.StepName, $item.PrivateDeltaMB, $item.DurationSeconds, $item.ManagedHeapDeltaMB) -ForegroundColor DarkGray
+        }
         Write-Log -Type INFO -Message ("[CollectorMetrics][Memory] Step='{0}' PrivateDeltaMB={1} DurationSeconds={2} ManagedHeapDeltaMB={3}" -f $item.StepName, $item.PrivateDeltaMB, $item.DurationSeconds, $item.ManagedHeapDeltaMB) -ExportFileLocation $ExportFileLocation
     }
 }
@@ -581,10 +671,15 @@ function Write-CollectorInventoryMatrix {
         }
     }
 
-    Write-Host ""
-    Write-Host "Collector inventory (row counts):" -ForegroundColor DarkCyan
+    $showConsoleDiagnostics = Test-ShowCollectorDiagnostics
+    if ($showConsoleDiagnostics) {
+        Write-Host ""
+        Write-Host "Collector inventory (row counts):" -ForegroundColor DarkCyan
+    }
     foreach ($entry in $inventory) {
-        Write-Host ("  {0}: {1} row(s) [{2}] -> {3}" -f $entry.Collector, $entry.Count, $entry.Source, $entry.Consumers) -ForegroundColor DarkGray
+        if ($showConsoleDiagnostics) {
+            Write-Host ("  {0}: {1} row(s) [{2}] -> {3}" -f $entry.Collector, $entry.Count, $entry.Source, $entry.Consumers) -ForegroundColor DarkGray
+        }
         Write-Log -Type INFO -Message ("[CollectorInventory] Collector='{0}' Key='{1}' Count={2} Source='{3}' Consumers='{4}'" -f $entry.Collector, $entry.Key, $entry.Count, $entry.Source, $entry.Consumers) -ExportFileLocation $ExportFileLocation
     }
 }
@@ -698,7 +793,7 @@ function Get-ExoMailboxStatisticsSafe {
                 $statsParams.IncludeSoftDeletedRecipient = $true
             }
 
-            $statResults = Get-EXOMailboxStatistics @statsParams
+            $statResults = Invoke-QuietCommand -ScriptBlock { Get-EXOMailboxStatistics @statsParams }
             if ($statResults.Count -eq 0) {
                 $failures.Add([PSCustomObject]@{
                     DisplayName = $displayName
@@ -709,6 +804,14 @@ function Get-ExoMailboxStatisticsSafe {
             }
 
             foreach ($stat in $statResults) {
+                $totalItemBytes = Convert-DataSizeToBytes -Value $stat.TotalItemSize
+                $deletedItemBytes = Convert-DataSizeToBytes -Value $stat.TotalDeletedItemSize
+                if (-not $stat.PSObject.Properties['TotalItemSizeBytes']) {
+                    $stat | Add-Member -MemberType NoteProperty -Name 'TotalItemSizeBytes' -Value $totalItemBytes -Force
+                }
+                if (-not $stat.PSObject.Properties['TotalDeletedItemSizeBytes']) {
+                    $stat | Add-Member -MemberType NoteProperty -Name 'TotalDeletedItemSizeBytes' -Value $deletedItemBytes -Force
+                }
                 $results.Add($stat)
             }
         }
@@ -886,53 +989,8 @@ function Convert-HashToArray {
         [String]$tenant
     )
 
-    # Using List to improve performance on adding items
-    $totalCount = $HashToConvert.Keys.Count
-    $customObject = [PSCustomObject]@{}
-
-    foreach ($nestedKey in $HashToConvert.Keys) {
-        Write-ProgressHelper -Total $totalCount -Id 10 -Activity "Converting Hash Table" -Operation "Converting $($nestedKey)"
-        
-        # Define the attributes
-        $attributes = $HashToConvert[$nestedKey]
-
-        # Initialize a new custom object for each item
-        #$customObject = [PSCustomObject]@{}
-
-        # If the attributes are a hashtable, convert them to a custom object
-        if ($attributes -is [hashtable] -or $attributes -is [System.Collections.Specialized.OrderedDictionary]) {
-            Write-Verbose "Converting $($nestedKey) Hash Table to Array"
-           # $customObject = New-Object -TypeName PSObject
-
-            # Add the tenant name to the attribute name
-            if ($tenant) {
-                foreach ($attribute in $attributes.keys) {
-                    Write-Verbose "Adding $($attribute)_$($tenant) to the custom object"
-                    $customObject | Add-Member -MemberType NoteProperty -Name "$($attribute)_$($tenant)" -Value ($attributes[$attribute] -join ';')
-                }
-            } else {
-                foreach ($attribute in $attributes.keys) {
-                    Write-Verbose "Adding $($attribute) to the custom object"
-                    $customObject | Add-Member -MemberType NoteProperty -Name "$($attribute)" -Value ($attributes[$attribute] -join ';')
-                }
-            }
-
-            #$ExportArray.Add($customObject)
-        } 
-        # If the attributes are an array or a custom object, add them directly
-        elseif ($attributes -is [array] -or $attributes -is [PSCustomObject]) {
-            Write-Verbose "Adding $($nestedKey) Array to the export array"
-            $ExportArray.Add($attributes)
-        }
-        # If the attributes are a string, add it to the export array
-        else {
-            Write-Verbose "Adding '$($nestedKey)' String to the export array with attribute '$($attributes)'"
-            $customObject | Add-Member -MemberType NoteProperty -Name "$($nestedKey)" -Value ($attributes)
-        }
-    }
-
-    Write-ProgressHelper -Total $totalCount -Id 10 -Activity "Converting Hash Table" -Completed
-    return $customObject  # Convert the List to an array if needed outside this function
+    # Compatibility shim: route legacy helper usage through shared converter.
+    return Convert-ArrayaObjectToArray -InputObject $HashToConvert
 }
 
 function Filter-TenantStatsHash {
@@ -948,7 +1006,9 @@ function Filter-TenantStatsHash {
 
     # Common tables to remove for both 'combined' and 'minimum' detail levels
     $commonTablesToRemove = @(
-        'AllMailboxes-MailIdentity'
+        'AllMailboxes-MailIdentity',
+        'AllMailboxes-UserPrincipalName',
+        'AllMailboxes-PrimarySmtpAddress'
     )
 
     # Determine additional tables to remove based on the reporting mode
@@ -1404,10 +1464,14 @@ function Get-AllExchangeMailboxDetails {
                     @{Name="PersistedCapabilities"; Expression={$_.PersistedCapabilities -join ","}}
                 )
 
-                $exoMailboxes = Get-EXOMailbox -Filter "RecipientTypeDetails -ne 'DiscoveryMailbox'" -Properties $Properties -IncludeInactiveMailbox -ResultSize Unlimited -ErrorAction SilentlyContinue | Select-Object $DesiredProperties
+                $exoMailboxes = Invoke-QuietCommand -ScriptBlock {
+                    Get-EXOMailbox -Filter "RecipientTypeDetails -ne 'DiscoveryMailbox'" -Properties $Properties -IncludeInactiveMailbox -ResultSize Unlimited -ErrorAction SilentlyContinue | Select-Object $DesiredProperties
+                }
             }
             geek {
-                $exoMailboxes = Get-EXOMailbox -Filter "RecipientTypeDetails -ne 'DiscoveryMailbox'" -IncludeInactiveMailbox -PropertySets All -ResultSize Unlimited -ErrorAction SilentlyContinue 
+                $exoMailboxes = Invoke-QuietCommand -ScriptBlock {
+                    Get-EXOMailbox -Filter "RecipientTypeDetails -ne 'DiscoveryMailbox'" -IncludeInactiveMailbox -PropertySets All -ResultSize Unlimited -ErrorAction SilentlyContinue
+                }
             }
         }
         Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Gathering all mailboxes (Get-EXOMailbox) including Inactive Mailboxes" -ExportFileLocation $ExportDetails
@@ -1419,6 +1483,8 @@ function Get-AllExchangeMailboxDetails {
         }
         $global:tenantStatsHash["AllMailboxes"] = @{}
         $Global:tenantStatsHash["AllMailboxes-MailIdentity"] = @{}
+        $Global:tenantStatsHash["AllMailboxes-UserPrincipalName"] = @{}
+        $Global:tenantStatsHash["AllMailboxes-PrimarySmtpAddress"] = @{}
         $global:tenantStatsHash["NonUserMailboxes"] = @{}
         
         $global:tenantStatsHash["ArchiveMailboxes"] = @{}
@@ -1428,13 +1494,29 @@ function Get-AllExchangeMailboxDetails {
         # Insert individual mailboxes into the hashtable
         $totalCount = $exoMailboxes.Count
         foreach ($mailbox in $exoMailboxes) {
-            $key = $mailbox.UserPrincipalName
+            $key = @(
+                [string]$mailbox.ExternalDirectoryObjectId
+                if ($mailbox.ExchangeGuid) { [string]$mailbox.ExchangeGuid }
+                if ($mailbox.Guid) { [string]$mailbox.Guid }
+                [string]$mailbox.UserPrincipalName
+                [string]$mailbox.PrimarySmtpAddress
+                [string]$mailbox.Identity
+            ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1
+            if ([string]::IsNullOrWhiteSpace($key)) {
+                $key = "mailbox:$([guid]::NewGuid().Guid)"
+            }
             Write-ProgressHelper -Total $totalCount -Id $mailboxInventoryProgressId -Activity "Gathering All Exchange Mailbox Details" -Operation "Gathering Mailbox Details for $($key)"
             
             # Set the key based on the mailbox type
             #$MailboxTypeKey = $mailbox.RecipientTypeDetails.tostring() # Use RecipientTypeDetails as the key
             $Global:tenantStatsHash["AllMailboxes"][$key] = $mailbox
             $Global:tenantStatsHash["AllMailboxes-MailIdentity"][$mailbox.Identity] = $mailbox
+            if ($mailbox.UserPrincipalName) {
+                $Global:tenantStatsHash["AllMailboxes-UserPrincipalName"][[string]$mailbox.UserPrincipalName] = $mailbox
+            }
+            if ($mailbox.PrimarySmtpAddress) {
+                $Global:tenantStatsHash["AllMailboxes-PrimarySmtpAddress"][[string]$mailbox.PrimarySmtpAddress] = $mailbox
+            }
 
             if ($mailbox.RecipientTypeDetails -ne "UserMailbox" -and $mailbox.RecipientTypeDetails -ne "GroupMailbox") {
                 #$MailboxTypeKey = "NonUserMailboxes"
@@ -1506,8 +1588,10 @@ function Get-AllExchangeMailboxDetails {
                         $stats = [PSCustomObject]@{
                             DisplayName = $mailbox.DisplayName
                             TotalItemSize = "$([math]::Round($storageBytes / 1GB, 4)) GB ($storageBytes bytes)"
+                            TotalItemSizeBytes = [int64]$storageBytes
                             ItemCount = $itemCount
                             TotalDeletedItemSize = "$([math]::Round($deletedBytes / 1GB, 4)) GB ($deletedBytes bytes)"
+                            TotalDeletedItemSizeBytes = [int64]$deletedBytes
                             MailboxType = $mailbox.RecipientTypeDetails
                             MailboxGuid = $mailbox.ExchangeGuid
                         }
@@ -1658,10 +1742,14 @@ function Get-AllRecipientDetails {
                     "SKUAssigned", "WhenCreated", "WhenSoftDeleted", "GUID",
                     "alias", "Notes"
                 )
-                $allRecipients = Get-EXORecipient -Properties $Properties -ResultSize Unlimited -Filter "RecipientTypeDetails -ne 'DiscoveryMailbox' -and RecipientTypeDetails -ne 'MailContact' -and RecipientTypeDetails -ne 'GuestMailUser' -and RecipientTypeDetails -ne 'MailUser'" -ErrorAction Stop | select $DesiredProperties
+                $allRecipients = Invoke-QuietCommand -ScriptBlock {
+                    Get-EXORecipient -Properties $Properties -ResultSize Unlimited -Filter "RecipientTypeDetails -ne 'DiscoveryMailbox' -and RecipientTypeDetails -ne 'MailContact' -and RecipientTypeDetails -ne 'GuestMailUser' -and RecipientTypeDetails -ne 'MailUser'" -ErrorAction Stop | select $DesiredProperties
+                }
             }           
             geek {
-                $allRecipients = Get-EXORecipient -PropertySets All -ResultSize Unlimited -Filter "RecipientTypeDetails -ne 'DiscoveryMailbox' -and RecipientTypeDetails -ne 'MailContact' -and RecipientTypeDetails -ne 'GuestMailUser' -and RecipientTypeDetails -ne 'MailUser'" -ErrorAction Stop
+                $allRecipients = Invoke-QuietCommand -ScriptBlock {
+                    Get-EXORecipient -PropertySets All -ResultSize Unlimited -Filter "RecipientTypeDetails -ne 'DiscoveryMailbox' -and RecipientTypeDetails -ne 'MailContact' -and RecipientTypeDetails -ne 'GuestMailUser' -and RecipientTypeDetails -ne 'MailUser'" -ErrorAction Stop
+                }
             }
         }
         Write-Log -Type INFO -Message "[Get-AllRecipientDetails] FOUND $($allRecipients.count) Exchange Online Recipients $($detailLevel) details" -ExportFileLocation $ExportDetails
@@ -2434,7 +2522,7 @@ function Get-AllUnifiedGroups {
 
                 $allUnifiedGroups = New-Object System.Collections.Generic.List[object]
                 $fetchedGroups = 0
-                Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue |
+                Invoke-QuietCommand -ScriptBlock { Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue } |
                     Select-Object $DesiredProperties |
                     ForEach-Object {
                         [void]$allUnifiedGroups.Add($_)
@@ -2447,7 +2535,7 @@ function Get-AllUnifiedGroups {
             geek {
                 $allUnifiedGroups = New-Object System.Collections.Generic.List[object]
                 $fetchedGroups = 0
-                Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue |
+                Invoke-QuietCommand -ScriptBlock { Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue } |
                     ForEach-Object {
                         [void]$allUnifiedGroups.Add($_)
                         $fetchedGroups++
@@ -4833,14 +4921,36 @@ function Get-AllUserDetails {
         [ValidateSet('minimum', 'combined', 'all', 'geek')]
         [string]$detailLevel
     )
-    #Get the start time of the function
     $start = Get-Date
     $graphUsersProgressId = 71
-    # Ensure global hash table structure
+    $userDetailsProgressId = 72
+    $DesiredProperties = @(
+        "DisplayName", "AssignedLicenses", "UserPrincipalName"
+        "UserType", "Id", "AccountEnabled"
+        "CreatedDateTime", "Mail", "JobTitle"
+        "Department", "CompanyName", "OfficeLocation"
+        "City", "State", "Country"
+        "OnPremisesSyncEnabled", "OnPremisesDistinguishedName", "OnPremisesLastSyncDateTime"
+        "UsageLocation", "SignInActivity", "ProxyAddresses"
+    )
+    $minimumModeMessage = 'NotCollected (minimum mode)'
+    $progressStatusInterval = 25
+    $isGeekDetail = ($detailLevel -eq 'geek')
+    $logPerUserDebug = $isGeekDetail
+    $BasicMGDetails = $false
+    $userCollectionState = [ordered]@{
+        ProcessedUserCount = 0
+        LicensedUserCount = 0
+        UnlicensedUserCount = 0
+        LicenseFallbackUserCount = 0
+        UnresolvedSkuCount = 0
+    }
+
     if (-not $global:tenantStatsHash) {
         $global:tenantStatsHash = @{}
     }
-    $global:tenantStatsHash["Users"] = @{} #Hash table to store all user details
+    $global:tenantStatsHash["Users"] = @{}
+
     $depthPolicy = if ($script:CollectionDepthPolicy) {
         $script:CollectionDepthPolicy
     }
@@ -4848,38 +4958,223 @@ function Get-AllUserDetails {
         Get-ArrayaCollectionDepthPolicy -ReportingMode ((Get-Culture).TextInfo.ToTitleCase($detailLevel.ToLowerInvariant()))
     }
     $collectExtendedUserDetails = if ($null -ne $depthPolicy.CollectExtendedGraphEnrichment) { [bool]$depthPolicy.CollectExtendedGraphEnrichment } else { $true }
-    $minimumModeMessage = 'NotCollected (minimum mode)'
     if (-not $collectExtendedUserDetails) {
         Write-Log -Type INFO -Message "[Get-allUserDetails] Minimum mode optimization active. Skipping per-user service-plan expansion and request-id sign-in fields." -ExportFileLocation $ExportDetails
     }
 
-    # Gather all Microsoft Graph User Details
+    function Process-TenantUserRecord {
+        param(
+            [Parameter(Mandatory = $true)]
+            [object]$UserRecord
+        )
+
+        $scriptLabel = if ($UserRecord.DisplayName) { [string]$UserRecord.DisplayName } elseif ($UserRecord.UserPrincipalName) { [string]$UserRecord.UserPrincipalName } else { 'User record' }
+        try {
+            $userCollectionState.ProcessedUserCount++
+            if ($userCollectionState.ProcessedUserCount -eq 1 -or ($userCollectionState.ProcessedUserCount % $progressStatusInterval) -eq 0) {
+                Write-Progress -Id $userDetailsProgressId -Activity "Gathering Tenant User Details" -Status "Processed $($userCollectionState.ProcessedUserCount) user(s): $scriptLabel"
+            }
+
+            $userPrincipalName = [string]$UserRecord.UserPrincipalName
+            if ([string]::IsNullOrWhiteSpace($userPrincipalName)) {
+                $userPrincipalName = if ($UserRecord.Id) { "id:$($UserRecord.Id)" } else { "unknown:$([guid]::NewGuid().Guid)" }
+            }
+            if ($logPerUserDebug) {
+                Write-Log -Type DEBUG -Message ("[Get-allUserDetails] Creating Hash for '{0}'" -f $userPrincipalName) -ExportFileLocation $ExportDetails
+            }
+
+            $signInActivity = if ($UserRecord.PSObject.Properties['SignInActivity']) { $UserRecord.SignInActivity } else { $null }
+            $userProperties = [ordered]@{}
+            if ($isGeekDetail) {
+                foreach ($property in $UserRecord.PSObject.Properties) {
+                    $userProperties[$property.Name] = $property.Value
+                }
+            }
+            else {
+                $userProperties['DisplayName'] = $UserRecord.DisplayName
+                $userProperties['AssignedLicenses'] = $UserRecord.AssignedLicenses
+                $userProperties['UserPrincipalName'] = $UserRecord.UserPrincipalName
+                $userProperties['UserType'] = $UserRecord.UserType
+                $userProperties['Id'] = $UserRecord.Id
+                $userProperties['AccountEnabled'] = $UserRecord.AccountEnabled
+                $userProperties['CreatedDateTime'] = $UserRecord.CreatedDateTime
+                $userProperties['Mail'] = $UserRecord.Mail
+                $userProperties['JobTitle'] = $UserRecord.JobTitle
+                $userProperties['Department'] = $UserRecord.Department
+                $userProperties['CompanyName'] = $UserRecord.CompanyName
+                $userProperties['OfficeLocation'] = $UserRecord.OfficeLocation
+                $userProperties['City'] = $UserRecord.City
+                $userProperties['State'] = $UserRecord.State
+                $userProperties['Country'] = $UserRecord.Country
+                $userProperties['OnPremisesSyncEnabled'] = $UserRecord.OnPremisesSyncEnabled
+                $userProperties['OnPremisesDistinguishedName'] = $UserRecord.OnPremisesDistinguishedName
+                $userProperties['OnPremisesLastSyncDateTime'] = $UserRecord.OnPremisesLastSyncDateTime
+                $userProperties['UsageLocation'] = $UserRecord.UsageLocation
+                $userProperties['SignInActivity'] = $signInActivity
+                $userProperties['ProxyAddresses'] = $UserRecord.ProxyAddresses
+            }
+
+            $combinedProxyAddresses = ($UserRecord.ProxyAddresses -replace '^[sS][mM][tT][pP]:') -join ';'
+            $userProperties['ProxyAddresses'] = $combinedProxyAddresses
+
+            if ($BasicMGDetails) {
+                if ($logPerUserDebug) {
+                    Write-Log -Type DEBUG -Message ("[Get-allUserDetails] Updating '{0}' UserType to HashTable if Basic Details" -f $userPrincipalName) -ExportFileLocation $ExportDetails
+                }
+                $userProperties['UserType'] = (if ($UserRecord.UserPrincipalName -like "*#EXT#*") { "GuestUser" } else { "User" })
+            }
+            else {
+                if ($logPerUserDebug) {
+                    Write-Log -Type DEBUG -Message ("[Get-allUserDetails] Gather '{0}' License Friendly Names" -f $userPrincipalName) -ExportFileLocation $ExportDetails
+                }
+                $assignedLicensesString = $null
+                $assignedLicensesFriendlyString = $null
+                $disabledPlans = $null
+                $enabledServicePlans = $null
+                $assignedLicenseEntries = @($UserRecord.AssignedLicenses)
+                if ($assignedLicenseEntries.Count -gt 0) {
+                    $userCollectionState.LicensedUserCount++
+                    $resolvedSkuParts = New-Object 'System.Collections.Generic.HashSet[string]'
+                    $resolvedFriendlyNames = New-Object 'System.Collections.Generic.HashSet[string]'
+                    $resolvedDisabledPlans = if ($collectExtendedUserDetails) { New-Object 'System.Collections.Generic.HashSet[string]' } else { $null }
+                    $resolvedEnabledPlans = if ($collectExtendedUserDetails) { New-Object 'System.Collections.Generic.HashSet[string]' } else { $null }
+
+                    foreach ($assignedLicenseEntry in $assignedLicenseEntries) {
+                        $skuId = $null
+                        if ($assignedLicenseEntry.PSObject.Properties['SkuId']) {
+                            $skuId = $assignedLicenseEntry.SkuId
+                        }
+                        elseif ($assignedLicenseEntry -is [guid]) {
+                            $skuId = $assignedLicenseEntry
+                        }
+
+                        $skuIdText = if ($skuId) { $skuId.ToString() } else { $null }
+                        $skuLookup = if ($skuIdText -and $script:SkuLookupById.ContainsKey($skuIdText)) { $script:SkuLookupById[$skuIdText] } else { $null }
+                        if ($skuLookup) {
+                            [void]$resolvedSkuParts.Add($skuLookup.SkuPartNumber)
+                            [void]$resolvedFriendlyNames.Add($skuLookup.FriendlyName)
+
+                            if ($collectExtendedUserDetails) {
+                                $disabledPlanIds = @()
+                                if ($assignedLicenseEntry.PSObject.Properties['DisabledPlans'] -and $assignedLicenseEntry.DisabledPlans) {
+                                    $disabledPlanIds = @($assignedLicenseEntry.DisabledPlans | ForEach-Object { $_.ToString() })
+                                }
+
+                                $disabledPlanNamesForSku = @()
+                                foreach ($disabledPlanId in $disabledPlanIds) {
+                                    if ($script:ServicePlanLookupById.ContainsKey($disabledPlanId)) {
+                                        $disabledPlanName = $script:ServicePlanLookupById[$disabledPlanId]
+                                        $disabledPlanNamesForSku += $disabledPlanName
+                                        [void]$resolvedDisabledPlans.Add($disabledPlanName)
+                                    }
+                                }
+
+                                $enabledPlanNamesForSku = @(
+                                    @($skuLookup.ServicePlans) |
+                                        Where-Object {
+                                            $_.ServicePlanName -and
+                                            ($disabledPlanNamesForSku -notcontains $_.ServicePlanName)
+                                        } |
+                                        ForEach-Object { $_.ServicePlanName }
+                                )
+                                foreach ($enabledPlanName in $enabledPlanNamesForSku) {
+                                    [void]$resolvedEnabledPlans.Add($enabledPlanName)
+                                }
+                            }
+                        }
+                        else {
+                            $userCollectionState.UnresolvedSkuCount++
+                            if ($skuIdText) {
+                                [void]$resolvedSkuParts.Add($skuIdText)
+                                [void]$resolvedFriendlyNames.Add($skuIdText)
+                            }
+                        }
+                    }
+
+                    $userCollectionState.LicenseFallbackUserCount++
+                    $assignedLicensesString = ($resolvedSkuParts | ForEach-Object { $_ }) -join ","
+                    $assignedLicensesFriendlyString = ($resolvedFriendlyNames | ForEach-Object { $_ }) -join ","
+                    if ($collectExtendedUserDetails) {
+                        $disabledPlans = @($resolvedDisabledPlans | ForEach-Object { $_ })
+                        $enabledServicePlans = ($resolvedEnabledPlans | ForEach-Object { $_ }) -join ","
+                    }
+                    else {
+                        $disabledPlans = @()
+                        $enabledServicePlans = $minimumModeMessage
+                    }
+                }
+                else {
+                    $userCollectionState.UnlicensedUserCount++
+                    if (-not $collectExtendedUserDetails) {
+                        $disabledPlans = @()
+                        $enabledServicePlans = $minimumModeMessage
+                    }
+                }
+                $userProperties['AssignedLicenses'] = $assignedLicensesString
+                $userProperties['AssignedLicensesFriendly'] = $assignedLicensesFriendlyString
+                $userProperties['License-DisabledArray'] = $disabledPlans
+                $userProperties['EnabledServicePlans'] = $enabledServicePlans
+                $userProperties['LastNonInteractiveSignInDateTime'] = if ($signInActivity) { $signInActivity.LastNonInteractiveSignInDateTime } else { $null }
+                if ($collectExtendedUserDetails) {
+                    $userProperties['LastNonInteractiveSignInRequestId'] = if ($signInActivity) { $signInActivity.LastNonInteractiveSignInRequestId } else { $null }
+                    $userProperties['LastSignInRequestId'] = if ($signInActivity) { $signInActivity.LastSignInRequestId } else { $null }
+                }
+                else {
+                    $userProperties['LastNonInteractiveSignInRequestId'] = $minimumModeMessage
+                    $userProperties['LastSignInRequestId'] = $minimumModeMessage
+                }
+                $userProperties['LastSignInDateTime'] = if ($signInActivity) { $signInActivity.LastSignInDateTime } else { $null }
+            }
+
+            $global:tenantStatsHash["Users"][$userPrincipalName] = [PSCustomObject]$userProperties
+        }
+        catch {
+            Write-Log -Type ERROR -Message ("[Get-allUserDetails] An error occurred in Creating User Hash for user '{0}'. $($_.Exception.Message)" -f $scriptLabel) -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
+        }
+    }
+
+    function Invoke-UserCollectionQuery {
+        param(
+            [switch]$BasicMode
+        )
+
+        if ($BasicMode) {
+            Invoke-QuietCommand -ScriptBlock { Get-MgUser -All -ErrorAction Stop } |
+                Where-Object { $null -ne $_.ID } |
+                ForEach-Object { Process-TenantUserRecord -UserRecord $_ }
+            return
+        }
+
+        if ($detailLevel -eq 'geek') {
+            Invoke-QuietCommand -ScriptBlock { Get-MgUser -All -ErrorAction Stop } |
+                Where-Object { $null -ne $_.ID } |
+                ForEach-Object { Process-TenantUserRecord -UserRecord $_ }
+            return
+        }
+
+        Invoke-QuietCommand -ScriptBlock { Get-MgUser -All -Property $DesiredProperties -ErrorAction Stop } |
+            Select-Object $DesiredProperties |
+            Where-Object { $null -ne $_.ID } |
+            ForEach-Object { Process-TenantUserRecord -UserRecord $_ }
+    }
+
     try {
         Write-Host "Getting all Microsoft Graph $($detailLevel) User data..." -ForegroundColor Cyan -nonewline
         Write-Log -Type Info -Message "[Get-allUserDetails] START: Getting all Microsoft Graph $($detailLevel) User data" -ExportFileLocation $ExportDetails
         Write-Progress -Id $graphUsersProgressId -Activity "Getting all Microsoft Graph User Data" -Status (((Get-Date) - $global:initialStart).ToString('hh\:mm\:ss'))
 
         $maxRetries = 3
-        $success = $false
+        $collectionSucceeded = $false
         for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
             try {
-                switch ($detailLevel) {
-                    #Not Sure this will pull all the details for a user. Need to review Property variable. Might need to include all properties that expand further
-                    geek { $allTenantUsers = Get-MgUser -all -ErrorAction Stop }
-                    default { 
-                        $DesiredProperties = @(
-                            "DisplayName", "AssignedLicenses", "UserPrincipalName"
-                            "UserType", "Id", "AccountEnabled"
-                            "CreatedDateTime", "Mail", "JobTitle"
-                            "Department", "CompanyName", "OfficeLocation"
-                            "City", "State", "Country"
-                            "OnPremisesSyncEnabled", "OnPremisesDistinguishedName", "OnPremisesLastSyncDateTime"
-                            "UsageLocation", "SignInActivity", "ProxyAddresses"
-                        )
-                        $allTenantUsers = Get-MgUser -all -Property $DesiredProperties -ErrorAction Stop | Select-Object $DesiredProperties | Where-Object { $null -ne $_.ID }
-                    }
-                }
-                $success = $true
+                $global:tenantStatsHash["Users"] = @{}
+                $userCollectionState.ProcessedUserCount = 0
+                $userCollectionState.LicensedUserCount = 0
+                $userCollectionState.UnlicensedUserCount = 0
+                $userCollectionState.LicenseFallbackUserCount = 0
+                $userCollectionState.UnresolvedSkuCount = 0
+                Invoke-UserCollectionQuery
+                $collectionSucceeded = $true
                 break
             }
             catch {
@@ -4893,225 +5188,56 @@ function Get-AllUserDetails {
                 }
             }
         }
+        if (-not $collectionSucceeded) {
+            throw "Graph user collection did not complete successfully."
+        }
     }
     catch {
-        # Using the Capture-ErrorHelper function to capture and log the error.
         if ($_.Exception.Message -like "*Neither tenant is B2C or tenant doesn't have premium license*") {
-            #Run if Error received is Get-MgUser : Neither tenant is B2C or tenant doesn't have premium license
-            #Status: 403 (Forbidden)
-            #ErrorCode: Authentication_RequestFromNonPremiumTenantOrB2CTenant
             Write-Log -Type ERROR -Message "[Get-allUserDetails] An error occurred in running Get-allMGUserDetails function. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
-            
+
             Write-Host
-            Write-Host "Caught a tenant license exception. Getting all Microsoft Graph User data without licenses and sign in activity..." -ForegroundColor Yellow -nonewline    
+            Write-Host "Caught a tenant license exception. Getting all Microsoft Graph User data without licenses and sign in activity..." -ForegroundColor Yellow -nonewline
             try {
-                #Fallback has bug that doesn't return all properties to help build licenses and sign in activity
                 Write-Log -Type Info -Message "[Get-allUserDetails] Attempt 2. Getting all Microsoft Graph $($detailLevel) with limited User Details" -ExportFileLocation $ExportDetails
-                $allTenantUsers = Get-MgUser -all -ErrorAction Stop
+                $global:tenantStatsHash["Users"] = @{}
+                $userCollectionState.ProcessedUserCount = 0
+                $userCollectionState.LicensedUserCount = 0
+                $userCollectionState.UnlicensedUserCount = 0
+                $userCollectionState.LicenseFallbackUserCount = 0
+                $userCollectionState.UnresolvedSkuCount = 0
                 $BasicMGDetails = $true
+                Invoke-UserCollectionQuery -BasicMode
             }
             catch {
                 Write-Log -Type ERROR -Message "[Get-allUserDetails] An error occurred in running Get-allMGUserDetails function. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
-                
-                }
+            }
         }
         else {
             Write-Log -Type Error -Message "[Get-allUserDetails] An error occurred in running Get-allMGUserDetails function. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
             Write-Log -Type WARNING -Message "[Get-allUserDetails] Continuing without user details due to Graph request failure." -ExportFileLocation $ExportDetails
-            $allTenantUsers = @()
             return
-            # Handle other exceptions
         }
     }
     finally {
         Write-Progress -Id $graphUsersProgressId -Activity "Getting all Microsoft Graph User Data" -Completed
     }
-    #Add Additional Properties to Hash Table - Licensing, MailboxStats, OneDriveStats, ArchiveStats
-    $userDetailsProgressId = 72
-    $userDetailsProgressTotal = 1
-    Write-Log -Type Info -Message "[Get-allUserDetails] Adding Additional Properties for $($allTenantUsers.count) Users" -ExportFileLocation $ExportDetails
+
+    Write-Log -Type Info -Message "[Get-allUserDetails] Added additional properties for $($userCollectionState.ProcessedUserCount) users" -ExportFileLocation $ExportDetails
     try {
-        $totalCount = $allTenantUsers.count
-        $userDetailsProgressTotal = [Math]::Max($totalCount, 1)
-        $isGeekDetail = ($detailLevel -eq 'geek')
-        $logPerUserDebug = $isGeekDetail
-        $licensedUserCount = 0
-        $unlicensedUserCount = 0
-        $licenseFallbackUserCount = 0
-        $unresolvedSkuCount = 0
-        foreach ($user in $allTenantUsers) {
-            try {
-                # Create Hash Table for each user
-                Write-ProgressHelper -Total $userDetailsProgressTotal -Id $userDetailsProgressId -Activity "Gathering Tenant User Details" -Operation "Gathering Tenant User Details for $($user.DisplayName)"
-                $userPrincipalName = [string]$user.UserPrincipalName
-                if ([string]::IsNullOrWhiteSpace($userPrincipalName)) {
-                    $userPrincipalName = if ($user.Id) { "id:$($user.Id)" } else { "unknown:$([guid]::NewGuid().Guid)" }
-                }
-                if ($logPerUserDebug) {
-                    Write-Log -Type DEBUG -Message ("[Get-allUserDetails] Creating Hash for '{0}'" -f $userPrincipalName) -ExportFileLocation $ExportDetails
-                }
-
-                $signInActivity = if ($user.PSObject.Properties['SignInActivity']) { $user.SignInActivity } else { $null }
-                $userProperties = [ordered]@{}
-                if ($isGeekDetail) {
-                    foreach ($property in $user.PSObject.Properties) {
-                        $userProperties[$property.Name] = $property.Value
-                    }
-                }
-                else {
-                    $userProperties['DisplayName'] = $user.DisplayName
-                    $userProperties['AssignedLicenses'] = $user.AssignedLicenses
-                    $userProperties['UserPrincipalName'] = $user.UserPrincipalName
-                    $userProperties['UserType'] = $user.UserType
-                    $userProperties['Id'] = $user.Id
-                    $userProperties['AccountEnabled'] = $user.AccountEnabled
-                    $userProperties['CreatedDateTime'] = $user.CreatedDateTime
-                    $userProperties['Mail'] = $user.Mail
-                    $userProperties['JobTitle'] = $user.JobTitle
-                    $userProperties['Department'] = $user.Department
-                    $userProperties['CompanyName'] = $user.CompanyName
-                    $userProperties['OfficeLocation'] = $user.OfficeLocation
-                    $userProperties['City'] = $user.City
-                    $userProperties['State'] = $user.State
-                    $userProperties['Country'] = $user.Country
-                    $userProperties['OnPremisesSyncEnabled'] = $user.OnPremisesSyncEnabled
-                    $userProperties['OnPremisesDistinguishedName'] = $user.OnPremisesDistinguishedName
-                    $userProperties['OnPremisesLastSyncDateTime'] = $user.OnPremisesLastSyncDateTime
-                    $userProperties['UsageLocation'] = $user.UsageLocation
-                    $userProperties['SignInActivity'] = $signInActivity
-                    $userProperties['ProxyAddresses'] = $user.ProxyAddresses
-                }
-
-                #Combine ProxyAddresses
-                $combinedProxyAddresses = ($user.ProxyAddresses -replace '^[sS][mM][tT][pP]:') -join ';'
-                $userProperties['ProxyAddresses'] = $combinedProxyAddresses
-
-                if ($BasicMGDetails) {
-                    if ($logPerUserDebug) {
-                        Write-Log -Type DEBUG -Message ("[Get-allUserDetails] Updating '{0}' UserType to HashTable if Basic Details" -f $userPrincipalName) -ExportFileLocation $ExportDetails
-                    }
-                    $userProperties['UserType'] = (if ($user.UserPrincipalName -like "*#EXT#*") { "GuestUser" } else { "User" })
-                }
-                else {
-                    if ($logPerUserDebug) {
-                        Write-Log -Type DEBUG -Message ("[Get-allUserDetails] Gather '{0}' License Friendly Names" -f $userPrincipalName) -ExportFileLocation $ExportDetails
-                    }
-                    $assignedLicensesString = $null
-                    $assignedLicensesFriendlyString = $null
-                    $disabledPlans = $null
-                    $enabledServicePlans = $null
-                    $assignedLicenseEntries = @($user.AssignedLicenses)
-                    if ($assignedLicenseEntries.Count -gt 0) {
-                        $licensedUserCount++
-                        $resolvedSkuParts = New-Object 'System.Collections.Generic.HashSet[string]'
-                        $resolvedFriendlyNames = New-Object 'System.Collections.Generic.HashSet[string]'
-                        $resolvedDisabledPlans = if ($collectExtendedUserDetails) { New-Object 'System.Collections.Generic.HashSet[string]' } else { $null }
-                        $resolvedEnabledPlans = if ($collectExtendedUserDetails) { New-Object 'System.Collections.Generic.HashSet[string]' } else { $null }
-
-                        foreach ($assignedLicenseEntry in $assignedLicenseEntries) {
-                            $skuId = $null
-                            if ($assignedLicenseEntry.PSObject.Properties['SkuId']) {
-                                $skuId = $assignedLicenseEntry.SkuId
-                            } elseif ($assignedLicenseEntry -is [guid]) {
-                                $skuId = $assignedLicenseEntry
-                            }
-
-                            $skuIdText = if ($skuId) { $skuId.ToString() } else { $null }
-                            $skuLookup = if ($skuIdText -and $script:SkuLookupById.ContainsKey($skuIdText)) { $script:SkuLookupById[$skuIdText] } else { $null }
-                            if ($skuLookup) {
-                                [void]$resolvedSkuParts.Add($skuLookup.SkuPartNumber)
-                                [void]$resolvedFriendlyNames.Add($skuLookup.FriendlyName)
-
-                                if ($collectExtendedUserDetails) {
-                                    $disabledPlanIds = @()
-                                    if ($assignedLicenseEntry.PSObject.Properties['DisabledPlans'] -and $assignedLicenseEntry.DisabledPlans) {
-                                        $disabledPlanIds = @($assignedLicenseEntry.DisabledPlans | ForEach-Object { $_.ToString() })
-                                    }
-
-                                    $disabledPlanNamesForSku = @()
-                                    foreach ($disabledPlanId in $disabledPlanIds) {
-                                        if ($script:ServicePlanLookupById.ContainsKey($disabledPlanId)) {
-                                            $disabledPlanName = $script:ServicePlanLookupById[$disabledPlanId]
-                                            $disabledPlanNamesForSku += $disabledPlanName
-                                            [void]$resolvedDisabledPlans.Add($disabledPlanName)
-                                        }
-                                    }
-
-                                    $enabledPlanNamesForSku = @(
-                                        @($skuLookup.ServicePlans) |
-                                            Where-Object {
-                                                $_.ServicePlanName -and
-                                                ($disabledPlanNamesForSku -notcontains $_.ServicePlanName)
-                                            } |
-                                            ForEach-Object { $_.ServicePlanName }
-                                    )
-                                    foreach ($enabledPlanName in $enabledPlanNamesForSku) {
-                                        [void]$resolvedEnabledPlans.Add($enabledPlanName)
-                                    }
-                                }
-                            } else {
-                                $unresolvedSkuCount++
-                                if ($skuIdText) {
-                                    [void]$resolvedSkuParts.Add($skuIdText)
-                                    [void]$resolvedFriendlyNames.Add($skuIdText)
-                                }
-                            }
-                        }
-
-                        $licenseFallbackUserCount++
-                        $assignedLicensesString = ($resolvedSkuParts | ForEach-Object { $_ }) -join ","
-                        $assignedLicensesFriendlyString = ($resolvedFriendlyNames | ForEach-Object { $_ }) -join ","
-                        if ($collectExtendedUserDetails) {
-                            $disabledPlans = @($resolvedDisabledPlans | ForEach-Object { $_ })
-                            $enabledServicePlans = ($resolvedEnabledPlans | ForEach-Object { $_ }) -join ","
-                        }
-                        else {
-                            $disabledPlans = @()
-                            $enabledServicePlans = $minimumModeMessage
-                        }
-                    }
-                    else {
-                        $unlicensedUserCount++
-                        if (-not $collectExtendedUserDetails) {
-                            $disabledPlans = @()
-                            $enabledServicePlans = $minimumModeMessage
-                        }
-                    }
-                    $userProperties['AssignedLicenses'] = $assignedLicensesString
-                    $userProperties['AssignedLicensesFriendly'] = $assignedLicensesFriendlyString
-                    $userProperties['License-DisabledArray'] = $disabledPlans
-                    $userProperties['EnabledServicePlans'] = $enabledServicePlans
-                    $userProperties['LastNonInteractiveSignInDateTime'] = if ($signInActivity) { $signInActivity.LastNonInteractiveSignInDateTime } else { $null }
-                    if ($collectExtendedUserDetails) {
-                        $userProperties['LastNonInteractiveSignInRequestId'] = if ($signInActivity) { $signInActivity.LastNonInteractiveSignInRequestId } else { $null }
-                        $userProperties['LastSignInRequestId'] = if ($signInActivity) { $signInActivity.LastSignInRequestId } else { $null }
-                    }
-                    else {
-                        $userProperties['LastNonInteractiveSignInRequestId'] = $minimumModeMessage
-                        $userProperties['LastSignInRequestId'] = $minimumModeMessage
-                    }
-                    $userProperties['LastSignInDateTime'] = if ($signInActivity) { $signInActivity.LastSignInDateTime } else { $null }
-                }
-
-                $global:tenantStatsHash["Users"][$userPrincipalName] = [PSCustomObject]$userProperties
-            }
-            catch {
-                Write-Log -Type ERROR -Message ("[Get-allUserDetails] An error occurred in Creating User Hash for user '{0}'. $($_.Exception.Message)" -f $userPrincipalName) -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
-            }
-        }
-        $allTenantUsers = $null
+        Write-Progress -Id $userDetailsProgressId -Activity "Gathering Tenant User Details" -Status "Processed $($userCollectionState.ProcessedUserCount) user(s)"
         [GC]::Collect()
         [GC]::WaitForPendingFinalizers()
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
         Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
-        Write-Log -Type INFO -Message "[Get-allUserDetails] Licensing summary: LicensedUsers=$licensedUserCount UnlicensedUsers=$unlicensedUserCount LicenseLookupUsers=$licenseFallbackUserCount UnresolvedSkuReferences=$unresolvedSkuCount" -ExportFileLocation $ExportDetails
+        Write-Log -Type INFO -Message "[Get-allUserDetails] Licensing summary: LicensedUsers=$($userCollectionState.LicensedUserCount) UnlicensedUsers=$($userCollectionState.UnlicensedUserCount) LicenseLookupUsers=$($userCollectionState.LicenseFallbackUserCount) UnresolvedSkuReferences=$($userCollectionState.UnresolvedSkuCount)" -ExportFileLocation $ExportDetails
         Write-Log -Type Info -Message "[Get-allUserDetails] COMPLETED: Gathering all  User Details in $($CompletedTime)" -ExportFileLocation $ExportDetails
     }     
     catch {
         Write-Log -Type ERROR -Message "[Get-allUserDetails] An error occurred in running Get-allUserDetails function. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
     }
     finally {
-        Write-ProgressHelper -Total $userDetailsProgressTotal -Id $userDetailsProgressId -Activity "Gathering Tenant User Details" -Completed
+        Write-Progress -Id $userDetailsProgressId -Activity "Gathering Tenant User Details" -Completed
     }
 }
 
@@ -5506,10 +5632,10 @@ function Report-UserAndMailboxStats {
                     $tenantStatsHash["AllMailboxes-MailIdentity"][$entity.Identity]
                     Write-Verbose "Mailbox Details Found: $($entity.Identity)"
                 } else { $null }
-            } elseif ($tenantStatsHash["AllMailboxes"] -and $entity.UserPrincipalName) {
-                # Check against UserPrincipalName
-                if ($tenantStatsHash["AllMailboxes"].ContainsKey($entity.UserPrincipalName)) {
-                    $tenantStatsHash["AllMailboxes"][$entity.UserPrincipalName]
+            } elseif ($tenantStatsHash["AllMailboxes-UserPrincipalName"] -and $entity.UserPrincipalName) {
+                # Check against UserPrincipalName index
+                if ($tenantStatsHash["AllMailboxes-UserPrincipalName"].ContainsKey($entity.UserPrincipalName)) {
+                    $tenantStatsHash["AllMailboxes-UserPrincipalName"][$entity.UserPrincipalName]
                     Write-Verbose "Mailbox Details Found (UPN): $($entity.UserPrincipalName)"
                 } else { $null }
             } else { 
@@ -5550,7 +5676,12 @@ function Report-UserAndMailboxStats {
     
             # Add mailbox stats, ensuring null safety
             $MBXSizeGB = if ($mailboxStats -and $mailboxStats.TotalItemSize) {
-                [math]::Round(($mailboxStats.TotalItemSize.ToString() -replace "(.*\()|,| [a-z]*\)", "") / 1GB, 3)
+                $mailboxBytes = if ($mailboxStats.PSObject.Properties['TotalItemSizeBytes']) {
+                    [int64]$mailboxStats.TotalItemSizeBytes
+                } else {
+                    Convert-DataSizeToBytes -Value $mailboxStats.TotalItemSize
+                }
+                [math]::Round(($mailboxBytes / 1GB), 3)
             } else { 0 }
     
             $MBXItemCount = if ($mailboxStats -and $mailboxStats.ItemCount) {
@@ -5559,7 +5690,12 @@ function Report-UserAndMailboxStats {
     
             # Add archive stats, ensuring null safety
             $ArchiveSizeGB = if ($archiveStats -and $archiveStats.TotalItemSize) {
-                [math]::Round(($archiveStats.TotalItemSize.ToString() -replace "(.*\()|,| [a-z]*\)", "") / 1GB, 3)
+                $archiveBytes = if ($archiveStats.PSObject.Properties['TotalItemSizeBytes']) {
+                    [int64]$archiveStats.TotalItemSizeBytes
+                } else {
+                    Convert-DataSizeToBytes -Value $archiveStats.TotalItemSize
+                }
+                [math]::Round(($archiveBytes / 1GB), 3)
             } else { 0 }
     
             $ArchiveItemCount = if ($archiveStats -and $archiveStats.ItemCount) {
@@ -6652,6 +6788,227 @@ function Get-EntraIDGroups {
     $collectGroupLicenseChecks = ($depthPolicy.CollectEntraGroupLicenseChecks -eq $true)
     $collectGroupMemberCounts = ($depthPolicy.CollectEntraGroupMemberCounts -eq $true)
     $collectGroupOwnerCounts = ($depthPolicy.CollectEntraGroupOwnerCounts -eq $true)
+    $groupMemberCountLookup = @{}
+    $groupOwnerCountLookup = @{}
+    $groupSelectProperties = @(
+        'id',
+        'displayName',
+        'description',
+        'visibility',
+        'createdDateTime',
+        'groupTypes',
+        'mailEnabled',
+        'securityEnabled',
+        'onPremisesSyncEnabled',
+        'onPremisesLastSyncDateTime',
+        'isAssignableToRole',
+        'mail',
+        'membershipRule',
+        'assignedLicenses'
+    )
+
+    function Convert-GraphBatchCountValue {
+        param(
+            [Parameter(Mandatory = $false)]
+            [AllowNull()]
+            $Body
+        )
+
+        if ($null -eq $Body) {
+            return $null
+        }
+
+        if ($Body -is [int] -or $Body -is [long] -or $Body -is [double] -or $Body -is [decimal]) {
+            try { return [int]$Body } catch { return $null }
+        }
+
+        if ($Body -is [string]) {
+            $parsedValue = 0
+            if ([int]::TryParse($Body, [ref]$parsedValue)) {
+                return $parsedValue
+            }
+        }
+
+        foreach ($propertyName in @('value', '@odata.count')) {
+            if ($Body.PSObject.Properties[$propertyName]) {
+                try { return [int]$Body.PSObject.Properties[$propertyName].Value } catch {}
+            }
+        }
+
+        return $null
+    }
+
+    function Invoke-GraphBatchRequests {
+        param(
+            [Parameter(Mandatory = $true)]
+            [array]$Requests,
+            [Parameter(Mandatory = $false)]
+            [string]$Activity = 'Graph batch request'
+        )
+
+        $result = @{}
+        if (-not $Requests -or $Requests.Count -eq 0) {
+            return $result
+        }
+
+        $batchEndpoint = 'https://graph.microsoft.com/v1.0/$batch'
+        $chunkSize = 20
+
+        for ($offset = 0; $offset -lt $Requests.Count; $offset += $chunkSize) {
+            $chunk = @($Requests | Select-Object -Skip $offset -First $chunkSize)
+            if ($chunk.Count -eq 0) {
+                continue
+            }
+
+            $payload = @{ requests = $chunk } | ConvertTo-Json -Depth 10 -Compress
+            $batchResponse = $null
+
+            try {
+                $canUseSdkBatch = (
+                    ($GraphAuthType -contains 'SDK') -and
+                    (Get-Command -Name Invoke-MgGraphRequest -ErrorAction SilentlyContinue) -and
+                    (Get-MgContext -ErrorAction SilentlyContinue)
+                )
+                if ($canUseSdkBatch) {
+                    $batchResponse = Invoke-QuietCommand -ScriptBlock {
+                        Invoke-MgGraphRequest -Method POST -Uri $batchEndpoint -Body $payload -OutputType PSObject -ErrorAction Stop
+                    }
+                }
+                else {
+                    $headers = @{}
+                    if ($global:GraphHeaders) {
+                        $headers = $global:GraphHeaders.Clone()
+                    }
+                    elseif ($global:GraphToken) {
+                        $headers = @{
+                            'Content-Type'     = 'application/json'
+                            'Authorization'    = "Bearer $global:GraphToken"
+                            'ConsistencyLevel' = 'eventual'
+                        }
+                    }
+                    if (-not $headers.ContainsKey('Content-Type')) {
+                        $headers['Content-Type'] = 'application/json'
+                    }
+                    if (-not $headers.ContainsKey('ConsistencyLevel')) {
+                        $headers['ConsistencyLevel'] = 'eventual'
+                    }
+
+                    $batchResponse = Invoke-QuietRestMethod -Parameters @{
+                        Uri         = $batchEndpoint
+                        Headers     = $headers
+                        Method      = 'POST'
+                        ContentType = 'application/json'
+                        Body        = $payload
+                        ErrorAction = 'Stop'
+                    }
+                }
+            }
+            catch {
+                Write-Log -Type WARNING -Message "[Get-EntraIDGroups] $Activity failed for request chunk starting at index $offset. $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+                continue
+            }
+
+            foreach ($response in @($batchResponse.responses)) {
+                if ($response -and $response.id) {
+                    $result[[string]$response.id] = $response
+                }
+            }
+        }
+
+        return $result
+    }
+
+    function Get-EntraGroupCountLookups {
+        param(
+            [Parameter(Mandatory = $true)]
+            [array]$Groups,
+            [Parameter(Mandatory = $false)]
+            [switch]$IncludeMemberCounts,
+            [Parameter(Mandatory = $false)]
+            [switch]$IncludeOwnerCounts
+        )
+
+        $lookups = @{
+            Members = @{}
+            Owners  = @{}
+        }
+
+        if (-not $Groups -or $Groups.Count -eq 0) {
+            return $lookups
+        }
+        if (-not $IncludeMemberCounts -and -not $IncludeOwnerCounts) {
+            return $lookups
+        }
+
+        $requests = New-Object System.Collections.Generic.List[object]
+        foreach ($group in $Groups) {
+            $groupId = if ($group -and $group.PSObject.Properties['id']) { [string]$group.id } else { $null }
+            if ([string]::IsNullOrWhiteSpace($groupId)) {
+                continue
+            }
+
+            $isDynamicDistributionGroup = ($group.groupTypes -contains "DynamicMembership") -and ($group.mailEnabled -eq $true) -and ($group.securityEnabled -eq $false) -and (-not ($group.groupTypes -contains "Unified"))
+            if ($isDynamicDistributionGroup) {
+                continue
+            }
+
+            if ($IncludeMemberCounts) {
+                $requests.Add([PSCustomObject]@{
+                    id      = "m:$groupId"
+                    method  = 'GET'
+                    url     = "/groups/$groupId/members/`$count"
+                    headers = @{ ConsistencyLevel = 'eventual' }
+                }) | Out-Null
+            }
+
+            if ($IncludeOwnerCounts) {
+                $requests.Add([PSCustomObject]@{
+                    id      = "o:$groupId"
+                    method  = 'GET'
+                    url     = "/groups/$groupId/owners/`$count"
+                    headers = @{ ConsistencyLevel = 'eventual' }
+                }) | Out-Null
+            }
+        }
+
+        if ($requests.Count -eq 0) {
+            return $lookups
+        }
+
+        Write-Log -Type INFO -Message "[Get-EntraIDGroups] Prefetching group member/owner counts via Graph batch for $($Groups.Count) groups ($($requests.Count) count request(s))." -ExportFileLocation $ExportDetails
+        $responses = Invoke-GraphBatchRequests -Requests $requests.ToArray() -Activity 'Group member/owner count prefetch'
+
+        foreach ($response in @($responses.Values)) {
+            if (-not $response -or -not $response.id) {
+                continue
+            }
+
+            $responseId = [string]$response.id
+            $statusCode = 0
+            try { $statusCode = [int]$response.status } catch { $statusCode = 0 }
+
+            if ($statusCode -lt 200 -or $statusCode -ge 300) {
+                continue
+            }
+
+            $countValue = Convert-GraphBatchCountValue -Body $response.body
+            if ($null -eq $countValue) {
+                continue
+            }
+
+            if ($responseId.StartsWith('m:')) {
+                $groupId = $responseId.Substring(2)
+                $lookups.Members[$groupId] = [int]$countValue
+            }
+            elseif ($responseId.StartsWith('o:')) {
+                $groupId = $responseId.Substring(2)
+                $lookups.Owners[$groupId] = [int]$countValue
+            }
+        }
+
+        Write-Log -Type INFO -Message "[Get-EntraIDGroups] Group count prefetch complete. MemberCounts=$($lookups.Members.Count) OwnerCounts=$($lookups.Owners.Count)" -ExportFileLocation $ExportDetails
+        return $lookups
+    }
 
     # Function to get group details by ID or DisplayName
     function Get-EntraGroupDetails {
@@ -6694,12 +7051,20 @@ function Get-EntraIDGroups {
                 $isManagingLicenses = $false
                 if ($collectGroupLicenseChecks) {
                     try {
-                        Write-Log -Type INFO -Message "Checking license details for group $($GroupDetails.displayName)" -ExportFileLocation $ExportDetails
-                        $licenseUri = "https://graph.microsoft.com/v1.0/groups/$($GroupDetails.id)?`$select=assignedLicenses"
-                        # Fetch the license details for the group
-                        $licenseDetails = Get-GraphData -PageSize 999 -ID $groupDetailProgressId -URI $licenseUri -Activity "Gathering License Details"
+                        $assignedLicenses = @()
+                        if ($GroupDetails.PSObject.Properties['assignedLicenses'] -and $GroupDetails.assignedLicenses) {
+                            $assignedLicenses = @($GroupDetails.assignedLicenses)
+                        }
+                        elseif ($GroupDetails.id) {
+                            Write-Log -Type INFO -Message "Checking license details for group $($GroupDetails.displayName)" -ExportFileLocation $ExportDetails
+                            $licenseUri = "https://graph.microsoft.com/v1.0/groups/$($GroupDetails.id)?`$select=assignedLicenses"
+                            $licenseDetails = Get-GraphData -PageSize 999 -ID $groupDetailProgressId -URI $licenseUri -Activity "Gathering License Details"
+                            if ($licenseDetails -and $licenseDetails.PSObject.Properties['assignedLicenses']) {
+                                $assignedLicenses = @($licenseDetails.assignedLicenses)
+                            }
+                        }
 
-                        if ($licenseDetails.assignedLicenses.count -gt 0) {
+                        if ($assignedLicenses.Count -gt 0) {
                             Write-Log -Type INFO -Message "Group $($GroupDetails.displayName) is managing licenses" -ExportFileLocation $ExportDetails
                             $isManagingLicenses = $true
                         }
@@ -6730,6 +7095,7 @@ function Get-EntraIDGroups {
                 $MemberCount = 0
                 $OwnerCount = 0
                 $hasNestedMembers = "Skipped"
+                $groupId = if ($GroupDetails.PSObject.Properties['id']) { [string]$GroupDetails.id } else { $null }
                 $isDynamicDistributionGroup = ($GroupDetails.groupTypes -contains "DynamicMembership") -and ($GroupDetails.mailEnabled -eq $true) -and ($GroupDetails.securityEnabled -eq $false) -and (-not ($GroupDetails.groupTypes -contains "Unified"))
                 if ($isDynamicDistributionGroup) {
                     $MemberCount = "Skipped (Dynamic Distribution Group)"
@@ -6739,18 +7105,28 @@ function Get-EntraIDGroups {
                     try {
                         Write-Log -Type INFO -Message "Checking member and owner count for group $($GroupDetails.displayName)" -ExportFileLocation $ExportDetails
                         if ($collectGroupMemberCounts) {
-                            $memberUri = "https://graph.microsoft.com/v1.0/groups/$($GroupDetails.id)/members/\$count"
-                            $memberCountResult = Get-GraphData -URI $memberUri -ID $groupDetailProgressId -Activity "Counting Members"
-                            $MemberCount = if ($memberCountResult -is [array]) { [int]($memberCountResult | Select-Object -First 1) } else { [int]$memberCountResult }
+                            if ($groupId -and $groupMemberCountLookup.ContainsKey($groupId)) {
+                                $MemberCount = [int]$groupMemberCountLookup[$groupId]
+                            }
+                            else {
+                                $memberUri = "https://graph.microsoft.com/v1.0/groups/$($GroupDetails.id)/members/\$count"
+                                $memberCountResult = Get-GraphData -URI $memberUri -ID $groupDetailProgressId -Activity "Counting Members"
+                                $MemberCount = if ($memberCountResult -is [array]) { [int]($memberCountResult | Select-Object -First 1) } else { [int]$memberCountResult }
+                            }
                         }
                         else {
                             $MemberCount = 'NotCollected (minimum mode)'
                         }
 
                         if ($collectGroupOwnerCounts) {
-                            $ownerUri = "https://graph.microsoft.com/v1.0/groups/$($GroupDetails.id)/owners/\$count"
-                            $ownerCountResult = Get-GraphData -URI $ownerUri -ID $groupDetailProgressId -Activity "Counting Owners"
-                            $OwnerCount = if ($ownerCountResult -is [array]) { [int]($ownerCountResult | Select-Object -First 1) } else { [int]$ownerCountResult }
+                            if ($groupId -and $groupOwnerCountLookup.ContainsKey($groupId)) {
+                                $OwnerCount = [int]$groupOwnerCountLookup[$groupId]
+                            }
+                            else {
+                                $ownerUri = "https://graph.microsoft.com/v1.0/groups/$($GroupDetails.id)/owners/\$count"
+                                $ownerCountResult = Get-GraphData -URI $ownerUri -ID $groupDetailProgressId -Activity "Counting Owners"
+                                $OwnerCount = if ($ownerCountResult -is [array]) { [int]($ownerCountResult | Select-Object -First 1) } else { [int]$ownerCountResult }
+                            }
                         }
                         else {
                             $OwnerCount = 'NotCollected (minimum mode)'
@@ -6787,9 +7163,25 @@ function Get-EntraIDGroups {
                 $MembershipRule = $classification.MembershipRule
                 $GroupType = $classification.GroupType
                 $Source = $classification.Source
-                $isManagingLicenses = if ($collectDeepGroupDetails) { $false } else { 'NotCollected (minimum mode)' }
-                $MemberCount = if ($collectDeepGroupDetails) { 0 } else { 'NotCollected (minimum mode)' }
-                $OwnerCount = if ($collectDeepGroupDetails) { 0 } else { 'NotCollected (minimum mode)' }
+                $assignedLicenses = @()
+                if ($GroupDetails.PSObject.Properties['assignedLicenses'] -and $GroupDetails.assignedLicenses) {
+                    $assignedLicenses = @($GroupDetails.assignedLicenses)
+                }
+                $isManagingLicenses = if ($collectGroupLicenseChecks) { ($assignedLicenses.Count -gt 0) } else { 'NotCollected (minimum mode)' }
+                $groupId = if ($GroupDetails.PSObject.Properties['id']) { [string]$GroupDetails.id } else { $null }
+                $isDynamicDistributionGroup = ($GroupDetails.groupTypes -contains "DynamicMembership") -and ($GroupDetails.mailEnabled -eq $true) -and ($GroupDetails.securityEnabled -eq $false) -and (-not ($GroupDetails.groupTypes -contains "Unified"))
+                if ($isDynamicDistributionGroup) {
+                    $MemberCount = "Skipped (Dynamic Distribution Group)"
+                    $OwnerCount = "Skipped (Dynamic Distribution Group)"
+                }
+                else {
+                    $MemberCount = if ($collectGroupMemberCounts) {
+                        if ($groupId -and $groupMemberCountLookup.ContainsKey($groupId)) { [int]$groupMemberCountLookup[$groupId] } else { 0 }
+                    } else { 'NotCollected (minimum mode)' }
+                    $OwnerCount = if ($collectGroupOwnerCounts) {
+                        if ($groupId -and $groupOwnerCountLookup.ContainsKey($groupId)) { [int]$groupOwnerCountLookup[$groupId] } else { 0 }
+                    } else { 'NotCollected (minimum mode)' }
+                }
                 $hasNestedMembers = $false
             }
         
@@ -6839,9 +7231,22 @@ function Get-EntraIDGroups {
             $savedProgressPreference = $ProgressPreference
             try {
                 $ProgressPreference = 'SilentlyContinue'
-                foreach ($Group in (Get-MgGroup -All -ErrorAction Stop)) {
-                    $totalGroups++
-                    Write-Progress -Id $groupLoopProgressId -Activity "Getting Group Details (SDK)" -Status "Processed $totalGroups group(s): $($Group.DisplayName)"
+                $Groups = @(
+                    Invoke-QuietCommand -ScriptBlock {
+                        Get-MgGroup -All -Property $groupSelectProperties -ErrorAction Stop
+                    }
+                )
+                $sdkGroupTotal = $Groups.Count
+                if ($collectDeepGroupDetails -and ($collectGroupMemberCounts -or $collectGroupOwnerCounts) -and $sdkGroupTotal -gt 0) {
+                    $countLookups = Get-EntraGroupCountLookups -Groups $Groups -IncludeMemberCounts:$collectGroupMemberCounts -IncludeOwnerCounts:$collectGroupOwnerCounts
+                    $groupMemberCountLookup = $countLookups.Members
+                    $groupOwnerCountLookup = $countLookups.Owners
+                }
+
+                $processedGroups = 0
+                foreach ($Group in $Groups) {
+                    $processedGroups++
+                    Write-Progress -Id $groupLoopProgressId -Activity "Getting Group Details (SDK)" -Status "Processed $processedGroups group(s): $($Group.DisplayName)"
 
                     Write-Log -Type INFO -Message "Checking group $($Group.displayName)" -ExportFileLocation $ExportDetails
                     $GroupDetails = Invoke-ArrayaCollectionStepSafe -OperationName "Get-EntraIDGroups details for $($Group.displayName)" -DefaultValue $null -ExportFileLocation $ExportDetails -ScriptBlock {
@@ -6863,7 +7268,7 @@ function Get-EntraIDGroups {
             $Groups = @()
 
             # Endpoint and initial URL for group data
-            $GroupsEndpoint = "https://graph.microsoft.com/v1.0/groups"
+            $GroupsEndpoint = "https://graph.microsoft.com/v1.0/groups?`$select=$($groupSelectProperties -join ',')"
 
             # Loop to handle paging through all group data
             try {
@@ -6878,17 +7283,17 @@ function Get-EntraIDGroups {
 
             # Process the groups data
             $totalGroups = $Groups.Count
+            if ($collectDeepGroupDetails -and ($collectGroupMemberCounts -or $collectGroupOwnerCounts) -and $totalGroups -gt 0) {
+                $countLookups = Get-EntraGroupCountLookups -Groups $Groups -IncludeMemberCounts:$collectGroupMemberCounts -IncludeOwnerCounts:$collectGroupOwnerCounts
+                $groupMemberCountLookup = $countLookups.Members
+                $groupOwnerCountLookup = $countLookups.Owners
+            }
             foreach ($Group in $Groups) {
                 Write-ProgressHelper -Total $totalGroups -Id $groupLoopProgressId -Activity "Getting Group Details" -Operation "Processing Group: $($Group.displayName)"
 
                 Write-Log -Type INFO -Message "Checking group $($Group.displayName)" -ExportFileLocation $ExportDetails
                 $GroupDetails = Invoke-ArrayaCollectionStepSafe -OperationName "Get-EntraIDGroups details for $($Group.displayName)" -DefaultValue $null -ExportFileLocation $ExportDetails -ScriptBlock {
-                    if ($collectDeepGroupDetails) {
-                        Get-EntraGroupDetails -GroupIdentifier $Group.id -GraphAuthType $GraphAuthType
-                    }
-                    else {
-                        Get-EntraGroupDetails -GroupIdentifier $Group -GraphAuthType $GraphAuthType
-                    }
+                    Get-EntraGroupDetails -GroupIdentifier $Group -GraphAuthType $GraphAuthType
                 }
                 
                 if ($GroupDetails) {
