@@ -1277,20 +1277,40 @@ function Export-HashTableToExcel {
             Write-Log -Type DEBUG -Message ("Exporting '{0}' Hash Table to '{1}'" -f $table, $ExportDetails) -ExportFileLocation $ExportDetails
 
             $tableValue = $hashtable[$table]
-            $exportData = @()
+            $sourceEnumerable = $null
+            $sourceCount = 0
+            $singleValue = $null
             if ($tableValue -is [hashtable] -or $tableValue -is [System.Collections.Specialized.OrderedDictionary]) {
-                $exportData = @($tableValue.Values)
+                $sourceCount = $tableValue.Count
+                $sourceEnumerable = $tableValue.Values
             } elseif ($tableValue -is [System.Collections.IEnumerable] -and -not ($tableValue -is [string])) {
-                $exportData = @($tableValue)
+                if ($tableValue.PSObject.Properties['Count']) {
+                    try { $sourceCount = [int]$tableValue.Count } catch { $sourceCount = -1 }
+                } else {
+                    $sourceCount = -1
+                }
+                $sourceEnumerable = $tableValue
             } else {
-                $exportData = @($tableValue)
+                if ($null -ne $tableValue) {
+                    $singleValue = $tableValue
+                    $sourceCount = 1
+                }
             }
 
-            if ($exportData.Count -gt 0) {
-                $exportData = @($exportData | ForEach-Object { ConvertTo-ExportFriendlyRecord -InputObject $_ })
+            if ($sourceCount -lt 0 -and $null -ne $sourceEnumerable) {
+                $sourceEnumerable = @($sourceEnumerable)
+                $sourceCount = $sourceEnumerable.Count
+            }
+
+            if ($sourceCount -gt 0) {
                 $attempt = 0
                 $maxAttempts = 3
                 $saved = $false
+                $exportSource = if ($null -ne $singleValue) { @($singleValue) } else { $sourceEnumerable }
+                $autoSizeSheet = ($sourceCount -le 5000)
+                if (-not $autoSizeSheet) {
+                    Write-Log -Type INFO -Message "Skipping AutoSize for worksheet '$table' due to row count ($sourceCount) to reduce export runtime/memory pressure." -ExportFileLocation $ExportDetails
+                }
                 while (-not $saved -and $attempt -lt $maxAttempts) {
                     $attempt++
                     if (Test-FileLocked -Path $ExportDetails) {
@@ -1299,7 +1319,19 @@ function Export-HashTableToExcel {
                         continue
                     }
                     try {
-                        $exportData | Export-Excel -Path $ExportDetails -WorksheetName $table -ClearSheet -AutoSize -BoldTopRow
+                        $excelSplat = @{
+                            Path          = $ExportDetails
+                            WorksheetName = $table
+                            ClearSheet    = $true
+                            BoldTopRow    = $true
+                        }
+                        if ($autoSizeSheet) {
+                            $excelSplat.AutoSize = $true
+                        }
+
+                        $exportSource |
+                            ForEach-Object { ConvertTo-ExportFriendlyRecord -InputObject $_ } |
+                            Export-Excel @excelSplat
                         $saved = $true
                     } catch {
                         if ($attempt -lt $maxAttempts) {
@@ -1372,6 +1404,12 @@ function Get-ResolvedEmailAddresses {
             $matchingRecipient = $MailObjectHash['AllRecipients'][$recipientName]
         } elseif ($MailObjectHash['AllMailboxes'].ContainsKey($recipientName)) {
             $matchingRecipient = $MailObjectHash['AllMailboxes'][$recipientName]
+        } elseif ($MailObjectHash['AllMailboxes-MailIdentity'] -and $MailObjectHash['AllMailboxes-MailIdentity'].ContainsKey($recipientName)) {
+            $matchingRecipient = $MailObjectHash['AllMailboxes-MailIdentity'][$recipientName]
+        } elseif ($MailObjectHash['AllMailboxes-UserPrincipalName'] -and $MailObjectHash['AllMailboxes-UserPrincipalName'].ContainsKey($recipientName)) {
+            $matchingRecipient = $MailObjectHash['AllMailboxes-UserPrincipalName'][$recipientName]
+        } elseif ($MailObjectHash['AllMailboxes-PrimarySmtpAddress'] -and $MailObjectHash['AllMailboxes-PrimarySmtpAddress'].ContainsKey($recipientName)) {
+            $matchingRecipient = $MailObjectHash['AllMailboxes-PrimarySmtpAddress'][$recipientName]
         }
         Write-Verbose "Matched '$recipientName' in hash table"       
     }
@@ -5153,7 +5191,6 @@ function Get-AllUserDetails {
         }
 
         Invoke-QuietCommand -ScriptBlock { Get-MgUser -All -Property $DesiredProperties -ErrorAction Stop } |
-            Select-Object $DesiredProperties |
             Where-Object { $null -ne $_.ID } |
             ForEach-Object { Process-TenantUserRecord -UserRecord $_ }
     }
