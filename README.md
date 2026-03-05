@@ -62,6 +62,12 @@ The assessment run supports three output profiles:
 
 `Lean` is the default. Explicit skip switches still override the profile.
 
+## Minimum Mode Runtime Notes
+- In `Minimum` reporting mode, the collector depth policy trims high-cardinality enrichment to reduce runtime and memory pressure.
+- Examples: Entra group deep membership/license expansion and detailed SSO app inventory are reduced in `Minimum`.
+- The output contract is preserved: workbook tabs and report artifacts still generate with compatible values.
+- Run logs now include collector duration and memory summaries (`[CollectorMetrics]`) plus inventory row counts (`[CollectorInventory]`) for hotspot review.
+
 ## HTML And PDF
 - The best practices analysis HTML is generated independently of the full HTML report.
 - The full HTML report is skipped when `-SkipHtmlReport` is used or the `Lean` profile is selected.

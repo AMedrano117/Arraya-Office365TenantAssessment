@@ -304,8 +304,8 @@ function New-TenantAssessmentHtmlReport {
             Select-Object -First 8 RecommendationTitle, Status, ScoreGap, ActionUrl
     )
 
-    $displayFindingRows = @($findingRows | Select-Object -First 12)
-    $displayMigrationRows = @($migrationRows | Select-Object -First 12)
+    $displayFindingRows = @($findingRows)
+    $displayMigrationRows = @($migrationRows)
 
     $reportDate = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $tenantName = 'Tenant Assessment'
@@ -500,7 +500,7 @@ function New-TenantAssessmentHtmlReport {
                     <h2>Best Practice Findings</h2>
                 </div>
             </div>
-            <p class="note">Top findings only. Showing $($displayFindingRows.Count) of $($findingRows.Count) detailed findings.</p>
+            <p class="note">Showing $($displayFindingRows.Count) detailed findings.</p>
             $(New-AssessmentTable -Rows $displayFindingRows -Columns @('Severity','Area','Message','RecommendedAction'))
         </div>
 
@@ -511,7 +511,7 @@ function New-TenantAssessmentHtmlReport {
                     <h2>Migration Readiness</h2>
                 </div>
             </div>
-            <p class="note">Open blockers, reviews, and missing-data items only. Showing $($displayMigrationRows.Count) of $($migrationRows.Count) actionable migration rows.</p>
+            <p class="note">Open blockers, reviews, and missing-data items only. Showing $($displayMigrationRows.Count) actionable migration rows.</p>
             $(New-AssessmentTable -Rows $displayMigrationRows -Columns @('Category','Item','Status','MigrationAction'))
         </div>
 

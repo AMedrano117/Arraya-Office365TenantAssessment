@@ -22,72 +22,46 @@ $ErrorActionPreference = 'Stop'
 $graphFallbackEnabled = $UseGraphFallback.IsPresent
 $graphFallbackUnavailableMessageShown = $false
 
-if ($graphFallbackEnabled) {
-    $commonModuleManifestPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\modules\Arraya.M365.Common\Arraya.M365.Common.psd1'))
-    if (-not (Test-Path -Path $commonModuleManifestPath)) {
-        Write-Warning "Graph fallback requested but common module manifest was not found: $commonModuleManifestPath"
-        $graphFallbackEnabled = $false
-    }
-    else {
-        $resolvedCommonManifestPath = (Resolve-Path -Path $commonModuleManifestPath).Path
-        $loadedCommonModule = Get-Module -Name 'Arraya.M365.Common' -ErrorAction SilentlyContinue | Select-Object -First 1
-        $requiredCommonCommands = @('Get-ArrayaGraphResource')
-        $missingCommonCommands = @(
-            $requiredCommonCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
-        )
-        if (
-            -not $loadedCommonModule -or
-            $loadedCommonModule.Path -ne $resolvedCommonManifestPath -or
-            $missingCommonCommands.Count -gt 0
-        ) {
-            Import-Module -Name $resolvedCommonManifestPath -Force -ErrorAction Stop
-        }
-    }
-}
-
-function ConvertTo-Array {
-    param($InputObject)
-
-    if ($null -eq $InputObject) { return @() }
-    if ($InputObject -is [System.Collections.IDictionary]) { return @($InputObject.Values) }
-    if ($InputObject -is [string]) { return @($InputObject) }
-    if ($InputObject -is [System.Collections.IEnumerable]) { return @($InputObject) }
-    return @($InputObject)
-}
-
-function Get-Value {
+function Import-ArrayaCommonModuleForPlanningScripts {
+    [CmdletBinding()]
     param(
-        $Object,
-        [string[]]$Names
+        [Parameter(Mandatory = $false)]
+        [switch]$GraphFallbackRequired
     )
 
-    if ($null -eq $Object) { return $null }
-
-    foreach ($name in $Names) {
-        if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($name)) {
-            return $Object[$name]
+    $commonModuleManifestPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\modules\Arraya.M365.Common\Arraya.M365.Common.psd1'))
+    if (-not (Test-Path -Path $commonModuleManifestPath)) {
+        if ($GraphFallbackRequired) {
+            Write-Warning "Graph fallback requested but common module manifest was not found: $commonModuleManifestPath"
         }
-        if ($Object.PSObject.Properties.Name -contains $name) {
-            return $Object.$name
-        }
+        return $false
     }
-    return $null
+
+    $resolvedCommonManifestPath = (Resolve-Path -Path $commonModuleManifestPath).Path
+    $loadedCommonModule = Get-Module -Name 'Arraya.M365.Common' -ErrorAction SilentlyContinue | Select-Object -First 1
+    $requiredCommonCommands = @(
+        'Convert-ArrayaObjectToArray',
+        'Get-ArrayaObjectValue',
+        'Convert-ArrayaToNumber',
+        'Convert-ArrayaToDate',
+        'Get-ArrayaGraphResource'
+    )
+    $missingCommonCommands = @(
+        $requiredCommonCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
+    )
+    if (
+        -not $loadedCommonModule -or
+        $loadedCommonModule.Path -ne $resolvedCommonManifestPath -or
+        $missingCommonCommands.Count -gt 0
+    ) {
+        Import-Module -Name $resolvedCommonManifestPath -Force -ErrorAction Stop
+    }
+
+    return $true
 }
 
-function Convert-ToNumber {
-    param($Value)
-    if ($null -eq $Value) { return $null }
-    $numeric = 0.0
-    if ([double]::TryParse(($Value.ToString()), [ref]$numeric)) { return [double]$numeric }
-    return $null
-}
-
-function Convert-ToDate {
-    param($Value)
-    if ($null -eq $Value) { return $null }
-    $dateValue = [datetime]::MinValue
-    if ([datetime]::TryParse(($Value.ToString()), [ref]$dateValue)) { return $dateValue }
-    return $null
+if (-not (Import-ArrayaCommonModuleForPlanningScripts -GraphFallbackRequired:$graphFallbackEnabled)) {
+    $graphFallbackEnabled = $false
 }
 
 function New-Finding {
@@ -127,7 +101,7 @@ function Get-ImprovementPlanDataset {
         [switch]$UseGraphFallback
     )
 
-    $rows = ConvertTo-Array (Get-Value -Object $DataRoot -Names $Names)
+    $rows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $DataRoot -Names $Names)
     if ($rows.Count -gt 0 -or -not $UseGraphFallback -or [string]::IsNullOrWhiteSpace($GraphUri)) {
         return $rows
     }
@@ -143,7 +117,7 @@ function Get-ImprovementPlanDataset {
 
     try {
         $graphResult = Get-ArrayaGraphResource -Uri $GraphUri -Activity $Activity -PageSize 999
-        return ConvertTo-Array $graphResult
+        return Convert-ArrayaObjectToArray $graphResult
     }
     catch {
         Write-Warning "Graph fallback failed for '$Activity': $($_.Exception.Message)"
@@ -175,11 +149,11 @@ $findings = New-Object System.Collections.Generic.List[object]
 $secureScoreRows = Get-ImprovementPlanDataset -DataRoot $tenantData -Names @('SecuritySecureScore', 'SecureScore') -GraphUri '/v1.0/security/secureScores?$top=10' -Activity 'Secure Score fallback' -UseGraphFallback:$graphFallbackEnabled
 if ($secureScoreRows.Count -gt 0) {
     $latestSecureScore = $secureScoreRows |
-        Sort-Object { Convert-ToDate (Get-Value -Object $_ -Names @('CreatedDateTime', 'createdDateTime')) } -Descending |
+        Sort-Object { Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('CreatedDateTime', 'createdDateTime')) } -Descending |
         Select-Object -First 1
 
-    $currentScore = Convert-ToNumber (Get-Value -Object $latestSecureScore -Names @('CurrentScore', 'currentScore'))
-    $maxScore = Convert-ToNumber (Get-Value -Object $latestSecureScore -Names @('MaxScore', 'maxScore'))
+    $currentScore = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $latestSecureScore -Names @('CurrentScore', 'currentScore'))
+    $maxScore = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $latestSecureScore -Names @('MaxScore', 'maxScore'))
 
     if ($null -ne $currentScore -and $null -ne $maxScore -and $maxScore -gt 0) {
         $pct = [math]::Round(($currentScore / $maxScore) * 100, 2)
@@ -199,7 +173,7 @@ if ($secureScoreRows.Count -gt 0) {
 $caPolicies = Get-ImprovementPlanDataset -DataRoot $tenantData -Names @('ConditionalAccessPolicies', 'ConditionalAccess') -GraphUri '/v1.0/identity/conditionalAccess/policies' -Activity 'Conditional Access policy fallback' -UseGraphFallback:$graphFallbackEnabled
 $enabledCaPolicies = @(
     $caPolicies | Where-Object {
-        $state = (Get-Value -Object $_ -Names @('State', 'state'))
+        $state = (Get-ArrayaObjectValue -Object $_ -Names @('State', 'state'))
         $null -ne $state -and $state.ToString().ToLower().Contains('enabled')
     }
 )
@@ -210,11 +184,11 @@ if ($caPolicies.Count -eq 0) {
 }
 
 # Rule: MFA registration
-$mfaSummary = Get-Value -Object $tenantData -Names @('MfaRegistrationSummary', 'MFARegistrationSummary', 'MfaRegistration', 'MFARegistration')
+$mfaSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('MfaRegistrationSummary', 'MFARegistrationSummary', 'MfaRegistration', 'MFARegistration')
 if ($mfaSummary) {
-    $registeredUsers = Convert-ToNumber (Get-Value -Object $mfaSummary -Names @('RegisteredUsers', 'RegisteredUserCount', 'MfaRegisteredUsers'))
-    $totalUsers = Convert-ToNumber (Get-Value -Object $mfaSummary -Names @('TotalUsers', 'UserCount', 'TotalUserCount'))
-    $registrationPct = Convert-ToNumber (Get-Value -Object $mfaSummary -Names @('RegistrationPercent', 'RegisteredPercent', 'MfaRegistrationPercent'))
+    $registeredUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaSummary -Names @('RegisteredUsers', 'RegisteredUserCount', 'MfaRegisteredUsers'))
+    $totalUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaSummary -Names @('TotalUsers', 'UserCount', 'TotalUserCount'))
+    $registrationPct = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaSummary -Names @('RegistrationPercent', 'RegisteredPercent', 'MfaRegistrationPercent'))
 
     if ($null -eq $registrationPct -and $null -ne $registeredUsers -and $null -ne $totalUsers -and $totalUsers -gt 0) {
         $registrationPct = [math]::Round(($registeredUsers / $totalUsers) * 100, 2)
@@ -230,10 +204,10 @@ if ($mfaSummary) {
 }
 
 # Rule: Global admin count
-$adminRows = ConvertTo-Array (Get-Value -Object $tenantData -Names @('AllOffice365Admins', 'Office365Admins', 'Admins'))
+$adminRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('AllOffice365Admins', 'Office365Admins', 'Admins'))
 $globalAdmins = @(
     $adminRows | Where-Object {
-        $role = (Get-Value -Object $_ -Names @('Role', 'RoleName', 'DirectoryRole', 'AdminRole'))
+        $role = (Get-ArrayaObjectValue -Object $_ -Names @('Role', 'RoleName', 'DirectoryRole', 'AdminRole'))
         $null -ne $role -and $role.ToString() -match 'Global Administrator|Company Administrator'
     }
 )
@@ -246,7 +220,7 @@ if ($globalAdminCount -gt $MaxGlobalAdmins) {
 $domainRows = Get-ImprovementPlanDataset -DataRoot $tenantData -Names @('Domains') -GraphUri '/v1.0/domains' -Activity 'Domain fallback' -UseGraphFallback:$graphFallbackEnabled
 $unverifiedDomains = @(
     $domainRows | Where-Object {
-        $isVerified = Get-Value -Object $_ -Names @('IsVerified', 'Verified', 'isVerified')
+        $isVerified = Get-ArrayaObjectValue -Object $_ -Names @('IsVerified', 'Verified', 'isVerified')
         if ($isVerified -is [bool]) { return (-not $isVerified) }
         if ($null -eq $isVerified) { return $false }
         return ($isVerified.ToString().ToLower() -notin @('true', 'verified'))
@@ -260,16 +234,16 @@ if ($unverifiedDomains.Count -gt 0) {
 $licenseRows = Get-ImprovementPlanDataset -DataRoot $tenantData -Names @('LicenseSKUs', 'Licenses') -GraphUri '/v1.0/subscribedSkus' -Activity 'Subscribed SKU fallback' -UseGraphFallback:$graphFallbackEnabled
 $highUtilSkus = New-Object System.Collections.Generic.List[string]
 foreach ($sku in $licenseRows) {
-    $skuName = (Get-Value -Object $sku -Names @('SkuPartNumber', 'DisplayName', 'ProductName', 'SkuId'))
+    $skuName = (Get-ArrayaObjectValue -Object $sku -Names @('SkuPartNumber', 'DisplayName', 'ProductName', 'SkuId'))
     if ([string]::IsNullOrWhiteSpace($skuName)) { $skuName = 'UnknownSKU' }
 
-    $consumed = Convert-ToNumber (Get-Value -Object $sku -Names @('ConsumedUnits', 'Consumed', 'Assigned'))
-    $active = Convert-ToNumber (Get-Value -Object $sku -Names @('ActiveUnits', 'EnabledUnits', 'TotalUnits'))
+    $consumed = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $sku -Names @('ConsumedUnits', 'Consumed', 'Assigned'))
+    $active = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $sku -Names @('ActiveUnits', 'EnabledUnits', 'TotalUnits'))
 
     if ($null -eq $active) {
-        $prepaid = Get-Value -Object $sku -Names @('PrepaidUnits')
+        $prepaid = Get-ArrayaObjectValue -Object $sku -Names @('PrepaidUnits')
         if ($prepaid) {
-            $active = Convert-ToNumber (Get-Value -Object $prepaid -Names @('Enabled', 'enabled'))
+            $active = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $prepaid -Names @('Enabled', 'enabled'))
         }
     }
 
@@ -290,7 +264,7 @@ if ($deviceRows.Count -gt 0) {
     $staleCutoff = (Get-Date).AddDays(-1 * $StaleDeviceDays)
     $staleDevices = @(
         $deviceRows | Where-Object {
-            $lastSignIn = Convert-ToDate (Get-Value -Object $_ -Names @('ApproximateLastSignInDateTime', 'LastSignInDateTime', 'LastSignInDate', 'LastLogonDateTime'))
+            $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('ApproximateLastSignInDateTime', 'LastSignInDateTime', 'LastSignInDate', 'LastLogonDateTime'))
             $null -ne $lastSignIn -and $lastSignIn -lt $staleCutoff
         }
     )
