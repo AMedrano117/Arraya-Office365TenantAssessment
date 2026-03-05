@@ -63,7 +63,14 @@ function Get-ArrayaGraphResource {
         while (-not $success -and $attempt -lt $MaxRetries) {
             try {
                 if ($useSdk) {
-                    $response = Invoke-MgGraphRequest -Uri $currentUri -Method GET -OutputType PSObject -ErrorAction Stop
+                    $savedProgressPreference = $ProgressPreference
+                    try {
+                        $ProgressPreference = 'SilentlyContinue'
+                        $response = Invoke-MgGraphRequest -Uri $currentUri -Method GET -OutputType PSObject -ErrorAction Stop
+                    }
+                    finally {
+                        $ProgressPreference = $savedProgressPreference
+                    }
                 }
                 else {
                     $savedProgressPreference = $ProgressPreference
