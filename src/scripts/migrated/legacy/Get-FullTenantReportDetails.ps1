@@ -4465,18 +4465,14 @@ function Get-FriendlyProductName {
         return $SkuPartNumber
     }
 
-    $normalizedSkuPartNumber = ($SkuPartNumber -replace '\s*_\s*', '_').Trim()
-
     if (-not $script:MicrosoftProductNameMapFromReferenceInitialized) {
         Initialize-MicrosoftLicenseReferenceMap | Out-Null
     }
 
+    # 1) Exact/raw lookup first.
     if ($script:CommonProductNameMapStatic) {
         if ($script:CommonProductNameMapStatic.ContainsKey($SkuPartNumber)) {
             return $script:CommonProductNameMapStatic[$SkuPartNumber]
-        }
-        if ($script:CommonProductNameMapStatic.ContainsKey($normalizedSkuPartNumber)) {
-            return $script:CommonProductNameMapStatic[$normalizedSkuPartNumber]
         }
     }
 
@@ -4484,7 +4480,18 @@ function Get-FriendlyProductName {
         if ($script:MicrosoftProductNameMapFromReference.ContainsKey($SkuPartNumber)) {
             return $script:MicrosoftProductNameMapFromReference[$SkuPartNumber]
         }
-        if ($script:MicrosoftProductNameMapFromReference.ContainsKey($normalizedSkuPartNumber)) {
+    }
+
+    # 2) If exact lookup misses, normalize and retry.
+    $normalizedSkuPartNumber = ($SkuPartNumber -replace '\s*_\s*', '_').Trim()
+    if (
+        -not [string]::IsNullOrWhiteSpace($normalizedSkuPartNumber) -and
+        $normalizedSkuPartNumber -ne $SkuPartNumber
+    ) {
+        if ($script:CommonProductNameMapStatic -and $script:CommonProductNameMapStatic.ContainsKey($normalizedSkuPartNumber)) {
+            return $script:CommonProductNameMapStatic[$normalizedSkuPartNumber]
+        }
+        if ($script:MicrosoftProductNameMapFromReference -and $script:MicrosoftProductNameMapFromReference.ContainsKey($normalizedSkuPartNumber)) {
             return $script:MicrosoftProductNameMapFromReference[$normalizedSkuPartNumber]
         }
     }
