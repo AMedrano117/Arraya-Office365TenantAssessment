@@ -5594,6 +5594,72 @@ function Get-AllOffice365Domains {
                 $aRecords = Resolve-DnsName -Name $domainName -Server 1.1.1.1 -Type A -ErrorAction SilentlyContinue -verbose:$false
                 $mxRecords = Resolve-DnsName -Name $domainName -Server 1.1.1.1 -Type MX -ErrorAction SilentlyContinue -verbose:$false
                 $NSRecords = Resolve-DnsName -Name $domainName -Server 1.1.1.1 -Type NS -ErrorAction SilentlyContinue -verbose:$false
+                $txtRecords = Resolve-DnsName -Name $domainName -Server 1.1.1.1 -Type TXT -ErrorAction SilentlyContinue -verbose:$false
+                $dmarcRecords = Resolve-DnsName -Name ("_dmarc.{0}" -f $domainName) -Server 1.1.1.1 -Type TXT -ErrorAction SilentlyContinue -verbose:$false
+
+                $selectorRecords = @()
+                foreach ($selector in @('selector1', 'selector2')) {
+                    $selectorRecords += @(Resolve-DnsName -Name ("{0}._domainkey.{1}" -f $selector, $domainName) -Server 1.1.1.1 -Type CNAME -ErrorAction SilentlyContinue -verbose:$false)
+                }
+
+                $spfConfigured = $false
+                $dmarcConfigured = $false
+                $dkimSelectorCount = 0
+                $dkimConfigured = $false
+
+                $txtValues = @($txtRecords | ForEach-Object { @($_.Strings) -join '' } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                $spfRecord = $null
+                $spfPolicyMode = $null
+                if ($txtValues.Count -gt 0) {
+                    $spfRecord = @($txtValues | Where-Object { $_ -match '(?i)^v=spf1' } | Select-Object -First 1)
+                    if ($spfRecord.Count -gt 0) {
+                        $spfRecord = $spfRecord[0]
+                    } else {
+                        $spfRecord = $null
+                    }
+                    $spfConfigured = @($txtValues | Where-Object { $_ -match '(?i)^v=spf1' -and $_ -match '(?i)include:spf\.protection\.outlook\.com' }).Count -gt 0
+                    if ($spfRecord) {
+                        if ($spfRecord -match '(?i)\s-all\b') { $spfPolicyMode = 'HardFail (-all)' }
+                        elseif ($spfRecord -match '(?i)\s~all\b') { $spfPolicyMode = 'SoftFail (~all)' }
+                        elseif ($spfRecord -match '(?i)\s\+all\b') { $spfPolicyMode = 'AllowAll (+all)' }
+                        elseif ($spfRecord -match '(?i)\s\?all\b') { $spfPolicyMode = 'Neutral (?all)' }
+                        else { $spfPolicyMode = 'Unspecified' }
+                    }
+                }
+
+                $dmarcValues = @($dmarcRecords | ForEach-Object { @($_.Strings) -join '' } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                $dmarcRecord = $null
+                $dmarcPolicy = $null
+                $dmarcPct = $null
+                if ($dmarcValues.Count -gt 0) {
+                    $dmarcConfigured = @($dmarcValues | Where-Object { $_ -match '(?i)^v=dmarc1' }).Count -gt 0
+                    $dmarcRecord = @($dmarcValues | Where-Object { $_ -match '(?i)^v=dmarc1' } | Select-Object -First 1)
+                    if ($dmarcRecord.Count -gt 0) {
+                        $dmarcRecord = $dmarcRecord[0]
+                    } else {
+                        $dmarcRecord = $null
+                    }
+                    if ($dmarcRecord) {
+                        $policyMatch = [regex]::Match($dmarcRecord, '(?i)\bp=([a-z]+)')
+                        if ($policyMatch.Success) {
+                            $dmarcPolicy = $policyMatch.Groups[1].Value.ToLowerInvariant()
+                        }
+                        $pctMatch = [regex]::Match($dmarcRecord, '(?i)\bpct=(\d{1,3})')
+                        if ($pctMatch.Success) {
+                            $dmarcPct = [int]$pctMatch.Groups[1].Value
+                        } else {
+                            $dmarcPct = 100
+                        }
+                    }
+                }
+
+                $dkimSelectorCount = @($selectorRecords | Where-Object { $_.NameHost }).Count
+                $dkimConfigured = ($dkimSelectorCount -ge 2)
+                $selector1Host = @($selectorRecords | Where-Object { $_.Name -like 'selector1._domainkey*' -and $_.NameHost } | Select-Object -First 1 -ExpandProperty NameHost)
+                $selector2Host = @($selectorRecords | Where-Object { $_.Name -like 'selector2._domainkey*' -and $_.NameHost } | Select-Object -First 1 -ExpandProperty NameHost)
+                if ($selector1Host.Count -gt 0) { $selector1Host = $selector1Host[0] } else { $selector1Host = $null }
+                if ($selector2Host.Count -gt 0) { $selector2Host = $selector2Host[0] } else { $selector2Host = $null }
+
                 if ($NSRecords) {
                     $DNSCompanies =  Get-DNSHostCompanyName -nsRecords $NSRecords -ErrorAction SilentlyContinue
                 }
@@ -5626,6 +5692,18 @@ function Get-AllOffice365Domains {
                     ARecords               = ($aRecords.IPAddress -join ",") -replace "`n|`r",     ""
                     MXRecords              = ($mxRecords.NameExchange -join ",") -replace "`n|`r", ""
                     Office365MailExchanger = ($mxRecords.NameExchange -join "," -like "*protection.outlook.com")
+                    SpfRecord              = $spfRecord
+                    SpfIncludesM365        = $spfConfigured
+                    SpfPolicyMode          = $spfPolicyMode
+                    DmarcRecord            = $dmarcRecord
+                    DmarcConfigured        = $dmarcConfigured
+                    DmarcPolicy            = $dmarcPolicy
+                    DmarcPercent           = $dmarcPct
+                    DkimConfigured         = $dkimConfigured
+                    DkimSelectorsConfigured = $dkimSelectorCount
+                    DkimSelector1          = $selector1Host
+                    DkimSelector2          = $selector2Host
+                    DkimSelectorRecords    = (($selectorRecords | Where-Object { $_.NameHost } | Select-Object -ExpandProperty NameHost) -join ",")
             
                     # ===== Recipient Counts =====
                     PrimarySMTPRecipients = $RecipientCounts.PrimarySMTPCount
@@ -7408,6 +7486,10 @@ function Get-AuthenticationConfiguration {
             SSOApplications = @()
             FederatedDomains = @()
             PasswordlessMethods = @()
+            DefaultUserCanCreateApps = $null
+            PermissionGrantPoliciesAssigned = @()
+            AdminConsentWorkflowEnabled = $null
+            AdminConsentWorkflowReviewerCount = 0
         }
         
         # Check for federated domains (indicates SSO)
@@ -7483,13 +7565,68 @@ function Get-AuthenticationConfiguration {
         # Check Conditional Access policies for MFA requirements
         if ($global:tenantStatsHash["ConditionalAccessPolicies"]) {
             $mfaPolicies = $global:tenantStatsHash["ConditionalAccessPolicies"].Values | 
-                Where-Object {$_.GrantControls -like "*mfa*"}
+                Where-Object {$_.GrantControls_BuiltInControls -match "(?i)mfa"}
             
             if ($mfaPolicies) {
                 $authMethodsPolicy.MFAEnabled = $true
                 $authMethodsPolicy | Add-Member -MemberType NoteProperty -Name "MFAConditionalAccessPolicies" -Value $mfaPolicies.Count
                 Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] Found $($mfaPolicies.Count) CA policies requiring MFA" -ExportFileLocation $ExportDetails
             }
+        }
+
+        # Check authorization policy (app consent posture)
+        try {
+            $authorizationPolicyResponse = Get-GraphData -Uri "https://graph.microsoft.com/v1.0/policies/authorizationPolicy" -Activity "Fetching authorization policy"
+            $authorizationPolicy = @($authorizationPolicyResponse | Select-Object -First 1)
+            if ($authorizationPolicy.Count -gt 0 -and $authorizationPolicy[0]) {
+                $defaultPermissions = $null
+                if ($authorizationPolicy[0].PSObject.Properties['defaultUserRolePermissions']) {
+                    $defaultPermissions = $authorizationPolicy[0].defaultUserRolePermissions
+                } elseif ($authorizationPolicy[0].PSObject.Properties['DefaultUserRolePermissions']) {
+                    $defaultPermissions = $authorizationPolicy[0].DefaultUserRolePermissions
+                }
+
+                if ($defaultPermissions) {
+                    if ($defaultPermissions.PSObject.Properties['allowedToCreateApps']) {
+                        $authMethodsPolicy.DefaultUserCanCreateApps = [bool]$defaultPermissions.allowedToCreateApps
+                    } elseif ($defaultPermissions.PSObject.Properties['AllowedToCreateApps']) {
+                        $authMethodsPolicy.DefaultUserCanCreateApps = [bool]$defaultPermissions.AllowedToCreateApps
+                    }
+
+                    $assignedGrantPolicies = @()
+                    if ($defaultPermissions.PSObject.Properties['permissionGrantPoliciesAssigned']) {
+                        $assignedGrantPolicies = @($defaultPermissions.permissionGrantPoliciesAssigned)
+                    } elseif ($defaultPermissions.PSObject.Properties['PermissionGrantPoliciesAssigned']) {
+                        $assignedGrantPolicies = @($defaultPermissions.PermissionGrantPoliciesAssigned)
+                    }
+                    $authMethodsPolicy.PermissionGrantPoliciesAssigned = @($assignedGrantPolicies | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                }
+            }
+        } catch {
+            Write-Log -Type WARNING -Message "[Get-AuthenticationConfiguration] Unable to retrieve authorization policy details: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        }
+
+        # Check admin consent request workflow
+        try {
+            $adminConsentPolicyResponse = Get-GraphData -Uri "https://graph.microsoft.com/v1.0/policies/adminConsentRequestPolicy" -Activity "Fetching admin consent request policy"
+            $adminConsentPolicy = @($adminConsentPolicyResponse | Select-Object -First 1)
+            if ($adminConsentPolicy.Count -gt 0 -and $adminConsentPolicy[0]) {
+                if ($adminConsentPolicy[0].PSObject.Properties['isEnabled']) {
+                    $authMethodsPolicy.AdminConsentWorkflowEnabled = [bool]$adminConsentPolicy[0].isEnabled
+                } elseif ($adminConsentPolicy[0].PSObject.Properties['IsEnabled']) {
+                    $authMethodsPolicy.AdminConsentWorkflowEnabled = [bool]$adminConsentPolicy[0].IsEnabled
+                }
+
+                $reviewers = @()
+                if ($adminConsentPolicy[0].PSObject.Properties['reviewers']) {
+                    $reviewers = @($adminConsentPolicy[0].reviewers)
+                } elseif ($adminConsentPolicy[0].PSObject.Properties['Reviewers']) {
+                    $reviewers = @($adminConsentPolicy[0].Reviewers)
+                }
+                $authMethodsPolicy.AdminConsentWorkflowReviewerCount = $reviewers.Count
+            }
+        } catch {
+            Write-Log -Type WARNING -Message "[Get-AuthenticationConfiguration] Unable to retrieve admin consent workflow policy: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
         
         $global:tenantStatsHash["AuthenticationConfig"]["Configuration"] = $authMethodsPolicy
@@ -7504,6 +7641,10 @@ function Get-AuthenticationConfiguration {
             FederatedDomains             = ($authMethodsPolicy.FederatedDomains -join ', ')
             PasswordlessMethods          = ($authMethodsPolicy.PasswordlessMethods -join ', ')
             MFAConditionalAccessPolicies = $(if ($authMethodsPolicy.PSObject.Properties['MFAConditionalAccessPolicies']) { $authMethodsPolicy.MFAConditionalAccessPolicies } else { 0 })
+            DefaultUserCanCreateApps     = $(if ($null -eq $authMethodsPolicy.DefaultUserCanCreateApps) { 'Not available' } elseif ($authMethodsPolicy.DefaultUserCanCreateApps) { 'Yes' } else { 'No' })
+            PermissionGrantPolicies      = $(if (@($authMethodsPolicy.PermissionGrantPoliciesAssigned).Count -gt 0) { $authMethodsPolicy.PermissionGrantPoliciesAssigned -join ', ' } else { 'Not available' })
+            AdminConsentWorkflowEnabled  = $(if ($null -eq $authMethodsPolicy.AdminConsentWorkflowEnabled) { 'Not available' } elseif ($authMethodsPolicy.AdminConsentWorkflowEnabled) { 'Enabled' } else { 'Disabled' })
+            AdminConsentWorkflowReviewers = $authMethodsPolicy.AdminConsentWorkflowReviewerCount
         }
 
         $methodIndex = 0
@@ -8796,11 +8937,28 @@ function Get-DomainAnalysis {
     .SYNOPSIS
         Analyzes domain configuration and returns findings
     #>
-    param([array]$Domains)
+    param(
+        [array]$Domains,
+        [object]$SpamFilteringSummary,
+        [object]$SMTPRelaySummary
+    )
     
     $findings = @()
+    $mailEnabledCustomDomainCount = 0
+    $spfPassingDomainCount = 0
+    $dmarcConfiguredDomainCount = 0
+    $dmarcEnforcedDomainCount = 0
+    $dkimCompleteDomainCount = 0
     
     foreach ($domain in $Domains) {
+        $domainName = [string]$domain.Domain
+        $isTenantServiceDomain = $domainName -match '(?i)\.onmicrosoft\.com$'
+        $isCustomDomain = -not $isTenantServiceDomain
+        $hasRecipientUsage = $false
+        try {
+            $hasRecipientUsage = ([int]$domain.TotalDomainRecipients -gt 0)
+        } catch {}
+
         # Check verification
         if (-not $domain.Verified -and $script:DefaultThresholds.DomainVerificationRequired) {
             $findings += @{
@@ -8822,6 +8980,179 @@ function Get-DomainAnalysis {
                     Anchor = 'domains-dns'
                     Priority = 3
                 }
+            }
+        }
+
+        if ($isCustomDomain -and $domain.Verified -and ($domain.Office365MailExchanger -eq $true -or $hasRecipientUsage)) {
+            $mailEnabledCustomDomainCount++
+
+            $spfIncludesM365 = $false
+            if ($domain.PSObject.Properties['SpfIncludesM365']) {
+                $spfIncludesM365 = ($domain.SpfIncludesM365 -eq $true)
+            }
+            if ($spfIncludesM365) { $spfPassingDomainCount++ }
+            if ($domain.PSObject.Properties['SpfIncludesM365'] -and $domain.SpfIncludesM365 -ne $true) {
+                $findings += @{
+                    Type = 'Warning'
+                    Category = 'SPF'
+                    Message = "Domain '$($domain.Domain)' does not show an SPF record including spf.protection.outlook.com"
+                    Anchor = 'domains-dns'
+                    Priority = 2
+                }
+            }
+            if ($domain.PSObject.Properties['SpfPolicyMode'] -and $domain.SpfPolicyMode) {
+                if ([string]$domain.SpfPolicyMode -eq 'AllowAll (+all)') {
+                    $findings += @{
+                        Type = 'Risk'
+                        Category = 'SPF'
+                        Message = "Domain '$($domain.Domain)' SPF record is configured as +all (allow all), which weakens spoof protection"
+                        Anchor = 'domains-dns'
+                        Priority = 1
+                    }
+                }
+                elseif ([string]$domain.SpfPolicyMode -eq 'SoftFail (~all)') {
+                    $findings += @{
+                        Type = 'Info'
+                        Category = 'SPF'
+                        Message = "Domain '$($domain.Domain)' uses SPF soft-fail (~all); consider hard-fail (-all) after validation"
+                        Anchor = 'domains-dns'
+                        Priority = 3
+                    }
+                }
+            }
+
+            $dmarcConfigured = $false
+            if ($domain.PSObject.Properties['DmarcConfigured']) {
+                $dmarcConfigured = ($domain.DmarcConfigured -eq $true)
+            }
+            if ($dmarcConfigured) { $dmarcConfiguredDomainCount++ }
+            if ($domain.PSObject.Properties['DmarcConfigured'] -and $domain.DmarcConfigured -ne $true) {
+                $findings += @{
+                    Type = 'Warning'
+                    Category = 'DMARC'
+                    Message = "Domain '$($domain.Domain)' does not show a DMARC policy record"
+                    Anchor = 'domains-dns'
+                    Priority = 2
+                }
+            }
+            if ($dmarcConfigured -and $domain.PSObject.Properties['DmarcPolicy']) {
+                $dmarcPolicy = [string]$domain.DmarcPolicy
+                if ($dmarcPolicy -eq 'none') {
+                    $findings += @{
+                        Type = 'Warning'
+                        Category = 'DMARC'
+                        Message = "Domain '$($domain.Domain)' DMARC policy is p=none (monitor only); move toward quarantine/reject for anti-spoofing enforcement"
+                        Anchor = 'domains-dns'
+                        Priority = 2
+                    }
+                } elseif ($dmarcPolicy -in @('quarantine', 'reject')) {
+                    $dmarcEnforcedDomainCount++
+                }
+
+                $dmarcPercent = 100
+                if ($domain.PSObject.Properties['DmarcPercent']) {
+                    try { $dmarcPercent = [int]$domain.DmarcPercent } catch { $dmarcPercent = 100 }
+                }
+                if ($dmarcPercent -lt 100) {
+                    $findings += @{
+                        Type = 'Info'
+                        Category = 'DMARC'
+                        Message = "Domain '$($domain.Domain)' DMARC enforcement scope is pct=$dmarcPercent; increase toward 100 for full anti-spoofing coverage"
+                        Anchor = 'domains-dns'
+                        Priority = 3
+                    }
+                }
+            }
+
+            if ($domain.PSObject.Properties['DkimSelectorsConfigured']) {
+                $dkimSelectorCount = 0
+                try { $dkimSelectorCount = [int]$domain.DkimSelectorsConfigured } catch { $dkimSelectorCount = 0 }
+                if ($dkimSelectorCount -ge 2) { $dkimCompleteDomainCount++ }
+                if ($dkimSelectorCount -lt 2) {
+                    $findings += @{
+                        Type = 'Warning'
+                        Category = 'DKIM'
+                        Message = "Domain '$($domain.Domain)' has $dkimSelectorCount DKIM selector CNAME record(s) detected (expected: 2)"
+                        Anchor = 'domains-dns'
+                        Priority = 2
+                    }
+                }
+            }
+        }
+    }
+
+    if ($mailEnabledCustomDomainCount -gt 0) {
+        $spfPct = [math]::Round((($spfPassingDomainCount / $mailEnabledCustomDomainCount) * 100), 1)
+        $dmarcPct = [math]::Round((($dmarcConfiguredDomainCount / $mailEnabledCustomDomainCount) * 100), 1)
+        $dmarcEnforcedPct = [math]::Round((($dmarcEnforcedDomainCount / $mailEnabledCustomDomainCount) * 100), 1)
+        $dkimPct = [math]::Round((($dkimCompleteDomainCount / $mailEnabledCustomDomainCount) * 100), 1)
+
+        $coverageType = if ($dmarcEnforcedPct -lt 60 -or $dkimPct -lt 60 -or $spfPct -lt 80) { 'Warning' } else { 'Info' }
+        $coveragePriority = if ($coverageType -eq 'Warning') { 2 } else { 3 }
+        $findings += @{
+            Type = $coverageType
+            Category = 'Email Authentication Coverage'
+            Message = "Mail-auth coverage across $mailEnabledCustomDomainCount custom mail domain(s): SPF $spfPct%, DKIM $dkimPct%, DMARC configured $dmarcPct%, DMARC enforcement (quarantine/reject) $dmarcEnforcedPct%"
+            Anchor = 'domains-dns'
+            Priority = $coveragePriority
+        }
+    }
+
+    if ($SpamFilteringSummary) {
+        $trustedBypassCount = 0
+        if ($SpamFilteringSummary.PSObject.Properties['TransportRulesWithTrustedIPs']) {
+            try { $trustedBypassCount = [int]$SpamFilteringSummary.TransportRulesWithTrustedIPs } catch { $trustedBypassCount = 0 }
+        }
+        $uses3rdPartyFiltering = $null
+        if ($SpamFilteringSummary.PSObject.Properties['Uses3rdPartyFiltering']) {
+            $rawThirdParty = $SpamFilteringSummary.Uses3rdPartyFiltering
+            if ($rawThirdParty -is [bool]) {
+                $uses3rdPartyFiltering = $rawThirdParty
+            } elseif ($null -ne $rawThirdParty) {
+                $uses3rdPartyFiltering = ([string]$rawThirdParty -match '(?i)^(yes|true|enabled)$')
+            }
+        }
+        if ($trustedBypassCount -gt 0) {
+            $findings += @{
+                Type = 'Warning'
+                Category = 'Anti-Spoofing Bypass'
+                Message = "$trustedBypassCount transport rule or connection-filter trusted IP bypass indicator(s) detected; validate spoof protection exceptions"
+                Anchor = 'domains-dns'
+                Priority = 2
+            }
+        }
+        $findings += @{
+            Type = 'Info'
+            Category = 'Anti-Spoofing Controls'
+            Message = "Mail-flow anti-spoof controls: trusted bypass indicators=$trustedBypassCount; third-party filtering detected=$(if ($null -eq $uses3rdPartyFiltering) { 'Unknown' } elseif ($uses3rdPartyFiltering) { 'Yes' } else { 'No' })"
+            Anchor = 'domains-dns'
+            Priority = 3
+        }
+    }
+
+    if ($SMTPRelaySummary) {
+        $smtpAuthEnabled = $false
+        if ($SMTPRelaySummary.PSObject.Properties['SMTPAuthEnabled']) {
+            $rawSmtpAuth = $SMTPRelaySummary.SMTPAuthEnabled
+            if ($rawSmtpAuth -is [bool]) {
+                $smtpAuthEnabled = $rawSmtpAuth
+            } elseif ($null -ne $rawSmtpAuth) {
+                $smtpAuthEnabled = ([string]$rawSmtpAuth -match '(?i)^(yes|true|enabled)$')
+            }
+        }
+
+        $smtpAuthUsers = 0
+        if ($SMTPRelaySummary.PSObject.Properties['SMTPAuthUsers']) {
+            try { $smtpAuthUsers = [int]$SMTPRelaySummary.SMTPAuthUsers } catch { $smtpAuthUsers = 0 }
+        }
+
+        if ($smtpAuthEnabled -and $smtpAuthUsers -gt 0) {
+            $findings += @{
+                Type = 'Warning'
+                Category = 'SMTP AUTH Exposure'
+                Message = "$smtpAuthUsers mailbox(es) still have SMTP AUTH enabled; this can increase impersonation and brute-force attack surface"
+                Anchor = 'domains-dns'
+                Priority = 2
             }
         }
     }
@@ -9051,7 +9382,8 @@ function Get-IdentityAdminAnalysis {
     param(
         [array]$Users,
         [array]$Admins,
-        [array]$Groups
+        [array]$Groups,
+        [array]$ConditionalAccessPolicies
     )
     
     $findings = @()
@@ -9073,6 +9405,301 @@ function Get-IdentityAdminAnalysis {
             Message = "No Entra ID groups found (or not collected)"
             Anchor = 'identity-admins'
             Priority = 3
+        }
+    }
+
+    function Convert-ToAssessmentDate {
+        param([Parameter(Mandatory = $false)][AllowNull()]$Value)
+        if ($null -eq $Value) { return $null }
+        if ($Value -is [datetime]) { return $Value }
+        try {
+            $text = [string]$Value
+            if ([string]::IsNullOrWhiteSpace($text) -or $text -eq 'NotCollected (minimum mode)') {
+                return $null
+            }
+            return [datetime]$text
+        }
+        catch {
+            return $null
+        }
+    }
+
+    $inactiveDaysThreshold = 180
+    $inactiveCutoff = (Get-Date).AddDays(-1 * $inactiveDaysThreshold)
+    $emergencyAccessRecentSignInThresholdDays = 30
+    $emergencyAccessRecentSignInCutoff = (Get-Date).AddDays(-1 * $emergencyAccessRecentSignInThresholdDays)
+
+    $memberUsers = @(
+        $Users | Where-Object {
+            ($_.UserType -ne 'Guest') -and
+            ($_.UserType -ne 'GuestUser') -and
+            ($_.UserPrincipalName -notlike '*#EXT#*')
+        }
+    )
+    $enabledMemberUsers = @(
+        $memberUsers | Where-Object {
+            $accountEnabled = $true
+            if ($_.PSObject.Properties['AccountEnabled']) {
+                try { $accountEnabled = [bool]$_.AccountEnabled } catch { $accountEnabled = $true }
+            }
+            $accountEnabled
+        }
+    )
+
+    $usersWithSignin = @()
+    foreach ($user in $enabledMemberUsers) {
+        $lastSignIn = Convert-ToAssessmentDate -Value $user.LastSignInDateTime
+        if ($lastSignIn) {
+            $usersWithSignin += [PSCustomObject]@{
+                User = $user
+                LastSignIn = $lastSignIn
+            }
+        }
+    }
+
+    $inactiveUsers = @($usersWithSignin | Where-Object { $_.LastSignIn -lt $inactiveCutoff })
+    if ($inactiveUsers.Count -gt 0) {
+        $inactivePct = if ($enabledMemberUsers.Count -gt 0) {
+            [math]::Round((($inactiveUsers.Count / $enabledMemberUsers.Count) * 100), 1)
+        }
+        else { 0 }
+        $inactiveType = if ($inactivePct -ge 20) { 'Risk' } else { 'Warning' }
+        $inactivePriority = if ($inactivePct -ge 20) { 1 } else { 2 }
+        $findings += @{
+            Type = $inactiveType
+            Category = 'Inactive Users'
+            Message = "$($inactiveUsers.Count) enabled member account(s) ($inactivePct%) have no sign-in within the last $inactiveDaysThreshold days"
+            Anchor = 'identity-admins'
+            Priority = $inactivePriority
+        }
+    }
+
+    if ($enabledMemberUsers.Count -gt 0) {
+        $signInCoveragePct = [math]::Round((($usersWithSignin.Count / $enabledMemberUsers.Count) * 100), 1)
+        if ($signInCoveragePct -lt 60) {
+            $findings += @{
+                Type = 'Info'
+                Category = 'Admin Sign-in Telemetry'
+                Message = "User sign-in telemetry coverage is $signInCoveragePct% for enabled member users; inactivity findings may be under-reported"
+                Anchor = 'identity-admins'
+                Priority = 3
+            }
+        }
+    }
+
+    $guestUsers = @(
+        $Users | Where-Object {
+            ($_.UserType -eq 'Guest') -or
+            ($_.UserType -eq 'GuestUser') -or
+            ($_.UserPrincipalName -like '*#EXT#*')
+        }
+    )
+    $enabledGuestUsers = @(
+        $guestUsers | Where-Object {
+            $accountEnabled = $true
+            if ($_.PSObject.Properties['AccountEnabled']) {
+                try { $accountEnabled = [bool]$_.AccountEnabled } catch { $accountEnabled = $true }
+            }
+            $accountEnabled
+        }
+    )
+    $inactiveGuests = @(
+        $enabledGuestUsers | Where-Object {
+            $lastSignIn = Convert-ToAssessmentDate -Value $_.LastSignInDateTime
+            $lastSignIn -and $lastSignIn -lt $inactiveCutoff
+        }
+    )
+    if ($inactiveGuests.Count -gt 0) {
+        $inactiveGuestPct = if ($enabledGuestUsers.Count -gt 0) {
+            [math]::Round((($inactiveGuests.Count / $enabledGuestUsers.Count) * 100), 1)
+        } else { 0 }
+        $findings += @{
+            Type = 'Warning'
+            Category = 'Inactive Guest Users'
+            Message = "$($inactiveGuests.Count) enabled guest account(s) ($inactiveGuestPct%) have no sign-in within the last $inactiveDaysThreshold days"
+            Anchor = 'identity-admins'
+            Priority = 2
+        }
+    }
+
+    $normalizedAdmins = @(
+        $Admins | Where-Object { $_ -ne $null }
+    )
+
+    $userByUpn = @{}
+    foreach ($user in $Users) {
+        $userUpn = [string]$user.UserPrincipalName
+        if ([string]::IsNullOrWhiteSpace($userUpn)) { continue }
+        $userByUpn[$userUpn.ToLowerInvariant()] = $user
+    }
+
+    if ($normalizedAdmins.Count -gt 0) {
+        $globalAdmins = @(
+            $normalizedAdmins | Where-Object {
+                $roleText = [string]$_.Role
+                $roleText -match 'Global Administrator|Company Administrator'
+            }
+        )
+        if ($globalAdmins.Count -gt 5) {
+            $findings += @{
+                Type = 'Risk'
+                Category = 'Global Admin Count'
+                Message = "$($globalAdmins.Count) Global Administrator account(s) detected; Microsoft least-privilege guidance recommends reducing standing Global Admins"
+                Anchor = 'identity-admins'
+                Priority = 1
+            }
+        }
+        elseif ($globalAdmins.Count -gt 4) {
+            $findings += @{
+                Type = 'Warning'
+                Category = 'Global Admin Count'
+                Message = "$($globalAdmins.Count) Global Administrator account(s) detected; review whether all are required as standing access"
+                Anchor = 'identity-admins'
+                Priority = 2
+            }
+        }
+
+        $staleAdmins = @(
+            $normalizedAdmins | Where-Object {
+                $lastSignIn = Convert-ToAssessmentDate -Value $_.LastSignInDateTime
+                $lastSignIn -and $lastSignIn -lt $inactiveCutoff
+            }
+        )
+        if ($staleAdmins.Count -gt 0) {
+            $findings += @{
+                Type = 'Risk'
+                Category = 'Inactive Admin Accounts'
+                Message = "$($staleAdmins.Count) admin account(s) have not signed in within $inactiveDaysThreshold days and should be reviewed or removed from privileged roles"
+                Anchor = 'identity-admins'
+                Priority = 1
+            }
+        }
+
+        $globalAdminUsers = @()
+        $seenGlobalAdminUpns = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($admin in $globalAdmins) {
+            $adminUpn = [string]$admin.UserPrincipalName
+            if ([string]::IsNullOrWhiteSpace($adminUpn)) { continue }
+            $normalizedUpn = $adminUpn.ToLowerInvariant()
+            if ($seenGlobalAdminUpns.Contains($normalizedUpn)) { continue }
+            [void]$seenGlobalAdminUpns.Add($normalizedUpn)
+
+            $matchedUser = $null
+            if ($userByUpn.ContainsKey($normalizedUpn)) {
+                $matchedUser = $userByUpn[$normalizedUpn]
+            }
+
+            $accountEnabled = $true
+            if ($matchedUser -and $matchedUser.PSObject.Properties['AccountEnabled']) {
+                try { $accountEnabled = [bool]$matchedUser.AccountEnabled } catch { $accountEnabled = $true }
+            }
+            elseif ($admin.PSObject.Properties['AccountEnabled']) {
+                try { $accountEnabled = [bool]$admin.AccountEnabled } catch { $accountEnabled = $true }
+            }
+
+            $lastSignIn = $null
+            if ($matchedUser) {
+                $lastSignIn = Convert-ToAssessmentDate -Value $matchedUser.LastSignInDateTime
+            }
+            if (-not $lastSignIn) {
+                $lastSignIn = Convert-ToAssessmentDate -Value $admin.LastSignInDateTime
+            }
+
+            $isCloudOnly = $true
+            if ($matchedUser -and $matchedUser.PSObject.Properties['OnPremisesSyncEnabled'] -and $matchedUser.OnPremisesSyncEnabled -eq $true) {
+                $isCloudOnly = $false
+            }
+
+            $objectId = $null
+            if ($matchedUser -and $matchedUser.PSObject.Properties['Id'] -and $matchedUser.Id) {
+                $objectId = [string]$matchedUser.Id
+            }
+
+            $globalAdminUsers += [PSCustomObject]@{
+                UserPrincipalName = $adminUpn
+                AccountEnabled = $accountEnabled
+                LastSignInDateTime = $lastSignIn
+                IsCloudOnly = $isCloudOnly
+                ObjectId = $objectId
+            }
+        }
+
+        $enabledCloudOnlyGlobalAdmins = @(
+            $globalAdminUsers | Where-Object { $_.AccountEnabled -eq $true -and $_.IsCloudOnly -eq $true }
+        )
+        $emergencyAccessCandidates = @(
+            $enabledCloudOnlyGlobalAdmins | Where-Object {
+                (-not $_.LastSignInDateTime) -or ($_.LastSignInDateTime -lt $emergencyAccessRecentSignInCutoff)
+            }
+        )
+
+        if ($enabledCloudOnlyGlobalAdmins.Count -eq 0) {
+            $findings += @{
+                Type = 'Warning'
+                Category = 'Emergency Access Accounts'
+                Message = "No enabled cloud-only Global Administrator accounts were detected; maintain dedicated emergency access accounts per Microsoft guidance"
+                Anchor = 'identity-admins'
+                Priority = 2
+            }
+        }
+        elseif ($emergencyAccessCandidates.Count -lt 2) {
+            $findings += @{
+                Type = 'Warning'
+                Category = 'Emergency Access Accounts'
+                Message = "Only $($emergencyAccessCandidates.Count) cloud-only Global Administrator account(s) appear to fit emergency-access profile (enabled and no recent sign-in > $emergencyAccessRecentSignInThresholdDays days); Microsoft recommends at least two"
+                Anchor = 'identity-admins'
+                Priority = 2
+            }
+        }
+
+        $enabledSyncedGlobalAdmins = @(
+            $globalAdminUsers | Where-Object { $_.AccountEnabled -eq $true -and $_.IsCloudOnly -eq $false }
+        )
+        if ($enabledSyncedGlobalAdmins.Count -gt 0) {
+            $findings += @{
+                Type = 'Info'
+                Category = 'Emergency Access Accounts'
+                Message = "$($enabledSyncedGlobalAdmins.Count) enabled Global Administrator account(s) are synchronized from on-premises; emergency access accounts should be cloud-only"
+                Anchor = 'identity-admins'
+                Priority = 3
+            }
+        }
+
+        if ($emergencyAccessCandidates.Count -gt 0 -and $ConditionalAccessPolicies) {
+            $enabledPolicies = @($ConditionalAccessPolicies | Where-Object { $_.State -eq 'enabled' })
+            $excludedUserValues = New-Object 'System.Collections.Generic.HashSet[string]'
+            foreach ($policy in $enabledPolicies) {
+                $excludedUsersText = [string]$policy.ExcludedUsers
+                if ([string]::IsNullOrWhiteSpace($excludedUsersText)) { continue }
+                foreach ($token in ($excludedUsersText -split ',')) {
+                    $trimmedToken = $token.Trim().ToLowerInvariant()
+                    if (-not [string]::IsNullOrWhiteSpace($trimmedToken)) {
+                        [void]$excludedUserValues.Add($trimmedToken)
+                    }
+                }
+            }
+
+            $excludedCandidateCount = 0
+            foreach ($candidate in $emergencyAccessCandidates) {
+                $candidateMatched = $false
+                if ($candidate.ObjectId -and $excludedUserValues.Contains($candidate.ObjectId.ToLowerInvariant())) {
+                    $candidateMatched = $true
+                }
+                elseif ($candidate.UserPrincipalName -and $excludedUserValues.Contains($candidate.UserPrincipalName.ToLowerInvariant())) {
+                    $candidateMatched = $true
+                }
+                if ($candidateMatched) { $excludedCandidateCount++ }
+            }
+
+            if ($excludedCandidateCount -lt 1) {
+                $findings += @{
+                    Type = 'Warning'
+                    Category = 'Emergency Access CA Exclusions'
+                    Message = "No emergency-access candidate appears in enabled Conditional Access exclusion lists; validate lockout-safe emergency account design"
+                    Anchor = 'identity-admins'
+                    Priority = 2
+                }
+            }
         }
     }
     
@@ -9114,6 +9741,98 @@ function Get-ConditionalAccessMfaAnalysis {
             Message = "No active MFA enforcement detected (no enabled MFA CA policies)"
             Anchor = 'conditional-access-mfa'
             Priority = 2
+        }
+    }
+
+    $legacyAuthBlockPolicies = @(
+        $enabledPolicies | Where-Object {
+            ([string]$_.ClientAppTypes -match '(?i)exchangeActiveSync|other') -and
+            ([string]$_.GrantControls_BuiltInControls -match '(?i)block')
+        }
+    )
+    if ($enabledPolicies.Count -gt 0 -and $legacyAuthBlockPolicies.Count -eq 0) {
+        $findings += @{
+            Type = 'Warning'
+            Category = 'Legacy Authentication'
+            Message = "No enabled Conditional Access policy appears to explicitly block legacy authentication client app types"
+            Anchor = 'conditional-access-mfa'
+            Priority = 2
+        }
+    }
+
+    $riskPolicies = @(
+        $enabledPolicies | Where-Object {
+            (-not [string]::IsNullOrWhiteSpace([string]$_.SignInRiskLevels_IncludeLevels)) -or
+            (-not [string]::IsNullOrWhiteSpace([string]$_.ServicePrincipalRiskLevels_IncludeLevels))
+        }
+    )
+    if ($enabledPolicies.Count -gt 0 -and $riskPolicies.Count -eq 0) {
+        $findings += @{
+            Type = 'Info'
+            Category = 'Risk-based Conditional Access'
+            Message = "No enabled risk-based Conditional Access policies detected (sign-in risk / user risk)"
+            Anchor = 'conditional-access-mfa'
+            Priority = 3
+        }
+    }
+
+    if ($AuthConfig) {
+        $adminConsentWorkflowEnabled = $null
+        if ($AuthConfig.PSObject.Properties['AdminConsentWorkflowEnabled']) {
+            $rawWorkflow = $AuthConfig.AdminConsentWorkflowEnabled
+            if ($rawWorkflow -is [bool]) {
+                $adminConsentWorkflowEnabled = [bool]$rawWorkflow
+            } elseif ($null -ne $rawWorkflow) {
+                $workflowText = [string]$rawWorkflow
+                if ($workflowText -match '(?i)^(enabled|true|yes)$') { $adminConsentWorkflowEnabled = $true }
+                elseif ($workflowText -match '(?i)^(disabled|false|no)$') { $adminConsentWorkflowEnabled = $false }
+            }
+        }
+        if ($adminConsentWorkflowEnabled -eq $false) {
+            $findings += @{
+                Type = 'Warning'
+                Category = 'Admin Consent Workflow'
+                Message = "Admin consent request workflow is disabled; enable it to govern end-user app consent escalation"
+                Anchor = 'conditional-access-mfa'
+                Priority = 2
+            }
+        }
+
+        $defaultUserCanCreateApps = $null
+        if ($AuthConfig.PSObject.Properties['DefaultUserCanCreateApps']) {
+            $rawCreateApps = $AuthConfig.DefaultUserCanCreateApps
+            if ($rawCreateApps -is [bool]) {
+                $defaultUserCanCreateApps = [bool]$rawCreateApps
+            } elseif ($null -ne $rawCreateApps) {
+                $createAppsText = [string]$rawCreateApps
+                if ($createAppsText -match '(?i)^(yes|true|enabled)$') { $defaultUserCanCreateApps = $true }
+                elseif ($createAppsText -match '(?i)^(no|false|disabled)$') { $defaultUserCanCreateApps = $false }
+            }
+        }
+        if ($defaultUserCanCreateApps -eq $true) {
+            $findings += @{
+                Type = 'Info'
+                Category = 'App Consent Governance'
+                Message = "Default users are allowed to create app registrations; verify enterprise governance requirements for app creation"
+                Anchor = 'conditional-access-mfa'
+                Priority = 3
+            }
+        }
+
+        $permissionGrantPolicyText = $null
+        if ($AuthConfig.PSObject.Properties['PermissionGrantPoliciesAssigned']) {
+            $permissionGrantPolicyText = (@($AuthConfig.PermissionGrantPoliciesAssigned) -join ',')
+        } elseif ($AuthConfig.PSObject.Properties['PermissionGrantPolicies']) {
+            $permissionGrantPolicyText = [string]$AuthConfig.PermissionGrantPolicies
+        }
+        if (-not [string]::IsNullOrWhiteSpace($permissionGrantPolicyText) -and $permissionGrantPolicyText -match '(?i)legacy') {
+            $findings += @{
+                Type = 'Warning'
+                Category = 'App Consent Governance'
+                Message = "Permission grant policy assignment includes legacy/default consent behavior; review least-privilege user consent posture"
+                Anchor = 'conditional-access-mfa'
+                Priority = 2
+            }
         }
     }
     
@@ -9446,6 +10165,34 @@ function Get-TenantAssessmentContext {
         $teamsVoice = $TenantStatsHash['TeamsVoice']
     }
 
+    $spamFilteringSummary = $null
+    if ($TenantStatsHash.ContainsKey('SpamFilteringSummary')) {
+        $spamSummaryContainer = $TenantStatsHash['SpamFilteringSummary']
+        if ($spamSummaryContainer -is [hashtable] -and $spamSummaryContainer.ContainsKey('Summary')) {
+            $spamFilteringSummary = $spamSummaryContainer['Summary']
+        }
+    }
+    if (-not $spamFilteringSummary -and $TenantStatsHash.ContainsKey('SpamFilteringConfig')) {
+        $spamConfigContainer = $TenantStatsHash['SpamFilteringConfig']
+        if ($spamConfigContainer -is [hashtable] -and $spamConfigContainer.ContainsKey('Configuration')) {
+            $spamFilteringSummary = $spamConfigContainer['Configuration']
+        }
+    }
+
+    $smtpRelaySummary = $null
+    if ($TenantStatsHash.ContainsKey('SMTPRelaySummary')) {
+        $smtpSummaryContainer = $TenantStatsHash['SMTPRelaySummary']
+        if ($smtpSummaryContainer -is [hashtable] -and $smtpSummaryContainer.ContainsKey('Summary')) {
+            $smtpRelaySummary = $smtpSummaryContainer['Summary']
+        }
+    }
+    if (-not $smtpRelaySummary -and $TenantStatsHash.ContainsKey('SMTPRelayConfig')) {
+        $smtpConfigContainer = $TenantStatsHash['SMTPRelayConfig']
+        if ($smtpConfigContainer -is [hashtable] -and $smtpConfigContainer.ContainsKey('Configuration')) {
+            $smtpRelaySummary = $smtpConfigContainer['Configuration']
+        }
+    }
+
     $mailboxSourceKey = if ($TenantStatsHash.ContainsKey('MailboxFullDetails')) {
         'MailboxFullDetails'
     } elseif ($TenantStatsHash.ContainsKey('AllMailboxes')) {
@@ -9493,6 +10240,8 @@ function Get-TenantAssessmentContext {
         FederationCrossTenant  = $federationCrossTenant
         FederationExternal     = $federationExternal
         TeamsVoice             = $teamsVoice
+        SpamFilteringSummary   = $spamFilteringSummary
+        SMTPRelaySummary       = $smtpRelaySummary
     }
 }
 
@@ -9528,14 +10277,44 @@ function Get-AssessmentRecommendationText {
     switch ($Finding.Anchor) {
         'licenses' { return 'Review SKU capacity, reclaim unused assignments, and align target-tenant licensing before cutover.' }
         'domains' { return 'Verify all domains and confirm authoritative routing before migration sequencing.' }
-        'domains-dns' { return 'Review MX, autodiscover, and mail-routing records to plan coexistence and cutover.' }
-        'identity-admins' { return 'Validate admin access, guest usage, and group ownership before identity migration activities.' }
+        'domains-dns' {
+            switch ([string]$Finding.Category) {
+                'DMARC' { return 'Publish and enforce DMARC for custom email domains to improve spoofing protection and align with Microsoft email security guidance.' }
+                'SPF' { return 'Ensure SPF includes Microsoft 365 mail protection endpoints and remains within DNS lookup limits.' }
+                'DKIM' { return 'Configure both DKIM selectors and enable DKIM signing for custom domains used for mail flow.' }
+                'Email Authentication Coverage' { return 'Raise SPF/DKIM/DMARC coverage on all active custom mail domains and prioritize DMARC enforcement (quarantine/reject).' }
+                'Anti-Spoofing Bypass' { return 'Review trusted-IP and bypass rules to ensure anti-spoofing controls are not unintentionally bypassed.' }
+                'Anti-Spoofing Controls' { return 'Track anti-spoofing controls over time and keep trusted bypasses and relay exceptions tightly scoped.' }
+                'SMTP AUTH Exposure' { return 'Disable SMTP AUTH where possible and use modern authentication or scoped relay alternatives for legacy apps/devices.' }
+                default { return 'Review MX, autodiscover, and mail-routing records to plan coexistence and cutover.' }
+            }
+        }
+        'identity-admins' {
+            switch ([string]$Finding.Category) {
+                'Inactive Users' { return 'Follow Microsoft identity hygiene guidance: disable or investigate member accounts inactive for 180+ days and keep only justified exceptions.' }
+                'Inactive Guest Users' { return 'Review stale guest accounts and use Entra access reviews/lifecycle governance to remove unneeded external identities.' }
+                'Inactive Admin Accounts' { return 'Remove or time-bound stale privileged assignments and use Entra PIM eligible roles instead of standing admin access.' }
+                'Global Admin Count' { return 'Follow least-privilege guidance: keep only a small set of Global Administrators (typically 2-4) and delegate other tasks to scoped roles.' }
+                'Admin Sign-in Telemetry' { return 'Ensure sign-in telemetry is available for privileged accounts (app permissions/log retention) so stale-admin monitoring is reliable.' }
+                'Emergency Access Accounts' { return 'Maintain at least two cloud-only emergency access accounts, monitor them, and keep them excluded from daily operational use.' }
+                'Emergency Access CA Exclusions' { return 'Validate Conditional Access emergency-access exclusions so break-glass accounts can sign in during policy or identity outages.' }
+                default { return 'Validate admin access, guest usage, and group ownership before identity migration activities.' }
+            }
+        }
         'mailboxes' { return 'Identify oversized or specialized mailboxes early to plan batching, archives, and exception handling.' }
         'inactive-mailboxes' { return 'Decide whether inactive mailboxes need retention, restore, or exclusion from scope.' }
         'sharepoint-onedrive' { return 'Use site inventory, ownership, and storage metrics to prioritize high-risk collaboration workloads.' }
         'devices' { return 'Review stale and non-compliant devices before identity and endpoint cutover.' }
         'ad-connect' { return 'Document synchronization dependencies and plan cloud identity cutover or staged decommissioning.' }
-        'conditional-access-mfa' { return 'Review CA and MFA design to avoid post-migration lockouts or authentication regressions.' }
+        'conditional-access-mfa' {
+            switch ([string]$Finding.Category) {
+                'Legacy Authentication' { return 'Block legacy authentication with Conditional Access and verify modern-auth readiness before enforcement.' }
+                'Risk-based Conditional Access' { return 'Implement sign-in risk and user risk Conditional Access policies to align with Microsoft identity protection practices.' }
+                'Admin Consent Workflow' { return 'Enable and tune the admin consent request workflow so app consent escalations follow governance controls.' }
+                'App Consent Governance' { return 'Harden app consent and app registration settings to reduce over-privileged or unmanaged enterprise app risk.' }
+                default { return 'Review CA and MFA design to avoid post-migration lockouts or authentication regressions.' }
+            }
+        }
         'exchange-hybrid' { return 'Validate hybrid, connectors, and migration endpoints because they affect tenant-to-tenant messaging strategy.' }
         'cross-tenant-access' { return 'Review cross-tenant and B2B settings for coexistence, external collaboration, and post-migration cleanup.' }
         'secure-score' { return 'Use the mapped Microsoft Secure Score action to prioritize remediation with the highest security impact.' }
@@ -9651,12 +10430,12 @@ function Update-AssessmentReportTables {
     }
 
     if ($context.Domains.Count -gt 0) {
-        $domainAnalysis = Get-DomainAnalysis -Domains $context.Domains
+        $domainAnalysis = Get-DomainAnalysis -Domains $context.Domains -SpamFilteringSummary $context.SpamFilteringSummary -SMTPRelaySummary $context.SMTPRelaySummary
         Add-AreaSummary -Area 'Domains' -AreaFindings $domainAnalysis.Findings -AssessmentType 'Assessment heuristic using Microsoft 365 domain state' -RelatedWorksheet 'Domains' -Notes 'Highlights verification and mail-routing concerns relevant to migration cutover.'
     }
 
     if ($context.Users.Count -gt 0 -or $context.Admins.Count -gt 0 -or $context.Groups.Count -gt 0) {
-        $identityAnalysis = Get-IdentityAdminAnalysis -Users $context.Users -Admins $context.Admins -Groups $context.Groups
+        $identityAnalysis = Get-IdentityAdminAnalysis -Users $context.Users -Admins $context.Admins -Groups $context.Groups -ConditionalAccessPolicies $context.ConditionalAccess
         Add-AreaSummary -Area 'Identity & Admins' -AreaFindings $identityAnalysis.Findings -AssessmentType 'Assessment heuristic using Entra users, groups, and admin assignments' -RelatedWorksheet 'Users' -Notes 'Surfaces admin and group inventory signals that affect migration readiness.'
     }
 
@@ -11267,13 +12046,17 @@ function Build-TeamsSection {
 }
 
 function Build-DomainsSection {
-    param([array]$Domains)
+    param(
+        [array]$Domains,
+        [object]$SpamFilteringSummary,
+        [object]$SMTPRelaySummary
+    )
     
     if ($Domains.Count -eq 0) {
         return "<div class='empty-state'>No domain data available</div>"
     }
     
-    $analysis = Get-DomainAnalysis -Domains $Domains
+    $analysis = Get-DomainAnalysis -Domains $Domains -SpamFilteringSummary $SpamFilteringSummary -SMTPRelaySummary $SMTPRelaySummary
     
     # Basic domain info
     $tableColumns = @('Domain','Verified','AuthenticationType','DomainType','IsDefault')
@@ -11291,6 +12074,70 @@ function Build-DomainsSection {
     
     $tableHtml = "<h3>Domain Configuration</h3>"
     $tableHtml += New-HtmlTable -Data $Domains -Columns $tableColumns -ColumnHeaders $tableHeaders -RiskColumns $riskColumns
+
+    # Mail authentication summary
+    $mailEnabledCustomDomains = @(
+        $Domains | Where-Object {
+            ([string]$_.Domain -notmatch '(?i)\.onmicrosoft\.com$') -and
+            ($_.Verified -eq $true) -and
+            ($_.Office365MailExchanger -eq $true -or ([int]$_.TotalDomainRecipients -gt 0))
+        }
+    )
+
+    $mailAuthKpiHtml = ""
+    if ($mailEnabledCustomDomains.Count -gt 0) {
+        $spfPassing = @($mailEnabledCustomDomains | Where-Object { $_.SpfIncludesM365 -eq $true }).Count
+        $dmarcConfigured = @($mailEnabledCustomDomains | Where-Object { $_.DmarcConfigured -eq $true }).Count
+        $dmarcEnforced = @($mailEnabledCustomDomains | Where-Object { $_.DmarcConfigured -eq $true -and $_.DmarcPolicy -in @('quarantine', 'reject') }).Count
+        $dkimComplete = @($mailEnabledCustomDomains | Where-Object { [int]$_.DkimSelectorsConfigured -ge 2 }).Count
+
+        $mailAuthKpiHtml = "<h3 id='domains-mailauth' style='margin-top:30px;'>Mail Authentication & Anti-Spoofing</h3>"
+        $mailAuthKpiHtml += "<div class='kpi-grid'>"
+        $mailAuthKpiHtml += New-KpiCard -Title "Mail Domains" -Value (Format-Number $mailEnabledCustomDomains.Count)
+        $mailAuthKpiHtml += New-KpiCard -Title "SPF Coverage" -Value ("{0}%" -f [math]::Round((($spfPassing / $mailEnabledCustomDomains.Count) * 100), 1))
+        $mailAuthKpiHtml += New-KpiCard -Title "DKIM (2 Selectors)" -Value ("{0}%" -f [math]::Round((($dkimComplete / $mailEnabledCustomDomains.Count) * 100), 1))
+        $mailAuthKpiHtml += New-KpiCard -Title "DMARC Enforced" -Value ("{0}%" -f [math]::Round((($dmarcEnforced / $mailEnabledCustomDomains.Count) * 100), 1))
+        $mailAuthKpiHtml += "</div>"
+
+        $mailAuthRows = @(
+            $mailEnabledCustomDomains | ForEach-Object {
+                $spfStatus = if ($_.SpfIncludesM365 -eq $true) { 'Pass' } else { 'Needs Review' }
+                $dmarcStatus = if ($_.DmarcConfigured -eq $true) { 'Present' } else { 'Missing' }
+                $dkimStatus = if ([int]$_.DkimSelectorsConfigured -ge 2) { 'Pass' } else { 'Needs Review' }
+                $dmarcPolicyDisplay = if ($_.DmarcPolicy) { [string]$_.DmarcPolicy } else { 'N/A' }
+                $dmarcPctDisplay = if ($_.DmarcPercent) { "$($_.DmarcPercent)%" } else { 'N/A' }
+
+                [PSCustomObject]@{
+                    Domain = $_.Domain
+                    M365MX = $(if ($_.Office365MailExchanger -eq $true) { 'Yes' } else { 'No' })
+                    SPF = $spfStatus
+                    SPFMode = $(if ($_.SpfPolicyMode) { $_.SpfPolicyMode } else { 'N/A' })
+                    DMARC = $dmarcStatus
+                    DMARCPolicy = $dmarcPolicyDisplay
+                    DMARCPct = $dmarcPctDisplay
+                    DKIM = $dkimStatus
+                }
+            }
+        )
+
+        $mailAuthColumns = @('Domain','M365MX','SPF','SPFMode','DMARC','DMARCPolicy','DMARCPct','DKIM')
+        $mailAuthHeaders = @{
+            'Domain' = 'Domain'
+            'M365MX' = 'M365 MX'
+            'SPF' = 'SPF'
+            'SPFMode' = 'SPF Mode'
+            'DMARC' = 'DMARC'
+            'DMARCPolicy' = 'DMARC Policy'
+            'DMARCPct' = 'DMARC %'
+            'DKIM' = 'DKIM'
+        }
+        $mailAuthRiskColumns = @{
+            'SPF' = { param($val) [string]$val -eq 'Needs Review' }
+            'DMARC' = { param($val) [string]$val -eq 'Missing' }
+            'DKIM' = { param($val) [string]$val -eq 'Needs Review' }
+        }
+        $mailAuthKpiHtml += New-HtmlTable -Data $mailAuthRows -Columns $mailAuthColumns -ColumnHeaders $mailAuthHeaders -RiskColumns $mailAuthRiskColumns -CssClass 'data-table wrap-cells'
+    }
     
     # DNS info
     $dnsColumns = @('Domain','NSRecords','ARecords','MXRecords','Office365MailExchanger')
@@ -11304,6 +12151,73 @@ function Build-DomainsSection {
     
     $tableHtml += "<h3 id='domains-dns' style='margin-top:30px;'>DNS Configuration</h3>"
     $tableHtml += New-HtmlTable -Data $Domains -Columns $dnsColumns -ColumnHeaders $dnsHeaders -CssClass 'data-table wrap-cells'
+
+    # Anti-spoofing control summary
+    $antiSpoofRows = @()
+    if ($SpamFilteringSummary -or $SMTPRelaySummary) {
+        $trustedBypassCount = 0
+        if ($SpamFilteringSummary -and $SpamFilteringSummary.PSObject.Properties['TransportRulesWithTrustedIPs']) {
+            try { $trustedBypassCount = [int]$SpamFilteringSummary.TransportRulesWithTrustedIPs } catch { $trustedBypassCount = 0 }
+        }
+        $uses3rdPartyFiltering = $null
+        if ($SpamFilteringSummary -and $SpamFilteringSummary.PSObject.Properties['Uses3rdPartyFiltering']) {
+            $rawThirdParty = $SpamFilteringSummary.Uses3rdPartyFiltering
+            if ($rawThirdParty -is [bool]) {
+                $uses3rdPartyFiltering = $rawThirdParty
+            } else {
+                $uses3rdPartyFiltering = ([string]$rawThirdParty -match '(?i)^(yes|true|enabled)$')
+            }
+        }
+
+        $smtpAuthEnabled = $null
+        $smtpAuthUsers = 0
+        $smtpClientAuthDisabled = $null
+        if ($SMTPRelaySummary) {
+            if ($SMTPRelaySummary.PSObject.Properties['SMTPAuthEnabled']) {
+                $rawSmtpAuth = $SMTPRelaySummary.SMTPAuthEnabled
+                if ($rawSmtpAuth -is [bool]) {
+                    $smtpAuthEnabled = $rawSmtpAuth
+                } else {
+                    $smtpAuthEnabled = ([string]$rawSmtpAuth -match '(?i)^(yes|true|enabled)$')
+                }
+            }
+            if ($SMTPRelaySummary.PSObject.Properties['SMTPAuthUsers']) {
+                try { $smtpAuthUsers = [int]$SMTPRelaySummary.SMTPAuthUsers } catch { $smtpAuthUsers = 0 }
+            }
+            if ($SMTPRelaySummary.PSObject.Properties['SmtpClientAuthenticationDisabled']) {
+                $smtpClientRaw = $SMTPRelaySummary.SmtpClientAuthenticationDisabled
+                if ($smtpClientRaw -is [bool]) {
+                    $smtpClientAuthDisabled = $smtpClientRaw
+                } else {
+                    $smtpClientAuthDisabled = ([string]$smtpClientRaw -match '(?i)^(yes|true)$')
+                }
+            }
+        }
+
+        $antiSpoofRows += [PSCustomObject]@{
+            Signal = 'Trusted IP / bypass indicators'
+            Value = $trustedBypassCount
+            Assessment = $(if ($trustedBypassCount -gt 0) { 'Review' } else { 'Good' })
+        }
+        $antiSpoofRows += [PSCustomObject]@{
+            Signal = 'SMTP AUTH enabled mailboxes'
+            Value = $smtpAuthUsers
+            Assessment = $(if ($smtpAuthEnabled -eq $true -and $smtpAuthUsers -gt 0) { 'Review' } else { 'Good' })
+        }
+        $antiSpoofRows += [PSCustomObject]@{
+            Signal = 'Org-wide SMTP client auth disabled'
+            Value = $(if ($null -eq $smtpClientAuthDisabled) { 'Unknown' } elseif ($smtpClientAuthDisabled) { 'Yes' } else { 'No' })
+            Assessment = $(if ($smtpClientAuthDisabled -eq $false) { 'Review' } else { 'Good' })
+        }
+        $antiSpoofRows += [PSCustomObject]@{
+            Signal = 'Third-party mail filtering detected'
+            Value = $(if ($null -eq $uses3rdPartyFiltering) { 'Unknown' } elseif ($uses3rdPartyFiltering) { 'Yes' } else { 'No' })
+            Assessment = $(if ($uses3rdPartyFiltering -eq $true) { 'Review' } else { 'Good' })
+        }
+
+        $tableHtml += "<h3 id='domains-antispoof' style='margin-top:30px;'>Anti-Spoofing Control Signals</h3>"
+        $tableHtml += New-HtmlTable -Data $antiSpoofRows -Columns @('Signal','Value','Assessment') -ColumnHeaders @{ Signal='Control'; Value='Value'; Assessment='Assessment' } -RiskColumns @{ Assessment = { param($val) [string]$val -eq 'Review' } }
+    }
     
     # Recipient counts
     $recipColumns = @('Domain','PrimarySMTPRecipients','AliasOnlyRecipients','TotalDomainRecipients')
@@ -11320,13 +12234,13 @@ function Build-DomainsSection {
     $footerHtml = @"
 <div class='section-footer'>
     <h3>What This Means</h3>
-    <p>This shows all domains in your tenant, their verification status, DNS configuration, and how many recipients use each domain.</p>
+    <p>This shows all domains in your tenant, DNS/mail-auth posture (SPF, DKIM, DMARC), recipient usage, and anti-spoofing control signals.</p>
     <h3>Recommended Next Steps</h3>
-    <p>Ensure all domains are verified. Confirm MX records point to Microsoft for mail delivery. Review unused domains for removal.</p>
+    <p>For mail-enabled custom domains, target SPF alignment, two DKIM selectors, and DMARC enforcement (quarantine/reject). Review trusted-IP bypasses and SMTP AUTH exceptions regularly.</p>
 </div>
 "@
     
-    return $tableHtml + $footerHtml
+    return $tableHtml + $mailAuthKpiHtml + $footerHtml
 }
 
 function Build-DevicesSection {
@@ -11775,7 +12689,10 @@ function Build-ConditionalAccessMfaSection {
         [PSCustomObject]@{ Metric = 'MFA Methods (Policy)'; Value = $mfaMethods },
         [PSCustomObject]@{ Metric = 'Passwordless Methods'; Value = $passwordlessMethods },
         [PSCustomObject]@{ Metric = '% Users Not Covered by CA'; Value = $pctNotCA },
-        [PSCustomObject]@{ Metric = '% Users Not Enforced with MFA'; Value = $pctNotMfa }
+        [PSCustomObject]@{ Metric = '% Users Not Enforced with MFA'; Value = $pctNotMfa },
+        [PSCustomObject]@{ Metric = 'Default User Can Create Apps'; Value = $(if ($AuthConfig -and $AuthConfig.PSObject.Properties['DefaultUserCanCreateApps']) { $AuthConfig.DefaultUserCanCreateApps } else { 'Not available' }) },
+        [PSCustomObject]@{ Metric = 'Permission Grant Policies'; Value = $(if ($AuthConfig -and $AuthConfig.PSObject.Properties['PermissionGrantPoliciesAssigned']) { (@($AuthConfig.PermissionGrantPoliciesAssigned) -join ', ') } elseif ($AuthConfig -and $AuthConfig.PSObject.Properties['PermissionGrantPolicies']) { [string]$AuthConfig.PermissionGrantPolicies } else { 'Not available' }) },
+        [PSCustomObject]@{ Metric = 'Admin Consent Workflow'; Value = $(if ($AuthConfig -and $AuthConfig.PSObject.Properties['AdminConsentWorkflowEnabled']) { $AuthConfig.AdminConsentWorkflowEnabled } else { 'Not available' }) }
     )
 
     if ($MfaRegistrationSummary) {
@@ -12197,6 +13114,8 @@ function New-TenantHtmlReport {
     $federationExchange = $context.FederationExchange
     $federationCrossTenant = $context.FederationCrossTenant
     $federationExternal = $context.FederationExternal
+    $spamFilteringSummary = $context.SpamFilteringSummary
+    $smtpRelaySummary = $context.SMTPRelaySummary
     
     Write-Host "  Data extraction complete" -ForegroundColor Green
     
@@ -12229,12 +13148,12 @@ function New-TenantHtmlReport {
     # Domains
     if ($domains.Count -gt 0) {
         #Write-Host "  Building Domains section..." -ForegroundColor Gray
-        $domainAnalysis = Get-DomainAnalysis -Domains $domains
+        $domainAnalysis = Get-DomainAnalysis -Domains $domains -SpamFilteringSummary $spamFilteringSummary -SMTPRelaySummary $smtpRelaySummary
         $allFindings += $domainAnalysis.Findings
         $sectionContents += @{
             Id = 'domains'
             Name = 'Domain Details'
-            Content = Build-DomainsSection -Domains $domains
+            Content = Build-DomainsSection -Domains $domains -SpamFilteringSummary $spamFilteringSummary -SMTPRelaySummary $smtpRelaySummary
         }
     }
     
@@ -12251,7 +13170,7 @@ function New-TenantHtmlReport {
     # Identity & Admins
     if ($users.Count -gt 0 -or $admins.Count -gt 0 -or $groups.Count -gt 0) {
         #Write-Host "  Building Identity & Admins section..." -ForegroundColor Gray
-        $identityAnalysis = Get-IdentityAdminAnalysis -Users $users -Admins $admins -Groups $groups
+        $identityAnalysis = Get-IdentityAdminAnalysis -Users $users -Admins $admins -Groups $groups -ConditionalAccessPolicies $conditionalAccess
         $allFindings += $identityAnalysis.Findings
         $sectionContents += @{
             Id = 'identity-admins'
