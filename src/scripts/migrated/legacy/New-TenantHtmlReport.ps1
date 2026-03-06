@@ -471,18 +471,6 @@ function New-TenantAssessmentHtmlReport {
         </div>
 
         <div class="section">
-            <div class="section-header">
-                <div>
-                    <div class="section-kicker">Methodology</div>
-                    <h2>License Utilization Scope</h2>
-                </div>
-            </div>
-            <div class="methodology-note">
-                Paid-license utilization excludes free, trial, preview, viral, and known benefit SKUs. It also excludes very large user-based seat pools that greatly exceed tenant user count, because those are typically freemium or bundled benefit inventories rather than true purchased capacity.
-            </div>
-        </div>
-
-        <div class="section">
                 <div class="section-header">
                     <div>
                         <div class="section-kicker">Rollup</div>
