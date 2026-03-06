@@ -242,10 +242,9 @@ function New-TenantAssessmentHtmlReport {
 
     $bestPractices = ConvertTo-AssessmentArray -Key 'BestPractices'
     $findings = ConvertTo-AssessmentArray -Key 'BestPracticeFindings'
-    $migrationReadiness = ConvertTo-AssessmentArray -Key 'MigrationReadiness'
     $secureScoreActions = ConvertTo-AssessmentArray -Key 'SecureScoreActions'
 
-    if ($bestPractices.Count -eq 0 -and $findings.Count -eq 0 -and $migrationReadiness.Count -eq 0) {
+    if ($bestPractices.Count -eq 0 -and $findings.Count -eq 0) {
         return [PSCustomObject]@{
             Success = $false
             OutputPath = $null
@@ -257,7 +256,7 @@ function New-TenantAssessmentHtmlReport {
     $warningAreas = @($bestPractices | Where-Object { $_.Status -eq 'Warning' }).Count
     $riskFindings = @($findings | Where-Object { $_.Severity -eq 'Risk' }).Count
     $warningFindings = @($findings | Where-Object { $_.Severity -eq 'Warning' }).Count
-    $migrationReviews = @($migrationReadiness | Where-Object { $_.Status -in @('Blocker', 'Review', 'Needs Data') }).Count
+    $openFindings = $riskFindings + $warningFindings
 
     $priorityFindings = @(
         $findings |
@@ -269,11 +268,6 @@ function New-TenantAssessmentHtmlReport {
                     default { 9 }
                 }
             } }, Priority |
-            Select-Object -First 6
-    )
-    $priorityMigrationItems = @(
-        $migrationReadiness |
-            Where-Object { $_.Status -in @('Blocker', 'Review', 'Needs Data') } |
             Select-Object -First 6
     )
 
@@ -293,11 +287,6 @@ function New-TenantAssessmentHtmlReport {
             } }, Priority |
             Select-Object Severity, Area, Message, RecommendedAction
     )
-    $migrationRows = @(
-        $migrationReadiness |
-            Where-Object { $_.Status -in @('Blocker', 'Review', 'Needs Data') } |
-            Select-Object Category, Item, Status, MigrationAction
-    )
     $secureScoreRows = @(
         $secureScoreActions |
             Sort-Object Rank, ScoreGap |
@@ -305,7 +294,72 @@ function New-TenantAssessmentHtmlReport {
     )
 
     $displayFindingRows = @($findingRows)
-    $displayMigrationRows = @($migrationRows)
+
+    function Get-RoadmapPhaseFromSeverity {
+        param([string]$Severity)
+        switch ($Severity) {
+            'Risk' { '0-30 Days' }
+            'Warning' { '31-60 Days' }
+            default { '61-90 Days' }
+        }
+    }
+
+    function Get-TargetStateFromStatus {
+        param([string]$Status)
+        switch ($Status) {
+            'Critical' { 'Healthy / Controlled' }
+            'Warning' { 'Healthy / Controlled' }
+            default { 'Maintain / Monitor' }
+        }
+    }
+
+    function Get-GapNarrativeFromStatus {
+        param([string]$Status)
+        switch ($Status) {
+            'Critical' { 'Material gap from Microsoft best practice baseline' }
+            'Warning' { 'Partial coverage or inconsistent control implementation' }
+            default { 'No immediate gap requiring escalation' }
+        }
+    }
+
+    $realityRows = @(
+        $bestPractices | ForEach-Object {
+            $phase = switch ([string]$_.Status) {
+                'Critical' { '0-30 Days' }
+                'Warning' { '31-60 Days' }
+                default { '61-90 Days' }
+            }
+
+            [PSCustomObject]@{
+                Area = $_.Area
+                CurrentState = $_.Status
+                BestPracticeTarget = Get-TargetStateFromStatus -Status $_.Status
+                Gap = Get-GapNarrativeFromStatus -Status $_.Status
+                RoadmapPhase = $phase
+                NextAction = $_.RecommendedAction
+            }
+        }
+    )
+
+    $roadmapRows = @(
+        $findings |
+            Sort-Object @{ Expression = {
+                switch ($_.Severity) {
+                    'Risk' { 1 }
+                    'Warning' { 2 }
+                    default { 3 }
+                }
+            } }, Priority |
+            Select-Object -First 9 |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    Phase = Get-RoadmapPhaseFromSeverity -Severity $_.Severity
+                    Area = $_.Area
+                    Focus = $_.Message
+                    Outcome = $_.RecommendedAction
+                }
+            }
+    )
 
     $reportDate = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $tenantName = 'Tenant Assessment'
@@ -340,13 +394,13 @@ function New-TenantAssessmentHtmlReport {
         "<li><div class='takeaway-head'>$badge <span>$area</span></div><div class='takeaway-body'>$message</div><div class='takeaway-action'>$action</div></li>"
     }
 
-    $priorityMigrationList = New-AssessmentList -Rows $priorityMigrationItems -EmptyMessage 'No migration blockers or review items were identified.' -ContentScript {
+    $roadmapList = New-AssessmentList -Rows $roadmapRows -EmptyMessage 'No roadmap actions were identified from findings.' -ContentScript {
         param($row)
-        $item = Encode-AssessmentHtml $row.Item
-        $value = Encode-AssessmentHtml $row.Value
-        $action = Encode-AssessmentHtml $row.MigrationAction
-        $badge = Format-AssessmentCell -Column 'Status' -Value $row.Status
-        "<li><div class='takeaway-head'>$badge <span>$item</span></div><div class='takeaway-body'>$value</div><div class='takeaway-action'>$action</div></li>"
+        $phase = Encode-AssessmentHtml $row.Phase
+        $focus = Encode-AssessmentHtml $row.Focus
+        $outcome = Encode-AssessmentHtml $row.Outcome
+        $area = Encode-AssessmentHtml $row.Area
+        "<li><div class='takeaway-head'><span class='pill pill-neutral'>$phase</span> <span>$area</span></div><div class='takeaway-body'>$focus</div><div class='takeaway-action'>$outcome</div></li>"
     }
 
     $html = @"
@@ -443,7 +497,7 @@ function New-TenantAssessmentHtmlReport {
             <div class="card"><div class="label">Assessment Areas</div><div class="value">$($bestPractices.Count)</div><div class="caption">Area-level rollups evaluated</div></div>
             <div class="card"><div class="label">Critical Areas</div><div class="value">$criticalAreas</div><div class="caption">Immediate remediation candidates</div></div>
             <div class="card"><div class="label">Actionable Areas</div><div class="value">$actionableAreas</div><div class="caption">Critical or warning areas</div></div>
-            <div class="card"><div class="label">Migration Reviews</div><div class="value">$migrationReviews</div><div class="caption">Migration blockers or review items</div></div>
+            <div class="card"><div class="label">Open Findings</div><div class="value">$openFindings</div><div class="caption">Risk and warning findings requiring action</div></div>
         </div>
 
         <div class="summary-grid">
@@ -461,12 +515,12 @@ function New-TenantAssessmentHtmlReport {
             <div class="section">
                 <div class="section-header">
                     <div>
-                        <div class="section-kicker">Migration Focus</div>
-                        <h2>Readiness Watchlist</h2>
+                        <div class="section-kicker">Roadmap</div>
+                        <h2>90-Day Action Plan</h2>
                     </div>
                 </div>
-                <p class="note">Migration items that still need design review, data collection, or remediation.</p>
-                $priorityMigrationList
+                <p class="note">Prioritized roadmap actions from highest-severity best-practice findings.</p>
+                $roadmapList
             </div>
         </div>
 
@@ -484,6 +538,17 @@ function New-TenantAssessmentHtmlReport {
         <div class="section">
             <div class="section-header">
                 <div>
+                    <div class="section-kicker">Reality vs Target</div>
+                    <h2>Reality vs Best Practices</h2>
+                </div>
+            </div>
+            <p class="note">Current-state gaps aligned to recommended target state and phased action timing.</p>
+            $(New-AssessmentTable -Rows $realityRows -Columns @('Area','CurrentState','BestPracticeTarget','Gap','RoadmapPhase','NextAction'))
+        </div>
+
+        <div class="section">
+            <div class="section-header">
+                <div>
                     <div class="section-kicker">Detail</div>
                     <h2>Best Practice Findings</h2>
                 </div>
@@ -495,12 +560,12 @@ function New-TenantAssessmentHtmlReport {
         <div class="section">
             <div class="section-header">
                 <div>
-                    <div class="section-kicker">Migration</div>
-                    <h2>Migration Readiness</h2>
+                    <div class="section-kicker">Execution Plan</div>
+                    <h2>Roadmap Details</h2>
                 </div>
             </div>
-            <p class="note">Open blockers, reviews, and missing-data items only. Showing $($displayMigrationRows.Count) actionable migration rows.</p>
-            $(New-AssessmentTable -Rows $displayMigrationRows -Columns @('Category','Item','Status','MigrationAction'))
+            <p class="note">Phased action plan built directly from priority findings.</p>
+            $(New-AssessmentTable -Rows $roadmapRows -Columns @('Phase','Area','Focus','Outcome'))
         </div>
 
         <div class="section">
@@ -526,6 +591,6 @@ function New-TenantAssessmentHtmlReport {
         OutputPath = $OutputPath
         BestPracticesCount = $bestPractices.Count
         FindingsCount = $findings.Count
-        MigrationReadinessCount = $migrationReadiness.Count
+        MigrationReadinessCount = 0
     }
 }
