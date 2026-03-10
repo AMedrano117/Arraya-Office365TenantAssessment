@@ -36,7 +36,8 @@ function Import-AssessmentRunnerDependencies {
     $loadedCommonModule = Get-Module -Name 'Arraya.M365.Common' -ErrorAction SilentlyContinue | Select-Object -First 1
     $requiredCommonCommands = @(
         'Import-ArrayaOffice365CustomLocal',
-        'Get-ArrayaAssessmentOutputRoot'
+        'Get-ArrayaAssessmentOutputRoot',
+        'Get-ArrayaAssessmentOutputProfilePolicy'
     )
     $missingCommonCommands = @(
         $requiredCommonCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
@@ -73,11 +74,8 @@ function Invoke-M365TenantAssessment {
         [Parameter(Mandatory = $false)]
         [string]$ExportPath,
         [Parameter(Mandatory = $false)]
-        [ValidateSet('Minimum', 'Combined', 'All', 'Geek')]
-        [string]$ReportingMode,
-        [Parameter(Mandatory = $false)]
-        [ValidateSet('Lean', 'Standard', 'Full')]
-        [string]$OutputProfile = 'Lean',
+        [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
+        [string]$OutputProfile = 'SolutionsEngineer',
         [Parameter(Mandatory = $false)]
         [switch]$SkipHtmlReport,
         [Parameter(Mandatory = $false)]
@@ -94,10 +92,14 @@ function Invoke-M365TenantAssessment {
         [string]$ClientSecret
     )
 
+    if (-not (Get-Command -Name 'Get-ArrayaAssessmentOutputProfilePolicy' -ErrorAction SilentlyContinue)) {
+        Import-AssessmentRunnerDependencies
+    }
+    $null = Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile $OutputProfile
+
     $scriptPath = Get-LegacyScriptPath -Name 'Get-FullTenantReportDetails.ps1'
     $invokeParams = @{}
     if ($PSBoundParameters.ContainsKey('ExportPath')) { $invokeParams.ExportPath = $ExportPath }
-    if ($PSBoundParameters.ContainsKey('ReportingMode')) { $invokeParams.ReportingMode = $ReportingMode }
     if ($PSBoundParameters.ContainsKey('OutputProfile')) { $invokeParams.OutputProfile = $OutputProfile }
     if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
     if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }

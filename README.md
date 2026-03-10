@@ -54,24 +54,29 @@ The workbook is the file that contains the assessment summary and findings. The 
 The questionnaire Markdown is intended as a migration intake companion, not a replacement for the workbook.
 
 ## Output Profiles
-The assessment run supports three output profiles:
+The assessment run supports six need-based output profiles:
 
-- `Lean`: workbook, best practices analysis HTML, and questionnaire only
-- `Standard`: workbook, best practices analysis HTML, full HTML, and questionnaire
-- `Full`: workbook, best practices analysis HTML, full HTML, questionnaire, JSON, and PDF
+- `Presales`: scope `Minimum`; outputs technical HTML + questionnaire
+- `SolutionsEngineer`: scope `Combined`; outputs workbook + technical HTML
+- `ExecutiveLevel`: scope `Minimum`; outputs best practices analysis HTML
+- `TenantToTenantMigration`: scope `Combined`; outputs workbook + technical HTML + questionnaire
+- `Geek`: scope `Geek`; outputs workbook + technical HTML + best practices HTML + questionnaire + JSON
+- `Machine`: scope `Geek`; outputs JSON only
 
-`Lean` is the default. Explicit skip switches still override the profile.
+`SolutionsEngineer` is the default profile.
 
-## Minimum Mode Runtime Notes
-- In `Minimum` reporting mode, the collector depth policy trims high-cardinality enrichment to reduce runtime and memory pressure.
+Reporting scope is not prompted interactively. Scope is automatically derived from the selected output profile.
+
+## Runtime Notes
+- In `Minimum` scope profiles, the collector depth policy trims high-cardinality enrichment to reduce runtime and memory pressure.
 - Examples: Entra group deep membership/license expansion and detailed SSO app inventory are reduced in `Minimum`.
 - The output contract is preserved: workbook tabs and report artifacts still generate with compatible values.
 - Run logs now include collector duration and memory summaries (`[CollectorMetrics]`) plus inventory row counts (`[CollectorInventory]`) for hotspot review.
 
 ## HTML And PDF
 - The best practices analysis HTML is generated independently of the full HTML report.
-- The full HTML report is skipped when `-SkipHtmlReport` is used or the `Lean` profile is selected.
-- PDF is generated from the full HTML report unless `-SkipPdfReport` is used or the selected profile disables it.
+- The full HTML report is generated only when the selected output profile enables technical HTML output.
+- PDF is disabled by default for all profiles in this model and remains skippable with `-SkipPdfReport`.
 - PDF rendering uses a locally installed Chromium-based browser, preferring Google Chrome and falling back to Microsoft Edge.
 
 If a supported browser is unavailable, the workbook, questionnaire, and HTML outputs still complete.

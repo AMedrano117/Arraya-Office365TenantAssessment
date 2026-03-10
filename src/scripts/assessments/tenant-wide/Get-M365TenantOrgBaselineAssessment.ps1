@@ -14,8 +14,8 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$IncludeRaw,
     [Parameter(Mandatory = $false)]
-    [ValidateSet('Minimum', 'Combined', 'All', 'Geek')]
-    [string]$ReportingMode
+    [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
+    [string]$OutputProfile = 'SolutionsEngineer'
 )
 
 function Resolve-ArrayaRepoRoot {
@@ -56,8 +56,8 @@ if ($IncludeRaw) {
 }
 
 $invokeParams = @{ ExportPath = $OutputPath }
-if ($PSBoundParameters.ContainsKey('ReportingMode')) {
-    $invokeParams.ReportingMode = $ReportingMode
+if ($PSBoundParameters.ContainsKey('OutputProfile')) {
+    $invokeParams.OutputProfile = $OutputProfile
 }
 
 Invoke-M365TenantAssessment @invokeParams

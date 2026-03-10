@@ -12,8 +12,8 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$ClientSecret,
     [Parameter(Mandatory = $false)]
-    [ValidateSet('Lean', 'Standard', 'Full')]
-    [string]$OutputProfile = 'Lean',
+    [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
+    [string]$OutputProfile = 'SolutionsEngineer',
     [Parameter(Mandatory = $false)]
     [switch]$UseGraphFallback,
     [Parameter(Mandatory = $false)]
@@ -108,13 +108,17 @@ if ([string]::IsNullOrWhiteSpace($Action)) {
 switch ($Action) {
     'M365' {
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
-        $reportingModeInput = Read-Host 'Reporting scope (Minimum, Combined, All, Geek) - default Minimum'
-        $outputProfileInput = Read-Host 'Output set (Lean, Standard, Full) - default Lean'
         $exportPathInput = Read-Host "Export path (.xlsx or folder) - default $defaultOutputRoot"
+        $selectedOutputProfile = $OutputProfile
+        if (-not $PSBoundParameters.ContainsKey('OutputProfile')) {
+            $outputProfileInput = Read-Host 'Output profile (Presales, SolutionsEngineer, ExecutiveLevel, TenantToTenantMigration, Geek, Machine) - default SolutionsEngineer'
+            if (-not [string]::IsNullOrWhiteSpace($outputProfileInput)) {
+                $selectedOutputProfile = $outputProfileInput
+            }
+        }
 
         $invokeParams = @{}
-        $invokeParams.ReportingMode = if ([string]::IsNullOrWhiteSpace($reportingModeInput)) { 'Minimum' } else { $reportingModeInput }
-        $invokeParams.OutputProfile = if (-not [string]::IsNullOrWhiteSpace($outputProfileInput)) { $outputProfileInput } else { $OutputProfile }
+        $invokeParams.OutputProfile = $selectedOutputProfile
         $invokeParams.ExportPath = if (-not [string]::IsNullOrWhiteSpace($exportPathInput)) { $exportPathInput } else { $defaultOutputRoot }
         if ($SkipPdfReport) { $invokeParams.SkipPdfReport = $true }
         if ($SkipJsonReport) { $invokeParams.SkipJsonReport = $true }
