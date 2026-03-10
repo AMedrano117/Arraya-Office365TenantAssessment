@@ -243,6 +243,10 @@ function New-TenantAssessmentHtmlReport {
     $bestPractices = ConvertTo-AssessmentArray -Key 'BestPractices'
     $findings = ConvertTo-AssessmentArray -Key 'BestPracticeFindings'
     $secureScoreActions = ConvertTo-AssessmentArray -Key 'SecureScoreActions'
+    $ownershipSummaryRows = ConvertTo-AssessmentArray -Key 'OwnershipGovernanceSummary'
+    $ownershipSummary = if ($ownershipSummaryRows.Count -gt 0) { $ownershipSummaryRows | Select-Object -First 1 } else { $null }
+    $unmanagedObjects = ConvertTo-AssessmentArray -Key 'UnmanagedObjects'
+    $oneDriveOwnerMismatches = ConvertTo-AssessmentArray -Key 'OneDriveOwnerMismatches'
 
     if ($bestPractices.Count -eq 0 -and $findings.Count -eq 0) {
         return [PSCustomObject]@{
@@ -291,6 +295,29 @@ function New-TenantAssessmentHtmlReport {
         $secureScoreActions |
             Sort-Object Rank, ScoreGap |
             Select-Object -First 8 RecommendationTitle, Status, ScoreGap, ActionUrl
+    )
+    $ownershipSnapshotRows = @(
+        [PSCustomObject]@{ Metric = 'Unmanaged Objects'; Value = if ($ownershipSummary -and $ownershipSummary.PSObject.Properties['UnmanagedObjectCount']) { $ownershipSummary.UnmanagedObjectCount } else { $unmanagedObjects.Count } },
+        [PSCustomObject]@{ Metric = 'Missing Owner'; Value = if ($ownershipSummary -and $ownershipSummary.PSObject.Properties['MissingOwnerCount']) { $ownershipSummary.MissingOwnerCount } else { @($unmanagedObjects | Where-Object { $_.OwnerState -eq 'Missing' }).Count } },
+        [PSCustomObject]@{ Metric = 'Owner Health Risks'; Value = if ($ownershipSummary -and $ownershipSummary.PSObject.Properties['OwnerHealthRiskCount']) { $ownershipSummary.OwnerHealthRiskCount } else { @($unmanagedObjects | Where-Object { $_.OwnerState -in @('Disabled', 'Stale', 'Mixed') }).Count } },
+        [PSCustomObject]@{ Metric = 'OneDrive Owner Mismatches'; Value = if ($ownershipSummary -and $ownershipSummary.PSObject.Properties['OneDriveOwnerMismatchCount']) { $ownershipSummary.OneDriveOwnerMismatchCount } else { $oneDriveOwnerMismatches.Count } },
+        [PSCustomObject]@{ Metric = 'Unknown Owner State'; Value = if ($ownershipSummary -and $ownershipSummary.PSObject.Properties['UnknownOwnerStateCount']) { $ownershipSummary.UnknownOwnerStateCount } else { 0 } }
+    )
+    $unmanagedPreviewRows = @(
+        $unmanagedObjects |
+            Sort-Object @{ Expression = {
+                switch ($_.Severity) {
+                    'Risk' { 1 }
+                    'Warning' { 2 }
+                    default { 3 }
+                }
+            } }, Workload, DisplayName |
+            Select-Object -First 10 Workload, ObjectType, DisplayName, OwnerState, Reason
+    )
+    $oneDriveMismatchPreviewRows = @(
+        $oneDriveOwnerMismatches |
+            Sort-Object DisplayName, SiteUrl |
+            Select-Object -First 10 DisplayName, SiteUrl, CurrentOwner, ExpectedDefaultOwner
     )
 
     $displayFindingRows = @($findingRows)
@@ -522,6 +549,21 @@ function New-TenantAssessmentHtmlReport {
                 <p class="note">Prioritized roadmap actions from highest-severity best-practice findings.</p>
                 $roadmapList
             </div>
+        </div>
+
+        <div class="section">
+            <div class="section-header">
+                <div>
+                    <div class="section-kicker">Governance</div>
+                    <h2>Ownership Governance Snapshot</h2>
+                </div>
+            </div>
+            <p class="note">Unmanaged object coverage across OneDrive, SharePoint, Teams, Entra groups, and Exchange groups. OneDrive owner mismatch is tracked separately as a review signal.</p>
+            $(New-AssessmentTable -Rows $ownershipSnapshotRows -Columns @('Metric','Value'))
+            <h3 style="margin-top:20px;">Top Unmanaged Objects</h3>
+            $(New-AssessmentTable -Rows $unmanagedPreviewRows -Columns @('Workload','ObjectType','DisplayName','OwnerState','Reason'))
+            <h3 style="margin-top:20px;">Top OneDrive Owner Mismatches</h3>
+            $(New-AssessmentTable -Rows $oneDriveMismatchPreviewRows -Columns @('DisplayName','SiteUrl','CurrentOwner','ExpectedDefaultOwner'))
         </div>
 
         <div class="section">

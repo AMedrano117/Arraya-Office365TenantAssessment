@@ -85,20 +85,23 @@ The questionnaire template is:
 `docs\templates\Microsoft 365 Tenant to Tenant Questionnaire.md`
 
 ## Output Profiles
-The assessment script supports:
+The assessment script supports six need-based output profiles:
 
-- `Lean`: workbook, best practices analysis HTML, and questionnaire
-- `Standard`: workbook, best practices analysis HTML, full HTML, and questionnaire
-- `Full`: workbook, best practices analysis HTML, full HTML, questionnaire, JSON, and PDF
+- `Presales`: scope `Minimum`; outputs technical HTML + questionnaire
+- `SolutionsEngineer`: scope `Combined`; outputs workbook + technical HTML
+- `ExecutiveLevel`: scope `Minimum`; outputs best practices analysis HTML
+- `TenantToTenantMigration`: scope `Combined`; outputs workbook + technical HTML + questionnaire
+- `Geek`: scope `Geek`; outputs workbook + technical HTML + best practices HTML + questionnaire + JSON
+- `Machine`: scope `Geek`; outputs JSON only
 
-`Lean` is the default profile.
+`SolutionsEngineer` is the default profile.
 
 ## HTML And PDF
 The assessment script now attempts to generate:
 
 - `*-BestPracticesAnalysis.html` independently of the full HTML output
-- `*.html` unless `-SkipHtmlReport` is provided or `-OutputProfile Lean` is used
-- `*.pdf` from the full HTML unless `-SkipPdfReport` is provided or the selected profile disables it
+- `*.html` when the selected profile enables technical HTML output and `-SkipHtmlReport` is not provided
+- `*.pdf` from the full HTML only when explicitly enabled in profile policy (disabled by default in current model)
 
 PDF rendering prefers Google Chrome and falls back to Microsoft Edge when available.
 

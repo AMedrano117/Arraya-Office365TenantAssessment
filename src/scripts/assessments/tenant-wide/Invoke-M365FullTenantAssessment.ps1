@@ -3,8 +3,8 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$ExportPath,
     [Parameter(Mandatory = $false)]
-    [ValidateSet('Minimum', 'Combined', 'All', 'Geek')]
-    [string]$ReportingMode,
+    [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
+    [string]$OutputProfile = 'SolutionsEngineer',
     [Parameter(Mandatory = $false)]
     [switch]$SkipHtmlReport
 )
@@ -41,7 +41,7 @@ if (-not (Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction SilentlyC
 
 $invokeParams = @{}
 if ($PSBoundParameters.ContainsKey('ExportPath')) { $invokeParams.ExportPath = $ExportPath }
-if ($PSBoundParameters.ContainsKey('ReportingMode')) { $invokeParams.ReportingMode = $ReportingMode }
+if ($PSBoundParameters.ContainsKey('OutputProfile')) { $invokeParams.OutputProfile = $OutputProfile }
 if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
 
 Invoke-M365TenantAssessment @invokeParams

@@ -85,7 +85,7 @@ Last Modified Date: 2024-06-06
    cd "path\to\your\script\directory"
 4. Run the script:
    .\Get-FullTenantReportDetails.ps1
-5. Follow the prompts to provide necessary input such as ReportingMode, ExportPath, Authentication, and others as prompted.
+5. Follow the prompts to provide necessary input such as OutputProfile, ExportPath, Authentication, and others as prompted.
 6. Check the specified export path for the generated reports and error logs.
 7. Review the console output for any errors or summary information provided by the script.
 
@@ -98,11 +98,8 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$ExportPath,
     [Parameter(Mandatory = $false)]
-    [ValidateSet('Minimum', 'Combined', 'All', 'Geek')]
-    [string]$ReportingMode,
-    [Parameter(Mandatory = $false)]
-    [ValidateSet('Lean', 'Standard', 'Full')]
-    [string]$OutputProfile = 'Lean',
+    [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
+    [string]$OutputProfile = 'SolutionsEngineer',
     [Parameter(Mandatory = $false)]
     [switch]$SkipHtmlReport,
     [Parameter(Mandatory = $false)]
@@ -127,23 +124,13 @@ if (-not (Get-Variable -Name GraphToken -Scope Global -ErrorAction SilentlyConti
     $global:GraphToken = $null
 }
 
-$effectiveSkipHtmlReport = $SkipHtmlReport.IsPresent
-$effectiveSkipPdfReport = $SkipPdfReport.IsPresent
-$effectiveSkipJsonReport = $SkipJsonReport.IsPresent
-
-switch ($OutputProfile) {
-    'Lean' {
-        if (-not $PSBoundParameters.ContainsKey('SkipHtmlReport')) { $effectiveSkipHtmlReport = $true }
-        if (-not $PSBoundParameters.ContainsKey('SkipPdfReport')) { $effectiveSkipPdfReport = $true }
-        if (-not $PSBoundParameters.ContainsKey('SkipJsonReport')) { $effectiveSkipJsonReport = $true }
-    }
-    'Standard' {
-        if (-not $PSBoundParameters.ContainsKey('SkipPdfReport')) { $effectiveSkipPdfReport = $true }
-        if (-not $PSBoundParameters.ContainsKey('SkipJsonReport')) { $effectiveSkipJsonReport = $true }
-    }
-    'Full' {
-    }
-}
+$effectiveSkipWorkbook = $false
+$effectiveSkipBestPracticesHtml = $false
+$effectiveSkipQuestionnaire = $false
+$effectiveSkipHtmlReport = $false
+$effectiveSkipPdfReport = $false
+$effectiveSkipJsonReport = $false
+$reportingMode = 'minimum'
 
 $officeModuleLoaderPath = Join-Path -Path $PSScriptRoot -ChildPath 'Import-Office365CustomLocal.ps1'
 if (-not (Test-Path -Path $officeModuleLoaderPath)) {
@@ -165,6 +152,7 @@ $resolvedCommonManifestPath = (Resolve-Path -Path $commonModuleManifestPath).Pat
 $loadedCommonModule = Get-Module -Name 'Arraya.M365.Common' -ErrorAction SilentlyContinue | Select-Object -First 1
 $requiredCommonCommands = @(
     'Get-ArrayaAssessmentOutputRoot',
+    'Get-ArrayaAssessmentOutputProfilePolicy',
     'Get-ArrayaGraphResource',
     'Export-ArrayaGraphReportCsv',
     'Get-ArrayaEntraGroupClassification',
@@ -183,6 +171,15 @@ if (
 ) {
     Import-Module -Name $resolvedCommonManifestPath -Force -ErrorAction Stop
 }
+
+$profilePolicy = Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile $OutputProfile
+$reportingMode = $profilePolicy.ReportingMode.ToLowerInvariant()
+$effectiveSkipWorkbook = (-not $profilePolicy.GenerateWorkbook)
+$effectiveSkipBestPracticesHtml = (-not $profilePolicy.GenerateBestPracticesHtml)
+$effectiveSkipQuestionnaire = (-not $profilePolicy.GenerateQuestionnaire)
+$effectiveSkipHtmlReport = (-not $profilePolicy.GenerateTechnicalHtml) -or $SkipHtmlReport.IsPresent
+$effectiveSkipPdfReport = (-not $profilePolicy.GeneratePdf) -or $SkipPdfReport.IsPresent
+$effectiveSkipJsonReport = (-not $profilePolicy.GenerateJson) -or $SkipJsonReport.IsPresent
 
 $tenantHtmlReportPath = Join-Path -Path $PSScriptRoot -ChildPath 'New-TenantHtmlReport.ps1'
 if (Test-Path $tenantHtmlReportPath) {
@@ -700,7 +697,7 @@ function Resolve-ExoStatisticsIdentity {
         return $MailboxObject
     }
 
-    foreach ($propertyName in @('DistinguishedName', 'ExternalDirectoryObjectId', 'ExchangeGuid', 'Guid', 'Identity', 'PrimarySmtpAddress', 'UserPrincipalName', 'WindowsEmailAddress', 'Alias')) {
+    foreach ($propertyName in @('ExchangeGuid', 'ExternalDirectoryObjectId', 'Guid', 'Identity', 'PrimarySmtpAddress', 'UserPrincipalName', 'WindowsEmailAddress', 'Alias', 'DistinguishedName')) {
         $property = $MailboxObject.PSObject.Properties[$propertyName]
         if (-not $property) {
             continue
@@ -861,32 +858,6 @@ function Write-ExoStatisticsFailureSummary {
     ) -join '; '
 
     Write-Log -Type WARNING -Message "[$OperationName] Skipped $($Failures.Count) object(s). Sample failures: $sampleText" -ExportFileLocation $ExportDetails
-}
-
-#Level of Detail Reporting
-function Set-ReportMode {
-
-    Write-Host "Reporting Mode Explanations:" -ForegroundColor Yellow
-    Write-Host "Minimum   - Provides basic details for a quick overview."
-    Write-Host "Combined  - Combines details from similar reports. E.g., combining a user's mailbox and SharePoint data."
-    Write-Host "All       - Provides a comprehensive, detailed report that includes all possible details and combined reports."
-    Write-Host "Geek      - Provides every available detail from reports, does not include Combined reports"
-    Write-Host ""
-    
-    $selectedMode = $null
-    do {
-        $selectedMode = Read-Host "Please select a reporting mode (Minimum, Combined, All, Geek) or type 'help' for explanations"
-        
-        # Check if the user wants to see the explanations again
-        if ($selectedMode -eq 'help') {
-            ShowModeExplanations
-            $selectedMode = $null  # Reset to null to continue the loop
-        }
-    } while ($selectedMode -notin @('Minimum', 'Combined', 'All', 'Geek'))
-
-    $selectedMode = $selectedMode.ToLower()
-    Write-Host "You selected: $selectedMode reporting mode" -ForegroundColor Green
-    return $selectedMode
 }
 
 # ----------------------------------
@@ -1221,20 +1192,46 @@ function Export-HashTableToExcel {
 
     $optionalEmptySheets = @(
         'AuthenticationSSOApplications',
-        'SpamFilteringSummary',
         'SMTPRelaySummary',
-        'FederationSummary',
         'TeamsVoiceSummary',
+        'UnmanagedObjects',
+        'OneDriveOwnerMismatches'
+    )
+
+    $excludedWorksheets = @(
+        'OwnershipGovernanceSummary',
+        'TenantInfoSummary',
+        'AuthenticationConfigSummary',
+        'SpamFilteringSummary',
+        'FederationSummary',
         'MfaRegistrationSummary'
     )
+
+    if (Test-Path -Path $ExportDetails) {
+        try {
+            $existingSheetNames = @()
+            if (Get-Command -Name Get-ExcelSheetInfo -ErrorAction SilentlyContinue) {
+                $existingSheetNames = @(Get-ExcelSheetInfo -Path $ExportDetails | Select-Object -ExpandProperty Name)
+            }
+
+            $sheetsToRemove = @($excludedWorksheets | Where-Object { $existingSheetNames -contains $_ })
+            if ($sheetsToRemove.Count -gt 0) {
+                Remove-Worksheet -Path $ExportDetails -WorksheetName $sheetsToRemove
+                Write-Log -Type INFO -Message "Removed excluded worksheet(s) from existing workbook: $([string]::Join(', ', $sheetsToRemove))" -ExportFileLocation $ExportDetails
+            }
+        }
+        catch {
+            Write-Log -Type WARNING -Message "Unable to remove excluded worksheets from existing workbook before export: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        }
+    }
     
     # === Sheet ordering ===
     $desiredOrder = @(
         # Assessment Outputs
-        "BestPractices", "BestPracticeFindings", "MigrationReadiness", "SecureScoreActions",
+        "BestPractices", "BestPracticeFindings", "MigrationReadiness", "SecureScoreActions", "UnmanagedObjects", "OneDriveOwnerMismatches",
 
         # Licensing & Tenant Info
-        "TenantInfoSummary", "LicenseSKUs", "Domains", "AuthenticationConfigSummary", "AuthenticationMethods", "AuthenticationSSOApplications", "AuthenticationConfig", "Admins",
+        "LicenseSKUs", "Domains", "AuthenticationMethods", "AuthenticationSSOApplications", "AuthenticationConfig", "Admins",
 
         # Users
         "Users", "UserFullDetails", "DeviceDetails",
@@ -1252,7 +1249,7 @@ function Export-HashTableToExcel {
         "MailFlowRules", "MailFlowConnectors", "RemoteDomains", "SMTPRelayConfig",
 
         # Security & Compliance
-        "SecuritySecureScore", "ConditionalAccessPolicies", "SpamFilteringSummary", "SMTPRelaySummary", "FederationSummary", "TeamsVoiceSummary", "SpamFilteringConfig",
+        "SecuritySecureScore", "ConditionalAccessPolicies", "SMTPRelaySummary", "TeamsVoiceSummary", "SpamFilteringConfig",
 
         # Cloud Services
         "OneDrive",
@@ -1264,11 +1261,17 @@ function Export-HashTableToExcel {
 
     $orderedTables = @()
     foreach ($name in $desiredOrder) {
-        if ($hashtable.ContainsKey($name)) {
+        if (($excludedWorksheets -notcontains $name) -and $hashtable.ContainsKey($name)) {
             $orderedTables += $name
         }
     }
-    $orderedTables += ($hashtable.Keys | Where-Object { $orderedTables -notcontains $_ } | Sort-Object)
+    $orderedTables += ($hashtable.Keys | Where-Object { ($orderedTables -notcontains $_) -and ($excludedWorksheets -notcontains $_) } | Sort-Object)
+
+    foreach ($excludedSheet in $excludedWorksheets) {
+        if ($hashtable.ContainsKey($excludedSheet)) {
+            Write-Log -Type INFO -Message "Skipping worksheet '$excludedSheet' by export policy." -ExportFileLocation $ExportDetails
+        }
+    }
 
     $totalCount = ($orderedTables | Measure-Object).Count
     foreach ($table in $orderedTables) {
@@ -1343,8 +1346,53 @@ function Export-HashTableToExcel {
                     }
                 }
             } else {
+                if ($table -eq 'OneDriveOwnerMismatches') {
+                    try {
+                        $placeholderRows = @(
+                            [PSCustomObject]@{
+                                DisplayName          = 'N/A'
+                                SiteUrl              = 'N/A'
+                                CurrentOwner         = 'N/A'
+                                ExpectedDefaultOwner = 'N/A'
+                                Notes                = 'No owner mismatches detected in this run.'
+                            }
+                        )
+                        $excelSplat = @{
+                            Path          = $ExportDetails
+                            WorksheetName = $table
+                            ClearSheet    = $true
+                            BoldTopRow    = $true
+                            AutoSize      = $true
+                        }
+                        $placeholderRows |
+                            ForEach-Object { ConvertTo-ExportFriendlyRecord -InputObject $_ } |
+                            Export-Excel @excelSplat
+                        Write-Log -Type INFO -Message "No owner mismatch rows found; exported placeholder row to worksheet '$table'." -ExportFileLocation $ExportDetails
+                        continue
+                    }
+                    catch {
+                        Write-Log -Type WARNING -Message "Unable to export placeholder row for '$table': $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+                    }
+                }
+
                 $logType = if ($optionalEmptySheets -contains $table) { 'INFO' } else { 'WARNING' }
                 Write-Log -Type $logType -Message "No data found for $($table) to export to Excel" -ExportFileLocation $ExportDetails
+
+                if (Test-Path -Path $ExportDetails) {
+                    try {
+                        $existingSheetNames = @()
+                        if (Get-Command -Name Get-ExcelSheetInfo -ErrorAction SilentlyContinue) {
+                            $existingSheetNames = @(Get-ExcelSheetInfo -Path $ExportDetails | Select-Object -ExpandProperty Name)
+                        }
+                        if ($existingSheetNames -contains $table) {
+                            Remove-Worksheet -Path $ExportDetails -WorksheetName $table
+                            Write-Log -Type INFO -Message "Removed stale worksheet '$table' because the current run produced no rows." -ExportFileLocation $ExportDetails
+                        }
+                    }
+                    catch {
+                        Write-Log -Type WARNING -Message "Unable to remove stale worksheet '$table': $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+                    }
+                }
             }
         }
         catch {
@@ -1689,6 +1737,62 @@ function Get-AllExchangeMailboxDetails {
         if ($exoFilledCount -lt 0) { $exoFilledCount = 0 }
         $totalMailboxes = $global:tenantStatsHash['AllMailboxes'].Values.Count
         Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Mailbox stats summary: Graph=$graphStatsCount; EXO filled=$exoFilledCount; Total mailboxes=$totalMailboxes." -ExportFileLocation $ExportDetails
+
+        # Pre-cache unified group mailbox stats so later unified-group collection can reuse this data.
+        $isMinimumMode = $false
+        if ($script:CollectionDepthPolicy -and $script:CollectionDepthPolicy.PSObject.Properties['IsMinimum']) {
+            $isMinimumMode = ($script:CollectionDepthPolicy.IsMinimum -eq $true)
+        }
+        elseif ($detailLevel -eq 'minimum') {
+            $isMinimumMode = $true
+        }
+
+        if (-not $isMinimumMode) {
+            try {
+                Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Pre-caching unified group mailbox stats into PrimaryMailboxStats." -ExportFileLocation $ExportDetails
+                $unifiedGroupsForStats = @(
+                    Invoke-QuietCommand -ScriptBlock { Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue } |
+                        Select-Object DisplayName, PrimarySmtpAddress, ExchangeGuid
+                )
+
+                if ($unifiedGroupsForStats.Count -gt 0) {
+                    $groupsMissingStats = New-Object System.Collections.Generic.List[object]
+                    $cachedUnifiedGroupStats = 0
+                    foreach ($group in $unifiedGroupsForStats) {
+                        $groupGuidKey = $null
+                        if ($group -and $group.PSObject.Properties['ExchangeGuid'] -and $group.ExchangeGuid) {
+                            $groupGuidKey = [string]$group.ExchangeGuid
+                        }
+
+                        if (-not [string]::IsNullOrWhiteSpace($groupGuidKey) -and $global:tenantStatsHash["PrimaryMailboxStats"].ContainsKey($groupGuidKey)) {
+                            $cachedUnifiedGroupStats++
+                            continue
+                        }
+
+                        [void]$groupsMissingStats.Add($group)
+                    }
+
+                    $fetchedUnifiedGroupStats = 0
+                    if ($groupsMissingStats.Count -gt 0) {
+                        $unifiedGroupStatsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $groupsMissingStats.ToArray() -ProgressActivity "Pre-caching Unified Group Mailbox Statistics" -ProgressId $primaryStatsProgressId
+                        foreach ($groupStat in $unifiedGroupStatsResult.Results) {
+                            $key = $groupStat.MailboxGuid.ToString()
+                            $global:tenantStatsHash["PrimaryMailboxStats"][$key] = $groupStat
+                        }
+                        $fetchedUnifiedGroupStats = @($unifiedGroupStatsResult.Results).Count
+                        Write-ExoStatisticsFailureSummary -OperationName 'Get-AllExchangeMailboxDetails unified group mailbox statistics pre-cache' -Failures $unifiedGroupStatsResult.Failures
+                    }
+
+                    Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Unified group stats pre-cache summary: reused=$cachedUnifiedGroupStats; fetched=$fetchedUnifiedGroupStats; unifiedGroups=$($unifiedGroupsForStats.Count)." -ExportFileLocation $ExportDetails
+                }
+            }
+            catch {
+                Write-Log -Type WARNING -Message "[Get-AllExchangeMailboxDetails] Unified group mailbox statistics pre-cache failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+            }
+            finally {
+                Write-Progress -Id $primaryStatsProgressId -Activity "Pre-caching Unified Group Mailbox Statistics" -Completed
+            }
+        }
     }
     catch {
         Write-Log -Type ERROR -Message "[Get-AllExchangeMailboxDetails] An error occurred in Gathering Mailbox Satistics and adding to Hash Table. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
@@ -2945,6 +3049,76 @@ function Get-SharePointAndOneDriveSites {
         return ("{0}@{1}" -f $localPart, $domainPart).ToLowerInvariant()
     }
 
+    function ConvertTo-OneDriveSiteKey {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $false)]
+            [string]$Url,
+            [Parameter(Mandatory = $false)]
+            [string]$SiteId
+        )
+
+        if (-not [string]::IsNullOrWhiteSpace($Url)) {
+            return $Url.Trim().TrimEnd('/').ToLowerInvariant()
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($SiteId)) {
+            return $SiteId.Trim().ToLowerInvariant()
+        }
+
+        return $null
+    }
+
+    function Get-LikelyOneDriveOwnerFromUrl {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $false)]
+            [string]$Url
+        )
+
+        if ([string]::IsNullOrWhiteSpace($Url)) {
+            return $null
+        }
+
+        $segment = $null
+        try {
+            $segment = ($Url.TrimEnd('/') -split '/')[-1]
+        }
+        catch {
+            return $null
+        }
+
+        if ([string]::IsNullOrWhiteSpace($segment)) {
+            return $null
+        }
+
+        $tokens = @($segment.Trim().ToLowerInvariant() -split '_' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($tokens.Count -lt 3) {
+            return $null
+        }
+
+        # Most OneDrive personal paths map to:
+        #   local_part_domain_tld
+        # with onmicrosoft domains represented as:
+        #   local_part_tenant_onmicrosoft_com
+        $domainStartIndex = $tokens.Count - 2
+        if ($tokens.Count -ge 3 -and $tokens[$tokens.Count - 2] -eq 'onmicrosoft') {
+            $domainStartIndex = $tokens.Count - 3
+        }
+
+        if ($domainStartIndex -lt 1) {
+            return $null
+        }
+
+        $localPart = ($tokens[0..($domainStartIndex - 1)] -join '.')
+        $domainPart = ($tokens[$domainStartIndex..($tokens.Count - 1)] -join '.')
+        if ([string]::IsNullOrWhiteSpace($localPart) -or [string]::IsNullOrWhiteSpace($domainPart)) {
+            return $null
+        }
+
+        return ("{0}@{1}" -f $localPart, $domainPart).ToLowerInvariant()
+    }
+
     function ConvertTo-NormalizedSiteData {
         [CmdletBinding()]
         param(
@@ -3097,10 +3271,11 @@ function Get-SharePointAndOneDriveSites {
         }
 
         if (-not $owner -and $IsOneDrive -and $url) {
-            $owner = (($url -split '/')[-1] -replace '_', '@')
+            $owner = Get-LikelyOneDriveOwnerFromUrl -Url $url
         }
 
         return [PSCustomObject]@{
+            SiteId                    = $(if ($Site.PSObject.Properties['Id']) { [string]$Site.Id } elseif ($Site.PSObject.Properties['id']) { [string]$Site.id } else { $null })
             Template                  = $template
             IsHubSite                 = ($Site.IsHubSite -eq $true)
             Title                     = $title
@@ -3155,7 +3330,7 @@ function Get-SharePointAndOneDriveSites {
                     $siteData = ConvertTo-NormalizedSiteData -Site $site -IsOneDrive:$isOneDrive -Source MGGraph -UsageReport $usageReport
 
                     if ($isOneDrive) {
-                        $oneDriveKey = ConvertTo-OneDriveOwnerKey -Owner $siteData.Owner -Url $siteData.Url
+                        $oneDriveKey = ConvertTo-OneDriveSiteKey -Url $siteData.Url -SiteId $siteData.SiteId
                         if ($oneDriveKey) {
                             $global:tenantStatsHash['OneDrive'][$oneDriveKey] = $siteData
                         }
@@ -3204,7 +3379,7 @@ function Get-SharePointAndOneDriveSites {
 
                 # Store data in appropriate hashtable
                 if ($isOneDrive) {
-                    $oneDriveKey = ConvertTo-OneDriveOwnerKey -Owner $siteData.Owner -Url $siteData.Url
+                    $oneDriveKey = ConvertTo-OneDriveSiteKey -Url $siteData.Url -SiteId $siteData.SiteId
                     if ($oneDriveKey) {
                         $global:tenantStatsHash['OneDrive'][$oneDriveKey] = $siteData
                     }
@@ -3272,7 +3447,7 @@ function Get-SharePointAndOneDriveSites {
                     $siteData = ConvertTo-NormalizedSiteData -Site $site -IsOneDrive:$isOneDrive -Source API -UsageReport $usageReport
 
                     if ($isOneDrive) {
-                        $oneDriveKey = ConvertTo-OneDriveOwnerKey -Owner $siteData.Owner -Url $siteData.Url
+                        $oneDriveKey = ConvertTo-OneDriveSiteKey -Url $siteData.Url -SiteId $siteData.SiteId
                         if ($oneDriveKey) {
                             $global:tenantStatsHash['OneDrive'][$oneDriveKey] = $siteData
                         }
@@ -9210,6 +9385,564 @@ function Get-DeviceAnalysis {
     }
 }
 
+function Convert-ToOwnershipAssessmentDate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Value
+    )
+
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) { return $Value }
+
+    try {
+        $text = [string]$Value
+        if ([string]::IsNullOrWhiteSpace($text) -or $text -eq 'NotCollected (minimum mode)' -or $text -eq 'N/A') {
+            return $null
+        }
+        return [datetime]$text
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-OneDriveDefaultOwnerFromUrl {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Url,
+        [Parameter(Mandatory = $false)]
+        [hashtable]$SegmentToUpnMap,
+        [Parameter(Mandatory = $false)]
+        [string[]]$KnownDomains
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Url)) {
+        return $null
+    }
+
+    try {
+        $pathSegment = ($Url.TrimEnd('/') -split '/')[-1]
+    }
+    catch {
+        return $null
+    }
+
+    if ([string]::IsNullOrWhiteSpace($pathSegment)) {
+        return $null
+    }
+
+    $normalizedSegment = $pathSegment.Trim().ToLowerInvariant()
+
+    if ($SegmentToUpnMap -and $SegmentToUpnMap.ContainsKey($normalizedSegment)) {
+        $mappedOwner = [string]$SegmentToUpnMap[$normalizedSegment]
+        if (-not [string]::IsNullOrWhiteSpace($mappedOwner)) {
+            return $mappedOwner.ToLowerInvariant()
+        }
+    }
+
+    if ($KnownDomains -and $KnownDomains.Count -gt 0) {
+        $orderedDomains = @(
+            $KnownDomains |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                ForEach-Object { $_.Trim().ToLowerInvariant() } |
+                Select-Object -Unique |
+                Sort-Object Length -Descending
+        )
+
+        foreach ($domain in $orderedDomains) {
+            $encodedDomain = ($domain -replace '\.', '_')
+            if ([string]::IsNullOrWhiteSpace($encodedDomain)) { continue }
+
+            $suffix = "_$encodedDomain"
+            if (-not $normalizedSegment.EndsWith($suffix)) { continue }
+
+            $encodedLocal = $normalizedSegment.Substring(0, $normalizedSegment.Length - $suffix.Length)
+            if ([string]::IsNullOrWhiteSpace($encodedLocal)) { continue }
+
+            $localPart = ($encodedLocal -replace '_', '.')
+            return ("{0}@{1}" -f $localPart, $domain).ToLowerInvariant()
+        }
+    }
+
+    $firstSeparatorIndex = $pathSegment.IndexOf('_')
+    if ($firstSeparatorIndex -lt 1) {
+        return $pathSegment.ToLowerInvariant()
+    }
+
+    $localPart = $pathSegment.Substring(0, $firstSeparatorIndex)
+    $domainPart = $pathSegment.Substring($firstSeparatorIndex + 1) -replace '_', '.'
+    return ("{0}@{1}" -f $localPart, $domainPart).ToLowerInvariant()
+}
+
+function Update-OwnershipGovernanceTables {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$TenantStatsHash
+    )
+
+    if (-not $TenantStatsHash) {
+        return
+    }
+
+    $context = Get-TenantAssessmentContext -TenantStatsHash $TenantStatsHash
+    $TenantStatsHash['UnmanagedObjects'] = @{}
+    $TenantStatsHash['OneDriveOwnerMismatches'] = @{}
+    $TenantStatsHash['OwnershipGovernanceSummary'] = @{}
+
+    $staleOwnerDays = 180
+    $staleCutoff = (Get-Date).AddDays(-1 * $staleOwnerDays)
+    $ownersByUpn = @{}
+
+    function Add-OwnerProfile {
+        param([object]$Record)
+
+        if (-not $Record) { return }
+        $upn = [string]$Record.UserPrincipalName
+        if ([string]::IsNullOrWhiteSpace($upn)) { return }
+
+        $normalizedUpn = $upn.Trim().ToLowerInvariant()
+        $accountEnabled = $true
+        if ($Record.PSObject.Properties['AccountEnabled']) {
+            try { $accountEnabled = [bool]$Record.AccountEnabled } catch { $accountEnabled = $true }
+        }
+        $lastSignIn = $null
+        if ($Record.PSObject.Properties['LastSignInDateTime']) {
+            $lastSignIn = Convert-ToOwnershipAssessmentDate -Value $Record.LastSignInDateTime
+        }
+
+        if (-not $ownersByUpn.ContainsKey($normalizedUpn)) {
+            $ownersByUpn[$normalizedUpn] = [PSCustomObject]@{
+                UserPrincipalName = $upn
+                AccountEnabled = $accountEnabled
+                LastSignInDateTime = $lastSignIn
+            }
+            return
+        }
+
+        $existing = $ownersByUpn[$normalizedUpn]
+        if ($accountEnabled -eq $false) {
+            $existing | Add-Member -MemberType NoteProperty -Name AccountEnabled -Value $false -Force
+        }
+        if ($lastSignIn -and (-not $existing.LastSignInDateTime -or $lastSignIn -gt $existing.LastSignInDateTime)) {
+            $existing | Add-Member -MemberType NoteProperty -Name LastSignInDateTime -Value $lastSignIn -Force
+        }
+    }
+
+    foreach ($user in $context.Users) { Add-OwnerProfile -Record $user }
+    foreach ($admin in $context.Admins) { Add-OwnerProfile -Record $admin }
+
+    $oneDriveSegmentToUpnMap = @{}
+    $knownOwnerDomains = @(
+        $ownersByUpn.Keys |
+            Where-Object { $_ -and $_ -like '*@*' } |
+            ForEach-Object { (($_ -split '@', 2)[1]).Trim().ToLowerInvariant() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique
+    )
+    foreach ($upn in $ownersByUpn.Keys) {
+        if ([string]::IsNullOrWhiteSpace($upn) -or $upn -notlike '*@*') { continue }
+        $normalizedUpn = $upn.Trim().ToLowerInvariant()
+        $encodedSegment = ($normalizedUpn -replace '@', '_' -replace '\.', '_')
+        if ([string]::IsNullOrWhiteSpace($encodedSegment)) { continue }
+        if (-not $oneDriveSegmentToUpnMap.ContainsKey($encodedSegment)) {
+            $oneDriveSegmentToUpnMap[$encodedSegment] = $normalizedUpn
+        }
+    }
+
+    function Get-OwnerTokens {
+        param($OwnerValue)
+
+        $rawTokens = @()
+        if ($null -eq $OwnerValue) {
+            return @()
+        }
+
+        if ($OwnerValue -is [System.Collections.IEnumerable] -and -not ($OwnerValue -is [string])) {
+            foreach ($item in $OwnerValue) {
+                if ($null -ne $item) { $rawTokens += [string]$item }
+            }
+        }
+        else {
+            $rawTokens += ([string]$OwnerValue -split '[,;]')
+        }
+
+        $normalized = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($token in $rawTokens) {
+            $trimmed = ([string]$token).Trim()
+            if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+            $trimmed = ($trimmed -replace '(?i)^smtp:', '').Trim()
+            $emailMatch = [regex]::Match($trimmed, '(?i)[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}')
+            if ($emailMatch.Success) {
+                $trimmed = $emailMatch.Value
+            }
+            $normalized.Add($trimmed.ToLowerInvariant())
+        }
+
+        return @($normalized | Select-Object -Unique)
+    }
+
+    function Get-OwnerState {
+        param($OwnerValue)
+
+        $owners = @(Get-OwnerTokens -OwnerValue $OwnerValue)
+        if ($owners.Count -eq 0) {
+            return [PSCustomObject]@{
+                Owners = @()
+                PrimaryOwner = $null
+                State = 'Missing'
+                Reason = 'No owner assigned'
+                ResolvedOwnerCount = 0
+                HealthyOwnerCount = 0
+                DisabledOwnerCount = 0
+                StaleOwnerCount = 0
+                UnknownOwnerCount = 0
+            }
+        }
+
+        $resolved = 0
+        $healthy = 0
+        $disabled = 0
+        $stale = 0
+        $unknown = 0
+
+        foreach ($owner in $owners) {
+            if (-not $ownersByUpn.ContainsKey($owner)) {
+                $unknown++
+                continue
+            }
+
+            $resolved++
+            $ownerProfile = $ownersByUpn[$owner]
+            if ($ownerProfile.AccountEnabled -eq $false) {
+                $disabled++
+                continue
+            }
+
+            $lastSignIn = $ownerProfile.LastSignInDateTime
+            if ($lastSignIn -and $lastSignIn -lt $staleCutoff) {
+                $stale++
+            }
+            else {
+                $healthy++
+            }
+        }
+
+        $state = 'Healthy'
+        $reason = 'Owner account is active'
+
+        if ($resolved -eq 0) {
+            $state = 'Unknown'
+            $reason = 'Owner account could not be resolved to collected user data'
+        }
+        elseif ($disabled -gt 0 -and $healthy -eq 0 -and $stale -eq 0) {
+            $state = 'Disabled'
+            $reason = 'Owner account is disabled'
+        }
+        elseif ($stale -gt 0 -and $healthy -eq 0 -and $disabled -eq 0) {
+            $state = 'Stale'
+            $reason = "Owner account has no sign-in within $staleOwnerDays days"
+        }
+        elseif (($disabled + $stale) -gt 0) {
+            $state = 'Mixed'
+            $reason = "At least one resolved owner account is disabled or stale ($staleOwnerDays+ days)"
+        }
+
+        return [PSCustomObject]@{
+            Owners = $owners
+            PrimaryOwner = if ($owners.Count -gt 0) { $owners[0] } else { $null }
+            State = $state
+            Reason = $reason
+            ResolvedOwnerCount = $resolved
+            HealthyOwnerCount = $healthy
+            DisabledOwnerCount = $disabled
+            StaleOwnerCount = $stale
+            UnknownOwnerCount = $unknown
+        }
+    }
+
+    function Convert-ToNullableInt {
+        param($Value)
+        if ($null -eq $Value) { return $null }
+        if ($Value -is [int]) { return [int]$Value }
+        if ($Value -is [long]) { return [int]$Value }
+
+        try {
+            $text = [string]$Value
+            if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+            $trimmed = $text.Trim()
+            if ($trimmed -match '^\d+$') {
+                return [int]$trimmed
+            }
+        }
+        catch {
+            return $null
+        }
+
+        return $null
+    }
+
+    $teamsNameSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($team in $context.Teams) {
+        $teamName = [string]$team.DisplayName
+        if (-not [string]::IsNullOrWhiteSpace($teamName)) {
+            $null = $teamsNameSet.Add($teamName.Trim())
+        }
+    }
+
+    $unmanagedRows = New-Object System.Collections.Generic.List[object]
+    $mismatchRows = New-Object System.Collections.Generic.List[object]
+    $unknownOwnerStateCount = 0
+
+    function Add-UnmanagedRow {
+        param(
+            [string]$Workload,
+            [string]$ObjectType,
+            [string]$DisplayName,
+            [string]$Identifier,
+            [string]$CurrentOwner,
+            [string]$OwnerState,
+            [string]$Reason,
+            [string]$Severity,
+            [string]$SourceWorksheet
+        )
+
+        $unmanagedRows.Add([PSCustomObject]@{
+            Workload = $Workload
+            ObjectType = $ObjectType
+            DisplayName = $DisplayName
+            Identifier = $Identifier
+            CurrentOwner = $CurrentOwner
+            OwnerState = $OwnerState
+            Reason = $Reason
+            Severity = $Severity
+            SourceWorksheet = $SourceWorksheet
+        }) | Out-Null
+    }
+
+    foreach ($oneDrive in $context.OneDrive) {
+        $displayName = if ($oneDrive.Title) { [string]$oneDrive.Title } else { [string]$oneDrive.Url }
+        $identifier = if ($oneDrive.Url) { [string]$oneDrive.Url } elseif ($oneDrive.SiteId) { [string]$oneDrive.SiteId } else { $displayName }
+        $ownerState = Get-OwnerState -OwnerValue $oneDrive.Owner
+        if ($ownerState.State -eq 'Unknown') { $unknownOwnerStateCount++ }
+
+        $expectedOwner = Get-OneDriveDefaultOwnerFromUrl -Url $oneDrive.Url -SegmentToUpnMap $oneDriveSegmentToUpnMap -KnownDomains $knownOwnerDomains
+        if ($expectedOwner -and $ownerState.PrimaryOwner -and $expectedOwner -ne $ownerState.PrimaryOwner) {
+            $mismatchRows.Add([PSCustomObject]@{
+                Workload = 'OneDrive'
+                DisplayName = $displayName
+                SiteUrl = [string]$oneDrive.Url
+                SiteId = [string]$oneDrive.SiteId
+                CurrentOwner = [string]$ownerState.PrimaryOwner
+                ExpectedDefaultOwner = [string]$expectedOwner
+                Assessment = 'Review'
+                SourceWorksheet = 'OneDrive'
+            }) | Out-Null
+        }
+
+        if ($ownerState.State -eq 'Missing') {
+            Add-UnmanagedRow -Workload 'OneDrive' -ObjectType 'OneDrive Site' -DisplayName $displayName -Identifier $identifier -CurrentOwner '' -OwnerState $ownerState.State -Reason $ownerState.Reason -Severity 'Risk' -SourceWorksheet 'OneDrive'
+        }
+        elseif ($ownerState.State -in @('Disabled', 'Stale', 'Mixed')) {
+            Add-UnmanagedRow -Workload 'OneDrive' -ObjectType 'OneDrive Site' -DisplayName $displayName -Identifier $identifier -CurrentOwner ([string]$oneDrive.Owner) -OwnerState $ownerState.State -Reason $ownerState.Reason -Severity 'Warning' -SourceWorksheet 'OneDrive'
+        }
+    }
+
+    foreach ($site in $context.SharePoint) {
+        $isTeamsSite = ($site.Template -eq 'TEAMCHANNEL#0' -or $site.IsTeamsChannelConnected -eq $true)
+        $workload = if ($isTeamsSite) { 'Teams' } else { 'SharePoint' }
+        $objectType = if ($isTeamsSite) { 'Teams Site' } else { 'SharePoint Site' }
+        $displayName = if ($site.Title) { [string]$site.Title } else { [string]$site.Url }
+        $identifier = if ($site.Url) { [string]$site.Url } elseif ($site.SiteId) { [string]$site.SiteId } else { $displayName }
+        $ownerState = Get-OwnerState -OwnerValue $site.Owner
+        if ($ownerState.State -eq 'Unknown') { $unknownOwnerStateCount++ }
+
+        if ($ownerState.State -eq 'Missing') {
+            Add-UnmanagedRow -Workload $workload -ObjectType $objectType -DisplayName $displayName -Identifier $identifier -CurrentOwner '' -OwnerState $ownerState.State -Reason $ownerState.Reason -Severity 'Risk' -SourceWorksheet 'SharePoint'
+        }
+        elseif ($ownerState.State -in @('Disabled', 'Stale', 'Mixed')) {
+            Add-UnmanagedRow -Workload $workload -ObjectType $objectType -DisplayName $displayName -Identifier $identifier -CurrentOwner ([string]$site.Owner) -OwnerState $ownerState.State -Reason $ownerState.Reason -Severity 'Warning' -SourceWorksheet 'SharePoint'
+        }
+
+        if ($isTeamsSite -and -not [string]::IsNullOrWhiteSpace($displayName)) {
+            $null = $teamsNameSet.Add($displayName.Trim())
+        }
+    }
+
+    foreach ($group in $context.Groups) {
+        $ownerCount = Convert-ToNullableInt -Value $group.OwnerCount
+        if ($null -eq $ownerCount) {
+            $unknownOwnerStateCount++
+            continue
+        }
+
+        if ($ownerCount -eq 0) {
+            $groupDisplayName = [string]$group.DisplayName
+            $isTeamGroup = (-not [string]::IsNullOrWhiteSpace($groupDisplayName) -and $teamsNameSet.Contains($groupDisplayName.Trim()))
+            Add-UnmanagedRow `
+                -Workload $(if ($isTeamGroup) { 'Teams' } else { 'Entra ID' }) `
+                -ObjectType $(if ($isTeamGroup) { 'Team (M365 Group)' } else { 'Entra Group' }) `
+                -DisplayName $groupDisplayName `
+                -Identifier ([string]$group.ID) `
+                -CurrentOwner 'None (OwnerCount=0)' `
+                -OwnerState 'Missing' `
+                -Reason 'No owner assigned (OwnerCount=0)' `
+                -Severity 'Risk' `
+                -SourceWorksheet 'EntraIDGroups'
+        }
+    }
+
+    foreach ($group in $context.ExchangeGroups) {
+        $ownerCount = Convert-ToNullableInt -Value $group.OwnersCount
+        if ($null -eq $ownerCount) {
+            $unknownOwnerStateCount++
+            continue
+        }
+
+        if ($ownerCount -eq 0) {
+            $groupDisplayName = [string]$group.DisplayName
+            $identifier = if ($group.PrimarySMTPAddress) { [string]$group.PrimarySMTPAddress } else { [string]$group.Identity }
+            Add-UnmanagedRow `
+                -Workload 'Exchange' `
+                -ObjectType $(if ($group.RecipientTypeDetails) { [string]$group.RecipientTypeDetails } else { 'Exchange Group' }) `
+                -DisplayName $groupDisplayName `
+                -Identifier $identifier `
+                -CurrentOwner 'None (OwnersCount=0)' `
+                -OwnerState 'Missing' `
+                -Reason 'No owner assigned (OwnersCount=0)' `
+                -Severity 'Risk' `
+                -SourceWorksheet 'AllExchangeGroups'
+        }
+    }
+
+    $sortedUnmanagedRows = @(
+        $unmanagedRows |
+            Sort-Object @{ Expression = {
+                switch ($_.Severity) {
+                    'Risk' { 1 }
+                    'Warning' { 2 }
+                    default { 3 }
+                }
+            } }, Workload, ObjectType, DisplayName
+    )
+    $sortedMismatchRows = @($mismatchRows | Sort-Object DisplayName, SiteUrl)
+
+    $unmanagedIndex = 0
+    foreach ($row in $sortedUnmanagedRows) {
+        $unmanagedIndex++
+        $key = "{0:D4}-{1}" -f $unmanagedIndex, ($row.Identifier -replace '[^a-zA-Z0-9@._-]', '_')
+        $TenantStatsHash['UnmanagedObjects'][$key] = $row
+    }
+
+    $mismatchIndex = 0
+    foreach ($row in $sortedMismatchRows) {
+        $mismatchIndex++
+        $key = "{0:D4}-{1}" -f $mismatchIndex, (($row.SiteUrl) -replace '[^a-zA-Z0-9@._/-]', '_')
+        $TenantStatsHash['OneDriveOwnerMismatches'][$key] = $row
+    }
+
+    $missingOwnerCount = @($sortedUnmanagedRows | Where-Object { $_.OwnerState -eq 'Missing' }).Count
+    $ownerHealthRiskCount = @($sortedUnmanagedRows | Where-Object { $_.OwnerState -in @('Disabled', 'Stale', 'Mixed') }).Count
+
+    $summary = [PSCustomObject]@{
+        TotalObjectsReviewed = @($context.OneDrive).Count + @($context.SharePoint).Count + @($context.Groups).Count + @($context.ExchangeGroups).Count
+        UnmanagedObjectCount = $sortedUnmanagedRows.Count
+        MissingOwnerCount = $missingOwnerCount
+        OwnerHealthRiskCount = $ownerHealthRiskCount
+        OneDriveOwnerMismatchCount = $sortedMismatchRows.Count
+        UnknownOwnerStateCount = $unknownOwnerStateCount
+        OneDriveSiteCount = @($context.OneDrive).Count
+        SharePointSiteCount = @($context.SharePoint).Count
+        TeamsObjectCount = @($context.SharePoint | Where-Object { $_.Template -eq 'TEAMCHANNEL#0' -or $_.IsTeamsChannelConnected -eq $true }).Count
+        EntraGroupCount = @($context.Groups).Count
+        ExchangeGroupCount = @($context.ExchangeGroups).Count
+        StaleOwnerThresholdDays = $staleOwnerDays
+    }
+
+    $TenantStatsHash['OwnershipGovernanceSummary']['Summary'] = $summary
+}
+
+function Get-OwnershipGovernanceAnalysis {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [array]$UnmanagedObjects,
+        [Parameter(Mandatory = $false)]
+        [array]$OneDriveOwnerMismatches,
+        [Parameter(Mandatory = $false)]
+        [object]$OwnershipGovernanceSummary
+    )
+
+    $findings = @()
+    $unmanagedCount = @($UnmanagedObjects).Count
+    $mismatchCount = @($OneDriveOwnerMismatches).Count
+
+    $missingOwnerCount = if ($OwnershipGovernanceSummary -and $OwnershipGovernanceSummary.PSObject.Properties['MissingOwnerCount']) {
+        [int]$OwnershipGovernanceSummary.MissingOwnerCount
+    } else {
+        @($UnmanagedObjects | Where-Object { $_.OwnerState -eq 'Missing' }).Count
+    }
+
+    $ownerHealthRiskCount = if ($OwnershipGovernanceSummary -and $OwnershipGovernanceSummary.PSObject.Properties['OwnerHealthRiskCount']) {
+        [int]$OwnershipGovernanceSummary.OwnerHealthRiskCount
+    } else {
+        @($UnmanagedObjects | Where-Object { $_.OwnerState -in @('Disabled', 'Stale', 'Mixed') }).Count
+    }
+
+    $unknownOwnerStateCount = if ($OwnershipGovernanceSummary -and $OwnershipGovernanceSummary.PSObject.Properties['UnknownOwnerStateCount']) {
+        [int]$OwnershipGovernanceSummary.UnknownOwnerStateCount
+    } else {
+        0
+    }
+
+    if ($missingOwnerCount -gt 0) {
+        $findings += @{
+            Type = 'Risk'
+            Category = 'Unowned Objects'
+            Message = "$missingOwnerCount object(s) are missing owners and require ownership assignment"
+            Anchor = 'ownership-governance'
+            Priority = 1
+        }
+    }
+
+    if ($ownerHealthRiskCount -gt 0) {
+        $findings += @{
+            Type = 'Warning'
+            Category = 'Owner Health'
+            Message = "$ownerHealthRiskCount object(s) are owned by disabled or stale owner accounts"
+            Anchor = 'ownership-governance'
+            Priority = 2
+        }
+    }
+
+    if ($mismatchCount -gt 0) {
+        $findings += @{
+            Type = 'Warning'
+            Category = 'OneDrive Ownership Mismatch'
+            Message = "$mismatchCount OneDrive site(s) have a current owner different from the URL-derived default owner"
+            Anchor = 'ownership-governance'
+            Priority = 2
+        }
+    }
+
+    if ($unmanagedCount -eq 0 -and $mismatchCount -eq 0 -and $unknownOwnerStateCount -gt 0) {
+        $findings += @{
+            Type = 'Info'
+            Category = 'Owner Telemetry'
+            Message = "$unknownOwnerStateCount object(s) had unresolved ownership state in collected data; review deeper collection modes for complete ownership validation"
+            Anchor = 'ownership-governance'
+            Priority = 3
+        }
+    }
+
+    return @{
+        Findings = $findings
+    }
+}
+
 function Get-SharePointOneDriveAnalysis {
     <#
     .SYNOPSIS
@@ -10193,6 +10926,20 @@ function Get-TenantAssessmentContext {
         }
     }
 
+    $ownershipGovernanceSummary = $null
+    if ($TenantStatsHash.ContainsKey('OwnershipGovernanceSummary')) {
+        $ownershipSummaryContainer = $TenantStatsHash['OwnershipGovernanceSummary']
+        if ($ownershipSummaryContainer -is [hashtable] -and $ownershipSummaryContainer.ContainsKey('Summary')) {
+            $ownershipGovernanceSummary = $ownershipSummaryContainer['Summary']
+        }
+        elseif ($ownershipSummaryContainer -is [System.Collections.Specialized.OrderedDictionary] -and $ownershipSummaryContainer.Contains('Summary')) {
+            $ownershipGovernanceSummary = $ownershipSummaryContainer['Summary']
+        }
+        elseif ($ownershipSummaryContainer -isnot [System.Collections.IEnumerable] -or $ownershipSummaryContainer -is [string]) {
+            $ownershipGovernanceSummary = $ownershipSummaryContainer
+        }
+    }
+
     $mailboxSourceKey = if ($TenantStatsHash.ContainsKey('MailboxFullDetails')) {
         'MailboxFullDetails'
     } elseif ($TenantStatsHash.ContainsKey('AllMailboxes')) {
@@ -10242,6 +10989,9 @@ function Get-TenantAssessmentContext {
         TeamsVoice             = $teamsVoice
         SpamFilteringSummary   = $spamFilteringSummary
         SMTPRelaySummary       = $smtpRelaySummary
+        OwnershipGovernanceSummary = $ownershipGovernanceSummary
+        UnmanagedObjects       = Get-ContextArray -Key 'UnmanagedObjects'
+        OneDriveOwnerMismatches = Get-ContextArray -Key 'OneDriveOwnerMismatches'
     }
 }
 
@@ -10263,6 +11013,7 @@ function Get-AssessmentWorksheetName {
         'exchange-hybrid' { return 'HybridConfiguration' }
         'cross-tenant-access' { return 'FederationConfiguration' }
         'secure-score' { return 'SecureScoreActions' }
+        'ownership-governance' { return 'UnmanagedObjects' }
         default { return $null }
     }
 }
@@ -10318,6 +11069,14 @@ function Get-AssessmentRecommendationText {
         'exchange-hybrid' { return 'Validate hybrid, connectors, and migration endpoints because they affect tenant-to-tenant messaging strategy.' }
         'cross-tenant-access' { return 'Review cross-tenant and B2B settings for coexistence, external collaboration, and post-migration cleanup.' }
         'secure-score' { return 'Use the mapped Microsoft Secure Score action to prioritize remediation with the highest security impact.' }
+        'ownership-governance' {
+            switch ([string]$Finding.Category) {
+                'Unowned Objects' { return 'Assign at least one accountable owner to each collaboration object and validate ownership handoff before migration or governance workflows.' }
+                'Owner Health' { return 'Reassign ownership from disabled or stale accounts to active custodians and formalize backup ownership coverage.' }
+                'OneDrive Ownership Mismatch' { return 'Review OneDrive sites where the current owner differs from the URL-derived default user and confirm documented stewardship.' }
+                default { return 'Review ownership governance tables and assign healthy owners for all unmanaged or mismatched objects.' }
+            }
+        }
         default { return 'Review the related worksheet and validate whether remediation is required for your migration or security objectives.' }
     }
 }
@@ -10452,6 +11211,18 @@ function Update-AssessmentReportTables {
     if ($context.SharePoint.Count -gt 0 -or $context.OneDrive.Count -gt 0) {
         $spodAnalysis = Get-SharePointOneDriveAnalysis -SharePointSites $context.SharePoint -OneDriveSites $context.OneDrive
         Add-AreaSummary -Area 'SharePoint & OneDrive' -AreaFindings $spodAnalysis.Findings -AssessmentType 'Assessment heuristic using collaboration site inventory' -RelatedWorksheet 'SharePoint / OneDrive' -Notes 'Flags oversized sites and owner-linked OneDrive inventory for migration planning.'
+    }
+
+    if (
+        $context.OwnershipGovernanceSummary -or
+        $context.UnmanagedObjects.Count -gt 0 -or
+        $context.OneDriveOwnerMismatches.Count -gt 0
+    ) {
+        $ownershipAnalysis = Get-OwnershipGovernanceAnalysis `
+            -UnmanagedObjects $context.UnmanagedObjects `
+            -OneDriveOwnerMismatches $context.OneDriveOwnerMismatches `
+            -OwnershipGovernanceSummary $context.OwnershipGovernanceSummary
+        Add-AreaSummary -Area 'Ownership & Stewardship' -AreaFindings $ownershipAnalysis.Findings -AssessmentType 'Assessment heuristic using ownership governance signals across collaboration and group workloads' -RelatedWorksheet 'UnmanagedObjects' -Notes 'Highlights unowned objects, unhealthy owners, and OneDrive owner-mismatch governance review items.'
     }
 
     if ($context.Devices.Count -gt 0) {
@@ -11938,6 +12709,78 @@ function Build-SharePointOneDriveSection {
     return $kpiHtml + $tableHtml + $footerHtml
 }
 
+function Build-OwnershipGovernanceSection {
+    param(
+        [array]$UnmanagedObjects,
+        [array]$OneDriveOwnerMismatches,
+        [object]$OwnershipGovernanceSummary
+    )
+
+    $unmanagedCount = @($UnmanagedObjects).Count
+    $mismatchCount = @($OneDriveOwnerMismatches).Count
+
+    if ($unmanagedCount -eq 0 -and $mismatchCount -eq 0 -and -not $OwnershipGovernanceSummary) {
+        return "<div class='empty-state'>No ownership governance data available</div>"
+    }
+
+    $missingOwnerCount = if ($OwnershipGovernanceSummary -and $OwnershipGovernanceSummary.PSObject.Properties['MissingOwnerCount']) {
+        [int]$OwnershipGovernanceSummary.MissingOwnerCount
+    } else {
+        @($UnmanagedObjects | Where-Object { $_.OwnerState -eq 'Missing' }).Count
+    }
+    $ownerHealthRiskCount = if ($OwnershipGovernanceSummary -and $OwnershipGovernanceSummary.PSObject.Properties['OwnerHealthRiskCount']) {
+        [int]$OwnershipGovernanceSummary.OwnerHealthRiskCount
+    } else {
+        @($UnmanagedObjects | Where-Object { $_.OwnerState -in @('Disabled', 'Stale', 'Mixed') }).Count
+    }
+
+    $kpiHtml = "<div class='kpi-grid'>"
+    $kpiHtml += New-KpiCard -Title "Unmanaged Objects" -Value (Format-Number $unmanagedCount) -Theme $(if ($unmanagedCount -gt 0) { 'warning' } else { 'success' })
+    $kpiHtml += New-KpiCard -Title "Missing Owner" -Value (Format-Number $missingOwnerCount) -Theme $(if ($missingOwnerCount -gt 0) { 'danger' } else { 'success' })
+    $kpiHtml += New-KpiCard -Title "Owner Health Risks" -Value (Format-Number $ownerHealthRiskCount) -Theme $(if ($ownerHealthRiskCount -gt 0) { 'warning' } else { 'success' })
+    $kpiHtml += New-KpiCard -Title "OneDrive Mismatches" -Value (Format-Number $mismatchCount) -Theme $(if ($mismatchCount -gt 0) { 'warning' } else { 'success' })
+    $kpiHtml += "</div>"
+
+    $topUnmanaged = @(
+        $UnmanagedObjects |
+            Sort-Object @{ Expression = {
+                switch ($_.Severity) {
+                    'Risk' { 1 }
+                    'Warning' { 2 }
+                    default { 3 }
+                }
+            } }, Workload, DisplayName |
+            Select-Object -First 12 Workload, ObjectType, DisplayName, CurrentOwner, OwnerState, Reason
+    )
+    $unmanagedHtml = "<h3>Unmanaged Object Review</h3>" +
+        (New-HtmlTable -Data $topUnmanaged -Columns @('Workload','ObjectType','DisplayName','CurrentOwner','OwnerState','Reason') -ColumnHeaders @{
+            Workload='Workload'; ObjectType='Object Type'; DisplayName='Object'; CurrentOwner='Current Owner'; OwnerState='Owner State'; Reason='Finding'
+        } -RiskColumns @{
+            OwnerState = { param($val) [string]$val -in @('Missing','Disabled','Stale','Mixed') }
+        })
+
+    $topMismatches = @(
+        $OneDriveOwnerMismatches |
+            Sort-Object DisplayName, SiteUrl |
+            Select-Object -First 12 DisplayName, SiteUrl, CurrentOwner, ExpectedDefaultOwner
+    )
+    $mismatchHtml = "<h3 style='margin-top:20px;'>OneDrive Owner Mismatch Review</h3>" +
+        (New-HtmlTable -Data $topMismatches -Columns @('DisplayName','SiteUrl','CurrentOwner','ExpectedDefaultOwner') -ColumnHeaders @{
+            DisplayName='OneDrive'; SiteUrl='Site Url'; CurrentOwner='Current Owner'; ExpectedDefaultOwner='Expected Default Owner'
+        })
+
+    $footerHtml = @"
+<div class='section-footer'>
+    <h3>What This Means</h3>
+    <p>Objects without a healthy owner increase governance risk and slow migration/workload handoff decisions.</p>
+    <h3>Recommended Next Steps</h3>
+    <p>Assign accountable owners, reassign from disabled or stale identities, and validate OneDrive owner mismatches with business data stewards.</p>
+</div>
+"@
+
+    return $kpiHtml + $unmanagedHtml + $mismatchHtml + $footerHtml
+}
+
 function Build-TeamsSection {
     param(
         [array]$Teams,
@@ -13079,6 +13922,14 @@ function New-TenantHtmlReport {
     $onedrive = $context.OneDrive
     Write-Verbose "OneDrive: Found $($onedrive.Count) items"
 
+    $unmanagedObjects = $context.UnmanagedObjects
+    Write-Verbose "Unmanaged objects: Found $($unmanagedObjects.Count) items"
+
+    $oneDriveOwnerMismatches = $context.OneDriveOwnerMismatches
+    Write-Verbose "OneDrive owner mismatches: Found $($oneDriveOwnerMismatches.Count) items"
+
+    $ownershipGovernanceSummary = $context.OwnershipGovernanceSummary
+
     $domains = $context.Domains
     Write-Verbose "Domains: Found $($domains.Count) items"
 
@@ -13214,7 +14065,20 @@ function New-TenantHtmlReport {
             Content = Build-SharePointOneDriveSection -SharePointSites $sharepoint -OneDriveSites $onedrive
         }
     }
-    
+
+    if ($ownershipGovernanceSummary -or $unmanagedObjects.Count -gt 0 -or $oneDriveOwnerMismatches.Count -gt 0) {
+        $ownershipAnalysis = Get-OwnershipGovernanceAnalysis `
+            -UnmanagedObjects $unmanagedObjects `
+            -OneDriveOwnerMismatches $oneDriveOwnerMismatches `
+            -OwnershipGovernanceSummary $ownershipGovernanceSummary
+        $allFindings += $ownershipAnalysis.Findings
+        $sectionContents += @{
+            Id = 'ownership-governance'
+            Name = 'Ownership Governance'
+            Content = Build-OwnershipGovernanceSection -UnmanagedObjects $unmanagedObjects -OneDriveOwnerMismatches $oneDriveOwnerMismatches -OwnershipGovernanceSummary $ownershipGovernanceSummary
+        }
+    }
+
     # Teams
     if ($teams.Count -gt 0) {
         #Write-Host "  Building Teams section..." -ForegroundColor Gray
@@ -13510,14 +14374,8 @@ if ([string]::IsNullOrWhiteSpace($ExportPath)) {
 # Initialize list to store all discovery errors
 $global:AllDiscoveryErrors = New-Object System.Collections.Generic.List[pscustomobject]
 
-# Prompt for level of detail
-if ([string]::IsNullOrWhiteSpace($ReportingMode)) {
-    $reportingMode = Set-ReportMode
-} else {
-    $reportingMode = $ReportingMode.ToLower()
-    Write-Host "You selected: $reportingMode reporting mode" -ForegroundColor Green
-}
-Write-Host "Output profile: $OutputProfile" -ForegroundColor Green
+# Resolve collection depth and output behavior from the selected profile.
+Write-Host "Output profile: $OutputProfile (scope: $reportingMode)" -ForegroundColor Green
 
 $script:CollectionDepthPolicy = Get-ArrayaCollectionDepthPolicy -ReportingMode ((Get-Culture).TextInfo.ToTitleCase($reportingMode))
 Write-Log -Type INFO -Message ("Collection depth policy: Mode={0}; EntraDeep={1}; GroupCounts={2}; GroupLicenses={3}; SSOAppDetails={4}" -f $script:CollectionDepthPolicy.ReportingMode, $script:CollectionDepthPolicy.CollectEntraGroupDeepDetails, $script:CollectionDepthPolicy.CollectEntraGroupMemberCounts, $script:CollectionDepthPolicy.CollectEntraGroupLicenseChecks, $script:CollectionDepthPolicy.CollectSsoApplicationDetails) -ExportFileLocation $ExportDetails
@@ -13550,7 +14408,7 @@ $GraphTest = if (Get-MgContext -ErrorAction SilentlyContinue) { "SDK" } elseif (
 $baseCollectionSteps = 11 # Exchange(5) + Hybrid(4) + Collaboration(2)
 $identitySteps = if ($GraphTest -eq 'REST') { 2 } else { 13 }
 $combineSteps = if ($reportingMode -eq "combined" -or $reportingMode -eq "all") { 1 } else { 0 }
-$postProcessingSteps = 3
+$postProcessingSteps = 4
 $overallCollectionSteps = $baseCollectionSteps + $identitySteps + $combineSteps + $postProcessingSteps
 Initialize-AssessmentProgress -TotalSteps $overallCollectionSteps
 
@@ -13616,6 +14474,7 @@ if ($reportingMode -eq "combined" -or $reportingMode -eq "all") {
     Invoke-AssessmentProgressStep -Name 'Combined user/mailbox reporting' -ScriptBlock { Report-UserAndMailboxStats }
 }
 
+Invoke-AssessmentProgressStep -Name 'Ownership governance tables' -ScriptBlock { Update-OwnershipGovernanceTables -TenantStatsHash $global:tenantStatsHash }
 Invoke-AssessmentProgressStep -Name 'License classification metadata' -ScriptBlock { Update-LicenseClassificationMetadata -TenantStatsHash $global:tenantStatsHash }
 Invoke-AssessmentProgressStep -Name 'Best-practice assessment tables' -ScriptBlock { Update-AssessmentReportTables -TenantStatsHash $global:tenantStatsHash }
 Invoke-AssessmentProgressStep -Name 'Configuration summary tables' -ScriptBlock { Update-ConfigurationSummaryTables -TenantStatsHash $global:tenantStatsHash }
@@ -13632,7 +14491,7 @@ Write-AssessmentStepMetricsSummary -ExportFileLocation $ExportDetails
 Write-ConsoleSection -Step '5/5' -Title 'Exporting results'
 $ExportTenantStatsHash = Filter-TenantStatsHash -tenantStatsHash $global:tenantStatsHash -reportingMode $reportingMode -GraphTest $GraphTest
 $generatedArtifacts = [ordered]@{
-    Workbook                = $ExportDetails
+    Workbook                = $null
     'Best Practices HTML'   = $null
     Questionnaire           = $null
     'Full HTML'             = $null
@@ -13641,17 +14500,23 @@ $generatedArtifacts = [ordered]@{
 }
 
 #Export Reports: Exports each individual hashtable to own CSV file and then combines into Excel file
-Write-Log -Type INFO -Message "Exporting the Tenant Statistics to $($ExportDetails)." -ExportFileLocation $ExportDetails
-try {
-    Export-HashTableToExcel -hashtable $ExportTenantStatsHash -ExportDetails $ExportDetails
+if ($effectiveSkipWorkbook) {
+    Write-Log -Type INFO -Message "Skipping workbook generation because the selected output profile disables workbook output." -ExportFileLocation $ExportDetails
 }
-catch {
-    Write-Log -Type ERROR -Message "An error occurred in Exporting the Tenant Statistics to $($ExportDetails). Please re-run the script and verify the location is valid and the file is not open in another application. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
+else {
+    Write-Log -Type INFO -Message "Exporting the Tenant Statistics to $($ExportDetails)." -ExportFileLocation $ExportDetails
+    try {
+        Export-HashTableToExcel -hashtable $ExportTenantStatsHash -ExportDetails $ExportDetails
+        $generatedArtifacts['Workbook'] = $ExportDetails
+    }
+    catch {
+        Write-Log -Type ERROR -Message "An error occurred in Exporting the Tenant Statistics to $($ExportDetails). Please re-run the script and verify the location is valid and the file is not open in another application. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
+    }
 }
 
 # Export JSON snapshot for reuse
 if ($effectiveSkipJsonReport) {
-    Write-Log -Type INFO -Message "Skipping JSON report generation because -SkipJsonReport was provided." -ExportFileLocation $ExportDetails
+    Write-Log -Type INFO -Message "Skipping JSON report generation because the selected output profile disables it or -SkipJsonReport was provided." -ExportFileLocation $ExportDetails
 } else {
     try {
         $jsonExportPath = $ExportDetails -replace '\.xlsx$', '.json'
@@ -13663,25 +14528,30 @@ if ($effectiveSkipJsonReport) {
     }
 }
 
-try {
-    if (Get-Command -Name Export-TenantToTenantQuestionnaireMarkdown -ErrorAction SilentlyContinue) {
-        $questionnaireTemplateCandidates = @(
-            [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\..\docs\Microsoft 365 Tenant to Tenant Questionnaire.md')),
-            [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\..\docs\templates\Microsoft 365 Tenant to Tenant Questionnaire.md'))
-        )
-        $questionnaireTemplatePath = $questionnaireTemplateCandidates | Where-Object { Test-Path -Path $_ } | Select-Object -First 1
-        if (-not $questionnaireTemplatePath) {
-            throw "Questionnaire template not found in expected locations: $($questionnaireTemplateCandidates -join '; ')"
+if ($effectiveSkipQuestionnaire) {
+    Write-Log -Type INFO -Message "Skipping questionnaire export because the selected output profile disables questionnaire output." -ExportFileLocation $ExportDetails
+}
+else {
+    try {
+        if (Get-Command -Name Export-TenantToTenantQuestionnaireMarkdown -ErrorAction SilentlyContinue) {
+            $questionnaireTemplateCandidates = @(
+                [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\..\docs\Microsoft 365 Tenant to Tenant Questionnaire.md')),
+                [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\..\docs\templates\Microsoft 365 Tenant to Tenant Questionnaire.md'))
+            )
+            $questionnaireTemplatePath = $questionnaireTemplateCandidates | Where-Object { Test-Path -Path $_ } | Select-Object -First 1
+            if (-not $questionnaireTemplatePath) {
+                throw "Questionnaire template not found in expected locations: $($questionnaireTemplateCandidates -join '; ')"
+            }
+            $questionnaireExportPath = $ExportDetails -replace '\.xlsx$', '-TenantToTenantQuestionnaire.md'
+            Export-TenantToTenantQuestionnaireMarkdown -TenantStatsHash $global:tenantStatsHash -TemplatePath $questionnaireTemplatePath -Path $questionnaireExportPath
+            $generatedArtifacts['Questionnaire'] = $questionnaireExportPath
+            Write-Log -Type INFO -Message "Exported Tenant to Tenant Questionnaire to $questionnaireExportPath" -ExportFileLocation $ExportDetails
+        } else {
+            Write-Log -Type WARNING -Message "Skipping questionnaire export because Export-TenantToTenantQuestionnaireMarkdown is unavailable." -ExportFileLocation $ExportDetails
         }
-        $questionnaireExportPath = $ExportDetails -replace '\.xlsx$', '-TenantToTenantQuestionnaire.md'
-        Export-TenantToTenantQuestionnaireMarkdown -TenantStatsHash $global:tenantStatsHash -TemplatePath $questionnaireTemplatePath -Path $questionnaireExportPath
-        $generatedArtifacts['Questionnaire'] = $questionnaireExportPath
-        Write-Log -Type INFO -Message "Exported Tenant to Tenant Questionnaire to $questionnaireExportPath" -ExportFileLocation $ExportDetails
-    } else {
-        Write-Log -Type WARNING -Message "Skipping questionnaire export because Export-TenantToTenantQuestionnaireMarkdown is unavailable." -ExportFileLocation $ExportDetails
+    } catch {
+        Write-Log -Type WARNING -Message "Unable to export Tenant to Tenant Questionnaire: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
     }
-} catch {
-    Write-Log -Type WARNING -Message "Unable to export Tenant to Tenant Questionnaire: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
 }
 
 Write-Host ""
@@ -13707,7 +14577,10 @@ Write-Host ""
 Write-Host "Generating HTML Report..." -ForegroundColor Black -BackgroundColor Yellow
 
 try {
-        if (Get-Command New-TenantAssessmentHtmlReport -ErrorAction SilentlyContinue) {
+        if ($effectiveSkipBestPracticesHtml) {
+            Write-Log -Type INFO -Message "Skipping Best Practices Analysis HTML generation because the selected output profile disables it." -ExportFileLocation $ExportDetails
+        }
+        elseif (Get-Command New-TenantAssessmentHtmlReport -ErrorAction SilentlyContinue) {
             $assessmentHtmlPath = $ExportDetails -replace '\.xlsx$', '-BestPracticesAnalysis.html'
             $assessmentHtmlResult = New-TenantAssessmentHtmlReport -TenantStatsHash $global:tenantStatsHash -OutputPath $assessmentHtmlPath
             if ($assessmentHtmlResult.Success) {
@@ -13724,8 +14597,8 @@ try {
     }
 
 if ($effectiveSkipHtmlReport) {
-    Write-Host "Skipping full HTML report generation because -SkipHtmlReport was provided or the Lean output profile is active." -ForegroundColor Yellow
-    Write-Log -Type INFO -Message "Skipping full HTML report generation because -SkipHtmlReport was provided or the Lean output profile is active." -ExportFileLocation $ExportDetails
+    Write-Host "Skipping full HTML report generation because the selected output profile disables it or -SkipHtmlReport was provided." -ForegroundColor Yellow
+    Write-Log -Type INFO -Message "Skipping full HTML report generation because the selected output profile disables it or -SkipHtmlReport was provided." -ExportFileLocation $ExportDetails
 }
 elseif (-not (Get-Command New-TenantHtmlReport -ErrorAction SilentlyContinue)) {
     Write-Warning "New-TenantHtmlReport function is not available. Skipping full HTML report generation."
@@ -13801,7 +14674,9 @@ else {
         
     } catch {
         Write-Warning "Error generating HTML report: $($_.Exception.Message)"
-        Write-Warning "Excel report is still available at: $ExportDetails"
+        if ($generatedArtifacts['Workbook']) {
+            Write-Warning "Excel report is still available at: $ExportDetails"
+        }
         Write-Log -Type ERROR -Message "HTML report generation error: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         
         # Capture error but don't stop script
