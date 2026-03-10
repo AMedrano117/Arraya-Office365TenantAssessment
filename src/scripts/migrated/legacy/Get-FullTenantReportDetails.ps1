@@ -5954,128 +5954,206 @@ function Report-UserAndMailboxStats {
     [CmdletBinding()]
     param ()
 
-    # Helper function to populate details
+    $logPerRecordDebug = Test-ShowCollectorDiagnostics
+
+    function Get-LookupTable {
+        param(
+            [Parameter(Mandatory = $true)]
+            [hashtable]$tenantStatsHash,
+            [Parameter(Mandatory = $true)]
+            [string]$Key
+        )
+
+        if (-not $tenantStatsHash.ContainsKey($Key)) {
+            return $null
+        }
+
+        $candidate = $tenantStatsHash[$Key]
+        if ($candidate -is [System.Collections.IDictionary]) {
+            return $candidate
+        }
+
+        return $null
+    }
+
+    function Get-DictionaryValue {
+        param(
+            [Parameter(Mandatory = $false)]
+            [object]$Dictionary,
+            [Parameter(Mandatory = $false)]
+            [AllowNull()]
+            $Key
+        )
+
+        if ($null -eq $Dictionary -or $null -eq $Key) {
+            return $null
+        }
+
+        if ($Dictionary -is [System.Collections.IDictionary]) {
+            if ($Dictionary.Contains($Key)) {
+                return $Dictionary[$Key]
+            }
+            return $null
+        }
+
+        return $null
+    }
+
+    function Resolve-StatsSizeGb {
+        param(
+            [Parameter(Mandatory = $false)]
+            [AllowNull()]
+            $Stats,
+            [Parameter(Mandatory = $true)]
+            [string]$CachePrefix,
+            [Parameter(Mandatory = $true)]
+            [hashtable]$Cache
+        )
+
+        if ($null -eq $Stats) {
+            return 0
+        }
+
+        $cacheKey = $null
+        if ($Stats.PSObject.Properties['MailboxGuid'] -and $Stats.MailboxGuid) {
+            $cacheKey = "{0}:{1}" -f $CachePrefix, [string]$Stats.MailboxGuid
+        }
+
+        if ($cacheKey -and $Cache.ContainsKey($cacheKey)) {
+            return $Cache[$cacheKey]
+        }
+
+        $sizeBytes = [int64]0
+        if ($Stats.PSObject.Properties['TotalItemSizeBytes'] -and $Stats.TotalItemSizeBytes) {
+            $sizeBytes = [int64]$Stats.TotalItemSizeBytes
+        }
+        elseif ($Stats.PSObject.Properties['TotalItemSize'] -and $Stats.TotalItemSize) {
+            $sizeBytes = Convert-DataSizeToBytes -Value $Stats.TotalItemSize
+        }
+
+        $sizeGb = [math]::Round(($sizeBytes / 1GB), 3)
+        if ($cacheKey) {
+            $Cache[$cacheKey] = $sizeGb
+        }
+
+        return $sizeGb
+    }
+
     function Populate-Details {
         param (
             [Parameter(Mandatory = $true)]
             [hashtable]$tenantStatsHash,
             [Parameter(Mandatory = $true)]
-            [object]$entity,  # This can be a mailbox or user object
+            [object]$entity,
             [Parameter(Mandatory = $false)]
-            [switch]$IsMailbox  # Differentiates whether the entity is a mailbox or user
+            [switch]$IsMailbox
         )
-        $details = [PSCustomObject]@{}
+
+        $detailsMap = [ordered]@{}
         try {
-            # Populate existing entity-specific properties
             foreach ($property in $entity.PSObject.Properties) {
-                $details | Add-Member -MemberType NoteProperty -Name $property.Name -Value $property.Value
+                $detailsMap[$property.Name] = $property.Value
             }
-    
-            # Determine mailbox-specific details
-            $mailboxDetails = if ($IsMailbox -and $entity.RecipientTypeDetails -eq "GroupMailbox" -and $tenantStatsHash["UnifiedGroups"]) {
-                # Check for Group Mailbox Details
-                if ($tenantStatsHash["UnifiedGroups"].ContainsKey($entity.PrimarySMTPAddress)) {
-                    $tenantStatsHash["UnifiedGroups"][$entity.PrimarySMTPAddress]
+
+            $mailboxDetails = $null
+            if ($IsMailbox -and $entity.RecipientTypeDetails -eq "GroupMailbox" -and $lookupContext.UnifiedGroups) {
+                $mailboxDetails = Get-DictionaryValue -Dictionary $lookupContext.UnifiedGroups -Key $entity.PrimarySMTPAddress
+                if ($mailboxDetails) {
                     Write-Verbose "Unified Group Details Found: $($entity.PrimarySMTPAddress)"
-                } else { $null }
-            } elseif ($IsMailbox -and $tenantStatsHash["AllMailboxes-MailIdentity"]) {
-                # Check against Mailbox Identity
-                if ($tenantStatsHash["AllMailboxes-MailIdentity"].ContainsKey($entity.Identity)) {
-                    $tenantStatsHash["AllMailboxes-MailIdentity"][$entity.Identity]
+                }
+            }
+            elseif ($IsMailbox -and $lookupContext.AllMailboxesByIdentity) {
+                $mailboxDetails = Get-DictionaryValue -Dictionary $lookupContext.AllMailboxesByIdentity -Key $entity.Identity
+                if ($mailboxDetails) {
                     Write-Verbose "Mailbox Details Found: $($entity.Identity)"
-                } else { $null }
-            } elseif ($tenantStatsHash["AllMailboxes-UserPrincipalName"] -and $entity.UserPrincipalName) {
-                # Check against UserPrincipalName index
-                if ($tenantStatsHash["AllMailboxes-UserPrincipalName"].ContainsKey($entity.UserPrincipalName)) {
-                    $tenantStatsHash["AllMailboxes-UserPrincipalName"][$entity.UserPrincipalName]
+                }
+            }
+
+            if (-not $mailboxDetails -and $lookupContext.AllMailboxesByUserPrincipalName -and $entity.UserPrincipalName) {
+                $mailboxDetails = Get-DictionaryValue -Dictionary $lookupContext.AllMailboxesByUserPrincipalName -Key $entity.UserPrincipalName
+                if ($mailboxDetails) {
                     Write-Verbose "Mailbox Details Found (UPN): $($entity.UserPrincipalName)"
-                } else { $null }
-            } else { 
+                }
+            }
+
+            if (-not $mailboxDetails) {
                 Write-Verbose "Mailbox Details Not Found"
-                $null }
-    
-            $mailboxStats = if ($mailboxDetails -and $tenantStatsHash["PrimaryMailboxStats"]) {
-                if ($tenantStatsHash["PrimaryMailboxStats"].ContainsKey($mailboxDetails.ExchangeGuid.ToString())) {
-                    $tenantStatsHash["PrimaryMailboxStats"][$mailboxDetails.ExchangeGuid.ToString()]
+            }
+
+            $mailboxStats = $null
+            if ($mailboxDetails -and $lookupContext.PrimaryMailboxStats -and $mailboxDetails.ExchangeGuid) {
+                $mailboxStats = Get-DictionaryValue -Dictionary $lookupContext.PrimaryMailboxStats -Key ($mailboxDetails.ExchangeGuid.ToString())
+                if ($mailboxStats) {
                     Write-Verbose "Mailbox Stats Found: $($mailboxDetails.ExchangeGuid.ToString())"
-                } else { $null }
-            } else { 
+                }
+            }
+            if (-not $mailboxStats) {
                 Write-Verbose "Mailbox Stats Not Found"
-                $null }
-    
-            $archiveStats = if ($mailboxDetails -and $tenantStatsHash["ArchiveMailboxStats"] -and $mailboxDetails.ArchiveGuid) {
-                if ($tenantStatsHash["ArchiveMailboxStats"].ContainsKey($mailboxDetails.ArchiveGuid.ToString())) {
-                    $tenantStatsHash["ArchiveMailboxStats"][$mailboxDetails.ArchiveGuid.ToString()]
+            }
+
+            $archiveStats = $null
+            if ($mailboxDetails -and $lookupContext.ArchiveMailboxStats -and $mailboxDetails.ArchiveGuid) {
+                $archiveStats = Get-DictionaryValue -Dictionary $lookupContext.ArchiveMailboxStats -Key ($mailboxDetails.ArchiveGuid.ToString())
+                if ($archiveStats) {
                     Write-Verbose "Archive Stats Found: $($mailboxDetails.ArchiveGuid.ToString())"
-                } else { $null }
-            } else { 
+                }
+            }
+            if (-not $archiveStats) {
                 Write-Verbose "Archive Stats Not Found"
-                $null }
-    
-            # Determine drive-specific details (OneDrive or GroupMailbox SharePoint)
-            $DriveData = if ($IsMailbox -and $entity.RecipientTypeDetails -eq "GroupMailbox" -and $tenantStatsHash["SharePoint"] -and $mailboxDetails.SharePointSiteUrl) {
-                if ($tenantStatsHash["SharePoint"].ContainsKey($mailboxDetails.SharePointSiteUrl)) {
-                    $tenantStatsHash["SharePoint"][$mailboxDetails.SharePointSiteUrl]
+            }
+
+            $driveData = $null
+            if ($IsMailbox -and $entity.RecipientTypeDetails -eq "GroupMailbox" -and $lookupContext.SharePoint -and $mailboxDetails -and $mailboxDetails.SharePointSiteUrl) {
+                $driveData = Get-DictionaryValue -Dictionary $lookupContext.SharePoint -Key $mailboxDetails.SharePointSiteUrl
+                if ($driveData) {
                     Write-Verbose "SharePoint Details Found: $($mailboxDetails.SharePointSiteUrl)"
-                } else { $null }
-            } elseif ($IsMailbox -and $tenantStatsHash["OneDrive"] -and $mailboxDetails.UserPrincipalName -and $tenantStatsHash["OneDrive"].ContainsKey($mailboxDetails.UserPrincipalName)) {
-                $tenantStatsHash["OneDrive"][$mailboxDetails.UserPrincipalName]
-                Write-Verbose "OneDrive Details Found: $($mailboxDetails.UserPrincipalName)"
-            } elseif ($tenantStatsHash["OneDrive"] -and $entity.UserPrincipalName -and $tenantStatsHash["OneDrive"].ContainsKey($entity.UserPrincipalName)) {
-                $tenantStatsHash["OneDrive"][$entity.UserPrincipalName]
-                Write-Verbose "OneDrive Details Found: $($entity.UserPrincipalName)"
-            }  else { $null }
-    
-            # Add mailbox stats, ensuring null safety
-            $MBXSizeGB = if ($mailboxStats -and $mailboxStats.TotalItemSize) {
-                $mailboxBytes = if ($mailboxStats.PSObject.Properties['TotalItemSizeBytes']) {
-                    [int64]$mailboxStats.TotalItemSizeBytes
-                } else {
-                    Convert-DataSizeToBytes -Value $mailboxStats.TotalItemSize
                 }
-                [math]::Round(($mailboxBytes / 1GB), 3)
-            } else { 0 }
-    
-            $MBXItemCount = if ($mailboxStats -and $mailboxStats.ItemCount) {
-                $mailboxStats.ItemCount
-            } else { 0 }
-    
-            # Add archive stats, ensuring null safety
-            $ArchiveSizeGB = if ($archiveStats -and $archiveStats.TotalItemSize) {
-                $archiveBytes = if ($archiveStats.PSObject.Properties['TotalItemSizeBytes']) {
-                    [int64]$archiveStats.TotalItemSizeBytes
-                } else {
-                    Convert-DataSizeToBytes -Value $archiveStats.TotalItemSize
+            }
+            elseif ($IsMailbox -and $lookupContext.OneDrive -and $mailboxDetails -and $mailboxDetails.UserPrincipalName) {
+                $driveData = Get-DictionaryValue -Dictionary $lookupContext.OneDrive -Key $mailboxDetails.UserPrincipalName
+                if ($driveData) {
+                    Write-Verbose "OneDrive Details Found: $($mailboxDetails.UserPrincipalName)"
                 }
-                [math]::Round(($archiveBytes / 1GB), 3)
-            } else { 0 }
-    
-            $ArchiveItemCount = if ($archiveStats -and $archiveStats.ItemCount) {
-                $archiveStats.ItemCount
-            } else { 0 }
-    
-            # Add drive stats, ensuring null safety
-            $DriveURL = if ($DriveData -and $DriveData.URL) {
-                $DriveData.URL
-            } else { $null }
-    
-            $DriveStorageGB = if ($DriveData -and $DriveData.StorageUsageCurrent) {
-                [math]::Round($DriveData.StorageUsageCurrent / 1024, 3)
-            } else { 0 }
-    
-            # Add the computed values to the details object
-            $details | Add-Member -MemberType NoteProperty -Name "MBXSizeGB" -Value $MBXSizeGB
-            $details | Add-Member -MemberType NoteProperty -Name "MBXItemCount" -Value $MBXItemCount
-            $details | Add-Member -MemberType NoteProperty -Name "ArchiveSizeGB" -Value $ArchiveSizeGB
-            $details | Add-Member -MemberType NoteProperty -Name "ArchiveItemCount" -Value $ArchiveItemCount
-            $details | Add-Member -MemberType NoteProperty -Name "DriveURL" -Value $DriveURL
-            $details | Add-Member -MemberType NoteProperty -Name "DriveStorageGB" -Value $DriveStorageGB
-        } catch {
+            }
+            elseif ($lookupContext.OneDrive -and $entity.UserPrincipalName) {
+                $driveData = Get-DictionaryValue -Dictionary $lookupContext.OneDrive -Key $entity.UserPrincipalName
+                if ($driveData) {
+                    Write-Verbose "OneDrive Details Found: $($entity.UserPrincipalName)"
+                }
+            }
+
+            $MBXSizeGB = Resolve-StatsSizeGb -Stats $mailboxStats -CachePrefix 'MBX' -Cache $statsSizeCache
+            $MBXItemCount = if ($mailboxStats -and $mailboxStats.ItemCount) { $mailboxStats.ItemCount } else { 0 }
+            $ArchiveSizeGB = Resolve-StatsSizeGb -Stats $archiveStats -CachePrefix 'ARC' -Cache $statsSizeCache
+            $ArchiveItemCount = if ($archiveStats -and $archiveStats.ItemCount) { $archiveStats.ItemCount } else { 0 }
+            $DriveURL = if ($driveData -and $driveData.URL) { $driveData.URL } else { $null }
+            $DriveStorageGB = if ($driveData -and $driveData.StorageUsageCurrent) { [math]::Round($driveData.StorageUsageCurrent / 1024, 3) } else { 0 }
+
+            $detailsMap["MBXSizeGB"] = $MBXSizeGB
+            $detailsMap["MBXItemCount"] = $MBXItemCount
+            $detailsMap["ArchiveSizeGB"] = $ArchiveSizeGB
+            $detailsMap["ArchiveItemCount"] = $ArchiveItemCount
+            $detailsMap["DriveURL"] = $DriveURL
+            $detailsMap["DriveStorageGB"] = $DriveStorageGB
+        }
+        catch {
             Write-Log -Type ERROR -Message "[Populate-Details] An error occurred in Populating Details for $($entity.PrimarySMTPAddress). $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
         }
-    
-        return $details
+
+        return [PSCustomObject]$detailsMap
     }
+
+    $lookupContext = [ordered]@{
+        UnifiedGroups                  = Get-LookupTable -tenantStatsHash $global:tenantStatsHash -Key 'UnifiedGroups'
+        AllMailboxesByIdentity         = Get-LookupTable -tenantStatsHash $global:tenantStatsHash -Key 'AllMailboxes-MailIdentity'
+        AllMailboxesByUserPrincipalName = Get-LookupTable -tenantStatsHash $global:tenantStatsHash -Key 'AllMailboxes-UserPrincipalName'
+        PrimaryMailboxStats            = Get-LookupTable -tenantStatsHash $global:tenantStatsHash -Key 'PrimaryMailboxStats'
+        ArchiveMailboxStats            = Get-LookupTable -tenantStatsHash $global:tenantStatsHash -Key 'ArchiveMailboxStats'
+        SharePoint                     = Get-LookupTable -tenantStatsHash $global:tenantStatsHash -Key 'SharePoint'
+        OneDrive                       = Get-LookupTable -tenantStatsHash $global:tenantStatsHash -Key 'OneDrive'
+    }
+
+    $statsSizeCache = @{}
     
     # Combine User and Mailbox Stats with Progress
     function Combine-UserAndMailboxStats {
@@ -6100,7 +6178,9 @@ function Report-UserAndMailboxStats {
 
         foreach ($userKey in $tenantStatsHash["Users"].Keys) {
             $user = $tenantStatsHash["Users"][$userKey]
-            Write-Log -Type DEBUG -Message ("[Combine-UserAndMailboxStats] Combining User '{0}' Details" -f $user.DisplayName) -ExportFileLocation $ExportDetails
+            if ($logPerRecordDebug) {
+                Write-Log -Type DEBUG -Message ("[Combine-UserAndMailboxStats] Combining User '{0}' Details" -f $user.DisplayName) -ExportFileLocation $ExportDetails
+            }
 
             Write-ProgressHelper -Total ([Math]::Max($userCount, 1)) -Id $combinedUserProgressId -Activity "Processing User Data" -Operation "Processing user: $($user.DisplayName)"
 
@@ -6110,12 +6190,14 @@ function Report-UserAndMailboxStats {
         Write-ProgressHelper -Total ([Math]::Max($userCount, 1)) -Id $combinedUserProgressId -Activity "Processing User Data" -Completed
 
         # Process Mailboxes
-        $allMailboxes = $tenantStatsHash['AllRecipients'].Values | Where-Object { $_.RecipientTypeDetails -like "*Mailbox" }
+        $allMailboxes = @($tenantStatsHash['AllRecipients'].Values | Where-Object { $_.RecipientTypeDetails -like "*Mailbox" })
         $mailboxCount = $allMailboxes.Count
         Write-Log -Type INFO -Message "[Combine-UserAndMailboxStats] Combining User and Mailbox Details - Processing Mailboxes" -ExportFileLocation $ExportDetails
         foreach ($mailbox in $allMailboxes) {
             #$mailbox = $tenantStatsHash["AllMailboxes"][$mailbox.PrimarySMTPAddress]
-            Write-Log -Type DEBUG -Message ("[Combine-UserAndMailboxStats] Combining Mailbox '{0}' Details" -f $mailbox.PrimarySMTPAddress) -ExportFileLocation $ExportDetails
+            if ($logPerRecordDebug) {
+                Write-Log -Type DEBUG -Message ("[Combine-UserAndMailboxStats] Combining Mailbox '{0}' Details" -f $mailbox.PrimarySMTPAddress) -ExportFileLocation $ExportDetails
+            }
             Write-ProgressHelper -Total ([Math]::Max($mailboxCount, 1)) -Id $combinedMailboxProgressId -Activity "Processing Mailbox Data" -Operation "Processing mailbox: $($mailbox.PrimarySMTPAddress)"
 
             $mailboxDetails = Populate-Details -tenantStatsHash $tenantStatsHash -entity $mailbox -IsMailbox
@@ -6147,10 +6229,21 @@ function Report-UserAndMailboxStats {
         $inactiveMailboxCount = $inactiveMailboxes.Count
         Write-Log -Type INFO -Message "[Report-InactiveMailboxes] Processing Inactive Mailboxes" -ExportFileLocation $ExportDetails
         foreach ($mailbox in $inactiveMailboxes) {
-            Write-Log -Type DEBUG -Message ("[Report-InactiveMailboxes] Processing Inactive Mailbox '{0}'" -f $mailbox.PrimarySMTPAddress) -ExportFileLocation $ExportDetails
+            if ($logPerRecordDebug) {
+                Write-Log -Type DEBUG -Message ("[Report-InactiveMailboxes] Processing Inactive Mailbox '{0}'" -f $mailbox.PrimarySMTPAddress) -ExportFileLocation $ExportDetails
+            }
             Write-ProgressHelper -Total ([Math]::Max($inactiveMailboxCount, 1)) -Id $inactiveMailboxProgressId -Activity "Processing Inactive Mailbox Data" -Operation "Processing inactive mailbox: $($mailbox.PrimarySMTPAddress)"
 
-            $mailboxDetails = Populate-Details -tenantStatsHash $tenantStatsHash -entity $mailbox -IsMailbox
+            $existingMailboxDetails = $null
+            if ($global:tenantStatsHash.ContainsKey("MailboxFullDetails") -and $global:tenantStatsHash["MailboxFullDetails"]) {
+                $existingMailboxDetails = Get-DictionaryValue -Dictionary $global:tenantStatsHash["MailboxFullDetails"] -Key $mailbox.PrimarySMTPAddress
+            }
+
+            $mailboxDetails = if ($existingMailboxDetails) {
+                $existingMailboxDetails
+            } else {
+                Populate-Details -tenantStatsHash $tenantStatsHash -entity $mailbox -IsMailbox
+            }
             $global:tenantStatsHash["InactiveMailboxDetails"][$mailbox.PrimarySMTPAddress] = $mailboxDetails
         }
 
