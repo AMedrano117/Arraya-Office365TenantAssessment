@@ -1539,7 +1539,73 @@ function Get-AllExchangeMailboxDetails {
     try {
         # Gather Mailboxes - Include InActive Mailboxes
         switch ($detailLevel) {
-            {$_ -in "minimum", "combined", "all"} { 
+            "minimum" {
+                $Properties = @(
+                    "ExternalDirectoryObjectId", "DisplayName", "Office", "UserPrincipalName", "RecipientTypeDetails", "PrimarySmtpAddress"
+                    "WhenMailboxCreated", "UsageLocation", "IsInactiveMailbox", "WasInactiveMailbox", "WhenSoftDeleted"
+                    "InPlaceHolds", "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias"
+                    "EmailAddresses", "GrantSendOnBehalfTo", "AcceptMessagesOnlyFrom", "AcceptMessagesOnlyFromDLMembers", "AcceptMessagesOnlyFromSendersOrMembers"
+                    "RejectMessagesFrom", "RejectMessagesFromDLMembers", "RejectMessagesFromSendersOrMembers", "RequireSenderAuthenticationEnabled", "WindowsEmailAddress"
+                    "DistinguishedName", "Identity", "WhenChanged", "WhenCreated", "ExchangeObjectId"
+                    "Guid", "DeliverToMailboxAndForward", "ForwardingAddress", "ForwardingSmtpAddress", "LitigationHoldEnabled"
+                    "RetentionHoldEnabled", "DelayHoldApplied", "RetentionPolicy", "ExchangeGuid", "IsResource"
+                    "IsShared", "ResourceType", "RoomMailboxAccountEnabled", "WindowsLiveID", "MicrosoftOnlineServicesID"
+                    "EffectivePublicFolderMailbox", "MailboxPlan", "ArchiveStatus", "ArchiveState", "ArchiveName"
+                    "ArchiveGuid", "AutoExpandingArchiveEnabled", "DisabledArchiveGuid", "PersistedCapabilities"
+                )
+
+                $DesiredProperties = @(
+                    "ExternalDirectoryObjectId", "DisplayName", "Office", "UserPrincipalName", "RecipientTypeDetails", "PrimarySmtpAddress",
+                    "WhenMailboxCreated", "UsageLocation", "IsInactiveMailbox", "WasInactiveMailbox", "WhenSoftDeleted",
+                    @{Name="InPlaceHolds"; Expression={$_.InPlaceHolds -join ","}},"AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias",
+                    @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}}, 
+                    @{Name="GrantSendOnBehalfTo"; Expression={$_.GrantSendOnBehalfTo -join ","}}, 
+                    @{Name="AcceptMessagesOnlyFrom"; Expression={$_.AcceptMessagesOnlyFrom -join ","}}, 
+                    @{Name="AcceptMessagesOnlyFromDLMembers"; Expression={$_.AcceptMessagesOnlyFromDLMembers -join ","}}, 
+                    @{Name="AcceptMessagesOnlyFromSendersOrMembers"; Expression={$_.AcceptMessagesOnlyFromSendersOrMembers -join ","}}, 
+                    @{Name="RejectMessagesFrom"; Expression={$_.RejectMessagesFrom -join ","}}, 
+                    @{Name="RejectMessagesFromDLMembers"; Expression={$_.RejectMessagesFromDLMembers -join ","}}, 
+                    @{Name="RejectMessagesFromSendersOrMembers"; Expression={$_.RejectMessagesFromSendersOrMembers -join ","}}, 
+                    "RequireSenderAuthenticationEnabled", "WindowsEmailAddress",
+                    "DistinguishedName", "Identity", "WhenChanged", "WhenCreated", "ExchangeObjectId",
+                    "Guid", "DeliverToMailboxAndForward", "ForwardingAddress", "ForwardingSmtpAddress", "LitigationHoldEnabled",
+                    "RetentionHoldEnabled", "DelayHoldApplied", "RetentionPolicy", "ExchangeGuid", "IsResource",
+                    "IsShared", "ResourceType", "RoomMailboxAccountEnabled", "WindowsLiveID", "MicrosoftOnlineServicesID", "EffectivePublicFolderMailbox", "MailboxPlan", 
+                    "ArchiveStatus", "ArchiveState", @{Name="ArchiveName"; Expression={$_.ArchiveName -join ","}}, "ArchiveGuid", "AutoExpandingArchiveEnabled", "DisabledArchiveGuid",
+                    @{Name="PersistedCapabilities"; Expression={$_.PersistedCapabilities -join ","}}
+                )
+
+                $exoMailboxes = Invoke-QuietCommand -ScriptBlock {
+                    Get-EXOMailbox -Filter "RecipientTypeDetails -ne 'DiscoveryMailbox'" -Properties $Properties -IncludeInactiveMailbox -ResultSize Unlimited -ErrorAction SilentlyContinue | Select-Object $DesiredProperties
+                }
+            }
+            "combined" {
+                # Combined mode optimization: request a slimmer property set to reduce EXO payload and local projection overhead.
+                $Properties = @(
+                    "ExternalDirectoryObjectId", "DisplayName", "Office", "UserPrincipalName", "RecipientTypeDetails", "PrimarySmtpAddress"
+                    "WhenMailboxCreated", "UsageLocation", "IsInactiveMailbox", "WasInactiveMailbox", "WhenSoftDeleted"
+                    "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias", "EmailAddresses"
+                    "Identity", "WhenCreated", "Guid", "DeliverToMailboxAndForward", "ForwardingAddress"
+                    "ForwardingSmtpAddress", "LitigationHoldEnabled", "RetentionHoldEnabled", "DelayHoldApplied", "RetentionPolicy"
+                    "ExchangeGuid", "ArchiveStatus", "ArchiveState", "ArchiveGuid", "ArchiveName", "AutoExpandingArchiveEnabled"
+                )
+
+                $DesiredProperties = @(
+                    "ExternalDirectoryObjectId", "DisplayName", "Office", "UserPrincipalName", "RecipientTypeDetails", "PrimarySmtpAddress",
+                    "WhenMailboxCreated", "UsageLocation", "IsInactiveMailbox", "WasInactiveMailbox", "WhenSoftDeleted",
+                    "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias",
+                    @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}},
+                    "Identity", "WhenCreated", "Guid", "DeliverToMailboxAndForward", "ForwardingAddress", "ForwardingSmtpAddress",
+                    "LitigationHoldEnabled", "RetentionHoldEnabled", "DelayHoldApplied", "RetentionPolicy",
+                    "ExchangeGuid", "ArchiveStatus", "ArchiveState", "ArchiveGuid",
+                    @{Name="ArchiveName"; Expression={$_.ArchiveName -join ","}}, "AutoExpandingArchiveEnabled"
+                )
+
+                $exoMailboxes = Invoke-QuietCommand -ScriptBlock {
+                    Get-EXOMailbox -Filter "RecipientTypeDetails -ne 'DiscoveryMailbox'" -Properties $Properties -IncludeInactiveMailbox -ResultSize Unlimited -ErrorAction SilentlyContinue | Select-Object $DesiredProperties
+                }
+            }
+            "all" {
                 $Properties = @(
                     "ExternalDirectoryObjectId", "DisplayName", "Office", "UserPrincipalName", "RecipientTypeDetails", "PrimarySmtpAddress"
                     "WhenMailboxCreated", "UsageLocation", "IsInactiveMailbox", "WasInactiveMailbox", "WhenSoftDeleted"
@@ -2831,6 +2897,18 @@ function Get-AllPublicFolderDetails {
         [string]$ExchangeEnvironment = 'Office365'     
     )
     $start = Get-Date
+    $depthPolicy = if ($script:CollectionDepthPolicy) {
+        $script:CollectionDepthPolicy
+    } else {
+        Get-ArrayaCollectionDepthPolicy -ReportingMode ((Get-Culture).TextInfo.ToTitleCase($detailLevel.ToLowerInvariant()))
+    }
+    $collectPublicFolderPermissions = $true
+    if (
+        ($detailLevel -eq 'combined') -or
+        ($depthPolicy -and $depthPolicy.PSObject.Properties['IsCombined'] -and ($depthPolicy.IsCombined -eq $true))
+    ) {
+        $collectPublicFolderPermissions = $false
+    }
     # Ensure global hash table structure
     if (-not $global:tenantStatsHash) {
         $global:tenantStatsHash = @{}
@@ -2896,50 +2974,52 @@ function Get-AllPublicFolderDetails {
 
     # Public Folder Permissions
     #***************************
+    $global:tenantStatsHash["PublicFolderPerms"] = @{}
     $publicFolderPermProgressId = 37
     $publicFolderPermProgressTotal = 1
-    try {
-        Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] Gathering all public folder permissions" -ExportFileLocation $ExportDetails
-        $PublicFolderPermissions = $allPublicFolders | get-publicfolderclientpermission -ErrorAction SilentlyContinue
-        #Progress Bar Parameters Reset
-        $start = Get-Date
-        Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] Found $($PublicFolderPermissions.count) public folder permissions" -ExportFileLocation $ExportDetails
-
-        $global:tenantStatsHash["PublicFolderPerms"] = @{}
-        
-        Write-Host "Processing Public Folder Permissions..." -ForegroundColor Cyan -nonewline
-        Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] Processing all public folder permissions" -ExportFileLocation $ExportDetails
-        $totalCount = ($PublicFolderPermissions | Measure-Object).count
-        $publicFolderPermProgressTotal = [Math]::Max($totalCount, 1)
-        foreach($publicFolderPermission in $PublicFolderPermissions) {
-            Write-ProgressHelper -Total $publicFolderPermProgressTotal -Id $publicFolderPermProgressId -Activity "Processing all public folder permissions" -Operation "Gathering Public Folder Permissions for $($publicFolderPermission.Identity)"
-            Write-Log -Type DEBUG -Message "[Get-AllPublicFolderDetails] Gathering Public Folder Permissions for $($publicFolderPermission.Identity)" -ExportFileLocation $ExportDetails
-
+    if ($collectPublicFolderPermissions) {
+        try {
+            Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] Gathering all public folder permissions" -ExportFileLocation $ExportDetails
+            $PublicFolderPermissions = $allPublicFolders | get-publicfolderclientpermission -ErrorAction SilentlyContinue
+            Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] Found $($PublicFolderPermissions.count) public folder permissions" -ExportFileLocation $ExportDetails
             
-            $key = "$($publicFolderPermission.Identity)-$($publicFolderPermission.User.Displayname)"
-            $permissionObject = @(
-                [PSCustomObject]@{
-                    FolderName = $publicFolderPermission.FolderName
-                    FolderPath = $publicFolderPermission.Identity
-                    Displayname = $publicFolderPermission.User.Displayname
-                    PrimarySMTPAddress = $publicFolderPermission.User.RecipientPrincipal.PrimarySmtpAddress
-                    AccessRights = ($publicFolderPermission.AccessRights -join ",")
-                }
-            )
+            Write-Host "Processing Public Folder Permissions..." -ForegroundColor Cyan -nonewline
+            Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] Processing all public folder permissions" -ExportFileLocation $ExportDetails
+            $totalCount = ($PublicFolderPermissions | Measure-Object).count
+            $publicFolderPermProgressTotal = [Math]::Max($totalCount, 1)
+            foreach($publicFolderPermission in $PublicFolderPermissions) {
+                Write-ProgressHelper -Total $publicFolderPermProgressTotal -Id $publicFolderPermProgressId -Activity "Processing all public folder permissions" -Operation "Gathering Public Folder Permissions for $($publicFolderPermission.Identity)"
+                Write-Log -Type DEBUG -Message "[Get-AllPublicFolderDetails] Gathering Public Folder Permissions for $($publicFolderPermission.Identity)" -ExportFileLocation $ExportDetails
 
-            if($global:tenantStatsHash["PublicFolderPerms"].ContainsKey($key)) {
-                $global:tenantStatsHash["PublicFolderPerms"][$key] += $permissionObject
-            }
-            else {
-                $global:tenantStatsHash["PublicFolderPerms"][$key] = @($permissionObject)
+                $key = "$($publicFolderPermission.Identity)-$($publicFolderPermission.User.Displayname)"
+                $permissionObject = @(
+                    [PSCustomObject]@{
+                        FolderName = $publicFolderPermission.FolderName
+                        FolderPath = $publicFolderPermission.Identity
+                        Displayname = $publicFolderPermission.User.Displayname
+                        PrimarySMTPAddress = $publicFolderPermission.User.RecipientPrincipal.PrimarySmtpAddress
+                        AccessRights = ($publicFolderPermission.AccessRights -join ",")
+                    }
+                )
+
+                if($global:tenantStatsHash["PublicFolderPerms"].ContainsKey($key)) {
+                    $global:tenantStatsHash["PublicFolderPerms"][$key] += $permissionObject
+                }
+                else {
+                    $global:tenantStatsHash["PublicFolderPerms"][$key] = @($permissionObject)
+                }
             }
         }
+        catch {
+            Write-Log -Type ERROR -Message "[Get-AllPublicFolderDetails] An error occurred in running Get-AllPublicFolderPermissions function. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
+        }
+        finally {
+            Write-ProgressHelper -Total $publicFolderPermProgressTotal -Id $publicFolderPermProgressId -Activity "Processing all public folder permissions" -Completed
+        }
     }
-    catch {
-        Write-Log -Type ERROR -Message "[Get-AllPublicFolderDetails] An error occurred in running Get-AllPublicFolderPermissions function. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
-    }
-    finally {
-        Write-ProgressHelper -Total $publicFolderPermProgressTotal -Id $publicFolderPermProgressId -Activity "Processing all public folder permissions" -Completed
+    else {
+        Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] Combined mode optimization active. Skipping public folder permission expansion and exporting an empty PublicFolderPerms table." -ExportFileLocation $ExportDetails
+        Write-Host "Skipping Public Folder Permissions in combined mode..." -ForegroundColor DarkGray -nonewline
     }
     
     #Combine Stats with Details
