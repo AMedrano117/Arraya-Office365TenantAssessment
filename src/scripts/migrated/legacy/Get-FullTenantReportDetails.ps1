@@ -1772,7 +1772,21 @@ function Get-AllExchangeMailboxDetails {
             $isMinimumMode = $true
         }
 
+        $shouldPreCacheUnifiedGroupStats = $false
         if (-not $isMinimumMode) {
+            $shouldPreCacheUnifiedGroupStats = $true
+            if (
+                $script:ProfileCollectionPlan -and
+                $script:ProfileCollectionPlan -is [System.Collections.IDictionary] -and
+                $script:ProfileCollectionPlan.Contains('CollectUnifiedGroups') -and
+                ($script:ProfileCollectionPlan.CollectUnifiedGroups -eq $true)
+            ) {
+                $shouldPreCacheUnifiedGroupStats = $false
+                Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Skipping unified group mailbox stats pre-cache because unified group collection is enabled in this run." -ExportFileLocation $ExportDetails
+            }
+        }
+
+        if ($shouldPreCacheUnifiedGroupStats) {
             try {
                 Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Pre-caching unified group mailbox stats into PrimaryMailboxStats." -ExportFileLocation $ExportDetails
                 $unifiedGroupsForStats = @(
