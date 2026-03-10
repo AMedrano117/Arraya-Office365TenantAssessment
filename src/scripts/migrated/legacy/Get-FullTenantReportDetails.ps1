@@ -568,6 +568,31 @@ function Invoke-AssessmentProgressStep {
     }
 }
 
+function Invoke-ProfileAwareAssessmentStep {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Name,
+        [Parameter(Mandatory)]
+        [bool]$Enabled,
+        [Parameter(Mandatory)]
+        [scriptblock]$ScriptBlock,
+        [Parameter(Mandatory = $false)]
+        [string]$SkipReason = 'Disabled by output profile'
+    )
+
+    if ($Enabled) {
+        Invoke-AssessmentProgressStep -Name $Name -ScriptBlock $ScriptBlock
+        return
+    }
+
+    $skipMessage = "Skipped by output profile '$OutputProfile': $SkipReason"
+    Invoke-AssessmentProgressStep -Name $Name -ScriptBlock {
+        Write-Host ("{0} ...Skipped" -f $Name) -ForegroundColor DarkYellow
+        Write-Log -Type INFO -Message ("[{0}] {1}" -f $Name, $skipMessage) -ExportFileLocation $ExportDetails
+    }
+}
+
 function Complete-AssessmentProgress {
     [CmdletBinding()]
     param()
@@ -6879,37 +6904,47 @@ function Get-SecuritySecureScoreReport {
     }
     $global:tenantStatsHash["SecuritySecureScore"] = @{}
     $global:tenantStatsHash["SecureScoreActions"] = @{}
+    $depthPolicy = if ($script:CollectionDepthPolicy) {
+        $script:CollectionDepthPolicy
+    } else {
+        Get-ArrayaCollectionDepthPolicy -ReportingMode ((Get-Culture).TextInfo.ToTitleCase($detailLevel.ToLowerInvariant()))
+    }
+    $collectSecureScoreMappings = ($depthPolicy.CollectSecureScoreMappings -eq $true)
 
     Write-Host "Getting Security Score Details ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] START: Gathering all Security Score details" -ExportFileLocation $ExportDetails
     try {
         $controlProfileLookup = @{}
-        try {
-            $controlProfileUri = "https://graph.microsoft.com/v1.0/security/secureScoreControlProfiles?`$select=id,title,maxScore,rank,controlCategory,service,actionUrl,remediation,description,threats,userImpact,implementationCost,tier"
-            $controlProfiles = @(Get-ArrayaGraphResource -Uri $controlProfileUri -PageSize 250 -Activity 'Secure Score control profile mappings' -Headers $global:GraphHeaders)
-            foreach ($profile in $controlProfiles) {
-                if ($profile.Id) {
-                    $controlProfileLookup[$profile.Id] = [PSCustomObject]@{
-                        Id                 = $profile.Id
-                        Title              = $profile.Title
-                        MaxScore           = $profile.MaxScore
-                        Rank               = $profile.Rank
-                        ControlCategory    = $profile.ControlCategory
-                        Service            = $profile.Service
-                        ActionUrl          = $profile.ActionUrl
-                        Remediation        = $profile.Remediation
-                        Description        = $profile.Description
-                        Threats            = @($profile.Threats)
-                        UserImpact         = $profile.UserImpact
-                        ImplementationCost = $profile.ImplementationCost
-                        Tier               = $profile.Tier
+        if ($collectSecureScoreMappings) {
+            try {
+                $controlProfileUri = "https://graph.microsoft.com/v1.0/security/secureScoreControlProfiles?`$select=id,title,maxScore,rank,controlCategory,service,actionUrl,remediation,description,threats,userImpact,implementationCost,tier"
+                $controlProfiles = @(Get-ArrayaGraphResource -Uri $controlProfileUri -PageSize 250 -Activity 'Secure Score control profile mappings' -Headers $global:GraphHeaders)
+                foreach ($profile in $controlProfiles) {
+                    if ($profile.Id) {
+                        $controlProfileLookup[$profile.Id] = [PSCustomObject]@{
+                            Id                 = $profile.Id
+                            Title              = $profile.Title
+                            MaxScore           = $profile.MaxScore
+                            Rank               = $profile.Rank
+                            ControlCategory    = $profile.ControlCategory
+                            Service            = $profile.Service
+                            ActionUrl          = $profile.ActionUrl
+                            Remediation        = $profile.Remediation
+                            Description        = $profile.Description
+                            Threats            = @($profile.Threats)
+                            UserImpact         = $profile.UserImpact
+                            ImplementationCost = $profile.ImplementationCost
+                            Tier               = $profile.Tier
+                        }
                     }
                 }
+                Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] Loaded $($controlProfileLookup.Count) Secure Score control profile mappings" -ExportFileLocation $ExportDetails
+                $controlProfiles = $null
+            } catch {
+                Write-Log -Type WARNING -Message "[Get-SecuritySecureScoreReport] Unable to load Secure Score control profiles for source mapping: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
             }
-            Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] Loaded $($controlProfileLookup.Count) Secure Score control profile mappings" -ExportFileLocation $ExportDetails
-            $controlProfiles = $null
-        } catch {
-            Write-Log -Type WARNING -Message "[Get-SecuritySecureScoreReport] Unable to load Secure Score control profiles for source mapping: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        } else {
+            Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] Skipping Secure Score control profile mappings for this output profile." -ExportFileLocation $ExportDetails
         }
 
         if ($MostRecent) {
@@ -6998,7 +7033,7 @@ function Get-SecuritySecureScoreReport {
         }
 
         $latestScore = @($secureScore | Sort-Object CreatedDateTime -Descending | Select-Object -First 1)
-        if ($latestScore.Count -gt 0) {
+        if ($latestScore.Count -gt 0 -and $collectSecureScoreMappings) {
             $actionIndex = 0
             foreach ($controlScore in @($latestScore[0].ControlScores)) {
                 $actionIndex++
@@ -7060,6 +7095,8 @@ function Get-SecuritySecureScoreReport {
                 $global:tenantStatsHash["SecureScoreActions"][("{0:D3}-{1}" -f $actionIndex, $controlName)] = $actionRow
             }
             Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] Added $($global:tenantStatsHash['SecureScoreActions'].Count) Secure Score recommendation mappings" -ExportFileLocation $ExportDetails
+        } elseif (-not $collectSecureScoreMappings) {
+            Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] Secure Score recommendation mappings were skipped for this output profile." -ExportFileLocation $ExportDetails
         }
 
         $latestScore = $null
@@ -14378,7 +14415,48 @@ $global:AllDiscoveryErrors = New-Object System.Collections.Generic.List[pscustom
 Write-Host "Output profile: $OutputProfile (scope: $reportingMode)" -ForegroundColor Green
 
 $script:CollectionDepthPolicy = Get-ArrayaCollectionDepthPolicy -ReportingMode ((Get-Culture).TextInfo.ToTitleCase($reportingMode))
-Write-Log -Type INFO -Message ("Collection depth policy: Mode={0}; EntraDeep={1}; GroupCounts={2}; GroupLicenses={3}; SSOAppDetails={4}" -f $script:CollectionDepthPolicy.ReportingMode, $script:CollectionDepthPolicy.CollectEntraGroupDeepDetails, $script:CollectionDepthPolicy.CollectEntraGroupMemberCounts, $script:CollectionDepthPolicy.CollectEntraGroupLicenseChecks, $script:CollectionDepthPolicy.CollectSsoApplicationDetails) -ExportFileLocation $ExportDetails
+
+$collectSecureScoreMappings = ($profilePolicy.GenerateBestPracticesHtml -or $profilePolicy.GenerateWorkbook -or $profilePolicy.GenerateJson)
+if ($script:CollectionDepthPolicy.PSObject.Properties['CollectSecureScoreMappings']) {
+    $script:CollectionDepthPolicy | Add-Member -MemberType NoteProperty -Name CollectSecureScoreMappings -Value ([bool]$collectSecureScoreMappings) -Force
+}
+
+# Tenant-to-tenant migration profile needs richer user licensing detail even in combined mode.
+if ($OutputProfile -eq 'TenantToTenantMigration') {
+    $script:CollectionDepthPolicy | Add-Member -MemberType NoteProperty -Name CollectExtendedGraphEnrichment -Value $true -Force
+}
+
+$script:ProfileCollectionPlan = [ordered]@{
+    CollectExchangeRecipients        = $true
+    CollectExchangeGroups            = $true
+    CollectMailFlowRulesConnectors   = $true
+    CollectPublicFolders             = $true
+    CollectThirdPartySpamFiltering   = $true
+    CollectSmtpRelayConfiguration    = $true
+    CollectTeamsVoiceDetails         = $true
+    CollectUnifiedGroups             = $true
+    BuildOwnershipGovernanceTables   = ($profilePolicy.GenerateTechnicalHtml -or $profilePolicy.GenerateBestPracticesHtml -or $profilePolicy.GenerateWorkbook -or $profilePolicy.GenerateJson)
+    BuildAssessmentReportTables      = ($profilePolicy.GenerateBestPracticesHtml -or $profilePolicy.GenerateWorkbook -or $profilePolicy.GenerateQuestionnaire -or $profilePolicy.GenerateJson)
+    BuildConfigurationSummaryTables  = [bool]$profilePolicy.GenerateJson
+    BuildLicenseClassificationMetadata = ($profilePolicy.GenerateWorkbook -or $profilePolicy.GenerateTechnicalHtml -or $profilePolicy.GenerateBestPracticesHtml -or $profilePolicy.GenerateQuestionnaire -or $profilePolicy.GenerateJson)
+}
+
+switch ($OutputProfile) {
+    'ExecutiveLevel' {
+        # Best-practices only profile: trim technical/deep transport collectors.
+        $script:ProfileCollectionPlan.CollectExchangeRecipients = $false
+        $script:ProfileCollectionPlan.CollectExchangeGroups = $false
+        $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors = $false
+        $script:ProfileCollectionPlan.CollectPublicFolders = $false
+        $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering = $false
+        $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration = $false
+        $script:ProfileCollectionPlan.CollectTeamsVoiceDetails = $false
+        $script:ProfileCollectionPlan.CollectUnifiedGroups = $false
+    }
+}
+
+Write-Log -Type INFO -Message ("Collection depth policy: Mode={0}; EntraDeep={1}; GroupCounts={2}; GroupLicenses={3}; SSOAppDetails={4}; ExtendedGraphEnrichment={5}; SecureScoreMappings={6}" -f $script:CollectionDepthPolicy.ReportingMode, $script:CollectionDepthPolicy.CollectEntraGroupDeepDetails, $script:CollectionDepthPolicy.CollectEntraGroupMemberCounts, $script:CollectionDepthPolicy.CollectEntraGroupLicenseChecks, $script:CollectionDepthPolicy.CollectSsoApplicationDetails, $script:CollectionDepthPolicy.CollectExtendedGraphEnrichment, $script:CollectionDepthPolicy.CollectSecureScoreMappings) -ExportFileLocation $ExportDetails
+Write-Log -Type INFO -Message ("Profile collection plan ({0}): ExchangeRecipients={1}; ExchangeGroups={2}; MailFlow={3}; PublicFolders={4}; SpamFiltering={5}; SMTPRelay={6}; TeamsVoice={7}; UnifiedGroups={8}; OwnershipTables={9}; AssessmentTables={10}; ConfigSummaryTables={11}; LicenseMetadata={12}" -f $OutputProfile, $script:ProfileCollectionPlan.CollectExchangeRecipients, $script:ProfileCollectionPlan.CollectExchangeGroups, $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors, $script:ProfileCollectionPlan.CollectPublicFolders, $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering, $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration, $script:ProfileCollectionPlan.CollectTeamsVoiceDetails, $script:ProfileCollectionPlan.CollectUnifiedGroups, $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables, $script:ProfileCollectionPlan.BuildAssessmentReportTables, $script:ProfileCollectionPlan.BuildConfigurationSummaryTables, $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata) -ExportFileLocation $ExportDetails
 
 #Hash Table to hold final report data
 $global:tenantStatsHash = @{}
@@ -14413,17 +14491,17 @@ $overallCollectionSteps = $baseCollectionSteps + $identitySteps + $combineSteps 
 Initialize-AssessmentProgress -TotalSteps $overallCollectionSteps
 
 Write-ConsoleSection -Step '1/5' -Title 'Exchange inventory'
-Invoke-AssessmentProgressStep -Name 'Exchange recipients' -ScriptBlock { Get-AllRecipientDetails -detailLevel $reportingMode }
+Invoke-ProfileAwareAssessmentStep -Name 'Exchange recipients' -Enabled $script:ProfileCollectionPlan.CollectExchangeRecipients -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllRecipientDetails -detailLevel $reportingMode }
 Invoke-AssessmentProgressStep -Name 'Exchange mailboxes' -ScriptBlock { Get-AllExchangeMailboxDetails -detailLevel $reportingMode }
-Invoke-AssessmentProgressStep -Name 'Exchange groups' -ScriptBlock { Get-ExchangeGroupDetails -detailLevel $reportingMode }
-Invoke-AssessmentProgressStep -Name 'Mail flow rules/connectors' -ScriptBlock { Get-MailFlowRulesandConnectors -detailLevel $reportingMode }
-Invoke-AssessmentProgressStep -Name 'Public folders' -ScriptBlock { Get-AllPublicFolderDetails -detailLevel $reportingMode }
+Invoke-ProfileAwareAssessmentStep -Name 'Exchange groups' -Enabled $script:ProfileCollectionPlan.CollectExchangeGroups -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-ExchangeGroupDetails -detailLevel $reportingMode }
+Invoke-ProfileAwareAssessmentStep -Name 'Mail flow rules/connectors' -Enabled $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors -SkipReason 'Skipped in best-practices-only profile to reduce runtime.' -ScriptBlock { Get-MailFlowRulesandConnectors -detailLevel $reportingMode }
+Invoke-ProfileAwareAssessmentStep -Name 'Public folders' -Enabled $script:ProfileCollectionPlan.CollectPublicFolders -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllPublicFolderDetails -detailLevel $reportingMode }
 
 Write-ConsoleSection -Step '2/5' -Title 'Hybrid and configuration'
 Invoke-AssessmentProgressStep -Name 'Exchange hybrid configuration' -ScriptBlock { Get-ExchangeHybridConfiguration -detailLevel $reportingMode }
 Invoke-AssessmentProgressStep -Name 'Federation/cross-tenant configuration' -ScriptBlock { Get-FederationAndCrossTenantConfiguration }
-Invoke-AssessmentProgressStep -Name 'Third-party spam filtering configuration' -ScriptBlock { Get-ThirdPartySpamFilteringConfig }
-Invoke-AssessmentProgressStep -Name 'SMTP relay configuration' -ScriptBlock { Get-SMTPRelayConfiguration }
+Invoke-ProfileAwareAssessmentStep -Name 'Third-party spam filtering configuration' -Enabled $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering -SkipReason 'Requires mail flow connector/rule collection, which is disabled for this profile.' -ScriptBlock { Get-ThirdPartySpamFilteringConfig }
+Invoke-ProfileAwareAssessmentStep -Name 'SMTP relay configuration' -Enabled $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration -SkipReason 'Requires mail flow connector collection, which is disabled for this profile.' -ScriptBlock { Get-SMTPRelayConfiguration }
 
 Write-ConsoleSection -Step '3/5' -Title 'Identity, devices, and licensing'
 # Determine if using REST or SDK Graph API
@@ -14438,7 +14516,7 @@ switch ($GraphTest) {
         Invoke-AssessmentProgressStep -Name 'Conditional Access policies' -ScriptBlock { Get-ConditionalAccessPoliciesReport -detailLevel $reportingMode }
         Invoke-AssessmentProgressStep -Name 'License SKUs' -ScriptBlock { Get-AllLicenseSKUs }
         Invoke-AssessmentProgressStep -Name 'Users' -ScriptBlock { Get-AllUserDetails -detailLevel $reportingMode }
-        Invoke-AssessmentProgressStep -Name 'Teams voice details' -ScriptBlock { Get-TeamsVoiceDetails }
+        Invoke-ProfileAwareAssessmentStep -Name 'Teams voice details' -Enabled $script:ProfileCollectionPlan.CollectTeamsVoiceDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-TeamsVoiceDetails }
         Invoke-AssessmentProgressStep -Name 'Entra groups (SDK)' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType SDK }
         Invoke-AssessmentProgressStep -Name 'Domains' -ScriptBlock { Get-AllOffice365Domains }
         Invoke-AssessmentProgressStep -Name 'Admins' -ScriptBlock { Get-AllOffice365Admins }
@@ -14452,7 +14530,7 @@ switch ($GraphTest) {
 }
 
 Write-ConsoleSection -Step '4/5' -Title 'Collaboration and SharePoint'
-Invoke-AssessmentProgressStep -Name 'Unified groups' -ScriptBlock { Get-AllUnifiedGroups -detailLevel $reportingMode }
+Invoke-ProfileAwareAssessmentStep -Name 'Unified groups' -Enabled $script:ProfileCollectionPlan.CollectUnifiedGroups -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllUnifiedGroups -detailLevel $reportingMode }
 $sharePointDiscoveryService = if ($connectionResult -and $connectionResult.SharePointOnline) {
     'SPO'
 }
@@ -14474,10 +14552,10 @@ if ($reportingMode -eq "combined" -or $reportingMode -eq "all") {
     Invoke-AssessmentProgressStep -Name 'Combined user/mailbox reporting' -ScriptBlock { Report-UserAndMailboxStats }
 }
 
-Invoke-AssessmentProgressStep -Name 'Ownership governance tables' -ScriptBlock { Update-OwnershipGovernanceTables -TenantStatsHash $global:tenantStatsHash }
-Invoke-AssessmentProgressStep -Name 'License classification metadata' -ScriptBlock { Update-LicenseClassificationMetadata -TenantStatsHash $global:tenantStatsHash }
-Invoke-AssessmentProgressStep -Name 'Best-practice assessment tables' -ScriptBlock { Update-AssessmentReportTables -TenantStatsHash $global:tenantStatsHash }
-Invoke-AssessmentProgressStep -Name 'Configuration summary tables' -ScriptBlock { Update-ConfigurationSummaryTables -TenantStatsHash $global:tenantStatsHash }
+Invoke-ProfileAwareAssessmentStep -Name 'Ownership governance tables' -Enabled $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables -SkipReason 'Ownership governance table build is disabled for this profile.' -ScriptBlock { Update-OwnershipGovernanceTables -TenantStatsHash $global:tenantStatsHash }
+Invoke-ProfileAwareAssessmentStep -Name 'License classification metadata' -Enabled $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata -SkipReason 'License classification metadata is disabled for this profile.' -ScriptBlock { Update-LicenseClassificationMetadata -TenantStatsHash $global:tenantStatsHash }
+Invoke-ProfileAwareAssessmentStep -Name 'Best-practice assessment tables' -Enabled $script:ProfileCollectionPlan.BuildAssessmentReportTables -SkipReason 'Best-practice table build is disabled for this profile.' -ScriptBlock { Update-AssessmentReportTables -TenantStatsHash $global:tenantStatsHash }
+Invoke-ProfileAwareAssessmentStep -Name 'Configuration summary tables' -Enabled $script:ProfileCollectionPlan.BuildConfigurationSummaryTables -SkipReason 'Configuration summary tables are disabled for this profile.' -ScriptBlock { Update-ConfigurationSummaryTables -TenantStatsHash $global:tenantStatsHash }
 Complete-AssessmentProgress
 Write-CollectorInventoryMatrix -TenantStatsHash $global:tenantStatsHash -ExportFileLocation $ExportDetails
 Write-AssessmentStepMetricsSummary -ExportFileLocation $ExportDetails
@@ -14489,7 +14567,13 @@ Write-AssessmentStepMetricsSummary -ExportFileLocation $ExportDetails
 
 #Exclude specific reports from Export
 Write-ConsoleSection -Step '5/5' -Title 'Exporting results'
-$ExportTenantStatsHash = Filter-TenantStatsHash -tenantStatsHash $global:tenantStatsHash -reportingMode $reportingMode -GraphTest $GraphTest
+$requiresFilteredExportSnapshot = ((-not $effectiveSkipWorkbook) -or (-not $effectiveSkipJsonReport))
+$ExportTenantStatsHash = $null
+if ($requiresFilteredExportSnapshot) {
+    $ExportTenantStatsHash = Filter-TenantStatsHash -tenantStatsHash $global:tenantStatsHash -reportingMode $reportingMode -GraphTest $GraphTest
+} else {
+    Write-Log -Type INFO -Message "Skipping filtered export snapshot build because workbook and JSON outputs are both disabled for this profile." -ExportFileLocation $ExportDetails
+}
 $generatedArtifacts = [ordered]@{
     Workbook                = $null
     'Best Practices HTML'   = $null
