@@ -1007,6 +1007,265 @@ function Test-ShouldCollectUnifiedGroupMailboxStats {
     return $true
 }
 
+function Normalize-GraphReportFieldName {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Name
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return ''
+    }
+
+    return (($Name -replace '[^a-zA-Z0-9]', '').ToLowerInvariant())
+}
+
+function Get-GraphReportFieldValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Row,
+        [Parameter(Mandatory = $true)]
+        [string[]]$FieldNames
+    )
+
+    if (-not $Row) {
+        return $null
+    }
+
+    $normalizedPropertyMap = @{}
+    foreach ($property in $Row.PSObject.Properties) {
+        $normalizedName = Normalize-GraphReportFieldName -Name $property.Name
+        if (-not [string]::IsNullOrWhiteSpace($normalizedName) -and -not $normalizedPropertyMap.ContainsKey($normalizedName)) {
+            $normalizedPropertyMap[$normalizedName] = $property.Value
+        }
+    }
+
+    foreach ($fieldName in $FieldNames) {
+        if ($Row.PSObject.Properties[$fieldName]) {
+            $rawValue = [string]$Row.PSObject.Properties[$fieldName].Value
+            if (-not [string]::IsNullOrWhiteSpace($rawValue)) {
+                return $rawValue.Trim()
+            }
+        }
+
+        $normalizedFieldName = Normalize-GraphReportFieldName -Name $fieldName
+        if (
+            -not [string]::IsNullOrWhiteSpace($normalizedFieldName) -and
+            $normalizedPropertyMap.ContainsKey($normalizedFieldName)
+        ) {
+            $rawValue = [string]$normalizedPropertyMap[$normalizedFieldName]
+            if (-not [string]::IsNullOrWhiteSpace($rawValue)) {
+                return $rawValue.Trim()
+            }
+        }
+    }
+
+    return $null
+}
+
+function Convert-GraphReportValueToInt64 {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        $Value
+    )
+
+    if ($null -eq $Value) {
+        return [int64]0
+    }
+
+    if ($Value -is [int64] -or $Value -is [int32] -or $Value -is [long]) {
+        return [int64]$Value
+    }
+
+    $text = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return [int64]0
+    }
+
+    $text = $text -replace ',', ''
+    $styles = [System.Globalization.NumberStyles]::Any
+    $culture = [System.Globalization.CultureInfo]::InvariantCulture
+    $parsedInt64 = [int64]0
+    if ([int64]::TryParse($text, $styles, $culture, [ref]$parsedInt64)) {
+        return $parsedInt64
+    }
+
+    $parsedDouble = [double]0
+    if ([double]::TryParse($text, $styles, $culture, [ref]$parsedDouble)) {
+        return [int64][math]::Round($parsedDouble, 0)
+    }
+
+    return [int64]0
+}
+
+function Get-Office365GroupsActivityMailboxLookup {
+    [CmdletBinding()]
+    param()
+
+    if (
+        $script:Office365GroupsActivityMailboxLookup -and
+        $script:Office365GroupsActivityMailboxLookup.PSObject.Properties['ByGroupId'] -and
+        $script:Office365GroupsActivityMailboxLookup.PSObject.Properties['ByPrimarySmtpAddress']
+    ) {
+        return $script:Office365GroupsActivityMailboxLookup
+    }
+
+    $lookup = [ordered]@{
+        Rows               = 0
+        DownloadSucceeded  = $false
+        ByGroupId          = @{}
+        ByPrimarySmtpAddress = @{}
+    }
+
+    try {
+        $uri = "https://graph.microsoft.com/v1.0/reports/getOffice365GroupsActivityDetail(period='D180')"
+        $rows = @(Export-ArrayaGraphReportCsv -Uri $uri -Activity 'Office 365 Groups activity detail report' -Headers $global:GraphHeaders)
+        $lookup.Rows = @($rows).Count
+
+        foreach ($row in $rows) {
+            $groupId = Get-GraphReportFieldValue -Row $row -FieldNames @('Group Id', 'GroupId')
+            if (-not [string]::IsNullOrWhiteSpace($groupId)) {
+                $groupIdKey = $groupId.Trim().ToLowerInvariant()
+                if (-not $lookup.ByGroupId.ContainsKey($groupIdKey)) {
+                    $lookup.ByGroupId[$groupIdKey] = $row
+                }
+            }
+
+            $primarySmtp = Get-GraphReportFieldValue -Row $row -FieldNames @(
+                'Group Principal Name',
+                'Group Email',
+                'Group Email Address',
+                'Group Primary SMTP Address',
+                'Group SMTP Address'
+            )
+            if (-not [string]::IsNullOrWhiteSpace($primarySmtp)) {
+                $smtpKey = $primarySmtp.Trim().ToLowerInvariant()
+                if (-not $lookup.ByPrimarySmtpAddress.ContainsKey($smtpKey)) {
+                    $lookup.ByPrimarySmtpAddress[$smtpKey] = $row
+                }
+            }
+        }
+
+        $lookup.DownloadSucceeded = $true
+    }
+    catch {
+        Write-Log -Type WARNING -Message "[Get-Office365GroupsActivityMailboxLookup] Unable to download Office 365 Groups activity detail report: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+    }
+
+    $script:Office365GroupsActivityMailboxLookup = [pscustomobject]$lookup
+    return $script:Office365GroupsActivityMailboxLookup
+}
+
+function Get-GroupMailboxActivityRowForUnifiedGroup {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$GroupRecord,
+        [Parameter(Mandatory = $true)]
+        [object]$ActivityLookup
+    )
+
+    if (-not $GroupRecord -or -not $ActivityLookup) {
+        return $null
+    }
+
+    if ($ActivityLookup.PSObject.Properties['ByGroupId'] -and $ActivityLookup.ByGroupId) {
+        $groupIdCandidates = @(
+            if ($GroupRecord.PSObject.Properties['ExternalDirectoryObjectId']) { [string]$GroupRecord.ExternalDirectoryObjectId }
+            if ($GroupRecord.PSObject.Properties['ExternalDirectoryObjectID']) { [string]$GroupRecord.ExternalDirectoryObjectID }
+            if ($GroupRecord.PSObject.Properties['GroupId']) { [string]$GroupRecord.GroupId }
+            if ($GroupRecord.PSObject.Properties['Id']) { [string]$GroupRecord.Id }
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+        foreach ($candidateId in $groupIdCandidates) {
+            $groupIdKey = $candidateId.Trim().ToLowerInvariant()
+            if ($ActivityLookup.ByGroupId.ContainsKey($groupIdKey)) {
+                return $ActivityLookup.ByGroupId[$groupIdKey]
+            }
+        }
+    }
+
+    if ($ActivityLookup.PSObject.Properties['ByPrimarySmtpAddress'] -and $ActivityLookup.ByPrimarySmtpAddress) {
+        $smtpCandidates = @(
+            if ($GroupRecord.PSObject.Properties['PrimarySmtpAddress']) { [string]$GroupRecord.PrimarySmtpAddress }
+            if ($GroupRecord.PSObject.Properties['WindowsEmailAddress']) { [string]$GroupRecord.WindowsEmailAddress }
+            if ($GroupRecord.PSObject.Properties['UserPrincipalName']) { [string]$GroupRecord.UserPrincipalName }
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+        foreach ($candidateSmtp in $smtpCandidates) {
+            $smtpKey = $candidateSmtp.Trim().ToLowerInvariant()
+            if ($ActivityLookup.ByPrimarySmtpAddress.ContainsKey($smtpKey)) {
+                return $ActivityLookup.ByPrimarySmtpAddress[$smtpKey]
+            }
+        }
+    }
+
+    return $null
+}
+
+function New-GroupMailboxStatFromActivityRow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$GroupRecord,
+        [Parameter(Mandatory = $true)]
+        [object]$ActivityRow
+    )
+
+    if (-not $GroupRecord -or -not $ActivityRow) {
+        return $null
+    }
+
+    $storageBytes = Convert-GraphReportValueToInt64 -Value (Get-GraphReportFieldValue -Row $ActivityRow -FieldNames @(
+        'Exchange Mailbox Storage Used (Byte)',
+        'Exchange Mailbox Storage Used (Bytes)',
+        'Exchange Mailbox Storage Used'
+    ))
+
+    $itemCountValue = Get-GraphReportFieldValue -Row $ActivityRow -FieldNames @(
+        'Exchange Mailbox Total Item Count',
+        'Exchange Mailbox Item Count'
+    )
+    if ([string]::IsNullOrWhiteSpace($itemCountValue)) {
+        $itemCountValue = '0'
+    }
+
+    $displayName = if (
+        $GroupRecord.PSObject.Properties['DisplayName'] -and
+        -not [string]::IsNullOrWhiteSpace([string]$GroupRecord.DisplayName)
+    ) {
+        [string]$GroupRecord.DisplayName
+    }
+    else {
+        $graphDisplayName = Get-GraphReportFieldValue -Row $ActivityRow -FieldNames @('Group Display Name')
+        if (-not [string]::IsNullOrWhiteSpace($graphDisplayName)) { $graphDisplayName } else { '<Unified Group>' }
+    }
+
+    $mailboxGuid = if ($GroupRecord.PSObject.Properties['ExchangeGuid'] -and $GroupRecord.ExchangeGuid) {
+        $GroupRecord.ExchangeGuid
+    }
+    elseif ($GroupRecord.PSObject.Properties['Guid'] -and $GroupRecord.Guid) {
+        $GroupRecord.Guid
+    }
+    else {
+        $null
+    }
+
+    return [PSCustomObject]@{
+        DisplayName               = $displayName
+        TotalItemSize             = "$([math]::Round($storageBytes / 1GB, 4)) GB ($storageBytes bytes)"
+        TotalItemSizeBytes        = [int64]$storageBytes
+        ItemCount                 = [string]$itemCountValue
+        TotalDeletedItemSize      = "0 GB (0 bytes)"
+        TotalDeletedItemSizeBytes = [int64]0
+        MailboxType               = 'GroupMailbox'
+        MailboxGuid               = $mailboxGuid
+    }
+}
+
 # ----------------------------------
 # Export Script Functions
 # ----------------------------------
@@ -1855,9 +2114,13 @@ function Get-AllExchangeMailboxDetails {
         $graphMatchedMailboxCount = 0
         $exoFallbackRequestedCount = 0
         $exoFallbackReturnedCount = 0
+        $graphPhaseSeconds = 0
+        $exoFallbackPhaseSeconds = 0
+        $unifiedPreCachePhaseSeconds = 0
         $shouldPreCacheUnifiedGroupStats = Test-ShouldCollectUnifiedGroupMailboxStats -DetailLevel $detailLevel
 
         # Try Graph mailbox usage report (fast) for active mailboxes
+        $graphPhaseStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         try {
             $mailboxUsageUri = "https://graph.microsoft.com/v1.0/reports/getMailboxUsageDetail(period='D180')"
             $graphReportData = @(Export-ArrayaGraphReportCsv -Uri $mailboxUsageUri -Activity 'Mailbox usage detail report' -Headers $global:GraphHeaders)
@@ -1908,6 +2171,16 @@ function Get-AllExchangeMailboxDetails {
         } catch {
             Write-Log -Type WARNING -Message "[Get-AllExchangeMailboxDetails] Graph mailbox usage report failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
+        finally {
+            if ($graphPhaseStopwatch -and $graphPhaseStopwatch.IsRunning) {
+                $graphPhaseStopwatch.Stop()
+            }
+            if ($graphPhaseStopwatch) {
+                $graphPhaseSeconds = [math]::Round($graphPhaseStopwatch.Elapsed.TotalSeconds, 2)
+            }
+        }
+        Write-Host ("    Step 1/3 Graph mailbox usage: {0}s | report rows={1}, populated={2}" -f $graphPhaseSeconds, $graphReportRowCount, $graphMatchedMailboxCount) -ForegroundColor DarkGray
+        Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Primary mailbox stats step 1/3 (Graph mailbox usage) completed in $graphPhaseSeconds sec; reportRows=$graphReportRowCount; populated=$graphMatchedMailboxCount." -ExportFileLocation $ExportDetails
 
         Write-Progress -Id $primaryStatsProgressId -Activity "Gathering All Primary Mailbox Statistics" -Completed
 
@@ -1959,6 +2232,7 @@ function Get-AllExchangeMailboxDetails {
             Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Deferred EXO mailbox stats fallback for $deferredUnifiedGroupMailboxCount unified group mailbox(es) to unified-group pre-cache stage." -ExportFileLocation $ExportDetails
         }
         if ($mailboxesNeedingStats.Count -gt 0) {
+            $exoFallbackStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
             $exoFallbackRequestedCount = $mailboxesNeedingStats.Count
             #$inactiveMBXTest = ($script:tenantStatsHash['AllMailboxes'].Values | Where-Object { $_.IsInactiveMailbox -eq $true }).Count -gt 0
             Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Graph report covered $($script:tenantStatsHash['PrimaryMailboxStats'].Count) mailboxes; fetching EXO stats for $($mailboxesNeedingStats.Count) missing/inactive." -ExportFileLocation $ExportDetails
@@ -1975,6 +2249,14 @@ function Get-AllExchangeMailboxDetails {
                 }
             }
             Write-ExoStatisticsFailureSummary -OperationName 'Get-AllExchangeMailboxDetails primary mailbox statistics' -Failures $allRemainingMBXStatsResult.Failures
+            $exoFallbackStopwatch.Stop()
+            $exoFallbackPhaseSeconds = [math]::Round($exoFallbackStopwatch.Elapsed.TotalSeconds, 2)
+            Write-Host ("    Step 2/3 EXO fallback: {0}s | requested={1}, returned={2}, populated={3}" -f $exoFallbackPhaseSeconds, $exoFallbackRequestedCount, $exoFallbackReturnedCount, $exoFilledCount) -ForegroundColor DarkGray
+            Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Primary mailbox stats step 2/3 (EXO fallback) completed in $exoFallbackPhaseSeconds sec; requested=$exoFallbackRequestedCount; returned=$exoFallbackReturnedCount; populated=$exoFilledCount." -ExportFileLocation $ExportDetails
+        }
+        else {
+            Write-Host "    Step 2/3 EXO fallback: skipped | no unresolved mailboxes" -ForegroundColor DarkGray
+            Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Primary mailbox stats step 2/3 (EXO fallback) skipped; no unresolved mailboxes." -ExportFileLocation $ExportDetails
         }
 
         $finalStatsCount = $script:tenantStatsHash["PrimaryMailboxStats"].Count
@@ -1994,6 +2276,8 @@ function Get-AllExchangeMailboxDetails {
             ExoFallbackRequested   = [int]$exoFallbackRequestedCount
             ExoFallbackReturned    = [int]$exoFallbackReturnedCount
             ExoFallbackPopulated   = [int]$exoFilledCount
+            GraphPhaseSeconds      = [double]$graphPhaseSeconds
+            ExoFallbackPhaseSeconds = [double]$exoFallbackPhaseSeconds
             Populated              = [int]$finalStatsCount
             Missing                = [int]$missingMailboxStatsCount
             TotalMailboxes         = [int]$totalMailboxes
@@ -2003,73 +2287,171 @@ function Get-AllExchangeMailboxDetails {
 
         # Pre-cache unified group mailbox stats so later unified-group collection can reuse this data.
         if ($shouldPreCacheUnifiedGroupStats) {
+            $unifiedPreCacheStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
             try {
                 Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Pre-caching unified group mailbox stats into PrimaryMailboxStats." -ExportFileLocation $ExportDetails
+                $groupActivityLookup = Get-Office365GroupsActivityMailboxLookup
+                $groupActivityReportRows = if ($groupActivityLookup -and $groupActivityLookup.PSObject.Properties['Rows']) { [int]$groupActivityLookup.Rows } else { 0 }
                 $unifiedGroupsForStats = @()
-                switch ($detailLevel) {
-                    {$_ -in "minimum", "combined", "all"} {
-                        $desiredUnifiedGroupProperties = @(
-                            "PrimarySmtpAddress", "DisplayName", "AccessType", "RecipientTypeDetails",
-                            "ExchangeGuid", @{Name="ManagedByDetails"; Expression={$_.ManagedByDetails -join ','}}, "Notes",
-                            "SharePointSiteUrl", "ContentMailboxName", "GroupMemberCount",
-                            "AllowAddGuests", "WhenSoftDeleted", "HiddenFromExchangeClientsEnabled",
-                            @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}}, @{Name="ModeratedBy"; Expression={$_.ModeratedBy -join ','}}, "FolderPath",
-                            @{Name="Description"; Expression={$_.Description -join ','}}, "WhenCreated"
-                        )
-                        $unifiedGroupsForStats = @(
-                            Invoke-QuietCommand -ScriptBlock { Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue } |
-                                Select-Object $desiredUnifiedGroupProperties
-                        )
+                $groupMailboxCandidateSource = 'AllMailboxes(GroupMailbox)'
+                $groupMailboxCandidates = @($script:tenantStatsHash['AllMailboxes'].Values | Where-Object {
+                    $_.PSObject.Properties['RecipientTypeDetails'] -and [string]$_.RecipientTypeDetails -eq 'GroupMailbox'
+                })
+                if ($groupMailboxCandidates.Count -eq 0) {
+                    $groupMailboxCandidateSource = 'UnifiedGroupsInventory'
+                    $unifiedGroupsForStats = if ($script:UnifiedGroupsInventoryCache) { @($script:UnifiedGroupsInventoryCache) } else { @() }
+                    if ($unifiedGroupsForStats.Count -eq 0) {
+                        switch ($detailLevel) {
+                            {$_ -in "minimum", "combined", "all"} {
+                                $desiredUnifiedGroupProperties = @(
+                                    "PrimarySmtpAddress", "DisplayName", "AccessType", "RecipientTypeDetails",
+                                    "ExternalDirectoryObjectId",
+                                    "ExchangeGuid", @{Name="ManagedByDetails"; Expression={$_.ManagedByDetails -join ','}}, "Notes",
+                                    "SharePointSiteUrl", "ContentMailboxName", "GroupMemberCount",
+                                    "AllowAddGuests", "WhenSoftDeleted", "HiddenFromExchangeClientsEnabled",
+                                    @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}}, @{Name="ModeratedBy"; Expression={$_.ModeratedBy -join ','}}, "FolderPath",
+                                    @{Name="Description"; Expression={$_.Description -join ','}}, "WhenCreated"
+                                )
+                                $unifiedGroupsForStats = @(
+                                    Invoke-QuietCommand -ScriptBlock { Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue } |
+                                        Select-Object $desiredUnifiedGroupProperties
+                                )
+                            }
+                            default {
+                                $unifiedGroupsForStats = @(
+                                    Invoke-QuietCommand -ScriptBlock { Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue }
+                                )
+                            }
+                        }
                     }
-                    default {
-                        $unifiedGroupsForStats = @(
-                            Invoke-QuietCommand -ScriptBlock { Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue }
-                        )
+                    $groupMailboxCandidates = @($unifiedGroupsForStats)
+                }
+                $groupMailboxCandidateCount = $groupMailboxCandidates.Count
+                $groupsMissingStats = New-Object System.Collections.Generic.List[object]
+                $cachedUnifiedGroupStats = 0
+                $graphActivityUnifiedGroupStats = 0
+                $groupsWithoutGuidForPreCacheCount = 0
+
+                foreach ($groupMailbox in $groupMailboxCandidates) {
+                    $groupGuidKey = $null
+                    if ($groupMailbox.PSObject.Properties['ExchangeGuid'] -and $groupMailbox.ExchangeGuid) {
+                        $groupGuidKey = Convert-ToMailboxGuidKey -GuidValue $groupMailbox.ExchangeGuid
+                    }
+                    elseif ($groupMailbox.PSObject.Properties['Guid'] -and $groupMailbox.Guid) {
+                        $groupGuidKey = Convert-ToMailboxGuidKey -GuidValue $groupMailbox.Guid
+                    }
+
+                    if ([string]::IsNullOrWhiteSpace($groupGuidKey)) {
+                        $groupsWithoutGuidForPreCacheCount++
+                        continue
+                    }
+
+                    if ($script:tenantStatsHash["PrimaryMailboxStats"].ContainsKey($groupGuidKey)) {
+                        $cachedUnifiedGroupStats++
+                        continue
+                    }
+
+                    $groupActivityRow = Get-GroupMailboxActivityRowForUnifiedGroup -GroupRecord $groupMailbox -ActivityLookup $groupActivityLookup
+                    if ($groupActivityRow) {
+                        $groupActivityStat = New-GroupMailboxStatFromActivityRow -GroupRecord $groupMailbox -ActivityRow $groupActivityRow
+                        if ($groupActivityStat) {
+                            $script:tenantStatsHash["PrimaryMailboxStats"][$groupGuidKey] = $groupActivityStat
+                            $graphActivityUnifiedGroupStats++
+                            continue
+                        }
+                    }
+
+                    [void]$groupsMissingStats.Add($groupMailbox)
+                }
+
+                $fetchedUnifiedGroupStats = 0
+                if ($groupsMissingStats.Count -gt 0) {
+                    $unifiedGroupStatsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $groupsMissingStats.ToArray() -ProgressActivity "Pre-caching Unified Group Mailbox Statistics" -ProgressId $primaryStatsProgressId
+                    foreach ($groupStat in $unifiedGroupStatsResult.Results) {
+                        $key = Convert-ToMailboxGuidKey -GuidValue $groupStat.MailboxGuid
+                        if (-not $key) { continue }
+                        $script:tenantStatsHash["PrimaryMailboxStats"][$key] = $groupStat
+                    }
+                    $fetchedUnifiedGroupStats = @($unifiedGroupStatsResult.Results).Count
+                    Write-ExoStatisticsFailureSummary -OperationName 'Get-AllExchangeMailboxDetails unified group mailbox statistics pre-cache' -Failures $unifiedGroupStatsResult.Failures
+                }
+
+                # Pre-cache unified group inventory for later collectors.
+                if (-not $unifiedGroupsForStats) {
+                    $unifiedGroupsForStats = @()
+                }
+                if ($unifiedGroupsForStats.Count -eq 0) {
+                    $unifiedGroupsForStats = if ($script:UnifiedGroupsInventoryCache) { @($script:UnifiedGroupsInventoryCache) } else { @() }
+                }
+                if ($unifiedGroupsForStats.Count -eq 0) {
+                    switch ($detailLevel) {
+                        {$_ -in "minimum", "combined", "all"} {
+                            $desiredUnifiedGroupProperties = @(
+                                "PrimarySmtpAddress", "DisplayName", "AccessType", "RecipientTypeDetails",
+                                "ExternalDirectoryObjectId",
+                                "ExchangeGuid", @{Name="ManagedByDetails"; Expression={$_.ManagedByDetails -join ','}}, "Notes",
+                                "SharePointSiteUrl", "ContentMailboxName", "GroupMemberCount",
+                                "AllowAddGuests", "WhenSoftDeleted", "HiddenFromExchangeClientsEnabled",
+                                @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}}, @{Name="ModeratedBy"; Expression={$_.ModeratedBy -join ','}}, "FolderPath",
+                                @{Name="Description"; Expression={$_.Description -join ','}}, "WhenCreated"
+                            )
+                            $unifiedGroupsForStats = @(
+                                Invoke-QuietCommand -ScriptBlock { Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue } |
+                                    Select-Object $desiredUnifiedGroupProperties
+                            )
+                        }
+                        default {
+                            $unifiedGroupsForStats = @(
+                                Invoke-QuietCommand -ScriptBlock { Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue }
+                            )
+                        }
                     }
                 }
                 $script:UnifiedGroupsInventoryCache = @($unifiedGroupsForStats)
+                $unifiedGroupInventoryCount = $unifiedGroupsForStats.Count
 
-                if ($unifiedGroupsForStats.Count -gt 0) {
-                    $groupsMissingStats = New-Object System.Collections.Generic.List[object]
-                    $cachedUnifiedGroupStats = 0
-                    foreach ($group in $unifiedGroupsForStats) {
-                        $groupGuidKey = $null
-                        if ($group -and $group.PSObject.Properties['ExchangeGuid'] -and $group.ExchangeGuid) {
-                            $groupGuidKey = Convert-ToMailboxGuidKey -GuidValue $group.ExchangeGuid
-                        }
-
-                        if (-not [string]::IsNullOrWhiteSpace($groupGuidKey) -and $script:tenantStatsHash["PrimaryMailboxStats"].ContainsKey($groupGuidKey)) {
-                            $cachedUnifiedGroupStats++
-                            continue
-                        }
-
-                        [void]$groupsMissingStats.Add($group)
+                Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Unified group stats pre-cache summary: source=$groupMailboxCandidateSource; groupMailboxCandidates=$groupMailboxCandidateCount; reused=$cachedUnifiedGroupStats; graphActivityPopulated=$graphActivityUnifiedGroupStats; fetched=$fetchedUnifiedGroupStats; unresolved=$($groupsMissingStats.Count); withoutGuid=$groupsWithoutGuidForPreCacheCount; groupActivityReportRows=$groupActivityReportRows; unifiedGroupInventory=$unifiedGroupInventoryCount." -ExportFileLocation $ExportDetails
+                if ($groupMailboxCandidateCount -gt 0) {
+                    if ($unifiedPreCacheStopwatch -and $unifiedPreCacheStopwatch.IsRunning) {
+                        $unifiedPreCacheStopwatch.Stop()
                     }
-
-                    $fetchedUnifiedGroupStats = 0
-                    if ($groupsMissingStats.Count -gt 0) {
-                        $unifiedGroupStatsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $groupsMissingStats.ToArray() -ProgressActivity "Pre-caching Unified Group Mailbox Statistics" -ProgressId $primaryStatsProgressId
-                        foreach ($groupStat in $unifiedGroupStatsResult.Results) {
-                            $key = Convert-ToMailboxGuidKey -GuidValue $groupStat.MailboxGuid
-                            if (-not $key) { continue }
-                            $script:tenantStatsHash["PrimaryMailboxStats"][$key] = $groupStat
-                        }
-                        $fetchedUnifiedGroupStats = @($unifiedGroupStatsResult.Results).Count
-                        Write-ExoStatisticsFailureSummary -OperationName 'Get-AllExchangeMailboxDetails unified group mailbox statistics pre-cache' -Failures $unifiedGroupStatsResult.Failures
+                    if ($unifiedPreCacheStopwatch) {
+                        $unifiedPreCachePhaseSeconds = [math]::Round($unifiedPreCacheStopwatch.Elapsed.TotalSeconds, 2)
                     }
-
-                    Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Unified group stats pre-cache summary: reused=$cachedUnifiedGroupStats; fetched=$fetchedUnifiedGroupStats; unifiedGroups=$($unifiedGroupsForStats.Count)." -ExportFileLocation $ExportDetails
+                    Write-Host ("    Step 3/3 Unified group pre-cache: {0}s | source={1}, candidates={2}, reused={3}, graph={4}, fetched={5}, unresolved={6}" -f $unifiedPreCachePhaseSeconds, $groupMailboxCandidateSource, $groupMailboxCandidateCount, $cachedUnifiedGroupStats, $graphActivityUnifiedGroupStats, $fetchedUnifiedGroupStats, $groupsMissingStats.Count) -ForegroundColor DarkGray
+                    Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Primary mailbox stats step 3/3 (unified group pre-cache) completed in $unifiedPreCachePhaseSeconds sec; source=$groupMailboxCandidateSource; groupMailboxCandidates=$groupMailboxCandidateCount; reused=$cachedUnifiedGroupStats; graphActivityPopulated=$graphActivityUnifiedGroupStats; fetched=$fetchedUnifiedGroupStats; unresolved=$($groupsMissingStats.Count); withoutGuid=$groupsWithoutGuidForPreCacheCount; groupActivityReportRows=$groupActivityReportRows; unifiedGroupInventory=$unifiedGroupInventoryCount." -ExportFileLocation $ExportDetails
+                }
+                else {
+                    if ($unifiedPreCacheStopwatch -and $unifiedPreCacheStopwatch.IsRunning) {
+                        $unifiedPreCacheStopwatch.Stop()
+                    }
+                    if ($unifiedPreCacheStopwatch) {
+                        $unifiedPreCachePhaseSeconds = [math]::Round($unifiedPreCacheStopwatch.Elapsed.TotalSeconds, 2)
+                    }
+                    Write-Host ("    Step 3/3 Unified group pre-cache: {0}s | no group mailboxes found" -f $unifiedPreCachePhaseSeconds) -ForegroundColor DarkGray
+                    Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Primary mailbox stats step 3/3 (unified group pre-cache) completed in $unifiedPreCachePhaseSeconds sec; no group mailboxes found." -ExportFileLocation $ExportDetails
                 }
             }
             catch {
+                if ($unifiedPreCacheStopwatch -and $unifiedPreCacheStopwatch.IsRunning) {
+                    $unifiedPreCacheStopwatch.Stop()
+                }
+                if ($unifiedPreCacheStopwatch) {
+                    $unifiedPreCachePhaseSeconds = [math]::Round($unifiedPreCacheStopwatch.Elapsed.TotalSeconds, 2)
+                }
                 Write-Log -Type WARNING -Message "[Get-AllExchangeMailboxDetails] Unified group mailbox statistics pre-cache failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+                Write-Host ("    Step 3/3 Unified group pre-cache: failed after {0}s" -f $unifiedPreCachePhaseSeconds) -ForegroundColor Yellow
             }
             finally {
                 Write-Progress -Id $primaryStatsProgressId -Activity "Pre-caching Unified Group Mailbox Statistics" -Completed
             }
         }
         else {
+            Write-Host "    Step 3/3 Unified group pre-cache: skipped by profile/depth" -ForegroundColor DarkGray
             Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Unified group mailbox statistics pre-cache is disabled for this profile/depth." -ExportFileLocation $ExportDetails
+        }
+        if ($script:tenantStatsHash.ContainsKey("PrimaryMailboxStatsCollectionSummary") -and $script:tenantStatsHash["PrimaryMailboxStatsCollectionSummary"]) {
+            $script:tenantStatsHash["PrimaryMailboxStatsCollectionSummary"] | Add-Member -NotePropertyName 'UnifiedPreCachePhaseSeconds' -NotePropertyValue ([double]$unifiedPreCachePhaseSeconds) -Force
         }
     }
     catch {
@@ -3016,6 +3398,7 @@ function Get-AllUnifiedGroups {
                 {$_ -in "minimum", "combined", "all"} { 
                     $DesiredProperties = @(
                         "PrimarySmtpAddress", "DisplayName", "AccessType", "RecipientTypeDetails",
+                        "ExternalDirectoryObjectId",
                         "ExchangeGuid", @{Name="ManagedByDetails"; Expression={$_.ManagedByDetails -join ','}}, "Notes",
                         "SharePointSiteUrl", "ContentMailboxName", "GroupMemberCount",
                         "AllowAddGuests", "WhenSoftDeleted", "HiddenFromExchangeClientsEnabled",
@@ -3076,12 +3459,16 @@ function Get-AllUnifiedGroups {
             $collectUnifiedGroupMailboxStats = Test-ShouldCollectUnifiedGroupMailboxStats -DetailLevel $detailLevel
             $cachedStatsCount = 0
             $graphFilledCount = 0
+            $graphGroupsActivityFilledCount = 0
+            $graphMailboxUsageFilledCount = 0
             $fetchedStatsCount = 0
             $exoFilledCount = 0
             $exoFallbackRequestedCount = 0
             $unresolvedStatsCount = 0
             $groupsNeedingStats = New-Object System.Collections.Generic.List[object]
             $groupsWithoutGuidCount = 0
+            $groupActivityLookup = Get-Office365GroupsActivityMailboxLookup
+            $groupActivityReportRows = if ($groupActivityLookup -and $groupActivityLookup.PSObject.Properties['Rows']) { [int]$groupActivityLookup.Rows } else { 0 }
 
             foreach ($group in $allUnifiedGroups) {
                 $groupGuidKey = $null
@@ -3096,6 +3483,17 @@ function Get-AllUnifiedGroups {
                 if (-not [string]::IsNullOrWhiteSpace($groupGuidKey) -and $script:tenantStatsHash["PrimaryMailboxStats"].ContainsKey($groupGuidKey)) {
                     $cachedStatsCount++
                     continue
+                }
+
+                $groupActivityRow = Get-GroupMailboxActivityRowForUnifiedGroup -GroupRecord $group -ActivityLookup $groupActivityLookup
+                if ($groupActivityRow) {
+                    $groupActivityStat = New-GroupMailboxStatFromActivityRow -GroupRecord $group -ActivityRow $groupActivityRow
+                    if ($groupActivityStat) {
+                        $script:tenantStatsHash["PrimaryMailboxStats"][$groupGuidKey] = $groupActivityStat
+                        $graphGroupsActivityFilledCount++
+                        $graphFilledCount++
+                        continue
+                    }
                 }
 
                 $graphLookupKey = if (-not [string]::IsNullOrWhiteSpace([string]$group.PrimarySmtpAddress)) { ([string]$group.PrimarySmtpAddress).ToLowerInvariant() } else { $null }
@@ -3123,6 +3521,7 @@ function Get-AllUnifiedGroups {
                         MailboxType                = 'GroupMailbox'
                         MailboxGuid                = $group.ExchangeGuid
                     }
+                    $graphMailboxUsageFilledCount++
                     $graphFilledCount++
                     continue
                 }
@@ -3132,7 +3531,7 @@ function Get-AllUnifiedGroups {
 
             if ($groupsNeedingStats.Count -gt 0 -and $collectUnifiedGroupMailboxStats) {
                 $exoFallbackRequestedCount = $groupsNeedingStats.Count
-                Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Reused $cachedStatsCount cached mailbox stat(s), populated $graphFilledCount via Graph report, then fetching EXO stats for $($groupsNeedingStats.Count) unified group(s) still missing stats." -ExportFileLocation $ExportDetails
+                Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Reused $cachedStatsCount cached mailbox stat(s), populated $graphGroupsActivityFilledCount via Office 365 Groups activity report and $graphMailboxUsageFilledCount via mailbox usage report, then fetching EXO stats for $($groupsNeedingStats.Count) unified group(s) still missing stats." -ExportFileLocation $ExportDetails
                 $allUnifiedGroupStatisticsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $groupsNeedingStats.ToArray() -ProgressActivity "Gathering Unified Group Mailbox Statistics" -ProgressId $statsProgressId
                 foreach ($groupStat in $allUnifiedGroupStatisticsResult.Results) {
                     $key = Convert-ToMailboxGuidKey -GuidValue $groupStat.MailboxGuid
@@ -3147,7 +3546,7 @@ function Get-AllUnifiedGroups {
             
             }
             elseif ($groupsNeedingStats.Count -gt 0) {
-                Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Unified group mailbox EXO fallback is disabled for this profile/depth. Reused $cachedStatsCount cached stat(s), populated $graphFilledCount via Graph, leaving $($groupsNeedingStats.Count) group(s) unresolved." -ExportFileLocation $ExportDetails
+                Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Unified group mailbox EXO fallback is disabled for this profile/depth. Reused $cachedStatsCount cached stat(s), populated $graphGroupsActivityFilledCount via Office 365 Groups activity report and $graphMailboxUsageFilledCount via mailbox usage report, leaving $($groupsNeedingStats.Count) group(s) unresolved." -ExportFileLocation $ExportDetails
             }
             else {
                 Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] All unified group mailbox stats were already available in PrimaryMailboxStats; skipping EXO stats retrieval." -ExportFileLocation $ExportDetails
@@ -3162,17 +3561,20 @@ function Get-AllUnifiedGroups {
                 $unresolvedStatsCount = $groupsNeedingStats.Count
             }
             $script:tenantStatsHash["UnifiedGroupMailboxStatsCollectionSummary"] = [PSCustomObject]@{
-                ReusedFromCache      = [int]$cachedStatsCount
-                GraphPopulated       = [int]$graphFilledCount
-                ExoFallbackRequested = [int]$exoFallbackRequestedCount
-                ExoFallbackReturned  = [int]$fetchedStatsCount
-                ExoFallbackPopulated = [int]$exoFilledCount
-                Missing              = [int]$unresolvedStatsCount
-                WithoutGuid          = [int]$groupsWithoutGuidCount
-                TotalGroups          = [int]$totalUnifiedGroups
+                ReusedFromCache             = [int]$cachedStatsCount
+                GraphPopulated              = [int]$graphFilledCount
+                GraphGroupsActivityRows     = [int]$groupActivityReportRows
+                GraphGroupsActivityPopulated = [int]$graphGroupsActivityFilledCount
+                GraphMailboxUsagePopulated  = [int]$graphMailboxUsageFilledCount
+                ExoFallbackRequested        = [int]$exoFallbackRequestedCount
+                ExoFallbackReturned         = [int]$fetchedStatsCount
+                ExoFallbackPopulated        = [int]$exoFilledCount
+                Missing                     = [int]$unresolvedStatsCount
+                WithoutGuid                 = [int]$groupsWithoutGuidCount
+                TotalGroups                 = [int]$totalUnifiedGroups
             }
-            Write-Host ("  Unified group mailbox stats source breakdown: Cache={0}, Graph={1}, EXO fallback={2}, Missing={3}" -f $cachedStatsCount, $graphFilledCount, $exoFilledCount, $unresolvedStatsCount) -ForegroundColor DarkGray
-            Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Mailbox stats source breakdown: Cache=$cachedStatsCount; GraphPopulated=$graphFilledCount; EXOFallbackRequested=$exoFallbackRequestedCount; EXOFallbackReturned=$fetchedStatsCount; EXOFallbackPopulated=$exoFilledCount; Missing=$unresolvedStatsCount; WithoutGuid=$groupsWithoutGuidCount; TotalGroups=$totalUnifiedGroups." -ExportFileLocation $ExportDetails
+            Write-Host ("  Unified group mailbox stats source breakdown: Cache={0}, Graph(Activity={1}, MailboxUsage={2}), EXO fallback={3}, Missing={4}" -f $cachedStatsCount, $graphGroupsActivityFilledCount, $graphMailboxUsageFilledCount, $exoFilledCount, $unresolvedStatsCount) -ForegroundColor DarkGray
+            Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Mailbox stats source breakdown: Cache=$cachedStatsCount; GraphGroupsActivityRows=$groupActivityReportRows; GraphGroupsActivityPopulated=$graphGroupsActivityFilledCount; GraphMailboxUsagePopulated=$graphMailboxUsageFilledCount; GraphPopulated=$graphFilledCount; EXOFallbackRequested=$exoFallbackRequestedCount; EXOFallbackReturned=$fetchedStatsCount; EXOFallbackPopulated=$exoFilledCount; Missing=$unresolvedStatsCount; WithoutGuid=$groupsWithoutGuidCount; TotalGroups=$totalUnifiedGroups." -ExportFileLocation $ExportDetails
         }
         else {
             Write-Host "  No unified groups found" -ForegroundColor DarkGray
@@ -3187,6 +3589,7 @@ function Get-AllUnifiedGroups {
             $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
         }
         $script:UnifiedGroupsInventoryCache = $null
+        $script:Office365GroupsActivityMailboxLookup = $null
         Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Completed
         Write-ProgressHelper -Total 1 -Id $hashProgressId -Activity "Adding Unified Group data to Hash" -Completed
         Write-Progress -Id $statsProgressId -Activity "Gathering Unified Group Mailbox Statistics" -Completed
@@ -15038,6 +15441,7 @@ Write-Log -Type INFO -Message ("Profile collection plan ({0}): ExchangeRecipient
 $script:tenantStatsHash = @{}
 $script:MailboxUsageGraphLookup = $null
 $script:UnifiedGroupsInventoryCache = $null
+$script:Office365GroupsActivityMailboxLookup = $null
 
 #Global Start Time for Script
 $global:InitialStart = Get-Date
