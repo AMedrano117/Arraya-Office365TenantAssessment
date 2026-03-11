@@ -904,6 +904,84 @@ function Convert-ToMailboxGuidKey {
     return $text.Trim().Trim('{}').ToLowerInvariant()
 }
 
+function Get-MailboxGuidCandidateKeys {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        $MailboxRecord,
+        [switch]$IncludeArchiveGuid
+    )
+
+    if ($null -eq $MailboxRecord) {
+        return @()
+    }
+
+    $candidateKeys = New-Object System.Collections.Generic.List[string]
+    if (
+        $IncludeArchiveGuid -and
+        $MailboxRecord.PSObject.Properties['ArchiveGuid'] -and
+        $MailboxRecord.ArchiveGuid
+    ) {
+        $archiveKey = Convert-ToMailboxGuidKey -GuidValue $MailboxRecord.ArchiveGuid
+        if ($archiveKey -and -not $candidateKeys.Contains($archiveKey)) {
+            $candidateKeys.Add($archiveKey)
+        }
+    }
+
+    foreach ($propertyName in @('ExchangeGuid', 'Guid', 'MailboxGuid')) {
+        if (-not ($MailboxRecord.PSObject.Properties[$propertyName])) {
+            continue
+        }
+
+        $value = $MailboxRecord.PSObject.Properties[$propertyName].Value
+        if (-not $value) {
+            continue
+        }
+
+        $key = Convert-ToMailboxGuidKey -GuidValue $value
+        if ($key -and -not $candidateKeys.Contains($key)) {
+            $candidateKeys.Add($key)
+        }
+    }
+
+    return @($candidateKeys)
+}
+
+function Test-MailboxStatCached {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        $MailboxRecord,
+        [AllowNull()]
+        $StatsHash,
+        [switch]$IncludeArchiveGuid
+    )
+
+    if ($null -eq $MailboxRecord -or $null -eq $StatsHash) {
+        return $false
+    }
+
+    $candidateKeys = Get-MailboxGuidCandidateKeys -MailboxRecord $MailboxRecord -IncludeArchiveGuid:$IncludeArchiveGuid
+    if (-not $candidateKeys -or $candidateKeys.Count -eq 0) {
+        return $false
+    }
+
+    foreach ($key in $candidateKeys) {
+        if ([string]::IsNullOrWhiteSpace($key)) {
+            continue
+        }
+
+        if (
+            ($StatsHash.PSObject.Methods['ContainsKey'] -and $StatsHash.ContainsKey($key)) -or
+            ($StatsHash -is [System.Collections.IDictionary] -and $StatsHash.Contains($key))
+        ) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 function Test-ShouldCollectUnifiedGroupMailboxStats {
     [CmdletBinding()]
     param(
@@ -1037,7 +1115,7 @@ function Filter-TenantStatsHash {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
-        [hashtable]$tenantStatsHash,
+        [hashtable]$TenantStatsStore,
         [Parameter(Mandatory = $true)]
         [string]$reportingMode,
         [Parameter(Mandatory = $false)]
@@ -1092,7 +1170,7 @@ function Filter-TenantStatsHash {
 
     # Build filtered output directly to avoid carrying duplicate hash table state.
     $filteredStatsHash = @{}
-    foreach ($entry in $tenantStatsHash.GetEnumerator()) {
+    foreach ($entry in $TenantStatsStore.GetEnumerator()) {
         if ($excludeSet.Contains([string]$entry.Key)) {
             continue
         }
@@ -1273,7 +1351,11 @@ function Export-HashTableToExcel {
         'AuthenticationConfigSummary',
         'SpamFilteringSummary',
         'FederationSummary',
-        'MfaRegistrationSummary'
+        'MfaRegistrationSummary',
+        'PrimaryMailboxStatsCollectionSummary',
+        'UnifiedGroupMailboxStatsCollectionSummary',
+        'PrimaryMailboxStatsCollectionSu',
+        'UnifiedGroupMailboxStatsCollect'
     )
 
     if (Test-Path -Path $ExportDetails) {
@@ -1769,11 +1851,17 @@ function Get-AllExchangeMailboxDetails {
         $script:MailboxUsageGraphLookup = @{}
         $activeMailboxes = $script:tenantStatsHash['AllMailboxes'].Values | Where-Object { $_.IsInactiveMailbox -ne $true }
         $graphStatsCount = 0
+        $graphReportRowCount = 0
+        $graphMatchedMailboxCount = 0
+        $exoFallbackRequestedCount = 0
+        $exoFallbackReturnedCount = 0
+        $shouldPreCacheUnifiedGroupStats = Test-ShouldCollectUnifiedGroupMailboxStats -DetailLevel $detailLevel
 
         # Try Graph mailbox usage report (fast) for active mailboxes
         try {
             $mailboxUsageUri = "https://graph.microsoft.com/v1.0/reports/getMailboxUsageDetail(period='D180')"
             $graphReportData = @(Export-ArrayaGraphReportCsv -Uri $mailboxUsageUri -Activity 'Mailbox usage detail report' -Headers $global:GraphHeaders)
+            $graphReportRowCount = @($graphReportData).Count
             if ($graphReportData -and $graphReportData.Count -gt 0) {
                 foreach ($item in $graphReportData) {
                     $upn = [string]$item.'User Principal Name'
@@ -1810,33 +1898,74 @@ function Get-AllExchangeMailboxDetails {
                         TotalDeletedItemSize = "$([math]::Round($deletedBytes / 1GB, 4)) GB ($deletedBytes bytes)"
                         TotalDeletedItemSizeBytes = [int64]$deletedBytes
                         MailboxType = $mailbox.RecipientTypeDetails
-                        MailboxGuid = $mailbox.ExchangeGuid
+                        MailboxGuid = if ($mailbox.ExchangeGuid) { $mailbox.ExchangeGuid } else { $mailbox.Guid }
                     }
                     $script:tenantStatsHash["PrimaryMailboxStats"][$guidKey] = $stats
                 }
             }
             $graphStatsCount = $script:tenantStatsHash["PrimaryMailboxStats"].Count
+            $graphMatchedMailboxCount = $graphStatsCount
         } catch {
             Write-Log -Type WARNING -Message "[Get-AllExchangeMailboxDetails] Graph mailbox usage report failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
 
         Write-Progress -Id $primaryStatsProgressId -Activity "Gathering All Primary Mailbox Statistics" -Completed
 
-        # Fallback to EXO stats for missing mailboxes only (includes inactive)
-        $mailboxesNeedingStats = $script:tenantStatsHash['AllMailboxes'].Values | Where-Object {
-            if ($_.ExchangeGuid) {
-                -not $script:tenantStatsHash["PrimaryMailboxStats"].ContainsKey((Convert-ToMailboxGuidKey -GuidValue $_.ExchangeGuid))
-            } else {
-                $true
+        # Fallback to EXO stats for unresolved mailboxes only (Graph-first, profile-aware filtering)
+        $mailboxesNeedingStatsList = New-Object System.Collections.Generic.List[object]
+        $profileSkippedForFallbackCount = 0
+        $deferredUnifiedGroupMailboxCount = 0
+        $minimumExcludedRecipientTypesForExoStats = @(
+            'AuditLogMailbox',
+            'AuxAuditLogMailbox',
+            'ArbitrationMailbox',
+            'DiscoveryMailbox',
+            'MonitoringMailbox',
+            'PublicFolderMailbox',
+            'SupervisoryReviewPolicyMailbox'
+        )
+        $isMinimumDepth = ($script:CollectionDepthPolicy -and $script:CollectionDepthPolicy.IsMinimum)
+        foreach ($mailbox in $script:tenantStatsHash['AllMailboxes'].Values) {
+            if (Test-MailboxStatCached -MailboxRecord $mailbox -StatsHash $script:tenantStatsHash["PrimaryMailboxStats"]) {
+                continue
             }
+
+            if (
+                $shouldPreCacheUnifiedGroupStats -and
+                $mailbox.PSObject.Properties['RecipientTypeDetails'] -and
+                [string]$mailbox.RecipientTypeDetails -eq 'GroupMailbox'
+            ) {
+                $deferredUnifiedGroupMailboxCount++
+                continue
+            }
+
+            if (
+                $isMinimumDepth -and
+                $mailbox.PSObject.Properties['RecipientTypeDetails'] -and
+                $minimumExcludedRecipientTypesForExoStats -contains ([string]$mailbox.RecipientTypeDetails)
+            ) {
+                $profileSkippedForFallbackCount++
+                continue
+            }
+
+            [void]$mailboxesNeedingStatsList.Add($mailbox)
         }
+        $mailboxesNeedingStats = @($mailboxesNeedingStatsList.ToArray())
         $exoFilledCount = 0
+        if ($profileSkippedForFallbackCount -gt 0) {
+            Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Minimum mode optimization skipped EXO mailbox stats fallback for $profileSkippedForFallbackCount system mailbox(es)." -ExportFileLocation $ExportDetails
+        }
+        if ($deferredUnifiedGroupMailboxCount -gt 0) {
+            Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Deferred EXO mailbox stats fallback for $deferredUnifiedGroupMailboxCount unified group mailbox(es) to unified-group pre-cache stage." -ExportFileLocation $ExportDetails
+        }
         if ($mailboxesNeedingStats.Count -gt 0) {
+            $exoFallbackRequestedCount = $mailboxesNeedingStats.Count
             #$inactiveMBXTest = ($script:tenantStatsHash['AllMailboxes'].Values | Where-Object { $_.IsInactiveMailbox -eq $true }).Count -gt 0
             Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Graph report covered $($script:tenantStatsHash['PrimaryMailboxStats'].Count) mailboxes; fetching EXO stats for $($mailboxesNeedingStats.Count) missing/inactive." -ExportFileLocation $ExportDetails
 
             $allRemainingMBXStatsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $mailboxesNeedingStats -ProgressActivity "Gathering All Primary Mailbox Statistics" -ProgressId $primaryStatsProgressId
             $allRemainingMBXStats = @($allRemainingMBXStatsResult.Results)
+            $exoFallbackReturnedCount = $allRemainingMBXStats.Count
             $allRemainingMBXStats | ForEach-Object {
                 $key = Convert-ToMailboxGuidKey -GuidValue $_.MailboxGuid
                 if (-not $key) { continue }
@@ -1858,11 +1987,21 @@ function Get-AllExchangeMailboxDetails {
 
         if ($exoFilledCount -lt 0) { $exoFilledCount = 0 }
         $totalMailboxes = $script:tenantStatsHash['AllMailboxes'].Values.Count
-        Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Mailbox stats summary: Graph=$graphStatsCount; EXO filled=$exoFilledCount; Total mailboxes=$totalMailboxes." -ExportFileLocation $ExportDetails
+        $missingMailboxStatsCount = [Math]::Max(($totalMailboxes - $finalStatsCount), 0)
+        $script:tenantStatsHash["PrimaryMailboxStatsCollectionSummary"] = [PSCustomObject]@{
+            GraphReportRows        = [int]$graphReportRowCount
+            GraphPopulated         = [int]$graphMatchedMailboxCount
+            ExoFallbackRequested   = [int]$exoFallbackRequestedCount
+            ExoFallbackReturned    = [int]$exoFallbackReturnedCount
+            ExoFallbackPopulated   = [int]$exoFilledCount
+            Populated              = [int]$finalStatsCount
+            Missing                = [int]$missingMailboxStatsCount
+            TotalMailboxes         = [int]$totalMailboxes
+        }
+        Write-Host ("  Primary mailbox stats source breakdown: Graph={0}, EXO fallback={1}, Missing={2}" -f $graphMatchedMailboxCount, $exoFilledCount, $missingMailboxStatsCount) -ForegroundColor DarkGray
+        Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Mailbox stats source breakdown: GraphReportRows=$graphReportRowCount; GraphPopulated=$graphMatchedMailboxCount; EXOFallbackRequested=$exoFallbackRequestedCount; EXOFallbackReturned=$exoFallbackReturnedCount; EXOFallbackPopulated=$exoFilledCount; Populated=$finalStatsCount; Missing=$missingMailboxStatsCount; TotalMailboxes=$totalMailboxes." -ExportFileLocation $ExportDetails
 
         # Pre-cache unified group mailbox stats so later unified-group collection can reuse this data.
-        $shouldPreCacheUnifiedGroupStats = Test-ShouldCollectUnifiedGroupMailboxStats -DetailLevel $detailLevel
-
         if ($shouldPreCacheUnifiedGroupStats) {
             try {
                 Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Pre-caching unified group mailbox stats into PrimaryMailboxStats." -ExportFileLocation $ExportDetails
@@ -2069,7 +2208,9 @@ function Get-ExchangeGroupDetails {
     } else {
         Get-ArrayaCollectionDepthPolicy -ReportingMode ((Get-Culture).TextInfo.ToTitleCase($detailLevel.ToLowerInvariant()))
     }
-    $collectExchangeGroupDeepDetails = (-not $depthPolicy.IsMinimum)
+    $isCombinedDepth = [bool]($depthPolicy.PSObject.Properties['IsCombined'] -and $depthPolicy.IsCombined)
+    $collectExchangeGroupMetadataDetails = ($depthPolicy.IsAll -or $depthPolicy.IsGeek)
+    $collectExchangeGroupMemberExpansion = ($depthPolicy.IsAll -or $depthPolicy.IsGeek)
     try {
         $start = Get-Date
         # Ensure global hash table structure
@@ -2077,11 +2218,50 @@ function Get-ExchangeGroupDetails {
             $script:tenantStatsHash = @{}
         }
         $script:tenantStatsHash["AllExchangeGroups"] = @{}
+        $cachedUnifiedGroupsByAddress = @{}
+        if (
+            $script:tenantStatsHash.ContainsKey('UnifiedGroups') -and
+            $script:tenantStatsHash['UnifiedGroups'] -is [System.Collections.IDictionary]
+        ) {
+            foreach ($entry in $script:tenantStatsHash['UnifiedGroups'].GetEnumerator()) {
+                $smtp = [string]$entry.Key
+                if ([string]::IsNullOrWhiteSpace($smtp)) {
+                    continue
+                }
+                $cachedUnifiedGroupsByAddress[$smtp.ToLowerInvariant()] = $entry.Value
+            }
+        }
+        if ($script:UnifiedGroupsInventoryCache) {
+            foreach ($group in @($script:UnifiedGroupsInventoryCache)) {
+                if (-not $group -or -not $group.PSObject.Properties['PrimarySmtpAddress']) {
+                    continue
+                }
+                $smtp = [string]$group.PrimarySmtpAddress
+                if ([string]::IsNullOrWhiteSpace($smtp)) {
+                    continue
+                }
+                $lookupKey = $smtp.ToLowerInvariant()
+                if (-not $cachedUnifiedGroupsByAddress.ContainsKey($lookupKey)) {
+                    $cachedUnifiedGroupsByAddress[$lookupKey] = $group
+                }
+            }
+        }
+        $metadataReusedFromRecipientCount = 0
+        $metadataReusedFromUnifiedCacheCount = 0
+        $metadataFetchedFromExoCount = 0
         
         Write-Host "Getting all Exchange Online Groups ..." -ForegroundColor Cyan -nonewline
         Write-Log -Type INFO -Message "[Get-ExchangeGroupDetails] START: Gathering all Exchange Online Groups with $($detailLevel) details" -ExportFileLocation $ExportDetails
-        if (-not $collectExchangeGroupDeepDetails) {
-            Write-Log -Type INFO -Message "[Get-ExchangeGroupDetails] Minimum mode optimization active. Reusing recipient inventory and skipping deep group member expansion where possible." -ExportFileLocation $ExportDetails
+        if (-not $collectExchangeGroupMetadataDetails) {
+            if ($depthPolicy.IsMinimum) {
+                Write-Log -Type INFO -Message "[Get-ExchangeGroupDetails] Minimum mode optimization active. Reusing recipient inventory and skipping EXO group metadata/member expansion." -ExportFileLocation $ExportDetails
+            }
+            elseif ($isCombinedDepth) {
+                Write-Log -Type INFO -Message "[Get-ExchangeGroupDetails] Combined mode optimization active. Reusing recipient inventory and unified-group cache for metadata; skipping per-group EXO metadata/member expansion." -ExportFileLocation $ExportDetails
+            }
+        }
+        elseif (-not $collectExchangeGroupMemberExpansion) {
+            Write-Log -Type INFO -Message "[Get-ExchangeGroupDetails] Combined mode optimization active. Gathering group metadata while skipping deep member expansion." -ExportFileLocation $ExportDetails
         }
 
         # gather All Exchange Online Groups
@@ -2093,7 +2273,8 @@ function Get-ExchangeGroupDetails {
         foreach ($object in $allMailGroups) {
             try {
                 $identity = $object.identity.tostring()
-                $PrimarySMTPAddress = $object.PrimarySMTPAddress.ToString()
+                $PrimarySMTPAddress = if ($object.PrimarySMTPAddress) { $object.PrimarySMTPAddress.ToString() } else { $identity }
+                $primarySmtpLookupKey = if ([string]::IsNullOrWhiteSpace($PrimarySMTPAddress)) { $null } else { $PrimarySMTPAddress.ToLowerInvariant() }
                 Write-ProgressHelper -Total $exchangeGroupProgressTotal -Id $exchangeGroupProgressId -Activity "Gathering All Exchange Online Group Details" -Operation "Gathering Group Details for $($PrimarySMTPAddress)"
                 Write-Log -Type DEBUG -Message ("[Get-ExchangeGroupDetails] Gathering '{0}' '{1}' Group Details" -f $object.RecipientTypeDetails, $PrimarySMTPAddress) -ExportFileLocation $ExportDetails
     
@@ -2107,40 +2288,57 @@ function Get-ExchangeGroupDetails {
                 $usedUnifiedGroupCache = $false
 
                 if (
-                    $script:tenantStatsHash.ContainsKey('UnifiedGroups') -and
-                    $script:tenantStatsHash['UnifiedGroups'] -and
-                    $script:tenantStatsHash['UnifiedGroups'].ContainsKey($PrimarySMTPAddress)
+                    $primarySmtpLookupKey -and
+                    $cachedUnifiedGroupsByAddress.ContainsKey($primarySmtpLookupKey)
                 ) {
-                    $cachedUnifiedGroup = $script:tenantStatsHash['UnifiedGroups'][$PrimarySMTPAddress]
+                    $cachedUnifiedGroup = $cachedUnifiedGroupsByAddress[$primarySmtpLookupKey]
                 }
                 
                 # Conditional logic for different recipient types
                 switch ($object.RecipientTypeDetails) {
                     "DynamicDistributionGroup" {
-                        if ($collectExchangeGroupDeepDetails) {
+                        if ($collectExchangeGroupMetadataDetails) {
                             $groupDetails = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails details for $PrimarySMTPAddress" -DefaultValue $null -ExportFileLocation $ExportDetails -ScriptBlock {
                                 Get-DynamicDistributionGroup $identity -ErrorAction Stop
                             }
+                            if ($groupDetails) {
+                                $metadataFetchedFromExoCount++
+                            }
+                        }
+                        else {
+                            $groupDetails = $object
+                            $metadataReusedFromRecipientCount++
+                        }
+
+                        if ($collectExchangeGroupMemberExpansion) {
                             $groupMembers = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue @() -ExportFileLocation $ExportDetails -ScriptBlock {
                                 @(Get-DynamicDistributionGroupMember $identity -ErrorAction Stop -ResultSize unlimited -WarningAction SilentlyContinue)
                             }
                         }
                         else {
-                            $groupDetails = $object
                             $groupMembers = @()
                         }
                     }
                     {$_ -in 'MailUniversalDistributionGroup', 'MailUniversalSecurityGroup', "MailNonUniversalGroup"} {
-                        if ($collectExchangeGroupDeepDetails) {
+                        if ($collectExchangeGroupMetadataDetails) {
                             $groupDetails = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails details for $PrimarySMTPAddress" -DefaultValue $null -ExportFileLocation $ExportDetails -ScriptBlock {
                                 Get-DistributionGroup $identity -ErrorAction Stop
                             }
+                            if ($groupDetails) {
+                                $metadataFetchedFromExoCount++
+                            }
+                        }
+                        else {
+                            $groupDetails = $object
+                            $metadataReusedFromRecipientCount++
+                        }
+
+                        if ($collectExchangeGroupMemberExpansion) {
                             $groupMembers = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue @() -ExportFileLocation $ExportDetails -ScriptBlock {
                                 @(Get-DistributionGroupMember $identity -ResultSize unlimited -ErrorAction Stop)
                             }
                         }
                         else {
-                            $groupDetails = $object
                             $groupMembers = @()
                         }
                     }
@@ -2148,22 +2346,32 @@ function Get-ExchangeGroupDetails {
                         if ($cachedUnifiedGroup) {
                             $groupDetails = $cachedUnifiedGroup
                             $usedUnifiedGroupCache = $true
+                            $metadataReusedFromUnifiedCacheCount++
                             if ($cachedUnifiedGroup.PSObject.Properties['GroupMemberCount'] -and $cachedUnifiedGroup.GroupMemberCount -ne $null -and $cachedUnifiedGroup.GroupMemberCount -ne '') {
                                 try { $groupMembersCount = [int]$cachedUnifiedGroup.GroupMemberCount } catch { $groupMembersCount = 0 }
                             }
                             $groupMembers = @()
                         }
 
-                        if ($collectExchangeGroupDeepDetails -and -not $usedUnifiedGroupCache) {
+                        if ($collectExchangeGroupMetadataDetails -and -not $usedUnifiedGroupCache) {
                             $groupDetails = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails details for $PrimarySMTPAddress" -DefaultValue $null -ExportFileLocation $ExportDetails -ScriptBlock {
                                 Get-UnifiedGroup $identity -ErrorAction Stop
                             }
+                            if ($groupDetails) {
+                                $metadataFetchedFromExoCount++
+                            }
+                        }
+                        elseif (-not $groupDetails) {
+                            $groupDetails = $object
+                            $metadataReusedFromRecipientCount++
+                        }
+
+                        if ($collectExchangeGroupMemberExpansion -and -not $usedUnifiedGroupCache) {
                             $groupMembers = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue @() -ExportFileLocation $ExportDetails -ScriptBlock {
                                 @(Get-UnifiedGroupLinks -Identity $identity -LinkType Member -ResultSize unlimited -ErrorAction Stop)
                             }
                         }
-                        elseif (-not $collectExchangeGroupDeepDetails -and -not $groupDetails) {
-                            $groupDetails = $object
+                        else {
                             $groupMembers = @()
                         }
                     }
@@ -2171,6 +2379,7 @@ function Get-ExchangeGroupDetails {
 
                 if (-not $groupDetails) {
                     $groupDetails = $object
+                    $metadataReusedFromRecipientCount++
                 }
     
                 #Check Group Owners Size and Get Owners Addresses
@@ -2224,6 +2433,8 @@ function Get-ExchangeGroupDetails {
                 Write-Log -Type ERROR -Message "[Get-ExchangeGroupDetails] An error occurred in running Get-ExchangeGroupDetails function. Exception: $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
             }
         }
+        Write-Log -Type INFO -Message "[Get-ExchangeGroupDetails] Group metadata source breakdown: RecipientCache=$metadataReusedFromRecipientCount; UnifiedCache=$metadataReusedFromUnifiedCacheCount; EXOMetadataCalls=$metadataFetchedFromExoCount; TotalGroups=$totalCount." -ExportFileLocation $ExportDetails
+        Write-Host ("  Group metadata source breakdown: Recipient cache={0}, Unified cache={1}, EXO metadata calls={2}" -f $metadataReusedFromRecipientCount, $metadataReusedFromUnifiedCacheCount, $metadataFetchedFromExoCount) -ForegroundColor DarkGray
     }
     catch {
         Write-Log -Type ERROR -Message "[Get-ExchangeGroupDetails] An error occurred in running Get-ExchangeGroupDetails function. Exception: $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
@@ -2866,6 +3077,9 @@ function Get-AllUnifiedGroups {
             $cachedStatsCount = 0
             $graphFilledCount = 0
             $fetchedStatsCount = 0
+            $exoFilledCount = 0
+            $exoFallbackRequestedCount = 0
+            $unresolvedStatsCount = 0
             $groupsNeedingStats = New-Object System.Collections.Generic.List[object]
             $groupsWithoutGuidCount = 0
 
@@ -2916,17 +3130,24 @@ function Get-AllUnifiedGroups {
                 [void]$groupsNeedingStats.Add($group)
             }
 
-            if ($groupsNeedingStats.Count -gt 0) {
+            if ($groupsNeedingStats.Count -gt 0 -and $collectUnifiedGroupMailboxStats) {
+                $exoFallbackRequestedCount = $groupsNeedingStats.Count
                 Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Reused $cachedStatsCount cached mailbox stat(s), populated $graphFilledCount via Graph report, then fetching EXO stats for $($groupsNeedingStats.Count) unified group(s) still missing stats." -ExportFileLocation $ExportDetails
                 $allUnifiedGroupStatisticsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $groupsNeedingStats.ToArray() -ProgressActivity "Gathering Unified Group Mailbox Statistics" -ProgressId $statsProgressId
                 foreach ($groupStat in $allUnifiedGroupStatisticsResult.Results) {
                     $key = Convert-ToMailboxGuidKey -GuidValue $groupStat.MailboxGuid
                     if (-not $key) { continue }
-                    $script:tenantStatsHash["PrimaryMailboxStats"][$key] = $groupStat
+                    if (-not $script:tenantStatsHash["PrimaryMailboxStats"].ContainsKey($key)) {
+                        $script:tenantStatsHash["PrimaryMailboxStats"][$key] = $groupStat
+                        $exoFilledCount++
+                    }
                 }
                 $fetchedStatsCount = @($allUnifiedGroupStatisticsResult.Results).Count
                 Write-ExoStatisticsFailureSummary -OperationName 'Get-AllUnifiedGroups mailbox statistics' -Failures $allUnifiedGroupStatisticsResult.Failures
             
+            }
+            elseif ($groupsNeedingStats.Count -gt 0) {
+                Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Unified group mailbox EXO fallback is disabled for this profile/depth. Reused $cachedStatsCount cached stat(s), populated $graphFilledCount via Graph, leaving $($groupsNeedingStats.Count) group(s) unresolved." -ExportFileLocation $ExportDetails
             }
             else {
                 Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] All unified group mailbox stats were already available in PrimaryMailboxStats; skipping EXO stats retrieval." -ExportFileLocation $ExportDetails
@@ -2935,7 +3156,23 @@ function Get-AllUnifiedGroups {
             if ($groupsWithoutGuidCount -gt 0) {
                 Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] $groupsWithoutGuidCount unified group(s) did not expose ExchangeGuid and were excluded from mailbox statistics lookup." -ExportFileLocation $ExportDetails
             }
-            Write-Host ("  Mailbox statistics reused {0}, graph-populated {1}, fetched {2}" -f $cachedStatsCount, $graphFilledCount, $fetchedStatsCount) -ForegroundColor DarkGray
+            if ($groupsNeedingStats.Count -gt 0 -and $collectUnifiedGroupMailboxStats) {
+                $unresolvedStatsCount = [Math]::Max(($groupsNeedingStats.Count - $exoFilledCount), 0)
+            } elseif ($groupsNeedingStats.Count -gt 0) {
+                $unresolvedStatsCount = $groupsNeedingStats.Count
+            }
+            $script:tenantStatsHash["UnifiedGroupMailboxStatsCollectionSummary"] = [PSCustomObject]@{
+                ReusedFromCache      = [int]$cachedStatsCount
+                GraphPopulated       = [int]$graphFilledCount
+                ExoFallbackRequested = [int]$exoFallbackRequestedCount
+                ExoFallbackReturned  = [int]$fetchedStatsCount
+                ExoFallbackPopulated = [int]$exoFilledCount
+                Missing              = [int]$unresolvedStatsCount
+                WithoutGuid          = [int]$groupsWithoutGuidCount
+                TotalGroups          = [int]$totalUnifiedGroups
+            }
+            Write-Host ("  Unified group mailbox stats source breakdown: Cache={0}, Graph={1}, EXO fallback={2}, Missing={3}" -f $cachedStatsCount, $graphFilledCount, $exoFilledCount, $unresolvedStatsCount) -ForegroundColor DarkGray
+            Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Mailbox stats source breakdown: Cache=$cachedStatsCount; GraphPopulated=$graphFilledCount; EXOFallbackRequested=$exoFallbackRequestedCount; EXOFallbackReturned=$fetchedStatsCount; EXOFallbackPopulated=$exoFilledCount; Missing=$unresolvedStatsCount; WithoutGuid=$groupsWithoutGuidCount; TotalGroups=$totalUnifiedGroups." -ExportFileLocation $ExportDetails
         }
         else {
             Write-Host "  No unified groups found" -ForegroundColor DarkGray
@@ -3148,6 +3385,14 @@ function Get-SharePointAndOneDriveSites {
     $spoSitesProgressId = 52
     $siteDetailsProgressId = 53
     $restSitesProgressId = 54
+    $siteUsageCoverage = [ordered]@{
+        SharePointTotal   = 0
+        SharePointMatched = 0
+        SharePointMissing = 0
+        OneDriveTotal     = 0
+        OneDriveMatched   = 0
+        OneDriveMissing   = 0
+    }
 
     function Get-GraphCsvReportLookup {
         [CmdletBinding()]
@@ -3206,6 +3451,36 @@ function Get-SharePointAndOneDriveSites {
         }
 
         return $CompositeSiteId
+    }
+
+    function Update-SiteUsageCoverage {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [bool]$IsOneDrive,
+            [Parameter(Mandatory = $false)]
+            [AllowNull()]
+            $UsageReport
+        )
+
+        if ($IsOneDrive) {
+            $siteUsageCoverage.OneDriveTotal++
+            if ($UsageReport) {
+                $siteUsageCoverage.OneDriveMatched++
+            }
+            else {
+                $siteUsageCoverage.OneDriveMissing++
+            }
+        }
+        else {
+            $siteUsageCoverage.SharePointTotal++
+            if ($UsageReport) {
+                $siteUsageCoverage.SharePointMatched++
+            }
+            else {
+                $siteUsageCoverage.SharePointMissing++
+            }
+        }
     }
 
     function ConvertTo-OneDriveOwnerKey {
@@ -3516,8 +3791,11 @@ function Get-SharePointAndOneDriveSites {
                     if (-not $usageReport -and $siteUrlKey) {
                         $usageReport = if ($isOneDrive) { $oneDriveUsageByUrl[$siteUrlKey] } else { $sharePointUsageByUrl[$siteUrlKey] }
                     }
+                    Update-SiteUsageCoverage -IsOneDrive:$isOneDrive -UsageReport $usageReport
 
-                    Write-Progress -Id $siteDetailsProgressId -Activity "Gather Additional Site Details" -Status "Processed $totalCount site(s): $($site.DisplayName)"
+                    if ($totalCount -eq 1 -or ($totalCount % 50) -eq 0) {
+                        Write-Progress -Id $siteDetailsProgressId -Activity "Gather Additional Site Details" -Status "Processed $totalCount site(s): $($site.DisplayName)"
+                    }
                     $siteData = ConvertTo-NormalizedSiteData -Site $site -IsOneDrive:$isOneDrive -Source MGGraph -UsageReport $usageReport
 
                     if ($isOneDrive) {
@@ -3634,6 +3912,7 @@ function Get-SharePointAndOneDriveSites {
                     if (-not $usageReport -and $siteUrlKey) {
                         $usageReport = if ($isOneDrive) { $oneDriveUsageByUrl[$siteUrlKey] } else { $sharePointUsageByUrl[$siteUrlKey] }
                     }
+                    Update-SiteUsageCoverage -IsOneDrive:$isOneDrive -UsageReport $usageReport
 
                     $siteData = ConvertTo-NormalizedSiteData -Site $site -IsOneDrive:$isOneDrive -Source API -UsageReport $usageReport
 
@@ -3677,6 +3956,12 @@ function Get-SharePointAndOneDriveSites {
         'MGGraph' { Get-SharePointAndOneDriveSitesFromGraphSdk }
         'SPO'     { Get-SharePointAndOneDriveSitesFromSPO -detailLevel $detailLevel }
         'API'     { Get-SharePointAndOneDriveSitesFromRESTAPI }
+    }
+    if ($ServiceName -in @('MGGraph', 'API')) {
+        $sharePointUsageRows = if ($sharePointUsageBySiteId) { $sharePointUsageBySiteId.Count } else { 0 }
+        $oneDriveUsageRows = if ($oneDriveUsageBySiteId) { $oneDriveUsageBySiteId.Count } else { 0 }
+        Write-Host ("  Site usage report coverage: SharePoint {0}/{1}, OneDrive {2}/{3}" -f $siteUsageCoverage.SharePointMatched, $siteUsageCoverage.SharePointTotal, $siteUsageCoverage.OneDriveMatched, $siteUsageCoverage.OneDriveTotal) -ForegroundColor DarkGray
+        Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSites] Site usage report coverage: SharePointMatched=$($siteUsageCoverage.SharePointMatched); SharePointMissing=$($siteUsageCoverage.SharePointMissing); SharePointTotal=$($siteUsageCoverage.SharePointTotal); OneDriveMatched=$($siteUsageCoverage.OneDriveMatched); OneDriveMissing=$($siteUsageCoverage.OneDriveMissing); OneDriveTotal=$($siteUsageCoverage.OneDriveTotal); SharePointReportRows=$sharePointUsageRows; OneDriveReportRows=$oneDriveUsageRows." -ExportFileLocation $ExportDetails
     }
     if ($sharePointUsageBySiteId) { $sharePointUsageBySiteId.Clear() }
     if ($oneDriveUsageBySiteId) { $oneDriveUsageBySiteId.Clear() }
@@ -6150,20 +6435,24 @@ function Report-UserAndMailboxStats {
     param ()
 
     $logPerRecordDebug = Test-ShowCollectorDiagnostics
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
+    }
+    $tenantStatsStore = $script:tenantStatsHash
 
     function Get-LookupTable {
         param(
             [Parameter(Mandatory = $true)]
-            [hashtable]$tenantStatsHash,
+            [hashtable]$TenantStatsStore,
             [Parameter(Mandatory = $true)]
             [string]$Key
         )
 
-        if (-not $tenantStatsHash.ContainsKey($Key)) {
+        if (-not $TenantStatsStore.ContainsKey($Key)) {
             return $null
         }
 
-        $candidate = $tenantStatsHash[$Key]
+        $candidate = $TenantStatsStore[$Key]
         if ($candidate -is [System.Collections.IDictionary]) {
             return $candidate
         }
@@ -6237,8 +6526,6 @@ function Report-UserAndMailboxStats {
     function Populate-Details {
         param (
             [Parameter(Mandatory = $true)]
-            [hashtable]$tenantStatsHash,
-            [Parameter(Mandatory = $true)]
             [object]$entity,
             [Parameter(Mandatory = $false)]
             [switch]$IsMailbox
@@ -6276,10 +6563,10 @@ function Report-UserAndMailboxStats {
             }
 
             $mailboxStats = $null
-            if ($mailboxDetails -and $lookupContext.PrimaryMailboxStats -and $mailboxDetails.ExchangeGuid) {
-                $mailboxStats = Get-DictionaryValue -Dictionary $lookupContext.PrimaryMailboxStats -Key (Convert-ToMailboxGuidKey -GuidValue $mailboxDetails.ExchangeGuid)
+            if ($mailboxDetails -and $lookupContext.PrimaryMailboxStats) {
+                $mailboxStats = Get-MailboxStatForRecord -MailboxRecord $mailboxDetails -StatsHash $lookupContext.PrimaryMailboxStats
                 if ($mailboxStats) {
-                    Write-Verbose "Mailbox Stats Found: $($mailboxDetails.ExchangeGuid.ToString())"
+                    Write-Verbose "Mailbox Stats Found for '$($mailboxDetails.DisplayName)'"
                 }
             }
             if (-not $mailboxStats) {
@@ -6339,13 +6626,13 @@ function Report-UserAndMailboxStats {
     }
 
     $lookupContext = [ordered]@{
-        UnifiedGroups                  = Get-LookupTable -tenantStatsHash $script:tenantStatsHash -Key 'UnifiedGroups'
-        AllMailboxesByIdentity         = Get-LookupTable -tenantStatsHash $script:tenantStatsHash -Key 'AllMailboxes-MailIdentity'
-        AllMailboxesByUserPrincipalName = Get-LookupTable -tenantStatsHash $script:tenantStatsHash -Key 'AllMailboxes-UserPrincipalName'
-        PrimaryMailboxStats            = Get-LookupTable -tenantStatsHash $script:tenantStatsHash -Key 'PrimaryMailboxStats'
-        ArchiveMailboxStats            = Get-LookupTable -tenantStatsHash $script:tenantStatsHash -Key 'ArchiveMailboxStats'
-        SharePoint                     = Get-LookupTable -tenantStatsHash $script:tenantStatsHash -Key 'SharePoint'
-        OneDrive                       = Get-LookupTable -tenantStatsHash $script:tenantStatsHash -Key 'OneDrive'
+        UnifiedGroups                  = Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'UnifiedGroups'
+        AllMailboxesByIdentity         = Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'AllMailboxes-MailIdentity'
+        AllMailboxesByUserPrincipalName = Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'AllMailboxes-UserPrincipalName'
+        PrimaryMailboxStats            = Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'PrimaryMailboxStats'
+        ArchiveMailboxStats            = Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'ArchiveMailboxStats'
+        SharePoint                     = Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'SharePoint'
+        OneDrive                       = Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'OneDrive'
     }
 
     $statsSizeCache = @{}
@@ -6353,50 +6640,49 @@ function Report-UserAndMailboxStats {
     # Combine User and Mailbox Stats with Progress
     function Combine-UserAndMailboxStats {
         param (
-            [hashtable]$tenantStatsHash
+            [hashtable]$TenantStatsStore
         )
 
         # Initialize variables. Include the start time for the script and logging
         $start = Get-Date
-        # Ensure global hash table structure
-        if (-not $script:tenantStatsHash) {
-            $script:tenantStatsHash = @{}
+        if (-not $TenantStatsStore) {
+            throw "[Combine-UserAndMailboxStats] TenantStatsStore was not provided."
         }
         # Create hash tables for user and mailbox details
-        $script:tenantStatsHash["UserFullDetails"] = @{}
-        $script:tenantStatsHash["MailboxFullDetails"] = @{}
+        $TenantStatsStore["UserFullDetails"] = @{}
+        $TenantStatsStore["MailboxFullDetails"] = @{}
         $combinedUserProgressId = 81
         $combinedMailboxProgressId = 82
         
         # Process Users
-        $userCount = $tenantStatsHash["Users"].Keys.Count
+        $userCount = $TenantStatsStore["Users"].Keys.Count
 
-        foreach ($userKey in $tenantStatsHash["Users"].Keys) {
-            $user = $tenantStatsHash["Users"][$userKey]
+        foreach ($userKey in $TenantStatsStore["Users"].Keys) {
+            $user = $TenantStatsStore["Users"][$userKey]
             if ($logPerRecordDebug) {
                 Write-Log -Type DEBUG -Message ("[Combine-UserAndMailboxStats] Combining User '{0}' Details" -f $user.DisplayName) -ExportFileLocation $ExportDetails
             }
 
             Write-ProgressHelper -Total ([Math]::Max($userCount, 1)) -Id $combinedUserProgressId -Activity "Processing User Data" -Operation "Processing user: $($user.DisplayName)"
 
-            $userDetails = Populate-Details -tenantStatsHash $tenantStatsHash -entity $user
-            $script:tenantStatsHash["UserFullDetails"][$user.UserPrincipalName] = $userDetails
+            $userDetails = Populate-Details -entity $user
+            $TenantStatsStore["UserFullDetails"][$user.UserPrincipalName] = $userDetails
         }
         Write-ProgressHelper -Total ([Math]::Max($userCount, 1)) -Id $combinedUserProgressId -Activity "Processing User Data" -Completed
 
         # Process Mailboxes
-        $allMailboxes = @($tenantStatsHash['AllRecipients'].Values | Where-Object { $_.RecipientTypeDetails -like "*Mailbox" })
+        $allMailboxes = @($TenantStatsStore['AllRecipients'].Values | Where-Object { $_.RecipientTypeDetails -like "*Mailbox" })
         $mailboxCount = $allMailboxes.Count
         Write-Log -Type INFO -Message "[Combine-UserAndMailboxStats] Combining User and Mailbox Details - Processing Mailboxes" -ExportFileLocation $ExportDetails
         foreach ($mailbox in $allMailboxes) {
-            #$mailbox = $tenantStatsHash["AllMailboxes"][$mailbox.PrimarySMTPAddress]
+            #$mailbox = $TenantStatsStore["AllMailboxes"][$mailbox.PrimarySMTPAddress]
             if ($logPerRecordDebug) {
                 Write-Log -Type DEBUG -Message ("[Combine-UserAndMailboxStats] Combining Mailbox '{0}' Details" -f $mailbox.PrimarySMTPAddress) -ExportFileLocation $ExportDetails
             }
             Write-ProgressHelper -Total ([Math]::Max($mailboxCount, 1)) -Id $combinedMailboxProgressId -Activity "Processing Mailbox Data" -Operation "Processing mailbox: $($mailbox.PrimarySMTPAddress)"
 
-            $mailboxDetails = Populate-Details -tenantStatsHash $tenantStatsHash -entity $mailbox -IsMailbox
-            $script:tenantStatsHash["MailboxFullDetails"][$mailbox.PrimarySMTPAddress] = $mailboxDetails
+            $mailboxDetails = Populate-Details -entity $mailbox -IsMailbox
+            $TenantStatsStore["MailboxFullDetails"][$mailbox.PrimarySMTPAddress] = $mailboxDetails
         }
 
         Write-ProgressHelper -Total ([Math]::Max($mailboxCount, 1)) -Id $combinedMailboxProgressId -Activity "Processing Mailbox Data" -Completed
@@ -6405,22 +6691,21 @@ function Report-UserAndMailboxStats {
     function Report-InactiveMailboxes {
         [CmdletBinding()]
         param (
-            [hashtable]$tenantStatsHash
+            [hashtable]$TenantStatsStore
         )
 
         # Initialize variables. Include the start time for the script and logging
         $start = Get-Date
-        # Ensure global hash table structure
-        if (-not $script:tenantStatsHash) {
-            $script:tenantStatsHash = @{}
+        if (-not $TenantStatsStore) {
+            throw "[Report-InactiveMailboxes] TenantStatsStore was not provided."
         }
 
         # Create hash table for inactive mailbox details
-        $script:tenantStatsHash["InactiveMailboxDetails"] = @{}
+        $TenantStatsStore["InactiveMailboxDetails"] = @{}
         $inactiveMailboxProgressId = 83
 
         # Process Inactive Mailboxes
-        $inactiveMailboxes = $tenantStatsHash['InactiveMailboxes'].Values
+        $inactiveMailboxes = $TenantStatsStore['InactiveMailboxes'].Values
         $inactiveMailboxCount = $inactiveMailboxes.Count
         Write-Log -Type INFO -Message "[Report-InactiveMailboxes] Processing Inactive Mailboxes" -ExportFileLocation $ExportDetails
         foreach ($mailbox in $inactiveMailboxes) {
@@ -6430,16 +6715,16 @@ function Report-UserAndMailboxStats {
             Write-ProgressHelper -Total ([Math]::Max($inactiveMailboxCount, 1)) -Id $inactiveMailboxProgressId -Activity "Processing Inactive Mailbox Data" -Operation "Processing inactive mailbox: $($mailbox.PrimarySMTPAddress)"
 
             $existingMailboxDetails = $null
-            if ($script:tenantStatsHash.ContainsKey("MailboxFullDetails") -and $script:tenantStatsHash["MailboxFullDetails"]) {
-                $existingMailboxDetails = Get-DictionaryValue -Dictionary $script:tenantStatsHash["MailboxFullDetails"] -Key $mailbox.PrimarySMTPAddress
+            if ($TenantStatsStore.ContainsKey("MailboxFullDetails") -and $TenantStatsStore["MailboxFullDetails"]) {
+                $existingMailboxDetails = Get-DictionaryValue -Dictionary $TenantStatsStore["MailboxFullDetails"] -Key $mailbox.PrimarySMTPAddress
             }
 
             $mailboxDetails = if ($existingMailboxDetails) {
                 $existingMailboxDetails
             } else {
-                Populate-Details -tenantStatsHash $tenantStatsHash -entity $mailbox -IsMailbox
+                Populate-Details -entity $mailbox -IsMailbox
             }
-            $script:tenantStatsHash["InactiveMailboxDetails"][$mailbox.PrimarySMTPAddress] = $mailboxDetails
+            $TenantStatsStore["InactiveMailboxDetails"][$mailbox.PrimarySMTPAddress] = $mailboxDetails
         }
 
         Write-ProgressHelper -Total ([Math]::Max($inactiveMailboxCount, 1)) -Id $inactiveMailboxProgressId -Activity "Processing Inactive Mailbox Data" -Completed
@@ -6454,9 +6739,9 @@ function Report-UserAndMailboxStats {
     try {
         $start = Get-Date
         Write-Host "Combining User and Mailbox Details..." -ForegroundColor Cyan -NoNewline
-        Combine-UserAndMailboxStats -tenantStatsHash $script:tenantStatsHash
+        Combine-UserAndMailboxStats -TenantStatsStore $tenantStatsStore
         Write-Host "Generating Inactive Mailbox Report..." -ForegroundColor Cyan -NoNewline
-        Report-InactiveMailboxes -tenantStatsHash $script:tenantStatsHash
+        Report-InactiveMailboxes -TenantStatsStore $tenantStatsStore
     } catch {
         Write-Log -Type ERROR -Message "[Combine-UserAndMailboxStats] An error occurred while combining User and Mailbox Details. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
     } finally {
@@ -11077,23 +11362,7 @@ function Get-MailboxStatForRecord {
         return $null
     }
 
-    $candidateKeys = New-Object System.Collections.Generic.List[string]
-    if ($Archive -and $MailboxRecord.PSObject.Properties['ArchiveGuid'] -and $MailboxRecord.ArchiveGuid) {
-        $archiveKey = Convert-ToMailboxGuidKey -GuidValue $MailboxRecord.ArchiveGuid
-        if ($archiveKey) { $candidateKeys.Add($archiveKey) }
-    }
-    if ($MailboxRecord.PSObject.Properties['ExchangeGuid'] -and $MailboxRecord.ExchangeGuid) {
-        $exchangeKey = Convert-ToMailboxGuidKey -GuidValue $MailboxRecord.ExchangeGuid
-        if ($exchangeKey) { $candidateKeys.Add($exchangeKey) }
-    }
-    if ($MailboxRecord.PSObject.Properties['Guid'] -and $MailboxRecord.Guid) {
-        $guidKey = Convert-ToMailboxGuidKey -GuidValue $MailboxRecord.Guid
-        if ($guidKey) { $candidateKeys.Add($guidKey) }
-    }
-    if ($MailboxRecord.PSObject.Properties['MailboxGuid'] -and $MailboxRecord.MailboxGuid) {
-        $mailboxGuidKey = Convert-ToMailboxGuidKey -GuidValue $MailboxRecord.MailboxGuid
-        if ($mailboxGuidKey) { $candidateKeys.Add($mailboxGuidKey) }
-    }
+    $candidateKeys = Get-MailboxGuidCandidateKeys -MailboxRecord $MailboxRecord -IncludeArchiveGuid:$Archive
 
     foreach ($key in $candidateKeys) {
         if ([string]::IsNullOrWhiteSpace($key)) {
@@ -14879,7 +15148,7 @@ Write-ConsoleSection -Step '5/5' -Title 'Exporting results'
 $requiresFilteredExportSnapshot = ((-not $effectiveSkipWorkbook) -or (-not $effectiveSkipJsonReport))
 $ExportTenantStatsHash = $null
 if ($requiresFilteredExportSnapshot) {
-    $ExportTenantStatsHash = Filter-TenantStatsHash -tenantStatsHash $script:tenantStatsHash -reportingMode $reportingMode -GraphTest $GraphTest
+    $ExportTenantStatsHash = Filter-TenantStatsHash -TenantStatsStore $script:tenantStatsHash -reportingMode $reportingMode -GraphTest $GraphTest
 } else {
     Write-Log -Type INFO -Message "Skipping filtered export snapshot build because workbook and JSON outputs are both disabled for this profile." -ExportFileLocation $ExportDetails
 }
