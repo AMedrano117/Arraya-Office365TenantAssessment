@@ -885,6 +885,50 @@ function Write-ExoStatisticsFailureSummary {
     Write-Log -Type WARNING -Message "[$OperationName] Skipped $($Failures.Count) object(s). Sample failures: $sampleText" -ExportFileLocation $ExportDetails
 }
 
+function Convert-ToMailboxGuidKey {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        $GuidValue
+    )
+
+    if ($null -eq $GuidValue) {
+        return $null
+    }
+
+    $text = [string]$GuidValue
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $null
+    }
+
+    return $text.Trim().Trim('{}').ToLowerInvariant()
+}
+
+function Test-ShouldCollectUnifiedGroupMailboxStats {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$DetailLevel
+    )
+
+    if ($script:CollectionDepthPolicy -and $script:CollectionDepthPolicy.PSObject.Properties['CollectUnifiedGroupMailboxStats']) {
+        return [bool]$script:CollectionDepthPolicy.CollectUnifiedGroupMailboxStats
+    }
+
+    $isMinimum = $false
+    if ($script:CollectionDepthPolicy -and $script:CollectionDepthPolicy.PSObject.Properties['IsMinimum']) {
+        $isMinimum = ($script:CollectionDepthPolicy.IsMinimum -eq $true)
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($DetailLevel) -and $DetailLevel.ToLowerInvariant() -eq 'minimum') {
+        $isMinimum = $true
+    }
+    if ($isMinimum) {
+        return $false
+    }
+
+    return $true
+}
+
 # ----------------------------------
 # Export Script Functions
 # ----------------------------------
@@ -1012,13 +1056,13 @@ function Filter-TenantStatsHash {
         "combined" {
             @(
                 'Users', 'ArchiveMailboxes', 'ArchiveMailboxStats', 'NonUserMailboxes',
-                'PrimaryMailboxStats', 'AllMailboxes', 'InActiveMailboxes', 
+                'PrimaryMailboxStats', 'AllMailboxes', 'InactiveMailboxes', 
                 'LitigationHoldMailboxes', 'UnifiedGroups'
             )
         }
         "minimum" {
             @(
-                'InActiveMailboxes','ArchiveMailboxStats', 'NonUserMailboxes',
+                'InactiveMailboxes','ArchiveMailboxStats', 'NonUserMailboxes',
                 'PrimaryMailboxStats', 'AllMailboxes', 'LitigationHoldMailboxes',
                 'RemoteDomains','UnifiedGroups', 'MailFlowConnectors',
                 'PublicFolderPerms', 'AuthenticationConfig', 'TenantInfo', 'SpamFilteringConfig',
@@ -1473,16 +1517,22 @@ function Get-ResolvedEmailAddresses {
     # Check in hash table first
     if ($MailObjectHash) {
         $matchingRecipient = $null
-        if ($MailObjectHash['AllRecipients'].ContainsKey($recipientName)) {
-            $matchingRecipient = $MailObjectHash['AllRecipients'][$recipientName]
-        } elseif ($MailObjectHash['AllMailboxes'].ContainsKey($recipientName)) {
-            $matchingRecipient = $MailObjectHash['AllMailboxes'][$recipientName]
-        } elseif ($MailObjectHash['AllMailboxes-MailIdentity'] -and $MailObjectHash['AllMailboxes-MailIdentity'].ContainsKey($recipientName)) {
-            $matchingRecipient = $MailObjectHash['AllMailboxes-MailIdentity'][$recipientName]
-        } elseif ($MailObjectHash['AllMailboxes-UserPrincipalName'] -and $MailObjectHash['AllMailboxes-UserPrincipalName'].ContainsKey($recipientName)) {
-            $matchingRecipient = $MailObjectHash['AllMailboxes-UserPrincipalName'][$recipientName]
-        } elseif ($MailObjectHash['AllMailboxes-PrimarySmtpAddress'] -and $MailObjectHash['AllMailboxes-PrimarySmtpAddress'].ContainsKey($recipientName)) {
-            $matchingRecipient = $MailObjectHash['AllMailboxes-PrimarySmtpAddress'][$recipientName]
+        $allRecipients = if ($MailObjectHash.ContainsKey('AllRecipients') -and $MailObjectHash['AllRecipients'] -is [System.Collections.IDictionary]) { $MailObjectHash['AllRecipients'] } else { $null }
+        $allMailboxes = if ($MailObjectHash.ContainsKey('AllMailboxes') -and $MailObjectHash['AllMailboxes'] -is [System.Collections.IDictionary]) { $MailObjectHash['AllMailboxes'] } else { $null }
+        $mailboxesByIdentity = if ($MailObjectHash.ContainsKey('AllMailboxes-MailIdentity') -and $MailObjectHash['AllMailboxes-MailIdentity'] -is [System.Collections.IDictionary]) { $MailObjectHash['AllMailboxes-MailIdentity'] } else { $null }
+        $mailboxesByUpn = if ($MailObjectHash.ContainsKey('AllMailboxes-UserPrincipalName') -and $MailObjectHash['AllMailboxes-UserPrincipalName'] -is [System.Collections.IDictionary]) { $MailObjectHash['AllMailboxes-UserPrincipalName'] } else { $null }
+        $mailboxesBySmtp = if ($MailObjectHash.ContainsKey('AllMailboxes-PrimarySmtpAddress') -and $MailObjectHash['AllMailboxes-PrimarySmtpAddress'] -is [System.Collections.IDictionary]) { $MailObjectHash['AllMailboxes-PrimarySmtpAddress'] } else { $null }
+
+        if ($allRecipients -and $allRecipients.ContainsKey($recipientName)) {
+            $matchingRecipient = $allRecipients[$recipientName]
+        } elseif ($allMailboxes -and $allMailboxes.ContainsKey($recipientName)) {
+            $matchingRecipient = $allMailboxes[$recipientName]
+        } elseif ($mailboxesByIdentity -and $mailboxesByIdentity.ContainsKey($recipientName)) {
+            $matchingRecipient = $mailboxesByIdentity[$recipientName]
+        } elseif ($mailboxesByUpn -and $mailboxesByUpn.ContainsKey($recipientName)) {
+            $matchingRecipient = $mailboxesByUpn[$recipientName]
+        } elseif ($mailboxesBySmtp -and $mailboxesBySmtp.ContainsKey($recipientName)) {
+            $matchingRecipient = $mailboxesBySmtp[$recipientName]
         }
         Write-Verbose "Matched '$recipientName' in hash table"       
     }
@@ -1531,8 +1581,8 @@ function Get-AllExchangeMailboxDetails {
     $start = Get-Date
     $mailboxInventoryProgressId = 30
     # Ensure global hash table structure
-    if (-not $global:tenantStatsHash) {
-        $global:tenantStatsHash = @{}
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
     }
     Write-Host "Getting all mailboxes and inactive mailboxes with $($detailLevel) details ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] START: Getting all mailboxes with $($detailLevel) details" -ExportFileLocation $ExportDetails
@@ -1541,38 +1591,19 @@ function Get-AllExchangeMailboxDetails {
         switch ($detailLevel) {
             "minimum" {
                 $Properties = @(
-                    "ExternalDirectoryObjectId", "DisplayName", "Office", "UserPrincipalName", "RecipientTypeDetails", "PrimarySmtpAddress"
+                    "ExternalDirectoryObjectId", "DisplayName", "UserPrincipalName", "RecipientTypeDetails", "PrimarySmtpAddress"
+                    "Identity", "Guid", "ExchangeGuid", "ArchiveStatus", "ArchiveState", "ArchiveGuid", "ArchiveName"
                     "WhenMailboxCreated", "UsageLocation", "IsInactiveMailbox", "WasInactiveMailbox", "WhenSoftDeleted"
-                    "InPlaceHolds", "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias"
-                    "EmailAddresses", "GrantSendOnBehalfTo", "AcceptMessagesOnlyFrom", "AcceptMessagesOnlyFromDLMembers", "AcceptMessagesOnlyFromSendersOrMembers"
-                    "RejectMessagesFrom", "RejectMessagesFromDLMembers", "RejectMessagesFromSendersOrMembers", "RequireSenderAuthenticationEnabled", "WindowsEmailAddress"
-                    "DistinguishedName", "Identity", "WhenChanged", "WhenCreated", "ExchangeObjectId"
-                    "Guid", "DeliverToMailboxAndForward", "ForwardingAddress", "ForwardingSmtpAddress", "LitigationHoldEnabled"
-                    "RetentionHoldEnabled", "DelayHoldApplied", "RetentionPolicy", "ExchangeGuid", "IsResource"
-                    "IsShared", "ResourceType", "RoomMailboxAccountEnabled", "WindowsLiveID", "MicrosoftOnlineServicesID"
-                    "EffectivePublicFolderMailbox", "MailboxPlan", "ArchiveStatus", "ArchiveState", "ArchiveName"
-                    "ArchiveGuid", "AutoExpandingArchiveEnabled", "DisabledArchiveGuid", "PersistedCapabilities"
+                    "LitigationHoldEnabled", "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias", "EmailAddresses"
                 )
 
                 $DesiredProperties = @(
-                    "ExternalDirectoryObjectId", "DisplayName", "Office", "UserPrincipalName", "RecipientTypeDetails", "PrimarySmtpAddress",
+                    "ExternalDirectoryObjectId", "DisplayName", "UserPrincipalName", "RecipientTypeDetails", "PrimarySmtpAddress",
+                    "Identity", "Guid", "ExchangeGuid", "ArchiveStatus", "ArchiveState", "ArchiveGuid",
+                    @{Name="ArchiveName"; Expression={$_.ArchiveName -join ","}},
                     "WhenMailboxCreated", "UsageLocation", "IsInactiveMailbox", "WasInactiveMailbox", "WhenSoftDeleted",
-                    @{Name="InPlaceHolds"; Expression={$_.InPlaceHolds -join ","}},"AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias",
-                    @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}}, 
-                    @{Name="GrantSendOnBehalfTo"; Expression={$_.GrantSendOnBehalfTo -join ","}}, 
-                    @{Name="AcceptMessagesOnlyFrom"; Expression={$_.AcceptMessagesOnlyFrom -join ","}}, 
-                    @{Name="AcceptMessagesOnlyFromDLMembers"; Expression={$_.AcceptMessagesOnlyFromDLMembers -join ","}}, 
-                    @{Name="AcceptMessagesOnlyFromSendersOrMembers"; Expression={$_.AcceptMessagesOnlyFromSendersOrMembers -join ","}}, 
-                    @{Name="RejectMessagesFrom"; Expression={$_.RejectMessagesFrom -join ","}}, 
-                    @{Name="RejectMessagesFromDLMembers"; Expression={$_.RejectMessagesFromDLMembers -join ","}}, 
-                    @{Name="RejectMessagesFromSendersOrMembers"; Expression={$_.RejectMessagesFromSendersOrMembers -join ","}}, 
-                    "RequireSenderAuthenticationEnabled", "WindowsEmailAddress",
-                    "DistinguishedName", "Identity", "WhenChanged", "WhenCreated", "ExchangeObjectId",
-                    "Guid", "DeliverToMailboxAndForward", "ForwardingAddress", "ForwardingSmtpAddress", "LitigationHoldEnabled",
-                    "RetentionHoldEnabled", "DelayHoldApplied", "RetentionPolicy", "ExchangeGuid", "IsResource",
-                    "IsShared", "ResourceType", "RoomMailboxAccountEnabled", "WindowsLiveID", "MicrosoftOnlineServicesID", "EffectivePublicFolderMailbox", "MailboxPlan", 
-                    "ArchiveStatus", "ArchiveState", @{Name="ArchiveName"; Expression={$_.ArchiveName -join ","}}, "ArchiveGuid", "AutoExpandingArchiveEnabled", "DisabledArchiveGuid",
-                    @{Name="PersistedCapabilities"; Expression={$_.PersistedCapabilities -join ","}}
+                    "LitigationHoldEnabled", "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias",
+                    @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}}
                 )
 
                 $exoMailboxes = Invoke-QuietCommand -ScriptBlock {
@@ -1655,18 +1686,18 @@ function Get-AllExchangeMailboxDetails {
         
         #Create Hash Table to store mailboxes
         # Ensure global hash table structure
-        if (-not $global:tenantStatsHash) {
-            $global:tenantStatsHash = @{}
+        if (-not $script:tenantStatsHash) {
+            $script:tenantStatsHash = @{}
         }
-        $global:tenantStatsHash["AllMailboxes"] = @{}
-        $Global:tenantStatsHash["AllMailboxes-MailIdentity"] = @{}
-        $Global:tenantStatsHash["AllMailboxes-UserPrincipalName"] = @{}
-        $Global:tenantStatsHash["AllMailboxes-PrimarySmtpAddress"] = @{}
-        $global:tenantStatsHash["NonUserMailboxes"] = @{}
+        $script:tenantStatsHash["AllMailboxes"] = @{}
+        $script:tenantStatsHash["AllMailboxes-MailIdentity"] = @{}
+        $script:tenantStatsHash["AllMailboxes-UserPrincipalName"] = @{}
+        $script:tenantStatsHash["AllMailboxes-PrimarySmtpAddress"] = @{}
+        $script:tenantStatsHash["NonUserMailboxes"] = @{}
         
-        $global:tenantStatsHash["ArchiveMailboxes"] = @{}
-        $global:tenantStatsHash["InactiveMailboxes"] = @{}
-        $global:tenantStatsHash["LitigationHoldMailboxes"] = @{}
+        $script:tenantStatsHash["ArchiveMailboxes"] = @{}
+        $script:tenantStatsHash["InactiveMailboxes"] = @{}
+        $script:tenantStatsHash["LitigationHoldMailboxes"] = @{}
 
         # Insert individual mailboxes into the hashtable
         $totalCount = $exoMailboxes.Count
@@ -1686,30 +1717,30 @@ function Get-AllExchangeMailboxDetails {
             
             # Set the key based on the mailbox type
             #$MailboxTypeKey = $mailbox.RecipientTypeDetails.tostring() # Use RecipientTypeDetails as the key
-            $Global:tenantStatsHash["AllMailboxes"][$key] = $mailbox
-            $Global:tenantStatsHash["AllMailboxes-MailIdentity"][$mailbox.Identity] = $mailbox
+            $script:tenantStatsHash["AllMailboxes"][$key] = $mailbox
+            $script:tenantStatsHash["AllMailboxes-MailIdentity"][$mailbox.Identity] = $mailbox
             if ($mailbox.UserPrincipalName) {
-                $Global:tenantStatsHash["AllMailboxes-UserPrincipalName"][[string]$mailbox.UserPrincipalName] = $mailbox
+                $script:tenantStatsHash["AllMailboxes-UserPrincipalName"][[string]$mailbox.UserPrincipalName] = $mailbox
             }
             if ($mailbox.PrimarySmtpAddress) {
-                $Global:tenantStatsHash["AllMailboxes-PrimarySmtpAddress"][[string]$mailbox.PrimarySmtpAddress] = $mailbox
+                $script:tenantStatsHash["AllMailboxes-PrimarySmtpAddress"][[string]$mailbox.PrimarySmtpAddress] = $mailbox
             }
 
             if ($mailbox.RecipientTypeDetails -ne "UserMailbox" -and $mailbox.RecipientTypeDetails -ne "GroupMailbox") {
                 #$MailboxTypeKey = "NonUserMailboxes"
-                $global:tenantStatsHash["NonUserMailboxes"][$key] = $mailbox
+                $script:tenantStatsHash["NonUserMailboxes"][$key] = $mailbox
             }
             if ($mailbox.ArchiveStatus -eq "Active") {
                 #$MailboxTypeKey = "ArchiveMailboxes"
-                $global:tenantStatsHash["ArchiveMailboxes"][$key] = $mailbox
+                $script:tenantStatsHash["ArchiveMailboxes"][$key] = $mailbox
             }
             if ($mailbox.IsInactiveMailbox -eq $true) {
                 #$MailboxTypeKey = "InactiveMailboxes"
-                $global:tenantStatsHash["InactiveMailboxes"][$key] = $mailbox
+                $script:tenantStatsHash["InactiveMailboxes"][$key] = $mailbox
             }
             if ($mailbox.LitigationHoldEnabled -eq $true) {
                 #$MailboxTypeKey = "LitigationHoldMailboxes"
-                $global:tenantStatsHash["LitigationHoldMailboxes"][$key] = $mailbox
+                $script:tenantStatsHash["LitigationHoldMailboxes"][$key] = $mailbox
             }
         }
     }
@@ -1734,49 +1765,57 @@ function Get-AllExchangeMailboxDetails {
         Write-Host "  Getting primary mailbox stats..." -ForegroundColor Cyan -nonewline
         Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Gathering all primary mailbox statistics for collected mailboxes (including inactive where available)." -ExportFileLocation $ExportDetails
 
-        $global:tenantStatsHash["PrimaryMailboxStats"] = @{}
-        $activeMailboxes = $global:tenantStatsHash['AllMailboxes'].Values | Where-Object { $_.IsInactiveMailbox -ne $true }
+        $script:tenantStatsHash["PrimaryMailboxStats"] = @{}
+        $script:MailboxUsageGraphLookup = @{}
+        $activeMailboxes = $script:tenantStatsHash['AllMailboxes'].Values | Where-Object { $_.IsInactiveMailbox -ne $true }
         $graphStatsCount = 0
 
         # Try Graph mailbox usage report (fast) for active mailboxes
         try {
-            if (Get-MgContext -ErrorAction SilentlyContinue) {
-                $mailboxUsageUri = "https://graph.microsoft.com/v1.0/reports/getMailboxUsageDetail(period='D180')"
-                $graphReportData = @(Export-ArrayaGraphReportCsv -Uri $mailboxUsageUri -Activity 'Mailbox usage detail report' -Headers $global:GraphHeaders)
-                if ($graphReportData -and $graphReportData.Count -gt 0) {
-                    $graphMailboxHash = @{}
-                    foreach ($item in $graphReportData) {
-                        $upn = $item.'User Principal Name'
-                        if (-not [string]::IsNullOrWhiteSpace($upn)) {
-                            $graphMailboxHash[$upn] = $item
-                        }
+            $mailboxUsageUri = "https://graph.microsoft.com/v1.0/reports/getMailboxUsageDetail(period='D180')"
+            $graphReportData = @(Export-ArrayaGraphReportCsv -Uri $mailboxUsageUri -Activity 'Mailbox usage detail report' -Headers $global:GraphHeaders)
+            if ($graphReportData -and $graphReportData.Count -gt 0) {
+                foreach ($item in $graphReportData) {
+                    $upn = [string]$item.'User Principal Name'
+                    if ([string]::IsNullOrWhiteSpace($upn)) {
+                        continue
                     }
-                    foreach ($mailbox in $activeMailboxes) {
-                        if (-not $graphMailboxHash.ContainsKey($mailbox.UserPrincipalName)) { continue }
-                        $graphData = $graphMailboxHash[$mailbox.UserPrincipalName]
-                        $storageBytes = 0
-                        $deletedBytes = 0
-                        $itemCount = "0"
-                        if ($graphData.'Storage Used (Byte)') { $storageBytes = [double]$graphData.'Storage Used (Byte)' }
-                        if ($graphData.'Deleted Item Size (Byte)') { $deletedBytes = [double]$graphData.'Deleted Item Size (Byte)' }
-                        if ($graphData.'Item Count') { $itemCount = $graphData.'Item Count' }
-                        $guidKey = if ($mailbox.ExchangeGuid) { $mailbox.ExchangeGuid.ToString() } elseif ($mailbox.Guid) { $mailbox.Guid.ToString() } else { $null }
-                        if (-not $guidKey) { continue }
-                        $stats = [PSCustomObject]@{
-                            DisplayName = $mailbox.DisplayName
-                            TotalItemSize = "$([math]::Round($storageBytes / 1GB, 4)) GB ($storageBytes bytes)"
-                            TotalItemSizeBytes = [int64]$storageBytes
-                            ItemCount = $itemCount
-                            TotalDeletedItemSize = "$([math]::Round($deletedBytes / 1GB, 4)) GB ($deletedBytes bytes)"
-                            TotalDeletedItemSizeBytes = [int64]$deletedBytes
-                            MailboxType = $mailbox.RecipientTypeDetails
-                            MailboxGuid = $mailbox.ExchangeGuid
-                        }
-                        $global:tenantStatsHash["PrimaryMailboxStats"][$guidKey] = $stats
+                    $script:MailboxUsageGraphLookup[$upn.ToLowerInvariant()] = $item
+                }
+
+                foreach ($mailbox in $activeMailboxes) {
+                    $mailboxLookupKey = $null
+                    if (-not [string]::IsNullOrWhiteSpace([string]$mailbox.UserPrincipalName)) {
+                        $mailboxLookupKey = ([string]$mailbox.UserPrincipalName).ToLowerInvariant()
                     }
+                    elseif (-not [string]::IsNullOrWhiteSpace([string]$mailbox.PrimarySmtpAddress)) {
+                        $mailboxLookupKey = ([string]$mailbox.PrimarySmtpAddress).ToLowerInvariant()
+                    }
+
+                    if (-not $mailboxLookupKey -or -not $script:MailboxUsageGraphLookup.ContainsKey($mailboxLookupKey)) { continue }
+                    $graphData = $script:MailboxUsageGraphLookup[$mailboxLookupKey]
+                    $storageBytes = 0
+                    $deletedBytes = 0
+                    $itemCount = "0"
+                    if ($graphData.'Storage Used (Byte)') { $storageBytes = [double]$graphData.'Storage Used (Byte)' }
+                    if ($graphData.'Deleted Item Size (Byte)') { $deletedBytes = [double]$graphData.'Deleted Item Size (Byte)' }
+                    if ($graphData.'Item Count') { $itemCount = $graphData.'Item Count' }
+                    $guidKey = if ($mailbox.ExchangeGuid) { Convert-ToMailboxGuidKey -GuidValue $mailbox.ExchangeGuid } elseif ($mailbox.Guid) { Convert-ToMailboxGuidKey -GuidValue $mailbox.Guid } else { $null }
+                    if (-not $guidKey) { continue }
+                    $stats = [PSCustomObject]@{
+                        DisplayName = $mailbox.DisplayName
+                        TotalItemSize = "$([math]::Round($storageBytes / 1GB, 4)) GB ($storageBytes bytes)"
+                        TotalItemSizeBytes = [int64]$storageBytes
+                        ItemCount = $itemCount
+                        TotalDeletedItemSize = "$([math]::Round($deletedBytes / 1GB, 4)) GB ($deletedBytes bytes)"
+                        TotalDeletedItemSizeBytes = [int64]$deletedBytes
+                        MailboxType = $mailbox.RecipientTypeDetails
+                        MailboxGuid = $mailbox.ExchangeGuid
+                    }
+                    $script:tenantStatsHash["PrimaryMailboxStats"][$guidKey] = $stats
                 }
             }
-            $graphStatsCount = $global:tenantStatsHash["PrimaryMailboxStats"].Count
+            $graphStatsCount = $script:tenantStatsHash["PrimaryMailboxStats"].Count
         } catch {
             Write-Log -Type WARNING -Message "[Get-AllExchangeMailboxDetails] Graph mailbox usage report failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
@@ -1784,40 +1823,32 @@ function Get-AllExchangeMailboxDetails {
         Write-Progress -Id $primaryStatsProgressId -Activity "Gathering All Primary Mailbox Statistics" -Completed
 
         # Fallback to EXO stats for missing mailboxes only (includes inactive)
-        $mailboxesNeedingStats = $global:tenantStatsHash['AllMailboxes'].Values | Where-Object {
+        $mailboxesNeedingStats = $script:tenantStatsHash['AllMailboxes'].Values | Where-Object {
             if ($_.ExchangeGuid) {
-                -not $global:tenantStatsHash["PrimaryMailboxStats"].ContainsKey($_.ExchangeGuid.ToString())
+                -not $script:tenantStatsHash["PrimaryMailboxStats"].ContainsKey((Convert-ToMailboxGuidKey -GuidValue $_.ExchangeGuid))
             } else {
                 $true
             }
         }
         $exoFilledCount = 0
         if ($mailboxesNeedingStats.Count -gt 0) {
-            #$inactiveMBXTest = ($global:tenantStatsHash['AllMailboxes'].Values | Where-Object { $_.IsInactiveMailbox -eq $true }).Count -gt 0
-            Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Graph report covered $($global:tenantStatsHash['PrimaryMailboxStats'].Count) mailboxes; fetching EXO stats for $($mailboxesNeedingStats.Count) missing/inactive." -ExportFileLocation $ExportDetails
-
-            <#
-            $validMailboxStatsInput = $mailboxesNeedingStats | Where-Object {
-                $_.UserPrincipalName -and $_.UserPrincipalName -match ".+@.+"
-            }
-            $invalidMailboxStatsInput = $mailboxesNeedingStats | Where-Object {
-                -not $_.UserPrincipalName -or $_.UserPrincipalName -notmatch ".+@.+"
-            }
-            #>
+            #$inactiveMBXTest = ($script:tenantStatsHash['AllMailboxes'].Values | Where-Object { $_.IsInactiveMailbox -eq $true }).Count -gt 0
+            Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Graph report covered $($script:tenantStatsHash['PrimaryMailboxStats'].Count) mailboxes; fetching EXO stats for $($mailboxesNeedingStats.Count) missing/inactive." -ExportFileLocation $ExportDetails
 
             $allRemainingMBXStatsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $mailboxesNeedingStats -ProgressActivity "Gathering All Primary Mailbox Statistics" -ProgressId $primaryStatsProgressId
             $allRemainingMBXStats = @($allRemainingMBXStatsResult.Results)
             $allRemainingMBXStats | ForEach-Object {
-                $key = $_.MailboxGuid.ToString()
-                if (-not $global:tenantStatsHash["PrimaryMailboxStats"].ContainsKey($key)) {
-                    $global:tenantStatsHash["PrimaryMailboxStats"][$key] = $_
+                $key = Convert-ToMailboxGuidKey -GuidValue $_.MailboxGuid
+                if (-not $key) { continue }
+                if (-not $script:tenantStatsHash["PrimaryMailboxStats"].ContainsKey($key)) {
+                    $script:tenantStatsHash["PrimaryMailboxStats"][$key] = $_
                     $exoFilledCount++
                 }
             }
             Write-ExoStatisticsFailureSummary -OperationName 'Get-AllExchangeMailboxDetails primary mailbox statistics' -Failures $allRemainingMBXStatsResult.Failures
         }
 
-        $finalStatsCount = $global:tenantStatsHash["PrimaryMailboxStats"].Count
+        $finalStatsCount = $script:tenantStatsHash["PrimaryMailboxStats"].Count
         if ($exoFilledCount -eq 0 -and $finalStatsCount -gt $graphStatsCount) {
             $exoFilledCount = $finalStatsCount - $graphStatsCount
         }
@@ -1826,39 +1857,38 @@ function Get-AllExchangeMailboxDetails {
         Write-Verbose "finalStatsCount: $finalStatsCount"
 
         if ($exoFilledCount -lt 0) { $exoFilledCount = 0 }
-        $totalMailboxes = $global:tenantStatsHash['AllMailboxes'].Values.Count
+        $totalMailboxes = $script:tenantStatsHash['AllMailboxes'].Values.Count
         Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Mailbox stats summary: Graph=$graphStatsCount; EXO filled=$exoFilledCount; Total mailboxes=$totalMailboxes." -ExportFileLocation $ExportDetails
 
         # Pre-cache unified group mailbox stats so later unified-group collection can reuse this data.
-        $isMinimumMode = $false
-        if ($script:CollectionDepthPolicy -and $script:CollectionDepthPolicy.PSObject.Properties['IsMinimum']) {
-            $isMinimumMode = ($script:CollectionDepthPolicy.IsMinimum -eq $true)
-        }
-        elseif ($detailLevel -eq 'minimum') {
-            $isMinimumMode = $true
-        }
-
-        $shouldPreCacheUnifiedGroupStats = $false
-        if (-not $isMinimumMode) {
-            $shouldPreCacheUnifiedGroupStats = $true
-            if (
-                $script:ProfileCollectionPlan -and
-                $script:ProfileCollectionPlan -is [System.Collections.IDictionary] -and
-                $script:ProfileCollectionPlan.Contains('CollectUnifiedGroups') -and
-                ($script:ProfileCollectionPlan.CollectUnifiedGroups -eq $true)
-            ) {
-                $shouldPreCacheUnifiedGroupStats = $false
-                Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Skipping unified group mailbox stats pre-cache because unified group collection is enabled in this run." -ExportFileLocation $ExportDetails
-            }
-        }
+        $shouldPreCacheUnifiedGroupStats = Test-ShouldCollectUnifiedGroupMailboxStats -DetailLevel $detailLevel
 
         if ($shouldPreCacheUnifiedGroupStats) {
             try {
                 Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Pre-caching unified group mailbox stats into PrimaryMailboxStats." -ExportFileLocation $ExportDetails
-                $unifiedGroupsForStats = @(
-                    Invoke-QuietCommand -ScriptBlock { Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue } |
-                        Select-Object DisplayName, PrimarySmtpAddress, ExchangeGuid
-                )
+                $unifiedGroupsForStats = @()
+                switch ($detailLevel) {
+                    {$_ -in "minimum", "combined", "all"} {
+                        $desiredUnifiedGroupProperties = @(
+                            "PrimarySmtpAddress", "DisplayName", "AccessType", "RecipientTypeDetails",
+                            "ExchangeGuid", @{Name="ManagedByDetails"; Expression={$_.ManagedByDetails -join ','}}, "Notes",
+                            "SharePointSiteUrl", "ContentMailboxName", "GroupMemberCount",
+                            "AllowAddGuests", "WhenSoftDeleted", "HiddenFromExchangeClientsEnabled",
+                            @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}}, @{Name="ModeratedBy"; Expression={$_.ModeratedBy -join ','}}, "FolderPath",
+                            @{Name="Description"; Expression={$_.Description -join ','}}, "WhenCreated"
+                        )
+                        $unifiedGroupsForStats = @(
+                            Invoke-QuietCommand -ScriptBlock { Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue } |
+                                Select-Object $desiredUnifiedGroupProperties
+                        )
+                    }
+                    default {
+                        $unifiedGroupsForStats = @(
+                            Invoke-QuietCommand -ScriptBlock { Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue }
+                        )
+                    }
+                }
+                $script:UnifiedGroupsInventoryCache = @($unifiedGroupsForStats)
 
                 if ($unifiedGroupsForStats.Count -gt 0) {
                     $groupsMissingStats = New-Object System.Collections.Generic.List[object]
@@ -1866,10 +1896,10 @@ function Get-AllExchangeMailboxDetails {
                     foreach ($group in $unifiedGroupsForStats) {
                         $groupGuidKey = $null
                         if ($group -and $group.PSObject.Properties['ExchangeGuid'] -and $group.ExchangeGuid) {
-                            $groupGuidKey = [string]$group.ExchangeGuid
+                            $groupGuidKey = Convert-ToMailboxGuidKey -GuidValue $group.ExchangeGuid
                         }
 
-                        if (-not [string]::IsNullOrWhiteSpace($groupGuidKey) -and $global:tenantStatsHash["PrimaryMailboxStats"].ContainsKey($groupGuidKey)) {
+                        if (-not [string]::IsNullOrWhiteSpace($groupGuidKey) -and $script:tenantStatsHash["PrimaryMailboxStats"].ContainsKey($groupGuidKey)) {
                             $cachedUnifiedGroupStats++
                             continue
                         }
@@ -1881,8 +1911,9 @@ function Get-AllExchangeMailboxDetails {
                     if ($groupsMissingStats.Count -gt 0) {
                         $unifiedGroupStatsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $groupsMissingStats.ToArray() -ProgressActivity "Pre-caching Unified Group Mailbox Statistics" -ProgressId $primaryStatsProgressId
                         foreach ($groupStat in $unifiedGroupStatsResult.Results) {
-                            $key = $groupStat.MailboxGuid.ToString()
-                            $global:tenantStatsHash["PrimaryMailboxStats"][$key] = $groupStat
+                            $key = Convert-ToMailboxGuidKey -GuidValue $groupStat.MailboxGuid
+                            if (-not $key) { continue }
+                            $script:tenantStatsHash["PrimaryMailboxStats"][$key] = $groupStat
                         }
                         $fetchedUnifiedGroupStats = @($unifiedGroupStatsResult.Results).Count
                         Write-ExoStatisticsFailureSummary -OperationName 'Get-AllExchangeMailboxDetails unified group mailbox statistics pre-cache' -Failures $unifiedGroupStatsResult.Failures
@@ -1898,6 +1929,9 @@ function Get-AllExchangeMailboxDetails {
                 Write-Progress -Id $primaryStatsProgressId -Activity "Pre-caching Unified Group Mailbox Statistics" -Completed
             }
         }
+        else {
+            Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Unified group mailbox statistics pre-cache is disabled for this profile/depth." -ExportFileLocation $ExportDetails
+        }
     }
     catch {
         Write-Log -Type ERROR -Message "[Get-AllExchangeMailboxDetails] An error occurred in Gathering Mailbox Satistics and adding to Hash Table. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
@@ -1910,24 +1944,26 @@ function Get-AllExchangeMailboxDetails {
     }
     
     ## Archive Mailbox Stats to Hash Table
-    if ($global:tenantStatsHash['AllMailboxes'].Values | Where-Object {$_.ArchiveStatus -ne "None"}) {
+    if ($script:tenantStatsHash['AllMailboxes'].Values | Where-Object {$_.ArchiveStatus -ne "None"}) {
         try {
             $start = Get-Date
             Write-Host "  Getting archive mailbox stats..." -ForegroundColor Cyan -nonewline
+            Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Archive mailbox size/item metrics are not exposed in Graph mailbox usage reports; using EXO statistics for archive mailboxes." -ExportFileLocation $ExportDetails
             Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Gathering All Archive Mailbox Statistics. Including Group and Inactive Mailboxes" -ExportFileLocation $ExportDetails
             Write-Progress -Id $archiveStatsProgressId -Activity "Gathering All Archive Mailbox Statistics" -Status (((Get-Date) - $global:initialStart).ToString('hh\:mm\:ss'))
-            $archiveMailboxCandidates = @($global:tenantStatsHash['AllMailboxes'].Values | Where-Object {$_.ArchiveStatus -ne "None"})
+            $archiveMailboxCandidates = @($script:tenantStatsHash['AllMailboxes'].Values | Where-Object {$_.ArchiveStatus -ne "None"})
             $archiveMailboxStatsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $archiveMailboxCandidates -Archive -ProgressActivity "Gathering All Archive Mailbox Statistics" -ProgressId $archiveStatsProgressId
             $archiveMailboxStats = @($archiveMailboxStatsResult.Results)
             if ($archiveMailboxStats) {
-                $global:tenantStatsHash["ArchiveMailboxStats"] = @{}
+                $script:tenantStatsHash["ArchiveMailboxStats"] = @{}
                 
                 #Add to Tenant Stats Hash
                 $archiveMailboxStats | ForEach-Object {
                     # Using MailboxGUID from the Mailbox Statistics as the key; matches against the ExchangeGUID from the Mailbox
-                    $key = $_.MailboxGuid.ToString()
+                    $key = Convert-ToMailboxGuidKey -GuidValue $_.MailboxGuid
+                    if (-not $key) { continue }
                     $value = $_
-                    $global:tenantStatsHash["ArchiveMailboxStats"][$key] = $value
+                    $script:tenantStatsHash["ArchiveMailboxStats"][$key] = $value
                 }
             }
             Write-ExoStatisticsFailureSummary -OperationName 'Get-AllExchangeMailboxDetails archive mailbox statistics' -Failures $archiveMailboxStatsResult.Failures
@@ -1964,10 +2000,10 @@ function Get-AllRecipientDetails {
     try {
         $start = Get-Date
         # Ensure global hash table structure
-        if (-not $global:tenantStatsHash) {
-            $global:tenantStatsHash = @{}
+        if (-not $script:tenantStatsHash) {
+            $script:tenantStatsHash = @{}
         }
-        $global:tenantStatsHash["AllRecipients"] = @{}
+        $script:tenantStatsHash["AllRecipients"] = @{}
         Write-Host "Getting all Exchange Online Recipients $($detailLevel) details ..." -ForegroundColor Cyan -nonewline
         Write-Log -Type INFO -Message "[Get-AllRecipientDetails] START: Gathering all Exchange Online Recipients $($detailLevel) details" -ExportFileLocation $ExportDetails
         Write-Progress -Id $recipientProgressId -Activity "Gathering All Exchange Online Recipients" -Status (((Get-Date) - $global:initialStart).ToString('hh\:mm\:ss'))
@@ -2003,7 +2039,7 @@ function Get-AllRecipientDetails {
         #Add to hash table
         Write-Log -Type INFO -Message "[Get-AllRecipientDetails] Adding Exchange Online Recipients to Tenant Stats Hash" -ExportFileLocation $ExportDetails
         foreach ($recipient in $allRecipients) {
-            $global:tenantStatsHash["AllRecipients"][$recipient.PrimarySmtpAddress] = $recipient
+            $script:tenantStatsHash["AllRecipients"][$recipient.PrimarySmtpAddress] = $recipient
         }
     }
     catch {
@@ -2037,10 +2073,10 @@ function Get-ExchangeGroupDetails {
     try {
         $start = Get-Date
         # Ensure global hash table structure
-        if (-not $global:tenantStatsHash) {
-            $global:tenantStatsHash = @{}
+        if (-not $script:tenantStatsHash) {
+            $script:tenantStatsHash = @{}
         }
-        $global:tenantStatsHash["AllExchangeGroups"] = @{}
+        $script:tenantStatsHash["AllExchangeGroups"] = @{}
         
         Write-Host "Getting all Exchange Online Groups ..." -ForegroundColor Cyan -nonewline
         Write-Log -Type INFO -Message "[Get-ExchangeGroupDetails] START: Gathering all Exchange Online Groups with $($detailLevel) details" -ExportFileLocation $ExportDetails
@@ -2049,7 +2085,7 @@ function Get-ExchangeGroupDetails {
         }
 
         # gather All Exchange Online Groups
-        $allMailGroups = $global:tenantStatsHash['AllRecipients'].Values | Where-Object { $_.RecipientTypeDetails -like "*group" } | Sort-Object DisplayName
+        $allMailGroups = $script:tenantStatsHash['AllRecipients'].Values | Where-Object { $_.RecipientTypeDetails -like "*group" } | Sort-Object DisplayName
         
         Write-Log -Type INFO -Message "[Get-ExchangeGroupDetails] Gathering all Exchange Online Groups Details" -ExportFileLocation $ExportDetails
         $totalCount = $allMailGroups.count
@@ -2071,11 +2107,11 @@ function Get-ExchangeGroupDetails {
                 $usedUnifiedGroupCache = $false
 
                 if (
-                    $global:tenantStatsHash.ContainsKey('UnifiedGroups') -and
-                    $global:tenantStatsHash['UnifiedGroups'] -and
-                    $global:tenantStatsHash['UnifiedGroups'].ContainsKey($PrimarySMTPAddress)
+                    $script:tenantStatsHash.ContainsKey('UnifiedGroups') -and
+                    $script:tenantStatsHash['UnifiedGroups'] -and
+                    $script:tenantStatsHash['UnifiedGroups'].ContainsKey($PrimarySMTPAddress)
                 ) {
-                    $cachedUnifiedGroup = $global:tenantStatsHash['UnifiedGroups'][$PrimarySMTPAddress]
+                    $cachedUnifiedGroup = $script:tenantStatsHash['UnifiedGroups'][$PrimarySMTPAddress]
                 }
                 
                 # Conditional logic for different recipient types
@@ -2182,7 +2218,7 @@ function Get-ExchangeGroupDetails {
                 }
     
                 Write-Log -Type DEBUG -Message ("[Get-ExchangeGroupDetails] Add '{0}' '{1}' Group Details to Tenant Stats Hash" -f $object.RecipientTypeDetails, $PrimarySMTPAddress) -ExportFileLocation $ExportDetails
-                $global:tenantStatsHash["AllExchangeGroups"][$object.identity] = $currentobject
+                $script:tenantStatsHash["AllExchangeGroups"][$object.identity] = $currentobject
             }
             catch {
                 Write-Log -Type ERROR -Message "[Get-ExchangeGroupDetails] An error occurred in running Get-ExchangeGroupDetails function. Exception: $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
@@ -2212,12 +2248,12 @@ function Get-MailFlowRulesandConnectors {
     $start = Get-Date
     $mailFlowProgressId = 34
     # Ensure global hash table structure
-    if (-not $global:tenantStatsHash) {
-        $global:tenantStatsHash = @{}
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
     }
     # Create Hash Tables for Mail Flow Rules and Connectors
-    $global:tenantStatsHash["MailFlowRules"] = @{}
-    $global:tenantStatsHash["MailFlowConnectors"] = @{}
+    $script:tenantStatsHash["MailFlowRules"] = @{}
+    $script:tenantStatsHash["MailFlowConnectors"] = @{}
 
     Write-Host "Getting all Mail Flow Rules and Connectors ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-MailFlowRulesandConnectors] START: Gathering all Mail Flow Rules and Connectors with $($detailLevel) details" -ExportFileLocation $ExportDetails
@@ -2246,7 +2282,7 @@ function Get-MailFlowRulesandConnectors {
         foreach ($rule in $mailFlowRules) {
             $progresscounter++
             Write-Log -Type DEBUG -Message "[Get-MailFlowRulesandConnectors] Gathering Mail Flow Details for $($rule.Name): $($progresscounter)/$($totalCount)" -ExportFileLocation $ExportDetails
-            $global:tenantStatsHash["MailFlowRules"][$rule.Priority] = $rule
+            $script:tenantStatsHash["MailFlowRules"][$rule.Priority] = $rule
         }
         Write-Progress -Id $mailFlowProgressId -Activity "Getting all Mail Flow Rules details" -Completed
     }
@@ -2282,7 +2318,7 @@ function Get-MailFlowRulesandConnectors {
                     }
                 }
             }    
-            $global:tenantStatsHash["MailFlowConnectors"][$connector.Id] = $currentConnector
+            $script:tenantStatsHash["MailFlowConnectors"][$connector.Id] = $currentConnector
         }
     }
 
@@ -2322,7 +2358,7 @@ function Get-MailFlowRulesandConnectors {
         }
 
         # Ensure MailFlowConnectors is initialized as a hashtable
-        $global:tenantStatsHash["MailFlowConnectors"] = @{}
+        $script:tenantStatsHash["MailFlowConnectors"] = @{}
 
         #convert Mail Flow Connectors to Hash Table
         if ($mailFlowInboundConnectors) {
@@ -2349,10 +2385,10 @@ function Get-SMTPRelayConfiguration {
     
     $start = Get-Date
     # Ensure global hash table structure
-    if (-not $global:tenantStatsHash) {
-        $global:tenantStatsHash = @{}
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
     }
-    $global:tenantStatsHash["SMTPRelayConfig"] = @{}
+    $script:tenantStatsHash["SMTPRelayConfig"] = @{}
     
     Write-Host "Checking SMTP Relay Configuration ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-SMTPRelayConfiguration] START: Checking SMTP Relay Configuration" -ExportFileLocation $ExportDetails
@@ -2368,7 +2404,7 @@ function Get-SMTPRelayConfiguration {
         
         # Check for SMTP AUTH enabled on mailboxes
         try {
-            $smtpAuthUsers = $global:tenantStatsHash["AllMailboxes"].Values | 
+            $smtpAuthUsers = $script:tenantStatsHash["AllMailboxes"].Values | 
                 Where-Object {$_.SmtpClientAuthenticationDisabled -eq $false}
             
             if ($smtpAuthUsers) {
@@ -2381,7 +2417,7 @@ function Get-SMTPRelayConfiguration {
         }
         
         # Check outbound connectors for relay configuration
-        $outboundConnectors = $global:tenantStatsHash["MailFlowConnectors"].Values | 
+        $outboundConnectors = $script:tenantStatsHash["MailFlowConnectors"].Values | 
             Where-Object {$_.ConnectorDirection -eq "Outbound" -and $_.Enabled -eq $true}
         
         if ($outboundConnectors) {
@@ -2424,7 +2460,7 @@ function Get-SMTPRelayConfiguration {
             Write-Log -Type WARNING -Message "[Get-SMTPRelayConfiguration] Unable to check transport config" -ExportFileLocation $ExportDetails
         }
         
-        $global:tenantStatsHash["SMTPRelayConfig"]["Configuration"] = $smtpConfig
+        $script:tenantStatsHash["SMTPRelayConfig"]["Configuration"] = $smtpConfig
         
     } catch {
         Write-Log -Type ERROR -Message "[Get-SMTPRelayConfiguration] Error checking SMTP relay configuration: $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
@@ -2441,10 +2477,10 @@ function Get-ThirdPartySpamFilteringConfig {
     
     $start = Get-Date
     # Ensure global hash table structure
-    if (-not $global:tenantStatsHash) {
-        $global:tenantStatsHash = @{}
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
     }
-    $global:tenantStatsHash["SpamFilteringConfig"] = @{}
+    $script:tenantStatsHash["SpamFilteringConfig"] = @{}
     
     Write-Host "Analyzing Mail Flow for 3rd Party Spam Filtering ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-ThirdPartySpamFilteringConfig] START: Analyzing mail flow connectors" -ExportFileLocation $ExportDetails
@@ -2463,7 +2499,7 @@ function Get-ThirdPartySpamFilteringConfig {
         }
         
         # Analyze inbound connectors
-        $inboundConnectors = $global:tenantStatsHash["MailFlowConnectors"].Values | Where-Object {$_.ConnectorDirection -eq "Inbound"}
+        $inboundConnectors = $script:tenantStatsHash["MailFlowConnectors"].Values | Where-Object {$_.ConnectorDirection -eq "Inbound"}
         $spamFilterConfig.InboundConnectorCount = ($inboundConnectors | Measure-Object).Count
         
         foreach ($connector in $inboundConnectors) {
@@ -2485,7 +2521,7 @@ function Get-ThirdPartySpamFilteringConfig {
         }
         
         # Analyze outbound connectors for relay
-        $outboundConnectors = $global:tenantStatsHash["MailFlowConnectors"].Values | Where-Object {$_.ConnectorDirection -eq "Outbound"}
+        $outboundConnectors = $script:tenantStatsHash["MailFlowConnectors"].Values | Where-Object {$_.ConnectorDirection -eq "Outbound"}
         $spamFilterConfig.OutboundConnectorCount = ($outboundConnectors | Measure-Object).Count
         
         foreach ($connector in $outboundConnectors) {
@@ -2512,7 +2548,7 @@ function Get-ThirdPartySpamFilteringConfig {
         }
 
         # Analyze transport rules for trusted IPs / bypass patterns
-        $transportRules = $global:tenantStatsHash["MailFlowRules"].Values
+        $transportRules = $script:tenantStatsHash["MailFlowRules"].Values
         $spamFilterConfig.TransportRuleCount = ($transportRules | Measure-Object).Count
 
         foreach ($rule in $transportRules) {
@@ -2564,7 +2600,7 @@ function Get-ThirdPartySpamFilteringConfig {
             Write-Log -Type WARNING -Message "[Get-ThirdPartySpamFilteringConfig] Unable to check hosted connection filter policy" -ExportFileLocation $ExportDetails
         }
         
-        $global:tenantStatsHash["SpamFilteringConfig"]["Configuration"] = $spamFilterConfig
+        $script:tenantStatsHash["SpamFilteringConfig"]["Configuration"] = $spamFilterConfig
         
     } catch {
         Write-Log -Type ERROR -Message "[Get-ThirdPartySpamFilteringConfig] Error analyzing spam filtering config: $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
@@ -2584,10 +2620,10 @@ function Get-ExchangeHybridConfiguration {
     )
 
     $start = Get-Date
-    if (-not $global:tenantStatsHash) {
-        $global:tenantStatsHash = @{}
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
     }
-    $global:tenantStatsHash["HybridConfiguration"] = @{}
+    $script:tenantStatsHash["HybridConfiguration"] = @{}
 
     Write-Host "Checking for Exchange Hybrid Configuration ..." -ForegroundColor Cyan -NoNewline
     Write-Log -Type INFO -Message "[Get-ExchangeHybridConfiguration] START" -ExportFileLocation $ExportDetails
@@ -2616,8 +2652,8 @@ function Get-ExchangeHybridConfiguration {
         } catch {}
 
         $mailFlowConnectors = @()
-        if ($global:tenantStatsHash -and $global:tenantStatsHash.ContainsKey("MailFlowConnectors")) {
-            $mailFlowConnectors = $global:tenantStatsHash["MailFlowConnectors"].Values
+        if ($script:tenantStatsHash -and $script:tenantStatsHash.ContainsKey("MailFlowConnectors")) {
+            $mailFlowConnectors = $script:tenantStatsHash["MailFlowConnectors"].Values
         } else {
             try {
                 $mailFlowConnectors = @(
@@ -2713,12 +2749,12 @@ function Get-ExchangeHybridConfiguration {
             $details | Add-Member NoteProperty MailFlowOnPremConnectors ($signals.MailFlowOnPremConnectors -join ', ')
         }
 
-        $global:tenantStatsHash["HybridConfiguration"]["ExchangeHybrid"] = $details
+        $script:tenantStatsHash["HybridConfiguration"]["ExchangeHybrid"] = $details
         Write-Log -Type INFO -Message "[Get-ExchangeHybridConfiguration] Hybrid=$($details.IsHybridConfigured) Type=$($details.HybridType) Evidence=$($details.EvidenceCount)" -ExportFileLocation $ExportDetails
 
     } catch {
         Write-Log -Type WARNING -Message "[Get-ExchangeHybridConfiguration] Error: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
-        $global:tenantStatsHash["HybridConfiguration"]["ExchangeHybrid"] = [pscustomobject]@{
+        $script:tenantStatsHash["HybridConfiguration"]["ExchangeHybrid"] = [pscustomobject]@{
             IsHybridConfigured = $false
             Message            = "Unable to determine hybrid configuration"
             Error              = $_.Exception.Message
@@ -2747,57 +2783,65 @@ function Get-AllUnifiedGroups {
     $statsProgressId = 42
     try {
         # Ensure global hash table structure
-        if (-not $global:tenantStatsHash) {
-            $global:tenantStatsHash = @{}
+        if (-not $script:tenantStatsHash) {
+            $script:tenantStatsHash = @{}
         }
-        $global:tenantStatsHash["UnifiedGroups"] = @{}
+        $script:tenantStatsHash["UnifiedGroups"] = @{}
         Write-Host "Getting all unified groups (including soft deleted)..." -ForegroundColor Cyan -nonewline
         Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] START: Gathering all Unified with $($detailLevel) details" -ExportFileLocation $ExportDetails
-        Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Querying unified groups from Exchange Online" -ExportFileLocation $ExportDetails
-        Write-Host "  Phase 1/3: Querying unified groups from Exchange Online..." -ForegroundColor DarkGray
-        Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Status "Starting query"
-        switch ($detailLevel) {
-            {$_ -in "minimum", "combined", "all"} { 
-                $DesiredProperties = @(
-                    "PrimarySmtpAddress", "DisplayName", "AccessType", "RecipientTypeDetails",
-                    "ExchangeGuid", @{Name="ManagedByDetails"; Expression={$_.ManagedByDetails -join ','}}, "Notes",
-                    "SharePointSiteUrl", "ContentMailboxName", "GroupMemberCount",
-                    "AllowAddGuests", "WhenSoftDeleted", "HiddenFromExchangeClientsEnabled",
-                    @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}}, @{Name="ModeratedBy"; Expression={$_.ModeratedBy -join ','}}, "FolderPath",
-                    @{Name="Description"; Expression={$_.Description -join ','}}, "WhenCreated"
-                )
-
-                $allUnifiedGroups = New-Object System.Collections.Generic.List[object]
-                $fetchedGroups = 0
-                Invoke-QuietCommand -ScriptBlock { Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue } |
-                    Select-Object $DesiredProperties |
-                    ForEach-Object {
-                        [void]$allUnifiedGroups.Add($_)
-                        $fetchedGroups++
-                        if ($fetchedGroups -eq 1 -or ($fetchedGroups % 50) -eq 0) {
-                            Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Status "Fetched $fetchedGroups groups (continuing...)"
-                        }
-                    }
+        $allUnifiedGroups = New-Object System.Collections.Generic.List[object]
+        $cachedUnifiedGroups = if ($script:UnifiedGroupsInventoryCache) { @($script:UnifiedGroupsInventoryCache) } else { @() }
+        if ($cachedUnifiedGroups.Count -gt 0) {
+            Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Using pre-cached unified group inventory from mailbox stats phase ($($cachedUnifiedGroups.Count) group(s))." -ExportFileLocation $ExportDetails
+            foreach ($group in $cachedUnifiedGroups) {
+                [void]$allUnifiedGroups.Add($group)
             }
-            geek {
-                $allUnifiedGroups = New-Object System.Collections.Generic.List[object]
-                $fetchedGroups = 0
-                Invoke-QuietCommand -ScriptBlock { Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue } |
-                    ForEach-Object {
-                        [void]$allUnifiedGroups.Add($_)
-                        $fetchedGroups++
-                        if ($fetchedGroups -eq 1 -or ($fetchedGroups % 50) -eq 0) {
-                            Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Status "Fetched $fetchedGroups groups (continuing...)"
+        }
+        else {
+            Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Querying unified groups from Exchange Online" -ExportFileLocation $ExportDetails
+            Write-Host "  Querying unified groups from Exchange Online..." -ForegroundColor DarkGray
+            Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Status "Starting query"
+            switch ($detailLevel) {
+                {$_ -in "minimum", "combined", "all"} { 
+                    $DesiredProperties = @(
+                        "PrimarySmtpAddress", "DisplayName", "AccessType", "RecipientTypeDetails",
+                        "ExchangeGuid", @{Name="ManagedByDetails"; Expression={$_.ManagedByDetails -join ','}}, "Notes",
+                        "SharePointSiteUrl", "ContentMailboxName", "GroupMemberCount",
+                        "AllowAddGuests", "WhenSoftDeleted", "HiddenFromExchangeClientsEnabled",
+                        @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}}, @{Name="ModeratedBy"; Expression={$_.ModeratedBy -join ','}}, "FolderPath",
+                        @{Name="Description"; Expression={$_.Description -join ','}}, "WhenCreated"
+                    )
+
+                    $fetchedGroups = 0
+                    Invoke-QuietCommand -ScriptBlock { Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue } |
+                        Select-Object $DesiredProperties |
+                        ForEach-Object {
+                            [void]$allUnifiedGroups.Add($_)
+                            $fetchedGroups++
+                            if ($fetchedGroups -eq 1 -or ($fetchedGroups % 50) -eq 0) {
+                                Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Status "Fetched $fetchedGroups groups (continuing...)"
+                            }
                         }
-                    }
+                }
+                geek {
+                    $fetchedGroups = 0
+                    Invoke-QuietCommand -ScriptBlock { Get-UnifiedGroup -ResultSize unlimited -IncludeSoftDeletedGroups -ErrorAction SilentlyContinue } |
+                        ForEach-Object {
+                            [void]$allUnifiedGroups.Add($_)
+                            $fetchedGroups++
+                            if ($fetchedGroups -eq 1 -or ($fetchedGroups % 50) -eq 0) {
+                                Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Status "Fetched $fetchedGroups groups (continuing...)"
+                            }
+                        }
+                }
             }
         }
         Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Completed
-        Write-Host ("  Phase 1/3 complete: fetched {0} unified groups" -f $allUnifiedGroups.Count) -ForegroundColor DarkGray
+        #Write-Host ("  Phase 1/3 complete: fetched {0} unified groups" -f $allUnifiedGroups.Count) -ForegroundColor DarkGray
         
         $totalUnifiedGroups = $allUnifiedGroups.Count
         Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Adding Unified Group data to Hash" -ExportFileLocation $ExportDetails
-        Write-Host "  Phase 2/3: Adding unified group data to hash..." -ForegroundColor DarkGray
+        #Write-Host "  Phase 2/3: Adding unified group data to hash..." -ForegroundColor DarkGray
         $progressTotal = [Math]::Max($totalUnifiedGroups, 1)
         $progressIndex = 0
         foreach ($group in $allUnifiedGroups) {
@@ -2805,31 +2849,67 @@ function Get-AllUnifiedGroups {
             $groupLabel = if ([string]::IsNullOrWhiteSpace([string]$group.DisplayName)) { [string]$group.PrimarySmtpAddress } else { [string]$group.DisplayName }
             Write-ProgressHelper -Total $progressTotal -Id $hashProgressId -Index $progressIndex -Activity "Adding Unified Group data to Hash" -Operation $groupLabel
             #$key = $group.ExchangeGuid.ToString()
-            $global:tenantStatsHash["UnifiedGroups"][$group.PrimarySmtpAddress] = $group
+            $script:tenantStatsHash["UnifiedGroups"][$group.PrimarySmtpAddress] = $group
         }
         Write-ProgressHelper -Total $progressTotal -Id $hashProgressId -Activity "Adding Unified Group data to Hash" -Completed
-        Write-Host "  Phase 2/3 complete: unified group hash populated" -ForegroundColor DarkGray
+        #Write-Host "  Phase 2/3 complete: unified group hash populated" -ForegroundColor DarkGray
 
         # Get Unified Group Statistics
         Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Gathering all Unified Group Statistics" -ExportFileLocation $ExportDetails
-        if (-not $global:tenantStatsHash.ContainsKey("PrimaryMailboxStats")) {
-            $global:tenantStatsHash["PrimaryMailboxStats"] = @{}
+        if (-not $script:tenantStatsHash.ContainsKey("PrimaryMailboxStats")) {
+            $script:tenantStatsHash["PrimaryMailboxStats"] = @{}
         }
-        Write-Host "  Phase 3/3: Gathering unified group mailbox statistics..." -ForegroundColor DarkGray
+        Write-Host "  Gathering unified group mailbox statistics..." -ForegroundColor DarkGray
 
         if ($totalUnifiedGroups -gt 0) {
+            $collectUnifiedGroupMailboxStats = Test-ShouldCollectUnifiedGroupMailboxStats -DetailLevel $detailLevel
             $cachedStatsCount = 0
+            $graphFilledCount = 0
             $fetchedStatsCount = 0
             $groupsNeedingStats = New-Object System.Collections.Generic.List[object]
+            $groupsWithoutGuidCount = 0
 
             foreach ($group in $allUnifiedGroups) {
                 $groupGuidKey = $null
                 if ($group -and $group.PSObject.Properties['ExchangeGuid'] -and $group.ExchangeGuid) {
-                    $groupGuidKey = [string]$group.ExchangeGuid
+                    $groupGuidKey = Convert-ToMailboxGuidKey -GuidValue $group.ExchangeGuid
+                }
+                if ([string]::IsNullOrWhiteSpace($groupGuidKey)) {
+                    $groupsWithoutGuidCount++
+                    continue
                 }
 
-                if (-not [string]::IsNullOrWhiteSpace($groupGuidKey) -and $global:tenantStatsHash["PrimaryMailboxStats"].ContainsKey($groupGuidKey)) {
+                if (-not [string]::IsNullOrWhiteSpace($groupGuidKey) -and $script:tenantStatsHash["PrimaryMailboxStats"].ContainsKey($groupGuidKey)) {
                     $cachedStatsCount++
+                    continue
+                }
+
+                $graphLookupKey = if (-not [string]::IsNullOrWhiteSpace([string]$group.PrimarySmtpAddress)) { ([string]$group.PrimarySmtpAddress).ToLowerInvariant() } else { $null }
+                if (
+                    -not [string]::IsNullOrWhiteSpace($groupGuidKey) -and
+                    $script:MailboxUsageGraphLookup -and
+                    $graphLookupKey -and
+                    $script:MailboxUsageGraphLookup.ContainsKey($graphLookupKey)
+                ) {
+                    $graphData = $script:MailboxUsageGraphLookup[$graphLookupKey]
+                    $storageBytes = 0
+                    $deletedBytes = 0
+                    $itemCount = "0"
+                    if ($graphData.'Storage Used (Byte)') { $storageBytes = [double]$graphData.'Storage Used (Byte)' }
+                    if ($graphData.'Deleted Item Size (Byte)') { $deletedBytes = [double]$graphData.'Deleted Item Size (Byte)' }
+                    if ($graphData.'Item Count') { $itemCount = $graphData.'Item Count' }
+
+                    $script:tenantStatsHash["PrimaryMailboxStats"][$groupGuidKey] = [PSCustomObject]@{
+                        DisplayName                = $group.DisplayName
+                        TotalItemSize              = "$([math]::Round($storageBytes / 1GB, 4)) GB ($storageBytes bytes)"
+                        TotalItemSizeBytes         = [int64]$storageBytes
+                        ItemCount                  = $itemCount
+                        TotalDeletedItemSize       = "$([math]::Round($deletedBytes / 1GB, 4)) GB ($deletedBytes bytes)"
+                        TotalDeletedItemSizeBytes  = [int64]$deletedBytes
+                        MailboxType                = 'GroupMailbox'
+                        MailboxGuid                = $group.ExchangeGuid
+                    }
+                    $graphFilledCount++
                     continue
                 }
 
@@ -2837,37 +2917,28 @@ function Get-AllUnifiedGroups {
             }
 
             if ($groupsNeedingStats.Count -gt 0) {
-                $isMinimumMode = $false
-                if ($script:CollectionDepthPolicy -and $script:CollectionDepthPolicy.PSObject.Properties['IsMinimum']) {
-                    $isMinimumMode = ($script:CollectionDepthPolicy.IsMinimum -eq $true)
+                Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Reused $cachedStatsCount cached mailbox stat(s), populated $graphFilledCount via Graph report, then fetching EXO stats for $($groupsNeedingStats.Count) unified group(s) still missing stats." -ExportFileLocation $ExportDetails
+                $allUnifiedGroupStatisticsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $groupsNeedingStats.ToArray() -ProgressActivity "Gathering Unified Group Mailbox Statistics" -ProgressId $statsProgressId
+                foreach ($groupStat in $allUnifiedGroupStatisticsResult.Results) {
+                    $key = Convert-ToMailboxGuidKey -GuidValue $groupStat.MailboxGuid
+                    if (-not $key) { continue }
+                    $script:tenantStatsHash["PrimaryMailboxStats"][$key] = $groupStat
                 }
-                elseif ($detailLevel -eq 'minimum') {
-                    $isMinimumMode = $true
-                }
-
-                if ($isMinimumMode) {
-                    Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Minimum mode optimization active. Reused $cachedStatsCount cached mailbox stat(s) and skipped EXO mailbox stats for $($groupsNeedingStats.Count) unified group(s)." -ExportFileLocation $ExportDetails
-                    Write-Host ("  Phase 3/3 optimization: skipped EXO mailbox stats for {0} unified group(s) in Minimum mode" -f $groupsNeedingStats.Count) -ForegroundColor DarkGray
-                }
-                else {
-                    Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Reusing $cachedStatsCount cached mailbox stat(s); fetching EXO stats for $($groupsNeedingStats.Count) unified group(s) missing stats." -ExportFileLocation $ExportDetails
-                    $allUnifiedGroupStatisticsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $groupsNeedingStats.ToArray() -ProgressActivity "Gathering Unified Group Mailbox Statistics" -ProgressId $statsProgressId
-                    foreach ($groupStat in $allUnifiedGroupStatisticsResult.Results) {
-                        $key = $groupStat.MailboxGuid.ToString()
-                        $global:tenantStatsHash["PrimaryMailboxStats"][$key] = $groupStat
-                    }
-                    $fetchedStatsCount = @($allUnifiedGroupStatisticsResult.Results).Count
-                    Write-ExoStatisticsFailureSummary -OperationName 'Get-AllUnifiedGroups mailbox statistics' -Failures $allUnifiedGroupStatisticsResult.Failures
-                }
+                $fetchedStatsCount = @($allUnifiedGroupStatisticsResult.Results).Count
+                Write-ExoStatisticsFailureSummary -OperationName 'Get-AllUnifiedGroups mailbox statistics' -Failures $allUnifiedGroupStatisticsResult.Failures
+            
             }
             else {
                 Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] All unified group mailbox stats were already available in PrimaryMailboxStats; skipping EXO stats retrieval." -ExportFileLocation $ExportDetails
             }
 
-            Write-Host ("  Phase 3/3 complete: mailbox statistics reused {0}, fetched {1}" -f $cachedStatsCount, $fetchedStatsCount) -ForegroundColor DarkGray
+            if ($groupsWithoutGuidCount -gt 0) {
+                Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] $groupsWithoutGuidCount unified group(s) did not expose ExchangeGuid and were excluded from mailbox statistics lookup." -ExportFileLocation $ExportDetails
+            }
+            Write-Host ("  Mailbox statistics reused {0}, graph-populated {1}, fetched {2}" -f $cachedStatsCount, $graphFilledCount, $fetchedStatsCount) -ForegroundColor DarkGray
         }
         else {
-            Write-Host "  Phase 3/3 skipped: no unified groups found" -ForegroundColor DarkGray
+            Write-Host "  No unified groups found" -ForegroundColor DarkGray
         }
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
     }    
@@ -2878,6 +2949,7 @@ function Get-AllUnifiedGroups {
         if (-not $CompletedTime) {
             $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
         }
+        $script:UnifiedGroupsInventoryCache = $null
         Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Completed
         Write-ProgressHelper -Total 1 -Id $hashProgressId -Activity "Adding Unified Group data to Hash" -Completed
         Write-Progress -Id $statsProgressId -Activity "Gathering Unified Group Mailbox Statistics" -Completed
@@ -2910,10 +2982,10 @@ function Get-AllPublicFolderDetails {
         $collectPublicFolderPermissions = $false
     }
     # Ensure global hash table structure
-    if (-not $global:tenantStatsHash) {
-        $global:tenantStatsHash = @{}
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
     }
-    $global:tenantStatsHash["PublicFolderDetails"] = @{}
+    $script:tenantStatsHash["PublicFolderDetails"] = @{}
     Write-Host "Getting public folders, Stats and Perms ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] START: Gathering all public folder details with $($detailLevel) details" -ExportFileLocation $ExportDetails
     
@@ -2974,7 +3046,7 @@ function Get-AllPublicFolderDetails {
 
     # Public Folder Permissions
     #***************************
-    $global:tenantStatsHash["PublicFolderPerms"] = @{}
+    $script:tenantStatsHash["PublicFolderPerms"] = @{}
     $publicFolderPermProgressId = 37
     $publicFolderPermProgressTotal = 1
     if ($collectPublicFolderPermissions) {
@@ -3002,11 +3074,11 @@ function Get-AllPublicFolderDetails {
                     }
                 )
 
-                if($global:tenantStatsHash["PublicFolderPerms"].ContainsKey($key)) {
-                    $global:tenantStatsHash["PublicFolderPerms"][$key] += $permissionObject
+                if($script:tenantStatsHash["PublicFolderPerms"].ContainsKey($key)) {
+                    $script:tenantStatsHash["PublicFolderPerms"][$key] += $permissionObject
                 }
                 else {
-                    $global:tenantStatsHash["PublicFolderPerms"][$key] = @($permissionObject)
+                    $script:tenantStatsHash["PublicFolderPerms"][$key] = @($permissionObject)
                 }
             }
         }
@@ -3023,7 +3095,7 @@ function Get-AllPublicFolderDetails {
     }
     
     #Combine Stats with Details
-    $global:tenantStatsHash["PublicFolderDetails"] = @{}
+    $script:tenantStatsHash["PublicFolderDetails"] = @{}
     $totalCount = ($allPublicFolders | Measure-Object).count
     foreach($pf in $allPublicFolders) {
         $pfStatsCheck = $PublicFolderStatsHash[$pf.EntryId]
@@ -3036,7 +3108,7 @@ function Get-AllPublicFolderDetails {
         $pf | Add-Member -MemberType NoteProperty -Name "TotalDeletedItemSize" -Value $pfStatsCheck.TotalDeletedItemSize -Force
         $pf | Add-Member -MemberType NoteProperty -Name "TotalItemSize" -Value $pfStatsCheck.TotalItemSize -Force
         $pf | Add-Member -MemberType NoteProperty -Name "MailboxOwnerId" -Value $pfStatsCheck.MailboxOwnerId -Force
-        $global:tenantStatsHash["PublicFolderDetails"][$pf.Identity] = $pf
+        $script:tenantStatsHash["PublicFolderDetails"][$pf.Identity] = $pf
     }
 
     $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
@@ -3065,11 +3137,11 @@ function Get-SharePointAndOneDriveSites {
         Get-ArrayaCollectionDepthPolicy -ReportingMode ((Get-Culture).TextInfo.ToTitleCase($detailLevel.ToLowerInvariant()))
     }
     # Ensure global hash table structure
-    if (-not $global:tenantStatsHash) {
-        $global:tenantStatsHash = @{}
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
     }
-    $global:tenantStatsHash['SharePoint'] = @{}
-    $global:tenantStatsHash['OneDrive'] = @{}
+    $script:tenantStatsHash['SharePoint'] = @{}
+    $script:tenantStatsHash['OneDrive'] = @{}
     Write-Host "Getting all $($ServiceName) SharePoint Online and OneDrive Sites with $($detailLevel) ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type Info -Message "[Get-SharePointAndOneDriveSites] START: Getting all SharePoint Online and OneDrive $($detailLevel) details ($($ServiceName))" -ExportFileLocation $ExportDetails
     $graphSitesProgressId = 51
@@ -3451,10 +3523,10 @@ function Get-SharePointAndOneDriveSites {
                     if ($isOneDrive) {
                         $oneDriveKey = ConvertTo-OneDriveSiteKey -Url $siteData.Url -SiteId $siteData.SiteId
                         if ($oneDriveKey) {
-                            $global:tenantStatsHash['OneDrive'][$oneDriveKey] = $siteData
+                            $script:tenantStatsHash['OneDrive'][$oneDriveKey] = $siteData
                         }
                     } else {
-                        $global:tenantStatsHash['SharePoint'][$siteData.Url] = $siteData
+                        $script:tenantStatsHash['SharePoint'][$siteData.Url] = $siteData
                     }
                 }
             }
@@ -3500,10 +3572,10 @@ function Get-SharePointAndOneDriveSites {
                 if ($isOneDrive) {
                     $oneDriveKey = ConvertTo-OneDriveSiteKey -Url $siteData.Url -SiteId $siteData.SiteId
                     if ($oneDriveKey) {
-                        $global:tenantStatsHash['OneDrive'][$oneDriveKey] = $siteData
+                        $script:tenantStatsHash['OneDrive'][$oneDriveKey] = $siteData
                     }
                 } else {
-                    $global:tenantStatsHash['SharePoint'][$siteData.Url] = $siteData
+                    $script:tenantStatsHash['SharePoint'][$siteData.Url] = $siteData
                 }
             }
         } catch {
@@ -3568,10 +3640,10 @@ function Get-SharePointAndOneDriveSites {
                     if ($isOneDrive) {
                         $oneDriveKey = ConvertTo-OneDriveSiteKey -Url $siteData.Url -SiteId $siteData.SiteId
                         if ($oneDriveKey) {
-                            $global:tenantStatsHash['OneDrive'][$oneDriveKey] = $siteData
+                            $script:tenantStatsHash['OneDrive'][$oneDriveKey] = $siteData
                         }
                     } else {
-                        $global:tenantStatsHash['SharePoint'][$siteData.Url] = $siteData
+                        $script:tenantStatsHash['SharePoint'][$siteData.Url] = $siteData
                     }
                 }
 
@@ -3638,7 +3710,7 @@ function Get-TeamsDetails {
 
     try {
         $start = Get-Date
-        $global:tenantStatsHash["AllTeams"] = @{}
+        $script:tenantStatsHash["AllTeams"] = @{}
 
         Write-Host "Getting all Microsoft Teams details ..." -ForegroundColor Cyan -nonewline
         Write-Log -Type INFO -Message "[Get-TeamsDetails] START: Gathering all Microsoft Teams with $($detailLevel) details" -ExportFileLocation $ExportDetails
@@ -3669,7 +3741,16 @@ function Get-TeamsDetails {
 
                     # Fetch SharePoint site size for each Team
                     Write-Log -Type DEBUG -Message ("[Get-TeamsDetails] Gathering SharePoint Online Details for {0}" -f $team.DisplayName) -ExportFileLocation $ExportDetails
-                    $SPOSiteDetails = $global:tenantStatsHash["SharePointSites"][$team.displayName]
+                    $SPOSiteDetails = $null
+                    if ($script:tenantStatsHash.ContainsKey('SharePoint') -and $script:tenantStatsHash['SharePoint'] -is [System.Collections.IDictionary]) {
+                        $sharePointRows = @($script:tenantStatsHash['SharePoint'].Values)
+                        if ($team.PSObject.Properties['Id'] -and $team.Id) {
+                            $SPOSiteDetails = $sharePointRows | Where-Object { $_.GroupId -and ([string]$_.GroupId -eq [string]$team.Id) } | Select-Object -First 1
+                        }
+                        if (-not $SPOSiteDetails -and $team.PSObject.Properties['DisplayName'] -and $team.DisplayName) {
+                            $SPOSiteDetails = $sharePointRows | Where-Object { $_.Title -eq $team.DisplayName } | Select-Object -First 1
+                        }
+                    }
                     if ($SPOSiteDetails.Template -eq "TEAMCHANNEL#0" -or $SPOSiteDetails.Template -eq "GROUP#0") {
                         $siteSize = $SPOSiteDetails.StorageUsageCurrent
                         $siteSizeGB = [math]::Round($SPOSiteDetails.StorageUsageCurrent / 1024, 3)
@@ -3722,7 +3803,14 @@ function Get-TeamsDetails {
                         PrivateChannels   = $privateChannels -join ','
                         SharedChannels    = $sharedChannels -join ','
                     }
-                    $global:tenantStatsHash["AllTeams"][$team.DisplayName] = $currentTeam
+                    $teamKeyBase = if ($team.PSObject.Properties['Id'] -and $team.Id) { [string]$team.Id } elseif ($team.PSObject.Properties['GroupId'] -and $team.GroupId) { [string]$team.GroupId } else { [string]$team.DisplayName }
+                    $teamKey = $teamKeyBase
+                    $teamDuplicateSuffix = 2
+                    while ($script:tenantStatsHash["AllTeams"].ContainsKey($teamKey)) {
+                        $teamKey = "{0}#{1}" -f $teamKeyBase, $teamDuplicateSuffix
+                        $teamDuplicateSuffix++
+                    }
+                    $script:tenantStatsHash["AllTeams"][$teamKey] = $currentTeam
                 }
                 catch {
                     Write-Log -Type ERROR -Message "[Get-TeamsDetails] An error occurred in Gathering Teams Details for $($team.DisplayName). $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
@@ -3752,10 +3840,10 @@ function Get-TeamsVoiceDetails {
     param()
 
     $start = Get-Date
-    if (-not $global:tenantStatsHash) {
-        $global:tenantStatsHash = @{}
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
     }
-    $global:tenantStatsHash["TeamsVoice"] = @{}
+    $script:tenantStatsHash["TeamsVoice"] = @{}
 
     Write-Host "Gathering Teams Voice details ..." -ForegroundColor Cyan -NoNewline
     Write-Log -Type INFO -Message "[Get-TeamsVoiceDetails] START: Gathering Teams Voice details" -ExportFileLocation $ExportDetails
@@ -3784,8 +3872,8 @@ function Get-TeamsVoiceDetails {
     if (-not $teamsConnected) {
         $voicePlans = @('MCOEV','MCOPSTN1','MCOPSTN2','MCOEV_VIRTUALUSER','MCOEV_DOD','MCOPSTNC')
         $users = @()
-        if ($global:tenantStatsHash.ContainsKey('Users')) {
-            $users = @($global:tenantStatsHash['Users'].Values)
+        if ($script:tenantStatsHash.ContainsKey('Users')) {
+            $users = @($script:tenantStatsHash['Users'].Values)
         }
 
         $voiceLicensedUsers = @(
@@ -3811,11 +3899,11 @@ function Get-TeamsVoiceDetails {
         $summary.DataSource = 'GraphLicenseInference'
         $summary.Notes = 'Teams PowerShell is not connected. Voice-enabled users are inferred from assigned voice licenses and enabled service plans.'
 
-        $global:tenantStatsHash["TeamsVoice"]["Summary"] = $summary
-        $global:tenantStatsHash["TeamsVoice"]["PstnUsage"] = $pstnUsage
-        $global:tenantStatsHash["TeamsVoice"]["CallingPolicies"] = $callingPolicies
-        $global:tenantStatsHash["TeamsVoice"]["PhoneNumbers"] = $phoneAssignments
-        $global:tenantStatsHash["TeamsVoice"]["VoiceUsers"] = $voiceUsers
+        $script:tenantStatsHash["TeamsVoice"]["Summary"] = $summary
+        $script:tenantStatsHash["TeamsVoice"]["PstnUsage"] = $pstnUsage
+        $script:tenantStatsHash["TeamsVoice"]["CallingPolicies"] = $callingPolicies
+        $script:tenantStatsHash["TeamsVoice"]["PhoneNumbers"] = $phoneAssignments
+        $script:tenantStatsHash["TeamsVoice"]["VoiceUsers"] = $voiceUsers
 
         $elapsed = ((Get-Date) - $start).ToString('hh\:mm\:ss')
         Write-Host " Skipped in $elapsed" -ForegroundColor Yellow
@@ -3873,11 +3961,11 @@ function Get-TeamsVoiceDetails {
         Write-Log -Type WARNING -Message "[Get-TeamsVoiceDetails] Unable to retrieve voice-enabled users: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
     }
 
-    $global:tenantStatsHash["TeamsVoice"]["Summary"] = $summary
-    $global:tenantStatsHash["TeamsVoice"]["PstnUsage"] = $pstnUsage
-    $global:tenantStatsHash["TeamsVoice"]["CallingPolicies"] = $callingPolicies
-    $global:tenantStatsHash["TeamsVoice"]["PhoneNumbers"] = $phoneAssignments
-    $global:tenantStatsHash["TeamsVoice"]["VoiceUsers"] = $voiceUsers
+    $script:tenantStatsHash["TeamsVoice"]["Summary"] = $summary
+    $script:tenantStatsHash["TeamsVoice"]["PstnUsage"] = $pstnUsage
+    $script:tenantStatsHash["TeamsVoice"]["CallingPolicies"] = $callingPolicies
+    $script:tenantStatsHash["TeamsVoice"]["PhoneNumbers"] = $phoneAssignments
+    $script:tenantStatsHash["TeamsVoice"]["VoiceUsers"] = $voiceUsers
 
     $elapsed = ((Get-Date) - $start).ToString('hh\:mm\:ss')
     Write-Host " Completed in $elapsed" -ForegroundColor Green
@@ -5170,10 +5258,10 @@ function Get-AllLicenseSKUs {
     $start = Get-Date
     Initialize-MicrosoftLicenseReferenceMap | Out-Null
     # Ensure global hash table structure
-    if (-not $global:tenantStatsHash) {
-        $global:tenantStatsHash = @{}
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
     }
-    $global:tenantStatsHash["LicenseSKUs"] = @{}
+    $script:tenantStatsHash["LicenseSKUs"] = @{}
     Write-Log -Type Info -Message "[Get-AllLicenseSKUs] Gathering all License SKUs from tenant" -ExportFileLocation $ExportDetails
     # Get License SKUs using MGGraph   
     $skus = Get-MgSubscribedSku -ErrorAction Continue | ? {$_.AppliesTo}
@@ -5263,7 +5351,7 @@ function Get-AllLicenseSKUs {
         Write-Log -Type DEBUG -Message "[Get-AllLicenseSKUs] Gathering License details for $($AccountSkuId)" -ExportFileLocation $ExportDetails
 
         #Create Hash Table for License SKUs
-        $global:tenantStatsHash["LicenseSKUs"][$sku.SkuId.tostring()] = $skuDetails
+        $script:tenantStatsHash["LicenseSKUs"][$sku.SkuId.tostring()] = $skuDetails
 
     }
     $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
@@ -5301,10 +5389,10 @@ function Get-AllUserDetails {
         UnresolvedSkuCount = 0
     }
 
-    if (-not $global:tenantStatsHash) {
-        $global:tenantStatsHash = @{}
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
     }
-    $global:tenantStatsHash["Users"] = @{}
+    $script:tenantStatsHash["Users"] = @{}
 
     $depthPolicy = if ($script:CollectionDepthPolicy) {
         $script:CollectionDepthPolicy
@@ -5481,7 +5569,7 @@ function Get-AllUserDetails {
                 $userProperties['LastSignInDateTime'] = if ($signInActivity) { $signInActivity.LastSignInDateTime } else { $null }
             }
 
-            $global:tenantStatsHash["Users"][$userPrincipalName] = [PSCustomObject]$userProperties
+            $script:tenantStatsHash["Users"][$userPrincipalName] = [PSCustomObject]$userProperties
         }
         catch {
             Write-Log -Type ERROR -Message ("[Get-allUserDetails] An error occurred in Creating User Hash for user '{0}'. $($_.Exception.Message)" -f $scriptLabel) -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
@@ -5521,7 +5609,7 @@ function Get-AllUserDetails {
         $collectionSucceeded = $false
         for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
             try {
-                $global:tenantStatsHash["Users"] = @{}
+                $script:tenantStatsHash["Users"] = @{}
                 $userCollectionState.ProcessedUserCount = 0
                 $userCollectionState.LicensedUserCount = 0
                 $userCollectionState.UnlicensedUserCount = 0
@@ -5554,7 +5642,7 @@ function Get-AllUserDetails {
             Write-Host "Caught a tenant license exception. Getting all Microsoft Graph User data without licenses and sign in activity..." -ForegroundColor Yellow -nonewline
             try {
                 Write-Log -Type Info -Message "[Get-allUserDetails] Attempt 2. Getting all Microsoft Graph $($detailLevel) with limited User Details" -ExportFileLocation $ExportDetails
-                $global:tenantStatsHash["Users"] = @{}
+                $script:tenantStatsHash["Users"] = @{}
                 $userCollectionState.ProcessedUserCount = 0
                 $userCollectionState.LicensedUserCount = 0
                 $userCollectionState.UnlicensedUserCount = 0
@@ -5600,10 +5688,10 @@ function Get-AllOffice365Admins {
     param ()
     $start = Get-Date
     # Ensure global hash table structure
-    if (-not $global:tenantStatsHash) {
-        $global:tenantStatsHash = @{}
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
     }
-    $global:tenantStatsHash["Admins"] = @{}
+    $script:tenantStatsHash["Admins"] = @{}
     $adminResults = New-Object System.Collections.Generic.List[object]
     Write-Host "Gathering All Admins ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-AllOffice365Admins] START: Gathering All Admins from Tenant" -ExportFileLocation $ExportDetails
@@ -5648,9 +5736,18 @@ function Get-AllOffice365Admins {
                         $mail = $roleMember.AdditionalProperties['mail']
                         $jobTitle = $roleMember.AdditionalProperties['jobTitle']
 
-                        # Check if user is in the tenantStatsHash
-                        if ($global:tenantStatsHash['users'].ContainsKey($UPN)) {
-                            $userMatch = $global:tenantStatsHash['users'][$UPN]
+                        # Check if user is in tenant stats hash (guarded for profile/collector skips)
+                        $usersLookup = if (
+                            $script:tenantStatsHash.ContainsKey('Users') -and
+                            $script:tenantStatsHash['Users'] -is [System.Collections.IDictionary]
+                        ) {
+                            $script:tenantStatsHash['Users']
+                        }
+                        else {
+                            $null
+                        }
+                        if ($usersLookup -and $usersLookup.ContainsKey($UPN)) {
+                            $userMatch = $usersLookup[$UPN]
                         } else { $userMatch = $null }
                         $UserType = $userMatch.UserType
                         $AccountEnabled = $userMatch.AccountEnabled
@@ -5699,7 +5796,25 @@ function Get-AllOffice365Admins {
         }
 
         foreach ($result in $finalResults) {
-            $global:tenantStatsHash["Admins"][$result.DisplayName] = $result
+            $adminKeyBase = if (-not [string]::IsNullOrWhiteSpace([string]$result.UserPrincipalName)) {
+                ([string]$result.UserPrincipalName).Trim().ToLowerInvariant()
+            }
+            elseif (-not [string]::IsNullOrWhiteSpace([string]$result.Mail)) {
+                ([string]$result.Mail).Trim().ToLowerInvariant()
+            }
+            else {
+                # Keep this deterministic for non-user principals.
+                ("{0}|{1}|{2}" -f [string]$result.ObjectType, [string]$result.DisplayName, [string]$result.Role).ToLowerInvariant()
+            }
+
+            $adminKey = $adminKeyBase
+            $duplicateSuffix = 2
+            while ($script:tenantStatsHash["Admins"].ContainsKey($adminKey)) {
+                $adminKey = "{0}#{1}" -f $adminKeyBase, $duplicateSuffix
+                $duplicateSuffix++
+            }
+
+            $script:tenantStatsHash["Admins"][$adminKey] = $result
         }
     }
     catch {
@@ -5838,11 +5953,11 @@ function Get-AllOffice365Domains {
     # Initialize the hash tables for the domains and remote domains.
     $start = Get-Date
     # Ensure global hash table structure
-    if (-not $global:tenantStatsHash) {
-        $global:tenantStatsHash = @{}
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
     }
-    $global:tenantStatsHash["Domains"] = @{}
-    $global:tenantStatsHash["RemoteDomains"] = @{}
+    $script:tenantStatsHash["Domains"] = @{}
+    $script:tenantStatsHash["RemoteDomains"] = @{}
     Write-Host "Gathering All Domains ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-AllOffice365Domains] START: Gathering All Domains from tenant" -ExportFileLocation $ExportDetails
     try {
@@ -5853,8 +5968,8 @@ function Get-AllOffice365Domains {
             Write-Log -Type INFO -Message "[Get-AllOffice365Domains] Gathering Exchange Online Domain Details" -ExportFileLocation $ExportDetails
             $acceptedDomains = Get-AcceptedDomain
             $remoteDomains = Get-RemoteDomain | select Identity, DomainName, IsInternal, TargetDeliveryDomain, AllowedOOFType, AutoReplyEnabled, AutoForwardEnabled, DeliveryReportEnabled, NDREnabled, MeetingForwardNotificationEnabled, ContentType, TNEFEnabled, TrustedMailOutboundEnabled, TrustedMailInboundEnabled
-            if ($global:tenantStatsHash['AllRecipients']) {
-                $recipients = $global:tenantStatsHash['AllRecipients'].values
+            if ($script:tenantStatsHash['AllRecipients']) {
+                $recipients = $script:tenantStatsHash['AllRecipients'].values
             } else {$recipients = Get-EXORecipient -ResultSize Unlimited}
                         
             $exchangeOnline = $True
@@ -6004,7 +6119,7 @@ function Get-AllOffice365Domains {
                     AliasOnlyRecipients   = $RecipientCounts.AliasOnlyCount
                     TotalDomainRecipients = $RecipientCounts.TotalDomainRecipientsCount
                 }
-                $global:tenantStatsHash["Domains"][$domainName] = $currentDomain
+                $script:tenantStatsHash["Domains"][$domainName] = $currentDomain
             }
             catch {
                 Write-Log -Type ERROR -Message "An error occurred in running Get-AllOffice365Domains function. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
@@ -6012,7 +6127,7 @@ function Get-AllOffice365Domains {
         }
         foreach ($domain in $remoteDomains) {
             # Add to the results Hash Table
-            $global:tenantStatsHash["RemoteDomains"][$domain.Identity] = $domain
+            $script:tenantStatsHash["RemoteDomains"][$domain.Identity] = $domain
         }
     }
     catch {
@@ -6162,7 +6277,7 @@ function Report-UserAndMailboxStats {
 
             $mailboxStats = $null
             if ($mailboxDetails -and $lookupContext.PrimaryMailboxStats -and $mailboxDetails.ExchangeGuid) {
-                $mailboxStats = Get-DictionaryValue -Dictionary $lookupContext.PrimaryMailboxStats -Key ($mailboxDetails.ExchangeGuid.ToString())
+                $mailboxStats = Get-DictionaryValue -Dictionary $lookupContext.PrimaryMailboxStats -Key (Convert-ToMailboxGuidKey -GuidValue $mailboxDetails.ExchangeGuid)
                 if ($mailboxStats) {
                     Write-Verbose "Mailbox Stats Found: $($mailboxDetails.ExchangeGuid.ToString())"
                 }
@@ -6173,7 +6288,7 @@ function Report-UserAndMailboxStats {
 
             $archiveStats = $null
             if ($mailboxDetails -and $lookupContext.ArchiveMailboxStats -and $mailboxDetails.ArchiveGuid) {
-                $archiveStats = Get-DictionaryValue -Dictionary $lookupContext.ArchiveMailboxStats -Key ($mailboxDetails.ArchiveGuid.ToString())
+                $archiveStats = Get-DictionaryValue -Dictionary $lookupContext.ArchiveMailboxStats -Key (Convert-ToMailboxGuidKey -GuidValue $mailboxDetails.ArchiveGuid)
                 if ($archiveStats) {
                     Write-Verbose "Archive Stats Found: $($mailboxDetails.ArchiveGuid.ToString())"
                 }
@@ -6224,13 +6339,13 @@ function Report-UserAndMailboxStats {
     }
 
     $lookupContext = [ordered]@{
-        UnifiedGroups                  = Get-LookupTable -tenantStatsHash $global:tenantStatsHash -Key 'UnifiedGroups'
-        AllMailboxesByIdentity         = Get-LookupTable -tenantStatsHash $global:tenantStatsHash -Key 'AllMailboxes-MailIdentity'
-        AllMailboxesByUserPrincipalName = Get-LookupTable -tenantStatsHash $global:tenantStatsHash -Key 'AllMailboxes-UserPrincipalName'
-        PrimaryMailboxStats            = Get-LookupTable -tenantStatsHash $global:tenantStatsHash -Key 'PrimaryMailboxStats'
-        ArchiveMailboxStats            = Get-LookupTable -tenantStatsHash $global:tenantStatsHash -Key 'ArchiveMailboxStats'
-        SharePoint                     = Get-LookupTable -tenantStatsHash $global:tenantStatsHash -Key 'SharePoint'
-        OneDrive                       = Get-LookupTable -tenantStatsHash $global:tenantStatsHash -Key 'OneDrive'
+        UnifiedGroups                  = Get-LookupTable -tenantStatsHash $script:tenantStatsHash -Key 'UnifiedGroups'
+        AllMailboxesByIdentity         = Get-LookupTable -tenantStatsHash $script:tenantStatsHash -Key 'AllMailboxes-MailIdentity'
+        AllMailboxesByUserPrincipalName = Get-LookupTable -tenantStatsHash $script:tenantStatsHash -Key 'AllMailboxes-UserPrincipalName'
+        PrimaryMailboxStats            = Get-LookupTable -tenantStatsHash $script:tenantStatsHash -Key 'PrimaryMailboxStats'
+        ArchiveMailboxStats            = Get-LookupTable -tenantStatsHash $script:tenantStatsHash -Key 'ArchiveMailboxStats'
+        SharePoint                     = Get-LookupTable -tenantStatsHash $script:tenantStatsHash -Key 'SharePoint'
+        OneDrive                       = Get-LookupTable -tenantStatsHash $script:tenantStatsHash -Key 'OneDrive'
     }
 
     $statsSizeCache = @{}
@@ -6244,12 +6359,12 @@ function Report-UserAndMailboxStats {
         # Initialize variables. Include the start time for the script and logging
         $start = Get-Date
         # Ensure global hash table structure
-        if (-not $global:tenantStatsHash) {
-            $global:tenantStatsHash = @{}
+        if (-not $script:tenantStatsHash) {
+            $script:tenantStatsHash = @{}
         }
         # Create hash tables for user and mailbox details
-        $global:tenantStatsHash["UserFullDetails"] = @{}
-        $global:tenantStatsHash["MailboxFullDetails"] = @{}
+        $script:tenantStatsHash["UserFullDetails"] = @{}
+        $script:tenantStatsHash["MailboxFullDetails"] = @{}
         $combinedUserProgressId = 81
         $combinedMailboxProgressId = 82
         
@@ -6265,7 +6380,7 @@ function Report-UserAndMailboxStats {
             Write-ProgressHelper -Total ([Math]::Max($userCount, 1)) -Id $combinedUserProgressId -Activity "Processing User Data" -Operation "Processing user: $($user.DisplayName)"
 
             $userDetails = Populate-Details -tenantStatsHash $tenantStatsHash -entity $user
-            $global:tenantStatsHash["UserFullDetails"][$user.UserPrincipalName] = $userDetails
+            $script:tenantStatsHash["UserFullDetails"][$user.UserPrincipalName] = $userDetails
         }
         Write-ProgressHelper -Total ([Math]::Max($userCount, 1)) -Id $combinedUserProgressId -Activity "Processing User Data" -Completed
 
@@ -6281,7 +6396,7 @@ function Report-UserAndMailboxStats {
             Write-ProgressHelper -Total ([Math]::Max($mailboxCount, 1)) -Id $combinedMailboxProgressId -Activity "Processing Mailbox Data" -Operation "Processing mailbox: $($mailbox.PrimarySMTPAddress)"
 
             $mailboxDetails = Populate-Details -tenantStatsHash $tenantStatsHash -entity $mailbox -IsMailbox
-            $global:tenantStatsHash["MailboxFullDetails"][$mailbox.PrimarySMTPAddress] = $mailboxDetails
+            $script:tenantStatsHash["MailboxFullDetails"][$mailbox.PrimarySMTPAddress] = $mailboxDetails
         }
 
         Write-ProgressHelper -Total ([Math]::Max($mailboxCount, 1)) -Id $combinedMailboxProgressId -Activity "Processing Mailbox Data" -Completed
@@ -6296,12 +6411,12 @@ function Report-UserAndMailboxStats {
         # Initialize variables. Include the start time for the script and logging
         $start = Get-Date
         # Ensure global hash table structure
-        if (-not $global:tenantStatsHash) {
-            $global:tenantStatsHash = @{}
+        if (-not $script:tenantStatsHash) {
+            $script:tenantStatsHash = @{}
         }
 
         # Create hash table for inactive mailbox details
-        $global:tenantStatsHash["InactiveMailboxDetails"] = @{}
+        $script:tenantStatsHash["InactiveMailboxDetails"] = @{}
         $inactiveMailboxProgressId = 83
 
         # Process Inactive Mailboxes
@@ -6315,8 +6430,8 @@ function Report-UserAndMailboxStats {
             Write-ProgressHelper -Total ([Math]::Max($inactiveMailboxCount, 1)) -Id $inactiveMailboxProgressId -Activity "Processing Inactive Mailbox Data" -Operation "Processing inactive mailbox: $($mailbox.PrimarySMTPAddress)"
 
             $existingMailboxDetails = $null
-            if ($global:tenantStatsHash.ContainsKey("MailboxFullDetails") -and $global:tenantStatsHash["MailboxFullDetails"]) {
-                $existingMailboxDetails = Get-DictionaryValue -Dictionary $global:tenantStatsHash["MailboxFullDetails"] -Key $mailbox.PrimarySMTPAddress
+            if ($script:tenantStatsHash.ContainsKey("MailboxFullDetails") -and $script:tenantStatsHash["MailboxFullDetails"]) {
+                $existingMailboxDetails = Get-DictionaryValue -Dictionary $script:tenantStatsHash["MailboxFullDetails"] -Key $mailbox.PrimarySMTPAddress
             }
 
             $mailboxDetails = if ($existingMailboxDetails) {
@@ -6324,7 +6439,7 @@ function Report-UserAndMailboxStats {
             } else {
                 Populate-Details -tenantStatsHash $tenantStatsHash -entity $mailbox -IsMailbox
             }
-            $global:tenantStatsHash["InactiveMailboxDetails"][$mailbox.PrimarySMTPAddress] = $mailboxDetails
+            $script:tenantStatsHash["InactiveMailboxDetails"][$mailbox.PrimarySMTPAddress] = $mailboxDetails
         }
 
         Write-ProgressHelper -Total ([Math]::Max($inactiveMailboxCount, 1)) -Id $inactiveMailboxProgressId -Activity "Processing Inactive Mailbox Data" -Completed
@@ -6339,9 +6454,9 @@ function Report-UserAndMailboxStats {
     try {
         $start = Get-Date
         Write-Host "Combining User and Mailbox Details..." -ForegroundColor Cyan -NoNewline
-        Combine-UserAndMailboxStats -tenantStatsHash $global:tenantStatsHash
+        Combine-UserAndMailboxStats -tenantStatsHash $script:tenantStatsHash
         Write-Host "Generating Inactive Mailbox Report..." -ForegroundColor Cyan -NoNewline
-        Report-InactiveMailboxes -tenantStatsHash $global:tenantStatsHash
+        Report-InactiveMailboxes -tenantStatsHash $script:tenantStatsHash
     } catch {
         Write-Log -Type ERROR -Message "[Combine-UserAndMailboxStats] An error occurred while combining User and Mailbox Details. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
     } finally {
@@ -6362,7 +6477,7 @@ function Get-GraphUserStats {
     )
 
     # Initialize the tenant statistics hash table
-    $global:tenantStatsHash["AllGraphUserStats"] = @{}
+    $script:tenantStatsHash["AllGraphUserStats"] = @{}
 
     $StartTime1 = Get-Date
     Write-Log -Type INFO -Message "[Get-GraphUserStats] Gathering all User Combined Summary Details from Graph" -ExportFileLocation $ExportDetails
@@ -6401,34 +6516,34 @@ function Get-GraphUserStats {
         }
     }
 
-    # Fetch Graph Data and store in $global:tenantStatsHash
+    # Fetch Graph Data and store in $script:tenantStatsHash
     Write-Log -Type INFO -Message "[Get-GraphUserStats] Fetching Teams User Activity from Graph" -ExportFileLocation $ExportDetails 
-    $global:tenantStatsHash["TeamsUserData"] = Get-GraphDataWithLogging -Uri $dataUris.TeamsUserReportsURI -DataName "Teams User Report"
+    $script:tenantStatsHash["TeamsUserData"] = Get-GraphDataWithLogging -Uri $dataUris.TeamsUserReportsURI -DataName "Teams User Report"
     Write-Log -Type INFO -Message "[Get-GraphUserStats] Fetching OneDrive User Activity from Graph" -ExportFileLocation $ExportDetails 
-    $global:tenantStatsHash["OneDriveData"] = Get-GraphDataWithLogging -Uri $dataUris.OneDriveUsageUri -DataName "OneDrive Usage Report"
+    $script:tenantStatsHash["OneDriveData"] = Get-GraphDataWithLogging -Uri $dataUris.OneDriveUsageUri -DataName "OneDrive Usage Report"
     Write-Log -Type INFO -Message "[Get-GraphUserStats] Fetching Exchange User Activity from Graph" -ExportFileLocation $ExportDetails 
-    $global:tenantStatsHash["EmailData"] = Get-GraphDataWithLogging -Uri $dataUris.EmailReportsUri -DataName "Exchange Activity Report"
+    $script:tenantStatsHash["EmailData"] = Get-GraphDataWithLogging -Uri $dataUris.EmailReportsUri -DataName "Exchange Activity Report"
     Write-Log -Type INFO -Message "[Get-GraphUserStats] Fetching Exchange Mailbox Usage Report from Graph" -ExportFileLocation $ExportDetails 
-    $global:tenantStatsHash["MailboxUsage"] = Get-GraphDataWithLogging -Uri $dataUris.MailboxUsageReportsUri -DataName "Mailbox Usage Report"
+    $script:tenantStatsHash["MailboxUsage"] = Get-GraphDataWithLogging -Uri $dataUris.MailboxUsageReportsUri -DataName "Mailbox Usage Report"
     Write-Log -Type INFO -Message "[Get-GraphUserStats] Fetching SharePoint Online Usage Report from Graph" -ExportFileLocation $ExportDetails 
-    $global:tenantStatsHash["SPOUsage"] = Get-GraphDataWithLogging -Uri $dataUris.SPOUsageReportsUri -DataName "SharePoint Activity Report"
+    $script:tenantStatsHash["SPOUsage"] = Get-GraphDataWithLogging -Uri $dataUris.SPOUsageReportsUri -DataName "SharePoint Activity Report"
     Write-Log -Type INFO -Message "[Get-GraphUserStats] Fetching Yammer Usage Report from Graph" -ExportFileLocation $ExportDetails 
-    $global:tenantStatsHash["YammerUsage"] = Get-GraphDataWithLogging -Uri $dataUris.YammerUsageReportsUri -DataName "Yammer Activity Report"
+    $script:tenantStatsHash["YammerUsage"] = Get-GraphDataWithLogging -Uri $dataUris.YammerUsageReportsUri -DataName "Yammer Activity Report"
     Write-Log -Type INFO -Message "[Get-GraphUserStats] Fetching User Sign In Report from Graph" -ExportFileLocation $ExportDetails 
-    $global:tenantStatsHash["SignInData"] = Get-GraphDataWithLogging -Uri $dataUris.SignInUri -DataName "User Sign-In Data"
+    $script:tenantStatsHash["SignInData"] = Get-GraphDataWithLogging -Uri $dataUris.SignInUri -DataName "User Sign-In Data"
 
-    # Create hash table for user sign-in data within $global:tenantStatsHash
-    $global:tenantStatsHash["UserSignIns"] = @{}
+    # Create hash table for user sign-in data within $script:tenantStatsHash
+    $script:tenantStatsHash["UserSignIns"] = @{}
     
-    # Process User sign-in data and store in $global:tenantStatsHash["UserSignIns"]
+    # Process User sign-in data and store in $script:tenantStatsHash["UserSignIns"]
     Write-Log -Type INFO -Message "[Get-GraphUserStats] Processing User Sign-In Data fetched from Graph" -ExportFileLocation $ExportDetails
-    [array]$UserSignInData = $global:tenantStatsHash["SignInData"] | Where-Object { $_.UserType -eq "Member" } | Sort-Object UserPrincipalName -Unique
+    [array]$UserSignInData = $script:tenantStatsHash["SignInData"] | Where-Object { $_.UserType -eq "Member" } | Sort-Object UserPrincipalName -Unique
     ForEach ($U in $UserSignInData) {
         If ($U.SignInActivity.LastSignInDateTime) {
             $LastSignInDate = Get-Date($U.SignInActivity.LastSignInDateTime) -format g
-            $global:tenantStatsHash["UserSignIns"].Add([String]$U.UserPrincipalName, $LastSignInDate)
+            $script:tenantStatsHash["UserSignIns"].Add([String]$U.UserPrincipalName, $LastSignInDate)
         } Else {
-            $global:tenantStatsHash["UserSignIns"].Add([String]$U.UserPrincipalName, $Null)
+            $script:tenantStatsHash["UserSignIns"].Add([String]$U.UserPrincipalName, $Null)
         }
     }
 
@@ -6436,11 +6551,11 @@ function Get-GraphUserStats {
     Write-Host "Processing activity data fetched from the Graph..."
     Write-Log -Type INFO -Message "[Get-GraphUserStats] Processing activity data fetched from the Graph" -ExportFileLocation $ExportDetails
 
-    # Initialize the user data hash table within $global:tenantStatsHash
+    # Initialize the user data hash table within $script:tenantStatsHash
     $DataTable = @{}
 
     # Process Teams Data
-    ForEach ($T in $global:tenantStatsHash["TeamsUserData"]) {
+    ForEach ($T in $script:tenantStatsHash["TeamsUserData"]) {
         If ([string]::IsNullOrEmpty($T."Last Activity Date")) { 
             $TeamsLastActivity = "No activity"
             $TeamsDaysSinceActive = "N/A" 
@@ -6464,7 +6579,7 @@ function Get-GraphUserStats {
     } 
 
     # Process Exchange Data
-    ForEach ($E in $global:tenantStatsHash["EmailData"]) {
+    ForEach ($E in $script:tenantStatsHash["EmailData"]) {
         $ExoDaysSinceActive = $Null
         If ([string]::IsNullOrEmpty($E."Last Activity Date")) { 
             $ExoLastActivity = "No activity"
@@ -6491,7 +6606,7 @@ function Get-GraphUserStats {
     } 
 
     # Process Mailbox Usage Data
-    ForEach ($M in $global:tenantStatsHash["MailboxUsage"]) {
+    ForEach ($M in $script:tenantStatsHash["MailboxUsage"]) {
         If ([string]::IsNullOrEmpty($M."Last Activity Date")) { 
             $ExoLastActivity = "No activity" 
         } Else {
@@ -6514,7 +6629,7 @@ function Get-GraphUserStats {
     } 
 
     # Process SharePoint Data
-    ForEach ($S in $global:tenantStatsHash["SPOUsage"]) {
+    ForEach ($S in $script:tenantStatsHash["SPOUsage"]) {
         If ([string]::IsNullOrEmpty($S."Last Activity Date")) { 
             $SPOLastActivity = "No activity"
             $SPODaysSinceActive = "N/A" 
@@ -6539,7 +6654,7 @@ function Get-GraphUserStats {
     }  
 
     # Process OneDrive Data
-    ForEach ($O in $global:tenantStatsHash["OneDriveData"]) {
+    ForEach ($O in $script:tenantStatsHash["OneDriveData"]) {
         $OneDriveLastActivity = $Null
         If ([string]::IsNullOrEmpty($O."Last Activity Date")) { 
             $OneDriveLastActivity = "No activity"
@@ -6565,7 +6680,7 @@ function Get-GraphUserStats {
     }  
 
     # Process Yammer Data
-    ForEach ($Y in $global:tenantStatsHash["YammerUsage"]) {  
+    ForEach ($Y in $script:tenantStatsHash["YammerUsage"]) {  
         If ([string]::IsNullOrEmpty($Y."Last Activity Date")) { 
             $YammerLastActivity = "No activity" 
             $YammerDaysSinceActive = "N/A" 
@@ -6689,7 +6804,7 @@ function Get-GraphUserStats {
 
         # Fetch the sign-in data if available
         $LastAccountSignIn = $Null; $DaysSinceSignIn = 0
-        $LastAccountSignIn = $global:tenantStatsHash["UserSignIns"].Item($U)
+        $LastAccountSignIn = $script:tenantStatsHash["UserSignIns"].Item($U)
         If ($null -eq $LastAccountSignIn) { 
             $LastAccountSignIn = "No sign in data found"; $DaysSinceSignIn = "N/A"
         } Else { 
@@ -6767,7 +6882,7 @@ function Get-GraphUserStats {
                 TeamsReportDate         = (Out-String -InputObject $UserData.TeamsReportDate).Trim()
                 "AllServices-AverageDaysSinceUse"             = $AverageDaysSinceUse
             }
-            $global:tenantStatsHash["AllGraphUserStats"][$U] = $OutLine
+            $script:tenantStatsHash["AllGraphUserStats"][$U] = $OutLine
         } 
     }
 
@@ -6778,7 +6893,7 @@ function Get-GraphUserStats {
     $PrepTime = $StartTime3 - $StartTime2
     $ReportTime = $StartTime4 - $StartTime3
     $ScriptTime = $StartTime4 - $StartTime1
-    $AccountsPerMinute = [math]::Round(($global:tenantStatsHash["AllGraphUserStats"].Values.count/($ScriptTime.TotalSeconds/60)),2)
+    $AccountsPerMinute = [math]::Round(($script:tenantStatsHash["AllGraphUserStats"].Values.count/($ScriptTime.TotalSeconds/60)),2)
     $GraphElapsed = $GraphTime.Minutes.ToString() + ":" + $GraphTime.Seconds.ToString()
     $PrepElapsed = $PrepTime.Minutes.ToString() + ":" + $PrepTime.Seconds.ToString()
     $ReportElapsed = $ReportTime.Minutes.ToString() + ":" + $ReportTime.Seconds.ToString()
@@ -6791,7 +6906,7 @@ function Get-GraphUserStats {
     Write-Verbose "Time to prepare data for processing:     $PrepElapsed"
     Write-Verbose "Time to create report from data:         $ReportElapsed"
     Write-Verbose "Total time for script:                   $ScriptElapsed"
-    Write-Verbose "Total accounts processed:                $($global:tenantStatsHash["AllGraphUserStats"].Values.count)"
+    Write-Verbose "Total accounts processed:                $($script:tenantStatsHash["AllGraphUserStats"].Values.count)"
     Write-Verbose "Accounts processed per minute:           $AccountsPerMinute"
     Write-Verbose ""
 }
@@ -6813,10 +6928,10 @@ function Get-AllDevicesReport {
     $deviceProgressId = 73
     $deviceProgressTotal = 1
         # Ensure global hash table structure
-        if (-not $global:tenantStatsHash) {
-            $global:tenantStatsHash = @{}
+        if (-not $script:tenantStatsHash) {
+            $script:tenantStatsHash = @{}
         }
-    $global:tenantStatsHash["DeviceDetails"] = @{}
+    $script:tenantStatsHash["DeviceDetails"] = @{}
 
     Write-Host "Getting Device Details ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-AllDevicesReport] START: Gathering all Device with $($detailLevel) details" -ExportFileLocation $ExportDetails
@@ -6909,7 +7024,7 @@ function Get-AllDevicesReport {
             }
             finally {
                 #Add to Hash Table
-                $global:tenantStatsHash["DeviceDetails"][$device.ObjectID] = $device
+                $script:tenantStatsHash["DeviceDetails"][$device.ObjectID] = $device
             }
         }
     }
@@ -6937,10 +7052,10 @@ function Get-ConditionalAccessPoliciesReport {
     $conditionalAccessProgressTotal = 1
 
     # Ensure global hash table structure
-    if (-not $global:tenantStatsHash) {
-        $global:tenantStatsHash = @{}
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
     }
-    $global:tenantStatsHash["ConditionalAccessPolicies"] = @{}
+    $script:tenantStatsHash["ConditionalAccessPolicies"] = @{}
 
     Write-Host "Getting Entra Conditional Access Policies Details ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-ConditionalAccessPoliciesReport] START: Gathering all Entra Conditional Access Policies  with $($detailLevel) details" -ExportFileLocation $ExportDetails
@@ -7059,7 +7174,7 @@ function Get-ConditionalAccessPoliciesReport {
                 DeviceStates_ExcludeDeviceStates = $(if ($policy.Conditions.DeviceStates) { $policy.Conditions.DeviceStates.ExcludeDeviceStates -join ',' } else { '' })
             }
 
-            $global:tenantStatsHash["ConditionalAccessPolicies"][$policy.DisplayName] = $policyDetailsHash
+            $script:tenantStatsHash["ConditionalAccessPolicies"][$policy.DisplayName] = $policyDetailsHash
         }
     }
     catch {
@@ -7086,11 +7201,11 @@ function Get-SecuritySecureScoreReport {
     $secureScoreProgressId = 75
     $secureScoreProgressTotal = 1
     # Ensure global hash table structure
-    if (-not $global:tenantStatsHash) {
-        $global:tenantStatsHash = @{}
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
     }
-    $global:tenantStatsHash["SecuritySecureScore"] = @{}
-    $global:tenantStatsHash["SecureScoreActions"] = @{}
+    $script:tenantStatsHash["SecuritySecureScore"] = @{}
+    $script:tenantStatsHash["SecureScoreActions"] = @{}
     $depthPolicy = if ($script:CollectionDepthPolicy) {
         $script:CollectionDepthPolicy
     } else {
@@ -7216,7 +7331,7 @@ function Get-SecuritySecureScoreReport {
             
             #Add to Hash Table
             Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] Gathering Score Details for $($score.ID): Add Score to Tenant Stats Hash Table" -ExportFileLocation $ExportDetails
-            $global:tenantStatsHash["SecuritySecureScore"][$score.ID] = $currentSecurityScores
+            $script:tenantStatsHash["SecuritySecureScore"][$score.ID] = $currentSecurityScores
         }
 
         $latestScore = @($secureScore | Sort-Object CreatedDateTime -Descending | Select-Object -First 1)
@@ -7279,9 +7394,9 @@ function Get-SecuritySecureScoreReport {
                     SourceMapping         = if ($profile) { 'Microsoft Secure Score Control Profile' } else { 'Secure Score Snapshot Only' }
                 }
 
-                $global:tenantStatsHash["SecureScoreActions"][("{0:D3}-{1}" -f $actionIndex, $controlName)] = $actionRow
+                $script:tenantStatsHash["SecureScoreActions"][("{0:D3}-{1}" -f $actionIndex, $controlName)] = $actionRow
             }
-            Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] Added $($global:tenantStatsHash['SecureScoreActions'].Count) Secure Score recommendation mappings" -ExportFileLocation $ExportDetails
+            Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] Added $($script:tenantStatsHash['SecureScoreActions'].Count) Secure Score recommendation mappings" -ExportFileLocation $ExportDetails
         } elseif (-not $collectSecureScoreMappings) {
             Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] Secure Score recommendation mappings were skipped for this output profile." -ExportFileLocation $ExportDetails
         }
@@ -7760,7 +7875,7 @@ function Get-EntraIDGroups {
     }
 
     # Initialize hash table for storing group details
-    $Global:tenantStatsHash["EntraIDGroups"] = @{}
+    $script:tenantStatsHash["EntraIDGroups"] = @{}
     $totalGroups = 0
 
     try {
@@ -7791,7 +7906,7 @@ function Get-EntraIDGroups {
                     }
                     
                     if ($GroupDetails) {
-                        $global:tenantStatsHash['EntraIDGroups'][$GroupDetails.ID] = $GroupDetails
+                        $script:tenantStatsHash['EntraIDGroups'][$GroupDetails.ID] = $GroupDetails
                     } else {
                         Write-Log -Type WARNING -Message "[Get-EntraIDGroups] Could not retrieve details for group $($Group.displayName). Continuing." -ExportFileLocation $ExportDetails
                     }
@@ -7834,7 +7949,7 @@ function Get-EntraIDGroups {
                 }
                 
                 if ($GroupDetails) {
-                    $global:tenantStatsHash['EntraIDGroups'][$GroupDetails.ID] = $GroupDetails
+                    $script:tenantStatsHash['EntraIDGroups'][$GroupDetails.ID] = $GroupDetails
                 } else {
                     Write-Log -Type WARNING -Message "[Get-EntraIDGroups] Could not retrieve details for group $($Group.displayName). Continuing." -ExportFileLocation $ExportDetails
                 }
@@ -7858,13 +7973,13 @@ function Get-AuthenticationConfiguration {
     
     $start = Get-Date
     # Ensure global hash table structure
-    if (-not $global:tenantStatsHash) {
-        $global:tenantStatsHash = @{}
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
     }
-    $global:tenantStatsHash["AuthenticationConfig"] = @{}
-    $global:tenantStatsHash["AuthenticationConfigSummary"] = @{}
-    $global:tenantStatsHash["AuthenticationMethods"] = @{}
-    $global:tenantStatsHash["AuthenticationSSOApplications"] = @{}
+    $script:tenantStatsHash["AuthenticationConfig"] = @{}
+    $script:tenantStatsHash["AuthenticationConfigSummary"] = @{}
+    $script:tenantStatsHash["AuthenticationMethods"] = @{}
+    $script:tenantStatsHash["AuthenticationSSOApplications"] = @{}
     
     Write-Host "Checking Authentication and SSO Configuration ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] START: Checking Authentication Configuration" -ExportFileLocation $ExportDetails
@@ -7892,7 +8007,7 @@ function Get-AuthenticationConfiguration {
         }
         
         # Check for federated domains (indicates SSO)
-        $domains = $global:tenantStatsHash["Domains"].Values
+        $domains = $script:tenantStatsHash["Domains"].Values
         $federatedDomains = $domains | Where-Object {$_.AuthenticationType -eq "Federated"}
         
         if ($federatedDomains) {
@@ -7962,8 +8077,8 @@ function Get-AuthenticationConfiguration {
         }
         
         # Check Conditional Access policies for MFA requirements
-        if ($global:tenantStatsHash["ConditionalAccessPolicies"]) {
-            $mfaPolicies = $global:tenantStatsHash["ConditionalAccessPolicies"].Values | 
+        if ($script:tenantStatsHash["ConditionalAccessPolicies"]) {
+            $mfaPolicies = $script:tenantStatsHash["ConditionalAccessPolicies"].Values | 
                 Where-Object {$_.GrantControls_BuiltInControls -match "(?i)mfa"}
             
             if ($mfaPolicies) {
@@ -8028,10 +8143,10 @@ function Get-AuthenticationConfiguration {
             Write-Log -Type WARNING -Message "[Get-AuthenticationConfiguration] Unable to retrieve admin consent workflow policy: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
         
-        $global:tenantStatsHash["AuthenticationConfig"]["Configuration"] = $authMethodsPolicy
+        $script:tenantStatsHash["AuthenticationConfig"]["Configuration"] = $authMethodsPolicy
 
         $ssoAppNames = @($authMethodsPolicy.SSOApplications | ForEach-Object { $_.DisplayName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        $global:tenantStatsHash["AuthenticationConfigSummary"]["Summary"] = [PSCustomObject]@{
+        $script:tenantStatsHash["AuthenticationConfigSummary"]["Summary"] = [PSCustomObject]@{
             MFAEnabled                   = $authMethodsPolicy.MFAEnabled
             MFAMethods                   = ($authMethodsPolicy.MFAMethods -join ', ')
             SSOEnabled                   = $authMethodsPolicy.SSOEnabled
@@ -8049,7 +8164,7 @@ function Get-AuthenticationConfiguration {
         $methodIndex = 0
         foreach ($method in @($authMethodsPolicy.MFAMethods)) {
             $methodIndex++
-            $global:tenantStatsHash["AuthenticationMethods"][("{0:D3}-MFA" -f $methodIndex)] = [PSCustomObject]@{
+            $script:tenantStatsHash["AuthenticationMethods"][("{0:D3}-MFA" -f $methodIndex)] = [PSCustomObject]@{
                 Category = 'MFA Method'
                 Value    = $method
             }
@@ -8057,7 +8172,7 @@ function Get-AuthenticationConfiguration {
 
         foreach ($method in @($authMethodsPolicy.PasswordlessMethods)) {
             $methodIndex++
-            $global:tenantStatsHash["AuthenticationMethods"][("{0:D3}-Passwordless" -f $methodIndex)] = [PSCustomObject]@{
+            $script:tenantStatsHash["AuthenticationMethods"][("{0:D3}-Passwordless" -f $methodIndex)] = [PSCustomObject]@{
                 Category = 'Passwordless Method'
                 Value    = $method
             }
@@ -8065,7 +8180,7 @@ function Get-AuthenticationConfiguration {
 
         foreach ($domainName in @($authMethodsPolicy.FederatedDomains)) {
             $methodIndex++
-            $global:tenantStatsHash["AuthenticationMethods"][("{0:D3}-Federated" -f $methodIndex)] = [PSCustomObject]@{
+            $script:tenantStatsHash["AuthenticationMethods"][("{0:D3}-Federated" -f $methodIndex)] = [PSCustomObject]@{
                 Category = 'Federated Domain'
                 Value    = $domainName
             }
@@ -8074,7 +8189,7 @@ function Get-AuthenticationConfiguration {
         $ssoIndex = 0
         foreach ($app in @($authMethodsPolicy.SSOApplications)) {
             $ssoIndex++
-            $global:tenantStatsHash["AuthenticationSSOApplications"][("{0:D3}-{1}" -f $ssoIndex, $app.DisplayName)] = $app
+            $script:tenantStatsHash["AuthenticationSSOApplications"][("{0:D3}-{1}" -f $ssoIndex, $app.DisplayName)] = $app
         }
         
     } catch {
@@ -8091,8 +8206,8 @@ function Get-TenantOverviewInfo {
     param ()
 
     $start = Get-Date
-    if (-not $global:tenantStatsHash) { $global:tenantStatsHash = @{} }
-    $global:tenantStatsHash["TenantInfo"] = @{}
+    if (-not $script:tenantStatsHash) { $script:tenantStatsHash = @{} }
+    $script:tenantStatsHash["TenantInfo"] = @{}
 
     Write-Host "Gathering Tenant Overview Info ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-TenantOverviewInfo] START: Gathering tenant overview information" -ExportFileLocation $ExportDetails
@@ -8181,7 +8296,7 @@ function Get-TenantOverviewInfo {
         $azureNotes = "Azure module not used in this report"
         $azureDetails = $null
 
-        $global:tenantStatsHash["TenantInfo"] = [PSCustomObject]@{
+        $script:tenantStatsHash["TenantInfo"] = [PSCustomObject]@{
             DisplayName           = $org.DisplayName
             TenantId              = $org.Id
             InitialDomain         = $initialDomain
@@ -8219,8 +8334,8 @@ function Get-AdConnectSyncDetails {
     param ()
     
     $start = Get-Date
-    if (-not $global:tenantStatsHash) { $global:tenantStatsHash = @{} }
-    $global:tenantStatsHash["AdConnectConfiguration"] = @{}
+    if (-not $script:tenantStatsHash) { $script:tenantStatsHash = @{} }
+    $script:tenantStatsHash["AdConnectConfiguration"] = @{}
     
     Write-Host "Checking AD Connect/Sync status ..." -ForegroundColor Cyan -NoNewline
     Write-Log -Type INFO -Message "[Get-AdConnectSyncDetails] START" -ExportFileLocation $ExportDetails
@@ -8263,10 +8378,10 @@ function Get-AdConnectSyncDetails {
             } catch {}
         }
         
-        $global:tenantStatsHash["AdConnectConfiguration"]["Summary"] = $summary
-        $global:tenantStatsHash["AdConnectConfiguration"]["SyncServices"] = $serviceDetails
-        $global:tenantStatsHash["AdConnectConfiguration"]["RecentErrors"] = $syncErrors | Select-Object -First 10
-        $global:tenantStatsHash["AdConnectConfiguration"]["ErrorCount"] = ($syncErrors | Measure-Object).Count
+        $script:tenantStatsHash["AdConnectConfiguration"]["Summary"] = $summary
+        $script:tenantStatsHash["AdConnectConfiguration"]["SyncServices"] = $serviceDetails
+        $script:tenantStatsHash["AdConnectConfiguration"]["RecentErrors"] = $syncErrors | Select-Object -First 10
+        $script:tenantStatsHash["AdConnectConfiguration"]["ErrorCount"] = ($syncErrors | Measure-Object).Count
         
         Write-Log -Type INFO -Message "[Get-AdConnectSyncDetails] DirSyncEnabled=$($summary.OnPremisesSyncEnabled) LastSync=$($summary.OnPremisesLastSyncDateTime) Services=$($serviceDetails.Count) Errors=$(($syncErrors | Measure-Object).Count)" -ExportFileLocation $ExportDetails
     } catch {
@@ -8283,9 +8398,9 @@ function Get-MfaRegistrationDetails {
     param ()
     
     $start = Get-Date
-    if (-not $global:tenantStatsHash) { $global:tenantStatsHash = @{} }
-    $global:tenantStatsHash["MfaRegistrationDetails"] = @{}
-    $global:tenantStatsHash["MfaRegistrationSummary"] = $null
+    if (-not $script:tenantStatsHash) { $script:tenantStatsHash = @{} }
+    $script:tenantStatsHash["MfaRegistrationDetails"] = @{}
+    $script:tenantStatsHash["MfaRegistrationSummary"] = $null
     
     Write-Host "Gathering MFA registration details ..." -ForegroundColor Cyan -NoNewline
     Write-Log -Type INFO -Message "[Get-MfaRegistrationDetails] START: Gathering MFA registration details" -ExportFileLocation $ExportDetails
@@ -8325,7 +8440,7 @@ function Get-MfaRegistrationDetails {
             if ($user.IsMfaRegistered -eq $true) { $registeredUsers++ }
             
             if ($upn) {
-                $global:tenantStatsHash["MfaRegistrationDetails"][$upn] = [pscustomobject]@{
+                $script:tenantStatsHash["MfaRegistrationDetails"][$upn] = [pscustomobject]@{
                     UserPrincipalName = $upn
                     IsMfaRegistered = $user.IsMfaRegistered
                     IsMfaCapable = $user.IsMfaCapable
@@ -8343,7 +8458,7 @@ function Get-MfaRegistrationDetails {
                 RegistrationPercent = [math]::Round(($registeredUsers / $totalUsers) * 100, 1)
                 MethodCounts = $methodCounts
             }
-            $global:tenantStatsHash["MfaRegistrationSummary"] = $summary
+            $script:tenantStatsHash["MfaRegistrationSummary"] = $summary
         }
     } catch {
         Write-Log -Type WARNING -Message "[Get-MfaRegistrationDetails] Error: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
@@ -8360,8 +8475,8 @@ function Get-FederationAndCrossTenantConfiguration {
     param()
 
     $start = Get-Date
-    if (-not $global:tenantStatsHash) { $global:tenantStatsHash = @{} }
-    $global:tenantStatsHash["FederationConfiguration"] = @{}
+    if (-not $script:tenantStatsHash) { $script:tenantStatsHash = @{} }
+    $script:tenantStatsHash["FederationConfiguration"] = @{}
 
     Write-Host "Checking Federation and Cross-Tenant Configuration ..." -ForegroundColor Cyan -NoNewline
     Write-Log -Type INFO -Message "[Get-FederationAndCrossTenantConfiguration] START" -ExportFileLocation $ExportDetails
@@ -8595,9 +8710,9 @@ function Get-FederationAndCrossTenantConfiguration {
             InvitationsAllowed         = if ($b2bPolicy -and $b2bPolicy.InvitationPolicy) { $b2bPolicy.InvitationPolicy.AllowedToInvite } else { $null }
         }
 
-        $global:tenantStatsHash["FederationConfiguration"]["ExchangeFederation"] = $exchangeFed
-        $global:tenantStatsHash["FederationConfiguration"]["CrossTenantAccess"] = $crossTenantSummary
-        $global:tenantStatsHash["FederationConfiguration"]["ExternalIdentities"] = $externalIdentities
+        $script:tenantStatsHash["FederationConfiguration"]["ExchangeFederation"] = $exchangeFed
+        $script:tenantStatsHash["FederationConfiguration"]["CrossTenantAccess"] = $crossTenantSummary
+        $script:tenantStatsHash["FederationConfiguration"]["ExternalIdentities"] = $externalIdentities
 
         Write-Log -Type INFO -Message "[Get-FederationAndCrossTenantConfiguration] OrgRel=$($exchangeFed.OrganizationRelationshipCount) IOC=$($exchangeFed.IntraOrgConnectorCount) Partners=$($crossTenantSummary.PartnerCount)" -ExportFileLocation $ExportDetails
     }
@@ -10964,16 +11079,20 @@ function Get-MailboxStatForRecord {
 
     $candidateKeys = New-Object System.Collections.Generic.List[string]
     if ($Archive -and $MailboxRecord.PSObject.Properties['ArchiveGuid'] -and $MailboxRecord.ArchiveGuid) {
-        $candidateKeys.Add([string]$MailboxRecord.ArchiveGuid)
+        $archiveKey = Convert-ToMailboxGuidKey -GuidValue $MailboxRecord.ArchiveGuid
+        if ($archiveKey) { $candidateKeys.Add($archiveKey) }
     }
     if ($MailboxRecord.PSObject.Properties['ExchangeGuid'] -and $MailboxRecord.ExchangeGuid) {
-        $candidateKeys.Add([string]$MailboxRecord.ExchangeGuid)
+        $exchangeKey = Convert-ToMailboxGuidKey -GuidValue $MailboxRecord.ExchangeGuid
+        if ($exchangeKey) { $candidateKeys.Add($exchangeKey) }
     }
     if ($MailboxRecord.PSObject.Properties['Guid'] -and $MailboxRecord.Guid) {
-        $candidateKeys.Add([string]$MailboxRecord.Guid)
+        $guidKey = Convert-ToMailboxGuidKey -GuidValue $MailboxRecord.Guid
+        if ($guidKey) { $candidateKeys.Add($guidKey) }
     }
     if ($MailboxRecord.PSObject.Properties['MailboxGuid'] -and $MailboxRecord.MailboxGuid) {
-        $candidateKeys.Add([string]$MailboxRecord.MailboxGuid)
+        $mailboxGuidKey = Convert-ToMailboxGuidKey -GuidValue $MailboxRecord.MailboxGuid
+        if ($mailboxGuidKey) { $candidateKeys.Add($mailboxGuidKey) }
     }
 
     foreach ($key in $candidateKeys) {
@@ -14077,7 +14196,7 @@ function New-TenantHtmlReport {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [hashtable]$TenantStatsHash = $global:tenantStatsHash,
+        [hashtable]$TenantStatsHash = $script:tenantStatsHash,
         
         [Parameter()]
         [string]$OutputPath,
@@ -14588,7 +14707,8 @@ try {
     $defaultOrganization = Get-AssessmentTenantOrganization
 } catch {}
 $defaultTenantDisplayName = if ($defaultOrganization -and $defaultOrganization.DisplayName) { $defaultOrganization.DisplayName } else { 'Tenant' }
-$defaultReportFileName = ($defaultTenantDisplayName + " Tenant Discovery Report")
+$profileFileTag = if ([string]::IsNullOrWhiteSpace($OutputProfile)) { 'Profile' } else { ($OutputProfile -replace '[^A-Za-z0-9_-]', '') }
+$defaultReportFileName = ("{0} Tenant Discovery Report-{1}" -f $defaultTenantDisplayName, $profileFileTag)
 if ([string]::IsNullOrWhiteSpace($ExportPath)) {
     $ExportDetails = Get-ExportPath -FileName $defaultReportFileName
 } else {
@@ -14646,7 +14766,9 @@ Write-Log -Type INFO -Message ("Collection depth policy: Mode={0}; EntraDeep={1}
 Write-Log -Type INFO -Message ("Profile collection plan ({0}): ExchangeRecipients={1}; ExchangeGroups={2}; MailFlow={3}; PublicFolders={4}; SpamFiltering={5}; SMTPRelay={6}; TeamsVoice={7}; UnifiedGroups={8}; OwnershipTables={9}; AssessmentTables={10}; ConfigSummaryTables={11}; LicenseMetadata={12}" -f $OutputProfile, $script:ProfileCollectionPlan.CollectExchangeRecipients, $script:ProfileCollectionPlan.CollectExchangeGroups, $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors, $script:ProfileCollectionPlan.CollectPublicFolders, $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering, $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration, $script:ProfileCollectionPlan.CollectTeamsVoiceDetails, $script:ProfileCollectionPlan.CollectUnifiedGroups, $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables, $script:ProfileCollectionPlan.BuildAssessmentReportTables, $script:ProfileCollectionPlan.BuildConfigurationSummaryTables, $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata) -ExportFileLocation $ExportDetails
 
 #Hash Table to hold final report data
-$global:tenantStatsHash = @{}
+$script:tenantStatsHash = @{}
+$script:MailboxUsageGraphLookup = $null
+$script:UnifiedGroupsInventoryCache = $null
 
 #Global Start Time for Script
 $global:InitialStart = Get-Date
@@ -14739,12 +14861,12 @@ if ($reportingMode -eq "combined" -or $reportingMode -eq "all") {
     Invoke-AssessmentProgressStep -Name 'Combined user/mailbox reporting' -ScriptBlock { Report-UserAndMailboxStats }
 }
 
-Invoke-ProfileAwareAssessmentStep -Name 'Ownership governance tables' -Enabled $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables -SkipReason 'Ownership governance table build is disabled for this profile.' -ScriptBlock { Update-OwnershipGovernanceTables -TenantStatsHash $global:tenantStatsHash }
-Invoke-ProfileAwareAssessmentStep -Name 'License classification metadata' -Enabled $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata -SkipReason 'License classification metadata is disabled for this profile.' -ScriptBlock { Update-LicenseClassificationMetadata -TenantStatsHash $global:tenantStatsHash }
-Invoke-ProfileAwareAssessmentStep -Name 'Best-practice assessment tables' -Enabled $script:ProfileCollectionPlan.BuildAssessmentReportTables -SkipReason 'Best-practice table build is disabled for this profile.' -ScriptBlock { Update-AssessmentReportTables -TenantStatsHash $global:tenantStatsHash }
-Invoke-ProfileAwareAssessmentStep -Name 'Configuration summary tables' -Enabled $script:ProfileCollectionPlan.BuildConfigurationSummaryTables -SkipReason 'Configuration summary tables are disabled for this profile.' -ScriptBlock { Update-ConfigurationSummaryTables -TenantStatsHash $global:tenantStatsHash }
+Invoke-ProfileAwareAssessmentStep -Name 'Ownership governance tables' -Enabled $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables -SkipReason 'Ownership governance table build is disabled for this profile.' -ScriptBlock { Update-OwnershipGovernanceTables -TenantStatsHash $script:tenantStatsHash }
+Invoke-ProfileAwareAssessmentStep -Name 'License classification metadata' -Enabled $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata -SkipReason 'License classification metadata is disabled for this profile.' -ScriptBlock { Update-LicenseClassificationMetadata -TenantStatsHash $script:tenantStatsHash }
+Invoke-ProfileAwareAssessmentStep -Name 'Best-practice assessment tables' -Enabled $script:ProfileCollectionPlan.BuildAssessmentReportTables -SkipReason 'Best-practice table build is disabled for this profile.' -ScriptBlock { Update-AssessmentReportTables -TenantStatsHash $script:tenantStatsHash }
+Invoke-ProfileAwareAssessmentStep -Name 'Configuration summary tables' -Enabled $script:ProfileCollectionPlan.BuildConfigurationSummaryTables -SkipReason 'Configuration summary tables are disabled for this profile.' -ScriptBlock { Update-ConfigurationSummaryTables -TenantStatsHash $script:tenantStatsHash }
 Complete-AssessmentProgress
-Write-CollectorInventoryMatrix -TenantStatsHash $global:tenantStatsHash -ExportFileLocation $ExportDetails
+Write-CollectorInventoryMatrix -TenantStatsHash $script:tenantStatsHash -ExportFileLocation $ExportDetails
 Write-AssessmentStepMetricsSummary -ExportFileLocation $ExportDetails
 
 
@@ -14757,7 +14879,7 @@ Write-ConsoleSection -Step '5/5' -Title 'Exporting results'
 $requiresFilteredExportSnapshot = ((-not $effectiveSkipWorkbook) -or (-not $effectiveSkipJsonReport))
 $ExportTenantStatsHash = $null
 if ($requiresFilteredExportSnapshot) {
-    $ExportTenantStatsHash = Filter-TenantStatsHash -tenantStatsHash $global:tenantStatsHash -reportingMode $reportingMode -GraphTest $GraphTest
+    $ExportTenantStatsHash = Filter-TenantStatsHash -tenantStatsHash $script:tenantStatsHash -reportingMode $reportingMode -GraphTest $GraphTest
 } else {
     Write-Log -Type INFO -Message "Skipping filtered export snapshot build because workbook and JSON outputs are both disabled for this profile." -ExportFileLocation $ExportDetails
 }
@@ -14814,7 +14936,7 @@ else {
                 throw "Questionnaire template not found in expected locations: $($questionnaireTemplateCandidates -join '; ')"
             }
             $questionnaireExportPath = $ExportDetails -replace '\.xlsx$', '-TenantToTenantQuestionnaire.md'
-            Export-TenantToTenantQuestionnaireMarkdown -TenantStatsHash $global:tenantStatsHash -TemplatePath $questionnaireTemplatePath -Path $questionnaireExportPath
+            Export-TenantToTenantQuestionnaireMarkdown -TenantStatsHash $script:tenantStatsHash -TemplatePath $questionnaireTemplatePath -Path $questionnaireExportPath
             $generatedArtifacts['Questionnaire'] = $questionnaireExportPath
             Write-Log -Type INFO -Message "Exported Tenant to Tenant Questionnaire to $questionnaireExportPath" -ExportFileLocation $ExportDetails
         } else {
@@ -14853,7 +14975,7 @@ try {
         }
         elseif (Get-Command New-TenantAssessmentHtmlReport -ErrorAction SilentlyContinue) {
             $assessmentHtmlPath = $ExportDetails -replace '\.xlsx$', '-BestPracticesAnalysis.html'
-            $assessmentHtmlResult = New-TenantAssessmentHtmlReport -TenantStatsHash $global:tenantStatsHash -OutputPath $assessmentHtmlPath
+            $assessmentHtmlResult = New-TenantAssessmentHtmlReport -TenantStatsHash $script:tenantStatsHash -OutputPath $assessmentHtmlPath
             if ($assessmentHtmlResult.Success) {
                 $generatedArtifacts['Best Practices HTML'] = $assessmentHtmlResult.OutputPath
                 Write-Log -Type INFO -Message "Best Practices Analysis HTML report generated: $($assessmentHtmlResult.OutputPath)" -ExportFileLocation $ExportDetails
@@ -14896,7 +15018,7 @@ else {
         $HTMLExportPath = $ExportDetails -replace '\.xlsx$', '.html'
         
         $htmlResult = New-TenantHtmlReport `
-            -TenantStatsHash $global:tenantStatsHash `
+            -TenantStatsHash $script:tenantStatsHash `
             -Thresholds $reportThresholds `
             -OutputPath $HTMLExportPath
         
@@ -14914,8 +15036,8 @@ else {
             #Write-Log -Type INFO -Message "HTML report findings: $($htmlResult.SectionCounts.TotalFindings)" -ExportFileLocation $ExportDetails
 
             if ($effectiveSkipPdfReport) {
-                Write-Host "Skipping PDF report generation because -SkipPdfReport was provided or the selected output profile disables it." -ForegroundColor Yellow
-                Write-Log -Type INFO -Message "Skipping PDF report generation because -SkipPdfReport was provided or the selected output profile disables it." -ExportFileLocation $ExportDetails
+                #Write-Host "Skipping PDF report generation because -SkipPdfReport was provided or the selected output profile disables it." -ForegroundColor Yellow
+                #Write-Log -Type INFO -Message "Skipping PDF report generation because -SkipPdfReport was provided or the selected output profile disables it." -ExportFileLocation $ExportDetails
             }
             elseif (-not (Get-Command Export-TenantHtmlReportPdf -ErrorAction SilentlyContinue)) {
                 Write-Warning "PDF report helper is unavailable. HTML report was generated, but PDF export was skipped."
