@@ -32,6 +32,13 @@ Examples:
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
   -ClientSecret '<client-secret>'
+
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365 `
+  -TenantId '<tenant-guid>' `
+  -ClientId '<app-id>' `
+  -CertificateThumbprint '<cert-thumbprint>' `
+  -OutputProfile SolutionsEngineer,ExecutiveLevel
 ```
 
 ## Assessment Outputs
@@ -64,6 +71,8 @@ The assessment run supports six need-based output profiles:
 - `Machine`: scope `Geek`; outputs JSON only
 
 `SolutionsEngineer` is the default profile.
+You can run multiple profiles in one command by passing a comma-separated list (for example `SolutionsEngineer,ExecutiveLevel`).
+When multiple profiles are supplied, the assessment runs once using the highest required reporting scope and produces the union of requested artifacts.
 
 Reporting scope is not prompted interactively. Scope is automatically derived from the selected output profile.
 

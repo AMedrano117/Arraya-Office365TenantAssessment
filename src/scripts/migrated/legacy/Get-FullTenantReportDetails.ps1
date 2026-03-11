@@ -113,7 +113,24 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$ClientId,
     [Parameter(Mandatory = $false)]
-    [string]$ClientSecret
+    [string]$ClientSecret,
+    [Parameter(Mandatory = $false)]
+    [string]$OutputProfileLabel,
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('Minimum', 'Combined', 'Geek')]
+    [string]$ReportingModeOverride,
+    [Parameter(Mandatory = $false)]
+    [bool]$GenerateWorkbookOverride,
+    [Parameter(Mandatory = $false)]
+    [bool]$GenerateTechnicalHtmlOverride,
+    [Parameter(Mandatory = $false)]
+    [bool]$GenerateBestPracticesHtmlOverride,
+    [Parameter(Mandatory = $false)]
+    [bool]$GenerateQuestionnaireOverride,
+    [Parameter(Mandatory = $false)]
+    [bool]$GenerateJsonOverride,
+    [Parameter(Mandatory = $false)]
+    [bool]$GeneratePdfOverride
 )
 
 # Strict-mode safety: ensure legacy Graph globals exist even when SDK auth is used.
@@ -130,7 +147,15 @@ $effectiveSkipQuestionnaire = $false
 $effectiveSkipHtmlReport = $false
 $effectiveSkipPdfReport = $false
 $effectiveSkipJsonReport = $false
+$effectiveGenerateWorkbook = $false
+$effectiveGenerateTechnicalHtml = $false
+$effectiveGenerateBestPracticesHtml = $false
+$effectiveGenerateQuestionnaire = $false
+$effectiveGenerateJson = $false
+$effectiveGeneratePdf = $false
 $reportingMode = 'minimum'
+$script:EffectiveOutputProfileLabel = $OutputProfile
+$isMergedOutputProfileSelection = $false
 
 $officeModuleLoaderPath = Join-Path -Path $PSScriptRoot -ChildPath 'Import-Office365CustomLocal.ps1'
 if (-not (Test-Path -Path $officeModuleLoaderPath)) {
@@ -173,13 +198,61 @@ if (
 }
 
 $profilePolicy = Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile $OutputProfile
-$reportingMode = $profilePolicy.ReportingMode.ToLowerInvariant()
-$effectiveSkipWorkbook = (-not $profilePolicy.GenerateWorkbook)
-$effectiveSkipBestPracticesHtml = (-not $profilePolicy.GenerateBestPracticesHtml)
-$effectiveSkipQuestionnaire = (-not $profilePolicy.GenerateQuestionnaire)
-$effectiveSkipHtmlReport = (-not $profilePolicy.GenerateTechnicalHtml) -or $SkipHtmlReport.IsPresent
-$effectiveSkipPdfReport = (-not $profilePolicy.GeneratePdf) -or $SkipPdfReport.IsPresent
-$effectiveSkipJsonReport = (-not $profilePolicy.GenerateJson) -or $SkipJsonReport.IsPresent
+$effectiveOutputProfileLabel = if (-not [string]::IsNullOrWhiteSpace($OutputProfileLabel)) { $OutputProfileLabel } else { $OutputProfile }
+$script:EffectiveOutputProfileLabel = $effectiveOutputProfileLabel
+$isMergedOutputProfileSelection = $effectiveOutputProfileLabel -like 'Merged(*'
+
+$resolvedReportingMode = if ($PSBoundParameters.ContainsKey('ReportingModeOverride') -and -not [string]::IsNullOrWhiteSpace($ReportingModeOverride)) {
+    $ReportingModeOverride
+}
+else {
+    [string]$profilePolicy.ReportingMode
+}
+$reportingMode = $resolvedReportingMode.ToLowerInvariant()
+
+$effectiveGenerateWorkbook = if ($PSBoundParameters.ContainsKey('GenerateWorkbookOverride')) {
+    [bool]$GenerateWorkbookOverride
+}
+else {
+    [bool]$profilePolicy.GenerateWorkbook
+}
+$effectiveGenerateTechnicalHtml = if ($PSBoundParameters.ContainsKey('GenerateTechnicalHtmlOverride')) {
+    [bool]$GenerateTechnicalHtmlOverride
+}
+else {
+    [bool]$profilePolicy.GenerateTechnicalHtml
+}
+$effectiveGenerateBestPracticesHtml = if ($PSBoundParameters.ContainsKey('GenerateBestPracticesHtmlOverride')) {
+    [bool]$GenerateBestPracticesHtmlOverride
+}
+else {
+    [bool]$profilePolicy.GenerateBestPracticesHtml
+}
+$effectiveGenerateQuestionnaire = if ($PSBoundParameters.ContainsKey('GenerateQuestionnaireOverride')) {
+    [bool]$GenerateQuestionnaireOverride
+}
+else {
+    [bool]$profilePolicy.GenerateQuestionnaire
+}
+$effectiveGenerateJson = if ($PSBoundParameters.ContainsKey('GenerateJsonOverride')) {
+    [bool]$GenerateJsonOverride
+}
+else {
+    [bool]$profilePolicy.GenerateJson
+}
+$effectiveGeneratePdf = if ($PSBoundParameters.ContainsKey('GeneratePdfOverride')) {
+    [bool]$GeneratePdfOverride
+}
+else {
+    [bool]$profilePolicy.GeneratePdf
+}
+
+$effectiveSkipWorkbook = (-not $effectiveGenerateWorkbook)
+$effectiveSkipBestPracticesHtml = (-not $effectiveGenerateBestPracticesHtml)
+$effectiveSkipQuestionnaire = (-not $effectiveGenerateQuestionnaire)
+$effectiveSkipHtmlReport = (-not $effectiveGenerateTechnicalHtml) -or $SkipHtmlReport.IsPresent
+$effectiveSkipPdfReport = (-not $effectiveGeneratePdf) -or $SkipPdfReport.IsPresent
+$effectiveSkipJsonReport = (-not $effectiveGenerateJson) -or $SkipJsonReport.IsPresent
 
 $tenantHtmlReportPath = Join-Path -Path $PSScriptRoot -ChildPath 'New-TenantHtmlReport.ps1'
 if (Test-Path $tenantHtmlReportPath) {
@@ -586,7 +659,8 @@ function Invoke-ProfileAwareAssessmentStep {
         return
     }
 
-    $skipMessage = "Skipped by output profile '$OutputProfile': $SkipReason"
+    $profileLabelForSkip = if ([string]::IsNullOrWhiteSpace($script:EffectiveOutputProfileLabel)) { $OutputProfile } else { $script:EffectiveOutputProfileLabel }
+    $skipMessage = "Skipped by output profile '$profileLabelForSkip': $SkipReason"
     Invoke-AssessmentProgressStep -Name $Name -ScriptBlock {
         Write-Host ("{0} ...Skipped" -f $Name) -ForegroundColor DarkYellow
         Write-Log -Type INFO -Message ("[{0}] {1}" -f $Name, $skipMessage) -ExportFileLocation $ExportDetails
@@ -767,6 +841,7 @@ function Get-ExoMailboxStatisticsSafe {
 
     $totalMailboxCount = $normalizedMailboxObjects.Count
     $processedMailboxCount = 0
+    $progressStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
     foreach ($mailbox in $normalizedMailboxObjects) {
         $processedMailboxCount++
@@ -782,7 +857,9 @@ function Get-ExoMailboxStatisticsSafe {
             }
 
             $percentComplete = [math]::Round(($processedMailboxCount / $totalMailboxCount) * 100, 2)
-            Write-Progress -Id $ProgressId -Activity $ProgressActivity -Status "[$processedMailboxCount / $totalMailboxCount] $label" -PercentComplete $percentComplete
+            $elapsedText = if ($progressStopwatch) { $progressStopwatch.Elapsed.ToString('hh\:mm\:ss') } else { '00:00:00' }
+            $progressStatus = "[{0} / {1}] {2} | {3} elapsed | results={4}, failures={5}" -f $processedMailboxCount, $totalMailboxCount, $label, $elapsedText, $results.Count, $failures.Count
+            Write-Progress -Id $ProgressId -Activity $ProgressActivity -Status $progressStatus -PercentComplete $percentComplete
         }
 
         $identity = Resolve-ExoStatisticsIdentity -MailboxObject $mailbox
@@ -848,6 +925,9 @@ function Get-ExoMailboxStatisticsSafe {
 
     if (-not [string]::IsNullOrWhiteSpace($ProgressActivity)) {
         Write-Progress -Id $ProgressId -Activity $ProgressActivity -Completed
+    }
+    if ($progressStopwatch -and $progressStopwatch.IsRunning) {
+        $progressStopwatch.Stop()
     }
 
     return [PSCustomObject]@{
@@ -2109,15 +2189,32 @@ function Get-AllExchangeMailboxDetails {
         $script:tenantStatsHash["PrimaryMailboxStats"] = @{}
         $script:MailboxUsageGraphLookup = @{}
         $activeMailboxes = $script:tenantStatsHash['AllMailboxes'].Values | Where-Object { $_.IsInactiveMailbox -ne $true }
+        $activeMailboxUnmatchedAfterGraphCount = @($activeMailboxes).Count
         $graphStatsCount = 0
         $graphReportRowCount = 0
         $graphMatchedMailboxCount = 0
+        $graphUsablePrincipalRowCount = 0
+        $graphRowsWithoutPrincipalCount = 0
+        $graphRowsPotentiallyObscuredPrincipalCount = 0
+        $graphRowsDuplicatePrincipalCount = 0
+        $activeMailboxWithoutLookupKeyCount = 0
+        $activeMailboxLookupMissCount = 0
+        $activeMailboxMatchedByGraphCount = 0
         $exoFallbackRequestedCount = 0
         $exoFallbackReturnedCount = 0
         $graphPhaseSeconds = 0
         $exoFallbackPhaseSeconds = 0
         $unifiedPreCachePhaseSeconds = 0
+        $graphCoverageWarning = $null
         $shouldPreCacheUnifiedGroupStats = Test-ShouldCollectUnifiedGroupMailboxStats -DetailLevel $detailLevel
+        $estimatedGroupMailboxCount = @(
+            $script:tenantStatsHash['AllMailboxes'].Values | Where-Object {
+                $_.PSObject.Properties['RecipientTypeDetails'] -and [string]$_.RecipientTypeDetails -eq 'GroupMailbox'
+            }
+        ).Count
+        if ($shouldPreCacheUnifiedGroupStats) {
+            Write-Host ("    Step 3/3 Unified group pre-cache: scheduled | estimated group mailboxes in inventory={0}" -f $estimatedGroupMailboxCount) -ForegroundColor DarkGray
+        }
 
         # Try Graph mailbox usage report (fast) for active mailboxes
         $graphPhaseStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -2127,11 +2224,29 @@ function Get-AllExchangeMailboxDetails {
             $graphReportRowCount = @($graphReportData).Count
             if ($graphReportData -and $graphReportData.Count -gt 0) {
                 foreach ($item in $graphReportData) {
-                    $upn = [string]$item.'User Principal Name'
-                    if ([string]::IsNullOrWhiteSpace($upn)) {
+                    $principalValue = Get-GraphReportFieldValue -Row $item -FieldNames @(
+                        'User Principal Name',
+                        'User Principal Name ',
+                        'User Principal Name (UPN)',
+                        'Owner Principal Name',
+                        'Account'
+                    )
+                    if ([string]::IsNullOrWhiteSpace($principalValue)) {
+                        $graphRowsWithoutPrincipalCount++
                         continue
                     }
-                    $script:MailboxUsageGraphLookup[$upn.ToLowerInvariant()] = $item
+
+                    $principalKey = $principalValue.Trim().ToLowerInvariant()
+                    if (-not ($principalValue -match '@')) {
+                        $graphRowsPotentiallyObscuredPrincipalCount++
+                    }
+                    if ($script:MailboxUsageGraphLookup.ContainsKey($principalKey)) {
+                        $graphRowsDuplicatePrincipalCount++
+                        continue
+                    }
+
+                    $script:MailboxUsageGraphLookup[$principalKey] = $item
+                    $graphUsablePrincipalRowCount++
                 }
 
                 foreach ($mailbox in $activeMailboxes) {
@@ -2143,7 +2258,15 @@ function Get-AllExchangeMailboxDetails {
                         $mailboxLookupKey = ([string]$mailbox.PrimarySmtpAddress).ToLowerInvariant()
                     }
 
-                    if (-not $mailboxLookupKey -or -not $script:MailboxUsageGraphLookup.ContainsKey($mailboxLookupKey)) { continue }
+                    if (-not $mailboxLookupKey) {
+                        $activeMailboxWithoutLookupKeyCount++
+                        continue
+                    }
+                    if (-not $script:MailboxUsageGraphLookup.ContainsKey($mailboxLookupKey)) {
+                        $activeMailboxLookupMissCount++
+                        continue
+                    }
+
                     $graphData = $script:MailboxUsageGraphLookup[$mailboxLookupKey]
                     $storageBytes = 0
                     $deletedBytes = 0
@@ -2164,10 +2287,19 @@ function Get-AllExchangeMailboxDetails {
                         MailboxGuid = if ($mailbox.ExchangeGuid) { $mailbox.ExchangeGuid } else { $mailbox.Guid }
                     }
                     $script:tenantStatsHash["PrimaryMailboxStats"][$guidKey] = $stats
+                    $activeMailboxMatchedByGraphCount++
                 }
             }
             $graphStatsCount = $script:tenantStatsHash["PrimaryMailboxStats"].Count
             $graphMatchedMailboxCount = $graphStatsCount
+            $activeMailboxUnmatchedAfterGraphCount = [Math]::Max(($activeMailboxes.Count - $activeMailboxMatchedByGraphCount), 0)
+            if (
+                $graphReportRowCount -gt 0 -and
+                $graphMatchedMailboxCount -eq 0 -and
+                $graphRowsPotentiallyObscuredPrincipalCount -gt 0
+            ) {
+                $graphCoverageWarning = "Graph mailbox report appears to contain obfuscated principals (non-UPN rows=$graphRowsPotentiallyObscuredPrincipalCount), which can force EXO fallback."
+            }
         } catch {
             Write-Log -Type WARNING -Message "[Get-AllExchangeMailboxDetails] Graph mailbox usage report failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
@@ -2179,8 +2311,15 @@ function Get-AllExchangeMailboxDetails {
                 $graphPhaseSeconds = [math]::Round($graphPhaseStopwatch.Elapsed.TotalSeconds, 2)
             }
         }
-        Write-Host ("    Step 1/3 Graph mailbox usage: {0}s | report rows={1}, populated={2}" -f $graphPhaseSeconds, $graphReportRowCount, $graphMatchedMailboxCount) -ForegroundColor DarkGray
-        Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Primary mailbox stats step 1/3 (Graph mailbox usage) completed in $graphPhaseSeconds sec; reportRows=$graphReportRowCount; populated=$graphMatchedMailboxCount." -ExportFileLocation $ExportDetails
+        Write-Host ("    Step 1/3 Graph mailbox usage: {0}s | rows={1}, usable={2}, matched={3}/{4}, unresolvedActive={5}" -f $graphPhaseSeconds, $graphReportRowCount, $graphUsablePrincipalRowCount, $graphMatchedMailboxCount, $activeMailboxes.Count, $activeMailboxUnmatchedAfterGraphCount) -ForegroundColor DarkGray
+        Write-Host ("      Graph principal diagnostics: missingPrincipalRows={0}, nonUpnRows={1}, duplicatePrincipalRows={2}, activeWithoutLookupKey={3}, activeLookupMiss={4}" -f $graphRowsWithoutPrincipalCount, $graphRowsPotentiallyObscuredPrincipalCount, $graphRowsDuplicatePrincipalCount, $activeMailboxWithoutLookupKeyCount, $activeMailboxLookupMissCount) -ForegroundColor DarkGray
+        if (-not [string]::IsNullOrWhiteSpace($graphCoverageWarning)) {
+            Write-Host ("      Warning: {0}" -f $graphCoverageWarning) -ForegroundColor Yellow
+        }
+        Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Primary mailbox stats step 1/3 (Graph mailbox usage) completed in $graphPhaseSeconds sec; reportRows=$graphReportRowCount; usablePrincipalRows=$graphUsablePrincipalRowCount; missingPrincipalRows=$graphRowsWithoutPrincipalCount; nonUpnRows=$graphRowsPotentiallyObscuredPrincipalCount; duplicatePrincipalRows=$graphRowsDuplicatePrincipalCount; activeMailboxCount=$($activeMailboxes.Count); activeMatched=$activeMailboxMatchedByGraphCount; activeWithoutLookupKey=$activeMailboxWithoutLookupKeyCount; activeLookupMiss=$activeMailboxLookupMissCount; populated=$graphMatchedMailboxCount; unresolvedActive=$activeMailboxUnmatchedAfterGraphCount." -ExportFileLocation $ExportDetails
+        if (-not [string]::IsNullOrWhiteSpace($graphCoverageWarning)) {
+            Write-Log -Type WARNING -Message "[Get-AllExchangeMailboxDetails] $graphCoverageWarning" -ExportFileLocation $ExportDetails
+        }
 
         Write-Progress -Id $primaryStatsProgressId -Activity "Gathering All Primary Mailbox Statistics" -Completed
 
@@ -2188,6 +2327,8 @@ function Get-AllExchangeMailboxDetails {
         $mailboxesNeedingStatsList = New-Object System.Collections.Generic.List[object]
         $profileSkippedForFallbackCount = 0
         $deferredUnifiedGroupMailboxCount = 0
+        $exoFallbackActiveCandidateCount = 0
+        $exoFallbackInactiveCandidateCount = 0
         $minimumExcludedRecipientTypesForExoStats = @(
             'AuditLogMailbox',
             'AuxAuditLogMailbox',
@@ -2222,6 +2363,12 @@ function Get-AllExchangeMailboxDetails {
             }
 
             [void]$mailboxesNeedingStatsList.Add($mailbox)
+            if ($mailbox.PSObject.Properties['IsInactiveMailbox'] -and $mailbox.IsInactiveMailbox -eq $true) {
+                $exoFallbackInactiveCandidateCount++
+            }
+            else {
+                $exoFallbackActiveCandidateCount++
+            }
         }
         $mailboxesNeedingStats = @($mailboxesNeedingStatsList.ToArray())
         $exoFilledCount = 0
@@ -2235,6 +2382,7 @@ function Get-AllExchangeMailboxDetails {
             $exoFallbackStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
             $exoFallbackRequestedCount = $mailboxesNeedingStats.Count
             #$inactiveMBXTest = ($script:tenantStatsHash['AllMailboxes'].Values | Where-Object { $_.IsInactiveMailbox -eq $true }).Count -gt 0
+            Write-Host ("    Step 2/3 EXO fallback: starting | unresolved={0} (active={1}, inactive={2}, deferredGroups={3}, profileSkipped={4})" -f $mailboxesNeedingStats.Count, $exoFallbackActiveCandidateCount, $exoFallbackInactiveCandidateCount, $deferredUnifiedGroupMailboxCount, $profileSkippedForFallbackCount) -ForegroundColor DarkGray
             Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Graph report covered $($script:tenantStatsHash['PrimaryMailboxStats'].Count) mailboxes; fetching EXO stats for $($mailboxesNeedingStats.Count) missing/inactive." -ExportFileLocation $ExportDetails
 
             $allRemainingMBXStatsResult = Get-ExoMailboxStatisticsSafe -MailboxObjects $mailboxesNeedingStats -ProgressActivity "Gathering All Primary Mailbox Statistics" -ProgressId $primaryStatsProgressId
@@ -2255,8 +2403,8 @@ function Get-AllExchangeMailboxDetails {
             Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Primary mailbox stats step 2/3 (EXO fallback) completed in $exoFallbackPhaseSeconds sec; requested=$exoFallbackRequestedCount; returned=$exoFallbackReturnedCount; populated=$exoFilledCount." -ExportFileLocation $ExportDetails
         }
         else {
-            Write-Host "    Step 2/3 EXO fallback: skipped | no unresolved mailboxes" -ForegroundColor DarkGray
-            Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Primary mailbox stats step 2/3 (EXO fallback) skipped; no unresolved mailboxes." -ExportFileLocation $ExportDetails
+            Write-Host ("    Step 2/3 EXO fallback: skipped | no unresolved mailboxes (deferredGroups={0}, profileSkipped={1})" -f $deferredUnifiedGroupMailboxCount, $profileSkippedForFallbackCount) -ForegroundColor DarkGray
+            Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Primary mailbox stats step 2/3 (EXO fallback) skipped; no unresolved mailboxes. deferredUnifiedGroups=$deferredUnifiedGroupMailboxCount; profileSkipped=$profileSkippedForFallbackCount." -ExportFileLocation $ExportDetails
         }
 
         $finalStatsCount = $script:tenantStatsHash["PrimaryMailboxStats"].Count
@@ -2272,23 +2420,38 @@ function Get-AllExchangeMailboxDetails {
         $missingMailboxStatsCount = [Math]::Max(($totalMailboxes - $finalStatsCount), 0)
         $script:tenantStatsHash["PrimaryMailboxStatsCollectionSummary"] = [PSCustomObject]@{
             GraphReportRows        = [int]$graphReportRowCount
+            GraphUsablePrincipalRows = [int]$graphUsablePrincipalRowCount
+            GraphRowsWithoutPrincipal = [int]$graphRowsWithoutPrincipalCount
+            GraphRowsPotentiallyObscuredPrincipal = [int]$graphRowsPotentiallyObscuredPrincipalCount
+            GraphRowsDuplicatePrincipal = [int]$graphRowsDuplicatePrincipalCount
             GraphPopulated         = [int]$graphMatchedMailboxCount
+            ActiveMailboxes        = [int]$activeMailboxes.Count
+            ActiveMailboxMatchedByGraph = [int]$activeMailboxMatchedByGraphCount
+            ActiveMailboxesWithoutLookupKey = [int]$activeMailboxWithoutLookupKeyCount
+            ActiveMailboxLookupMiss = [int]$activeMailboxLookupMissCount
+            ActiveMailboxUnmatchedAfterGraph = [int]$activeMailboxUnmatchedAfterGraphCount
             ExoFallbackRequested   = [int]$exoFallbackRequestedCount
+            ExoFallbackRequestedActive = [int]$exoFallbackActiveCandidateCount
+            ExoFallbackRequestedInactive = [int]$exoFallbackInactiveCandidateCount
             ExoFallbackReturned    = [int]$exoFallbackReturnedCount
             ExoFallbackPopulated   = [int]$exoFilledCount
+            DeferredUnifiedGroupFallback = [int]$deferredUnifiedGroupMailboxCount
+            ProfileSkippedFallback = [int]$profileSkippedForFallbackCount
             GraphPhaseSeconds      = [double]$graphPhaseSeconds
             ExoFallbackPhaseSeconds = [double]$exoFallbackPhaseSeconds
             Populated              = [int]$finalStatsCount
             Missing                = [int]$missingMailboxStatsCount
             TotalMailboxes         = [int]$totalMailboxes
+            GraphCoverageWarning   = $graphCoverageWarning
         }
-        Write-Host ("  Primary mailbox stats source breakdown: Graph={0}, EXO fallback={1}, Missing={2}" -f $graphMatchedMailboxCount, $exoFilledCount, $missingMailboxStatsCount) -ForegroundColor DarkGray
-        Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Mailbox stats source breakdown: GraphReportRows=$graphReportRowCount; GraphPopulated=$graphMatchedMailboxCount; EXOFallbackRequested=$exoFallbackRequestedCount; EXOFallbackReturned=$exoFallbackReturnedCount; EXOFallbackPopulated=$exoFilledCount; Populated=$finalStatsCount; Missing=$missingMailboxStatsCount; TotalMailboxes=$totalMailboxes." -ExportFileLocation $ExportDetails
+        Write-Host ("  Primary mailbox stats source breakdown: Graph={0}, EXO fallback={1}, Missing={2}, ActiveUnmatchedAfterGraph={3}" -f $graphMatchedMailboxCount, $exoFilledCount, $missingMailboxStatsCount, $activeMailboxUnmatchedAfterGraphCount) -ForegroundColor DarkGray
+        Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Mailbox stats source breakdown: GraphReportRows=$graphReportRowCount; GraphUsablePrincipalRows=$graphUsablePrincipalRowCount; GraphRowsWithoutPrincipal=$graphRowsWithoutPrincipalCount; GraphRowsPotentiallyObscuredPrincipal=$graphRowsPotentiallyObscuredPrincipalCount; GraphRowsDuplicatePrincipal=$graphRowsDuplicatePrincipalCount; GraphPopulated=$graphMatchedMailboxCount; ActiveMailboxCount=$($activeMailboxes.Count); ActiveMailboxMatchedByGraph=$activeMailboxMatchedByGraphCount; ActiveMailboxWithoutLookupKey=$activeMailboxWithoutLookupKeyCount; ActiveMailboxLookupMiss=$activeMailboxLookupMissCount; ActiveMailboxUnmatchedAfterGraph=$activeMailboxUnmatchedAfterGraphCount; EXOFallbackRequested=$exoFallbackRequestedCount; EXOFallbackRequestedActive=$exoFallbackActiveCandidateCount; EXOFallbackRequestedInactive=$exoFallbackInactiveCandidateCount; EXOFallbackReturned=$exoFallbackReturnedCount; EXOFallbackPopulated=$exoFilledCount; DeferredUnifiedGroupFallback=$deferredUnifiedGroupMailboxCount; ProfileSkippedFallback=$profileSkippedForFallbackCount; Populated=$finalStatsCount; Missing=$missingMailboxStatsCount; TotalMailboxes=$totalMailboxes." -ExportFileLocation $ExportDetails
 
         # Pre-cache unified group mailbox stats so later unified-group collection can reuse this data.
         if ($shouldPreCacheUnifiedGroupStats) {
             $unifiedPreCacheStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
             try {
+                Write-Host "    Step 3/3 Unified group pre-cache: starting..." -ForegroundColor DarkGray
                 Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Pre-caching unified group mailbox stats into PrimaryMailboxStats." -ExportFileLocation $ExportDetails
                 $groupActivityLookup = Get-Office365GroupsActivityMailboxLookup
                 $groupActivityReportRows = if ($groupActivityLookup -and $groupActivityLookup.PSObject.Properties['Rows']) { [int]$groupActivityLookup.Rows } else { 0 }
@@ -15379,7 +15542,8 @@ try {
     $defaultOrganization = Get-AssessmentTenantOrganization
 } catch {}
 $defaultTenantDisplayName = if ($defaultOrganization -and $defaultOrganization.DisplayName) { $defaultOrganization.DisplayName } else { 'Tenant' }
-$profileFileTag = if ([string]::IsNullOrWhiteSpace($OutputProfile)) { 'Profile' } else { ($OutputProfile -replace '[^A-Za-z0-9_-]', '') }
+$profileFileTagSource = if ([string]::IsNullOrWhiteSpace($effectiveOutputProfileLabel)) { $OutputProfile } else { $effectiveOutputProfileLabel }
+$profileFileTag = if ([string]::IsNullOrWhiteSpace($profileFileTagSource)) { 'Profile' } else { ($profileFileTagSource -replace '[^A-Za-z0-9_-]', '') }
 $defaultReportFileName = ("{0} Tenant Discovery Report-{1}" -f $defaultTenantDisplayName, $profileFileTag)
 if ([string]::IsNullOrWhiteSpace($ExportPath)) {
     $ExportDetails = Get-ExportPath -FileName $defaultReportFileName
@@ -15391,17 +15555,17 @@ if ([string]::IsNullOrWhiteSpace($ExportPath)) {
 $global:AllDiscoveryErrors = New-Object System.Collections.Generic.List[pscustomobject]
 
 # Resolve collection depth and output behavior from the selected profile.
-Write-Host "Output profile: $OutputProfile (scope: $reportingMode)" -ForegroundColor Green
+Write-Host "Output profile: $effectiveOutputProfileLabel (scope: $reportingMode)" -ForegroundColor Green
 
 $script:CollectionDepthPolicy = Get-ArrayaCollectionDepthPolicy -ReportingMode ((Get-Culture).TextInfo.ToTitleCase($reportingMode))
 
-$collectSecureScoreMappings = ($profilePolicy.GenerateBestPracticesHtml -or $profilePolicy.GenerateWorkbook -or $profilePolicy.GenerateJson)
+$collectSecureScoreMappings = ($effectiveGenerateBestPracticesHtml -or $effectiveGenerateWorkbook -or $effectiveGenerateJson)
 if ($script:CollectionDepthPolicy.PSObject.Properties['CollectSecureScoreMappings']) {
     $script:CollectionDepthPolicy | Add-Member -MemberType NoteProperty -Name CollectSecureScoreMappings -Value ([bool]$collectSecureScoreMappings) -Force
 }
 
 # Tenant-to-tenant migration profile needs richer user licensing detail even in combined mode.
-if ($OutputProfile -eq 'TenantToTenantMigration') {
+if ($OutputProfile -eq 'TenantToTenantMigration' -or $effectiveOutputProfileLabel -match '(?i)\bTenantToTenantMigration\b') {
     $script:CollectionDepthPolicy | Add-Member -MemberType NoteProperty -Name CollectExtendedGraphEnrichment -Value $true -Force
 }
 
@@ -15414,28 +15578,30 @@ $script:ProfileCollectionPlan = [ordered]@{
     CollectSmtpRelayConfiguration    = $true
     CollectTeamsVoiceDetails         = $true
     CollectUnifiedGroups             = $true
-    BuildOwnershipGovernanceTables   = ($profilePolicy.GenerateTechnicalHtml -or $profilePolicy.GenerateBestPracticesHtml -or $profilePolicy.GenerateWorkbook -or $profilePolicy.GenerateJson)
-    BuildAssessmentReportTables      = ($profilePolicy.GenerateBestPracticesHtml -or $profilePolicy.GenerateWorkbook -or $profilePolicy.GenerateQuestionnaire -or $profilePolicy.GenerateJson)
-    BuildConfigurationSummaryTables  = [bool]$profilePolicy.GenerateJson
-    BuildLicenseClassificationMetadata = ($profilePolicy.GenerateWorkbook -or $profilePolicy.GenerateTechnicalHtml -or $profilePolicy.GenerateBestPracticesHtml -or $profilePolicy.GenerateQuestionnaire -or $profilePolicy.GenerateJson)
+    BuildOwnershipGovernanceTables   = ($effectiveGenerateTechnicalHtml -or $effectiveGenerateBestPracticesHtml -or $effectiveGenerateWorkbook -or $effectiveGenerateJson)
+    BuildAssessmentReportTables      = ($effectiveGenerateBestPracticesHtml -or $effectiveGenerateWorkbook -or $effectiveGenerateQuestionnaire -or $effectiveGenerateJson)
+    BuildConfigurationSummaryTables  = [bool]$effectiveGenerateJson
+    BuildLicenseClassificationMetadata = ($effectiveGenerateWorkbook -or $effectiveGenerateTechnicalHtml -or $effectiveGenerateBestPracticesHtml -or $effectiveGenerateQuestionnaire -or $effectiveGenerateJson)
 }
 
-switch ($OutputProfile) {
-    'ExecutiveLevel' {
-        # Best-practices only profile: trim technical/deep transport collectors.
-        $script:ProfileCollectionPlan.CollectExchangeRecipients = $false
-        $script:ProfileCollectionPlan.CollectExchangeGroups = $false
-        $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors = $false
-        $script:ProfileCollectionPlan.CollectPublicFolders = $false
-        $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering = $false
-        $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration = $false
-        $script:ProfileCollectionPlan.CollectTeamsVoiceDetails = $false
-        $script:ProfileCollectionPlan.CollectUnifiedGroups = $false
+if (-not $isMergedOutputProfileSelection) {
+    switch ($OutputProfile) {
+        'ExecutiveLevel' {
+            # Best-practices only profile: trim technical/deep transport collectors.
+            $script:ProfileCollectionPlan.CollectExchangeRecipients = $false
+            $script:ProfileCollectionPlan.CollectExchangeGroups = $false
+            $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors = $false
+            $script:ProfileCollectionPlan.CollectPublicFolders = $false
+            $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering = $false
+            $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration = $false
+            $script:ProfileCollectionPlan.CollectTeamsVoiceDetails = $false
+            $script:ProfileCollectionPlan.CollectUnifiedGroups = $false
+        }
     }
 }
 
 Write-Log -Type INFO -Message ("Collection depth policy: Mode={0}; EntraDeep={1}; GroupCounts={2}; GroupLicenses={3}; SSOAppDetails={4}; ExtendedGraphEnrichment={5}; SecureScoreMappings={6}" -f $script:CollectionDepthPolicy.ReportingMode, $script:CollectionDepthPolicy.CollectEntraGroupDeepDetails, $script:CollectionDepthPolicy.CollectEntraGroupMemberCounts, $script:CollectionDepthPolicy.CollectEntraGroupLicenseChecks, $script:CollectionDepthPolicy.CollectSsoApplicationDetails, $script:CollectionDepthPolicy.CollectExtendedGraphEnrichment, $script:CollectionDepthPolicy.CollectSecureScoreMappings) -ExportFileLocation $ExportDetails
-Write-Log -Type INFO -Message ("Profile collection plan ({0}): ExchangeRecipients={1}; ExchangeGroups={2}; MailFlow={3}; PublicFolders={4}; SpamFiltering={5}; SMTPRelay={6}; TeamsVoice={7}; UnifiedGroups={8}; OwnershipTables={9}; AssessmentTables={10}; ConfigSummaryTables={11}; LicenseMetadata={12}" -f $OutputProfile, $script:ProfileCollectionPlan.CollectExchangeRecipients, $script:ProfileCollectionPlan.CollectExchangeGroups, $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors, $script:ProfileCollectionPlan.CollectPublicFolders, $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering, $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration, $script:ProfileCollectionPlan.CollectTeamsVoiceDetails, $script:ProfileCollectionPlan.CollectUnifiedGroups, $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables, $script:ProfileCollectionPlan.BuildAssessmentReportTables, $script:ProfileCollectionPlan.BuildConfigurationSummaryTables, $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata) -ExportFileLocation $ExportDetails
+Write-Log -Type INFO -Message ("Profile collection plan ({0}): ExchangeRecipients={1}; ExchangeGroups={2}; MailFlow={3}; PublicFolders={4}; SpamFiltering={5}; SMTPRelay={6}; TeamsVoice={7}; UnifiedGroups={8}; OwnershipTables={9}; AssessmentTables={10}; ConfigSummaryTables={11}; LicenseMetadata={12}" -f $effectiveOutputProfileLabel, $script:ProfileCollectionPlan.CollectExchangeRecipients, $script:ProfileCollectionPlan.CollectExchangeGroups, $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors, $script:ProfileCollectionPlan.CollectPublicFolders, $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering, $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration, $script:ProfileCollectionPlan.CollectTeamsVoiceDetails, $script:ProfileCollectionPlan.CollectUnifiedGroups, $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables, $script:ProfileCollectionPlan.BuildAssessmentReportTables, $script:ProfileCollectionPlan.BuildConfigurationSummaryTables, $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata) -ExportFileLocation $ExportDetails
 
 #Hash Table to hold final report data
 $script:tenantStatsHash = @{}

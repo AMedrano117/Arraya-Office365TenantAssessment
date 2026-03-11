@@ -13,7 +13,7 @@ param(
     [string]$ClientSecret,
     [Parameter(Mandatory = $false)]
     [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
-    [string]$OutputProfile = 'SolutionsEngineer',
+    [string[]]$OutputProfile = @('SolutionsEngineer'),
     [Parameter(Mandatory = $false)]
     [switch]$UseGraphFallback,
     [Parameter(Mandatory = $false)]
@@ -109,16 +109,24 @@ switch ($Action) {
     'M365' {
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
         $exportPathInput = Read-Host "Export path (.xlsx or folder) - default $defaultOutputRoot"
-        $selectedOutputProfile = $OutputProfile
+        $selectedOutputProfiles = @($OutputProfile)
         if (-not $PSBoundParameters.ContainsKey('OutputProfile')) {
-            $outputProfileInput = Read-Host 'Output profile (Presales, SolutionsEngineer, ExecutiveLevel, TenantToTenantMigration, Geek, Machine) - default SolutionsEngineer'
+            $outputProfileInput = Read-Host 'Output profile(s) (Presales, SolutionsEngineer, ExecutiveLevel, TenantToTenantMigration, Geek, Machine) - comma-separated, default SolutionsEngineer'
             if (-not [string]::IsNullOrWhiteSpace($outputProfileInput)) {
-                $selectedOutputProfile = $outputProfileInput
+                $selectedOutputProfiles = @(
+                    $outputProfileInput -split ',' |
+                        ForEach-Object { $_.Trim() } |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                )
             }
         }
 
+        if (-not $selectedOutputProfiles -or $selectedOutputProfiles.Count -eq 0) {
+            $selectedOutputProfiles = @('SolutionsEngineer')
+        }
+
         $invokeParams = @{}
-        $invokeParams.OutputProfile = $selectedOutputProfile
+        $invokeParams.OutputProfile = $selectedOutputProfiles
         $invokeParams.ExportPath = if (-not [string]::IsNullOrWhiteSpace($exportPathInput)) { $exportPathInput } else { $defaultOutputRoot }
         if ($SkipPdfReport) { $invokeParams.SkipPdfReport = $true }
         if ($SkipJsonReport) { $invokeParams.SkipJsonReport = $true }

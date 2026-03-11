@@ -75,7 +75,7 @@ function Invoke-M365TenantAssessment {
         [string]$ExportPath,
         [Parameter(Mandatory = $false)]
         [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
-        [string]$OutputProfile = 'SolutionsEngineer',
+        [string[]]$OutputProfile = @('SolutionsEngineer'),
         [Parameter(Mandatory = $false)]
         [switch]$SkipHtmlReport,
         [Parameter(Mandatory = $false)]
@@ -95,12 +95,96 @@ function Invoke-M365TenantAssessment {
     if (-not (Get-Command -Name 'Get-ArrayaAssessmentOutputProfilePolicy' -ErrorAction SilentlyContinue)) {
         Import-AssessmentRunnerDependencies
     }
-    $null = Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile $OutputProfile
+
+    $selectedOutputProfiles = New-Object System.Collections.Generic.List[string]
+    $selectedOutputProfileSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($rawProfile in @($OutputProfile)) {
+        if ([string]::IsNullOrWhiteSpace([string]$rawProfile)) {
+            continue
+        }
+
+        foreach ($token in ([string]$rawProfile -split ',')) {
+            $profile = $token.Trim()
+            if ([string]::IsNullOrWhiteSpace($profile)) {
+                continue
+            }
+
+            # Validate against current profile policy surface.
+            $null = Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile $profile
+            if ($selectedOutputProfileSet.Add($profile)) {
+                $selectedOutputProfiles.Add($profile)
+            }
+        }
+    }
+
+    if ($selectedOutputProfiles.Count -eq 0) {
+        $selectedOutputProfiles.Add('SolutionsEngineer')
+    }
+
+    $selectedPolicies = @()
+    foreach ($profile in $selectedOutputProfiles) {
+        $selectedPolicies += Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile $profile
+    }
+
+    $reportingModeRank = @{
+        'Minimum' = 1
+        'Combined' = 2
+        'Geek' = 3
+    }
+    $resolvedReportingMode = 'Minimum'
+    $resolvedReportingRank = 0
+    foreach ($policy in $selectedPolicies) {
+        $mode = [string]$policy.ReportingMode
+        if (-not $reportingModeRank.ContainsKey($mode)) {
+            continue
+        }
+
+        $rank = [int]$reportingModeRank[$mode]
+        if ($rank -gt $resolvedReportingRank) {
+            $resolvedReportingRank = $rank
+            $resolvedReportingMode = $mode
+        }
+    }
+
+    $mergedGenerateWorkbook = $false
+    $mergedGenerateTechnicalHtml = $false
+    $mergedGenerateBestPracticesHtml = $false
+    $mergedGenerateQuestionnaire = $false
+    $mergedGenerateJson = $false
+    $mergedGeneratePdf = $false
+    foreach ($policy in $selectedPolicies) {
+        $mergedGenerateWorkbook = $mergedGenerateWorkbook -or [bool]$policy.GenerateWorkbook
+        $mergedGenerateTechnicalHtml = $mergedGenerateTechnicalHtml -or [bool]$policy.GenerateTechnicalHtml
+        $mergedGenerateBestPracticesHtml = $mergedGenerateBestPracticesHtml -or [bool]$policy.GenerateBestPracticesHtml
+        $mergedGenerateQuestionnaire = $mergedGenerateQuestionnaire -or [bool]$policy.GenerateQuestionnaire
+        $mergedGenerateJson = $mergedGenerateJson -or [bool]$policy.GenerateJson
+        $mergedGeneratePdf = $mergedGeneratePdf -or [bool]$policy.GeneratePdf
+    }
+
+    $primaryProfile = [string]$selectedOutputProfiles[0]
+    $profileLabel = if ($selectedOutputProfiles.Count -gt 1) {
+        "Merged({0})" -f (($selectedOutputProfiles.ToArray() -join '+'))
+    } else {
+        $primaryProfile
+    }
 
     $scriptPath = Get-LegacyScriptPath -Name 'Get-FullTenantReportDetails.ps1'
+    if ($selectedOutputProfiles.Count -gt 1) {
+        Write-Host ("Running merged profile pass for: {0}" -f ($selectedOutputProfiles.ToArray() -join ', ')) -ForegroundColor Cyan
+        Write-Host ("Merged reporting mode: {0}" -f $resolvedReportingMode) -ForegroundColor DarkCyan
+    }
+
     $invokeParams = @{}
     if ($PSBoundParameters.ContainsKey('ExportPath')) { $invokeParams.ExportPath = $ExportPath }
-    if ($PSBoundParameters.ContainsKey('OutputProfile')) { $invokeParams.OutputProfile = $OutputProfile }
+    $invokeParams.OutputProfile = $primaryProfile
+    $invokeParams.OutputProfileLabel = $profileLabel
+    $invokeParams.ReportingModeOverride = $resolvedReportingMode
+    $invokeParams.GenerateWorkbookOverride = $mergedGenerateWorkbook
+    $invokeParams.GenerateTechnicalHtmlOverride = $mergedGenerateTechnicalHtml
+    $invokeParams.GenerateBestPracticesHtmlOverride = $mergedGenerateBestPracticesHtml
+    $invokeParams.GenerateQuestionnaireOverride = $mergedGenerateQuestionnaire
+    $invokeParams.GenerateJsonOverride = $mergedGenerateJson
+    $invokeParams.GeneratePdfOverride = $mergedGeneratePdf
     if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
     if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
     if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
