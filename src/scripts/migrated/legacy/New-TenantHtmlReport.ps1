@@ -240,6 +240,20 @@ function New-TenantAssessmentHtmlReport {
         return "<ul class='takeaway-list'>$($items -join '')</ul>"
     }
 
+    function Convert-ToAreaAnchor {
+        param([string]$AreaName)
+
+        if ([string]::IsNullOrWhiteSpace($AreaName)) {
+            return 'findings-uncategorized'
+        }
+
+        $normalized = ($AreaName.ToLowerInvariant() -replace '[^a-z0-9]+', '-').Trim('-')
+        if ([string]::IsNullOrWhiteSpace($normalized)) {
+            return 'findings-uncategorized'
+        }
+        return "findings-$normalized"
+    }
+
     $bestPractices = ConvertTo-AssessmentArray -Key 'BestPractices'
     $findings = ConvertTo-AssessmentArray -Key 'BestPracticeFindings'
     $secureScoreActions = ConvertTo-AssessmentArray -Key 'SecureScoreActions'
@@ -277,7 +291,7 @@ function New-TenantAssessmentHtmlReport {
 
     $bestPracticeRows = @(
         $bestPractices |
-            Select-Object Area, Status, PrimaryFinding, RecommendedAction
+            Select-Object Area, Status, CriticalFindings, WarningFindings, InfoFindings, TotalFindings, PrimaryFinding, RecommendedAction
     )
     $findingRows = @(
         $findings |
@@ -289,7 +303,7 @@ function New-TenantAssessmentHtmlReport {
                     default { 9 }
                 }
             } }, Priority |
-            Select-Object Severity, Area, Message, RecommendedAction
+            Select-Object Severity, Area, Category, Message, RecommendedAction, Priority
     )
     $secureScoreRows = @(
         $secureScoreActions |
@@ -321,6 +335,67 @@ function New-TenantAssessmentHtmlReport {
     )
 
     $displayFindingRows = @($findingRows)
+    $groupedFindingAreas = @(
+        $displayFindingRows |
+            Group-Object Area |
+            Sort-Object Name |
+            ForEach-Object {
+                $areaRows = @(
+                    $_.Group |
+                        Sort-Object @{ Expression = {
+                            switch ([string]$_.Severity) {
+                                'Risk' { 1 }
+                                'Warning' { 2 }
+                                'Info' { 3 }
+                                default { 9 }
+                            }
+                        } }, Priority
+                )
+                $areaName = if ([string]::IsNullOrWhiteSpace([string]$_.Name)) { 'Uncategorized' } else { $_.Name }
+                [PSCustomObject]@{
+                    Area = $areaName
+                    Anchor = Convert-ToAreaAnchor -AreaName $areaName
+                    RiskCount = @($areaRows | Where-Object { $_.Severity -eq 'Risk' }).Count
+                    WarningCount = @($areaRows | Where-Object { $_.Severity -eq 'Warning' }).Count
+                    InfoCount = @($areaRows | Where-Object { $_.Severity -eq 'Info' }).Count
+                    TotalCount = $areaRows.Count
+                    Rows = $areaRows
+                }
+            }
+    )
+
+    $groupedFindingNavHtml = if ($groupedFindingAreas.Count -gt 0) {
+        $items = foreach ($areaGroup in $groupedFindingAreas) {
+            $areaText = Encode-AssessmentHtml $areaGroup.Area
+            "<a class='area-chip' href='#$($areaGroup.Anchor)'><span class='area-chip-name'>$areaText</span><span class='area-chip-count'>$($areaGroup.TotalCount)</span></a>"
+        }
+        "<div class='area-chip-grid'>$($items -join '')</div>"
+    } else {
+        "<div class='empty-state'>No findings were generated for this run.</div>"
+    }
+
+    $groupedFindingDetailsHtml = if ($groupedFindingAreas.Count -gt 0) {
+        $blocks = foreach ($areaGroup in $groupedFindingAreas) {
+            $areaText = Encode-AssessmentHtml $areaGroup.Area
+            $areaTable = New-AssessmentTable -Rows $areaGroup.Rows -Columns @('Severity','Category','Message','RecommendedAction')
+            @"
+<div class='finding-area-block' id='$($areaGroup.Anchor)'>
+    <div class='finding-area-head'>
+        <h3>$areaText</h3>
+        <div class='finding-area-counts'>
+            <span class='pill pill-critical'>Risk: $($areaGroup.RiskCount)</span>
+            <span class='pill pill-warning'>Warning: $($areaGroup.WarningCount)</span>
+            <span class='pill pill-neutral'>Info: $($areaGroup.InfoCount)</span>
+        </div>
+    </div>
+    $areaTable
+</div>
+"@
+        }
+        $blocks -join ''
+    } else {
+        ''
+    }
 
     function Get-RoadmapPhaseFromSeverity {
         param([string]$Severity)
@@ -486,6 +561,15 @@ function New-TenantAssessmentHtmlReport {
         .takeaway-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font: 700 14px/1.5 Segoe UI, Arial, sans-serif; }
         .takeaway-body { font: 500 13px/1.6 Segoe UI, Arial, sans-serif; color: var(--ink); }
         .takeaway-action { margin-top: 8px; font: 600 12px/1.6 Segoe UI, Arial, sans-serif; color: var(--accent); }
+        .area-chip-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 16px; }
+        .area-chip { display: flex; justify-content: space-between; align-items: center; gap: 12px; border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; text-decoration: none; background: #fffaf2; color: var(--ink); font: 600 12px/1.4 Segoe UI, Arial, sans-serif; }
+        .area-chip:hover { border-color: #c9bba4; background: #fff6e9; }
+        .area-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .area-chip-count { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; height: 22px; border-radius: 999px; background: #f2e7d4; color: #7a4f10; font-weight: 700; padding: 0 8px; }
+        .finding-area-block { margin-top: 18px; border: 1px solid var(--line); border-radius: 16px; padding: 14px; background: #fffdf8; }
+        .finding-area-head { display: flex; justify-content: space-between; gap: 10px; align-items: center; margin-bottom: 4px; flex-wrap: wrap; }
+        .finding-area-head h3 { margin: 0; font-size: 18px; }
+        .finding-area-counts { display: flex; gap: 8px; flex-wrap: wrap; }
         .action-link { color: var(--accent); text-decoration: none; font-weight: 600; }
         .action-link:hover { text-decoration: underline; }
         .methodology-note { margin-top: 16px; padding: 16px 18px; border-radius: 16px; background: #f8f3e8; border: 1px solid var(--line); font: 500 13px/1.7 Segoe UI, Arial, sans-serif; color: var(--muted); }
@@ -573,8 +657,8 @@ function New-TenantAssessmentHtmlReport {
                         <h2>Best Practices</h2>
                     </div>
                 </div>
-            <p class="note">One row per assessment area. This is the primary summary view for overall tenant posture.</p>
-            $(New-AssessmentTable -Rows $bestPracticeRows -Columns @('Area','Status','PrimaryFinding','RecommendedAction'))
+            <p class="note">One row per assessment area with rolled-up severity counts and top signal categories for overall tenant posture.</p>
+            $(New-AssessmentTable -Rows $bestPracticeRows -Columns @('Area','Status','CriticalFindings','WarningFindings','InfoFindings','TotalFindings','PrimaryFinding','RecommendedAction'))
         </div>
 
         <div class="section">
@@ -595,8 +679,9 @@ function New-TenantAssessmentHtmlReport {
                     <h2>Best Practice Findings</h2>
                 </div>
             </div>
-            <p class="note">Showing $($displayFindingRows.Count) detailed findings.</p>
-            $(New-AssessmentTable -Rows $displayFindingRows -Columns @('Severity','Area','Message','RecommendedAction'))
+            <p class="note">Showing $($displayFindingRows.Count) detailed findings across $($groupedFindingAreas.Count) assessment area(s), grouped for faster review.</p>
+            $groupedFindingNavHtml
+            $groupedFindingDetailsHtml
         </div>
 
         <div class="section">

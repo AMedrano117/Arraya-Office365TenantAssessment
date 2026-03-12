@@ -1,0 +1,55 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$AssessmentJsonPath,
+    [Parameter(Mandatory = $false)]
+    [string]$ExportPath,
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
+    [string[]]$OutputProfile = @('SolutionsEngineer'),
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipHtmlReport,
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipPdfReport,
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipJsonReport
+)
+
+function Resolve-ArrayaRepoRoot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$StartPath
+    )
+
+    $candidate = (Resolve-Path -Path $StartPath).Path
+    while ($true) {
+        $runnerManifestPath = Join-Path $candidate 'src\modules\Arraya.M365.AssessmentRunner\Arraya.M365.AssessmentRunner.psd1'
+        if (Test-Path -Path $runnerManifestPath) {
+            return $candidate
+        }
+
+        $parent = Split-Path -Path $candidate -Parent
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $candidate) {
+            break
+        }
+        $candidate = $parent
+    }
+
+    throw "Could not resolve repository root from: $StartPath"
+}
+
+$repoRoot = Resolve-ArrayaRepoRoot -StartPath $PSScriptRoot
+$runnerManifestPath = Join-Path $repoRoot 'src\modules\Arraya.M365.AssessmentRunner\Arraya.M365.AssessmentRunner.psd1'
+if (-not (Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction SilentlyContinue)) {
+    Import-Module -Name $runnerManifestPath -ErrorAction Stop
+}
+
+$invokeParams = @{ AssessmentJsonPath = $AssessmentJsonPath }
+if ($PSBoundParameters.ContainsKey('ExportPath')) { $invokeParams.ExportPath = $ExportPath }
+if ($PSBoundParameters.ContainsKey('OutputProfile')) { $invokeParams.OutputProfile = $OutputProfile }
+if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
+if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
+if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
+
+Invoke-M365TenantAssessmentExport @invokeParams

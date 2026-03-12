@@ -41,6 +41,33 @@ Examples:
   -OutputProfile SolutionsEngineer,ExecutiveLevel
 ```
 
+## Collection Vs Export
+The M365 workflow now supports explicit separation between data collection and artifact export:
+
+- `M365Collect`: runs discovery/collection only and writes a JSON snapshot.
+- `M365Export`: loads a previously collected JSON snapshot and generates artifacts without re-collecting tenant data.
+- `M365`: legacy combined path (collect + export in one run) remains available.
+- each run also writes a `*.manifest.json` artifact index next to the primary export filename.
+- JSON snapshots now use a versioned V2 contract with explicit sections: `Metadata`, `CollectionPlan`, `Data`, `Derived`, and `Diagnostics`.
+- Import is backward compatible with older V1 snapshots through an in-memory adapter.
+
+Examples:
+
+```powershell
+# Collect data only (JSON snapshot)
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365Collect `
+  -TenantId '<tenant-guid>' `
+  -ClientId '<app-id>' `
+  -CertificateThumbprint '<cert-thumbprint>' `
+  -OutputProfile SolutionsEngineer
+
+# Export artifacts from an existing JSON snapshot
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365Export `
+  -OutputProfile ExecutiveLevel
+```
+
 ## Assessment Outputs
 For a Microsoft 365 tenant assessment run, the primary deliverables are:
 
@@ -93,8 +120,10 @@ If a supported browser is unavailable, the workbook, questionnaire, and HTML out
 ## Primary Entry Scripts
 - `src/scripts/operations/Start-M365TenantAssessment.ps1`
 - `src/scripts/assessments/tenant-wide/Invoke-M365FullTenantAssessment.ps1`
+- `src/scripts/assessments/tenant-wide/Invoke-M365TenantDataCollection.ps1`
 - `src/scripts/assessments/identity/Invoke-ActiveDirectoryTenantAssessment.ps1`
 - `src/scripts/assessments/tenant-wide/Invoke-M365GraphActivityReport.ps1`
+- `src/scripts/reporting/Invoke-M365TenantAssessmentExport.ps1`
 - `src/scripts/reporting/Invoke-M365TenantImprovementPlan.ps1`
 - `src/scripts/reporting/Invoke-M365TenantAssessmentComparison.ps1`
 
