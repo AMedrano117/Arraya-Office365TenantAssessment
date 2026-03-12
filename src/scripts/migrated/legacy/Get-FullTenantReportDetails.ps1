@@ -130,7 +130,13 @@ param(
     [Parameter(Mandatory = $false)]
     [bool]$GenerateJsonOverride,
     [Parameter(Mandatory = $false)]
-    [bool]$GeneratePdfOverride
+    [bool]$GeneratePdfOverride,
+    [Parameter(Mandatory = $false)]
+    [switch]$DataCollectionOnly,
+    [Parameter(Mandatory = $false)]
+    [switch]$ExportOnly,
+    [Parameter(Mandatory = $false)]
+    [string]$TenantStatsJsonPath
 )
 
 # Strict-mode safety: ensure legacy Graph globals exist even when SDK auth is used.
@@ -156,6 +162,22 @@ $effectiveGeneratePdf = $false
 $reportingMode = 'minimum'
 $script:EffectiveOutputProfileLabel = $OutputProfile
 $isMergedOutputProfileSelection = $false
+$runExportOnly = $ExportOnly.IsPresent
+$runCollectionOnly = $DataCollectionOnly.IsPresent
+$script:LoadedTenantSnapshot = $null
+$script:CurrentGraphMode = 'UNKNOWN'
+
+if ($runCollectionOnly -and $runExportOnly) {
+    throw "Data collection only mode and export only mode cannot be used together."
+}
+
+if ($runExportOnly -and [string]::IsNullOrWhiteSpace($TenantStatsJsonPath)) {
+    throw "Export only mode requires -TenantStatsJsonPath."
+}
+
+if ($runCollectionOnly -and $SkipJsonReport.IsPresent) {
+    throw "Data collection only mode requires JSON output. Remove -SkipJsonReport."
+}
 
 $officeModuleLoaderPath = Join-Path -Path $PSScriptRoot -ChildPath 'Import-Office365CustomLocal.ps1'
 if (-not (Test-Path -Path $officeModuleLoaderPath)) {
@@ -184,7 +206,15 @@ $requiredCommonCommands = @(
     'Invoke-ArrayaCollectionStepSafe',
     'Export-ArrayaErrorReports',
     'Get-ArrayaCollectionDepthPolicy',
-    'Convert-ArrayaObjectToArray'
+    'Convert-ArrayaObjectToArray',
+    'New-ArrayaTenantSnapshot',
+    'Update-ArrayaTenantSnapshot',
+    'Test-ArrayaTenantSnapshot',
+    'Convert-ArrayaLegacyTenantStatsToSnapshot',
+    'Convert-ArrayaSnapshotToLegacyTenantStatsHash',
+    'Import-ArrayaTenantSnapshot',
+    'Export-ArrayaTenantSnapshot',
+    'Write-ArrayaAssessmentArtifactManifest'
 )
 $missingCommonCommands = @(
     $requiredCommonCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
@@ -247,6 +277,15 @@ else {
     [bool]$profilePolicy.GeneratePdf
 }
 
+if ($runCollectionOnly) {
+    $effectiveGenerateWorkbook = $false
+    $effectiveGenerateTechnicalHtml = $false
+    $effectiveGenerateBestPracticesHtml = $false
+    $effectiveGenerateQuestionnaire = $false
+    $effectiveGenerateJson = $true
+    $effectiveGeneratePdf = $false
+}
+
 $effectiveSkipWorkbook = (-not $effectiveGenerateWorkbook)
 $effectiveSkipBestPracticesHtml = (-not $effectiveGenerateBestPracticesHtml)
 $effectiveSkipQuestionnaire = (-not $effectiveGenerateQuestionnaire)
@@ -255,18 +294,8 @@ $effectiveSkipPdfReport = (-not $effectiveGeneratePdf) -or $SkipPdfReport.IsPres
 $effectiveSkipJsonReport = (-not $effectiveGenerateJson) -or $SkipJsonReport.IsPresent
 
 $tenantHtmlReportPath = Join-Path -Path $PSScriptRoot -ChildPath 'New-TenantHtmlReport.ps1'
-if (Test-Path $tenantHtmlReportPath) {
-    . $tenantHtmlReportPath
-} else {
-    Write-Warning "Optional HTML helper script not found: $tenantHtmlReportPath. Built-in HTML generation remains available, but PDF export helpers will be unavailable."
-}
-
 $tenantQuestionnairePath = Join-Path -Path $PSScriptRoot -ChildPath 'Export-TenantToTenantQuestionnaireMarkdown.ps1'
-if (Test-Path $tenantQuestionnairePath) {
-    . $tenantQuestionnairePath
-} else {
-    Write-Warning "Optional questionnaire helper script not found: $tenantQuestionnairePath. Questionnaire export will be skipped."
-}
+$tenantExportPipelinePath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\reporting\Invoke-M365TenantAssessmentExportPipeline.ps1'))
 
 ########################################################
 # Functions
@@ -545,6 +574,86 @@ function Write-ConsoleArtifactSummary {
     }
 }
 
+$script:ImportExcelReady = $false
+$script:TenantHtmlHelpersLoaded = $false
+$script:TenantQuestionnaireHelperLoaded = $false
+
+function Ensure-ImportExcelReady {
+    [CmdletBinding()]
+    param()
+
+    if ($script:ImportExcelReady) {
+        return
+    }
+
+    if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
+        Install-Module -Name ImportExcel -Scope CurrentUser -Force -ErrorAction Stop
+    }
+
+    Import-Module ImportExcel -ErrorAction Stop
+    $script:ImportExcelReady = $true
+}
+
+function Ensure-TenantHtmlHelpersLoaded {
+    [CmdletBinding()]
+    param()
+
+    if ($script:TenantHtmlHelpersLoaded) {
+        return
+    }
+
+    if (-not (Test-Path -Path $tenantHtmlReportPath)) {
+        Write-Warning "Optional HTML helper script not found: $tenantHtmlReportPath. Built-in technical HTML generation remains available, but PDF export helpers may be unavailable."
+        return
+    }
+
+    . $tenantHtmlReportPath
+    $script:TenantHtmlHelpersLoaded = $true
+}
+
+function Ensure-TenantQuestionnaireHelperLoaded {
+    [CmdletBinding()]
+    param()
+
+    if ($script:TenantQuestionnaireHelperLoaded) {
+        return
+    }
+
+    if (-not (Test-Path -Path $tenantQuestionnairePath)) {
+        Write-Warning "Optional questionnaire helper script not found: $tenantQuestionnairePath. Questionnaire export will be skipped."
+        return
+    }
+
+    . $tenantQuestionnairePath
+    $script:TenantQuestionnaireHelperLoaded = $true
+}
+
+function Write-AssessmentArtifactManifest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$BaseExportPath,
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Artifacts,
+        [Parameter(Mandatory)]
+        [string]$OutputProfileLabel,
+        [Parameter(Mandatory)]
+        [string]$ReportingMode,
+        [Parameter(Mandatory)]
+        [bool]$CollectionOnly,
+        [Parameter(Mandatory)]
+        [bool]$ExportOnly
+    )
+
+    return Write-ArrayaAssessmentArtifactManifest `
+        -BaseExportPath $BaseExportPath `
+        -Artifacts $Artifacts `
+        -OutputProfileLabel $OutputProfileLabel `
+        -ReportingMode $ReportingMode `
+        -CollectionOnly $CollectionOnly `
+        -ExportOnly $ExportOnly
+}
+
 function Get-CurrentProcessMemorySnapshot {
     [CmdletBinding()]
     param()
@@ -747,6 +856,8 @@ function Write-CollectorInventoryMatrix {
         [PSCustomObject]@{ Collector = 'Secure Score'; Key = 'SecuritySecureScore'; Source = 'Graph'; Consumers = 'Workbook, BestPractices, HTML'; Count = 0 }
         [PSCustomObject]@{ Collector = 'Secure Score Actions'; Key = 'SecureScoreActions'; Source = 'Graph'; Consumers = 'Workbook, BestPractices'; Count = 0 }
         [PSCustomObject]@{ Collector = 'License SKUs'; Key = 'LicenseSKUs'; Source = 'Graph'; Consumers = 'Workbook, BestPractices, HTML'; Count = 0 }
+        [PSCustomObject]@{ Collector = 'Email Activity Top Senders'; Key = 'EmailActivityTopSenders'; Source = 'Graph'; Consumers = 'Workbook, HTML'; Count = 0 }
+        [PSCustomObject]@{ Collector = 'Email Activity Top Receivers'; Key = 'EmailActivityTopReceivers'; Source = 'Graph'; Consumers = 'Workbook, HTML'; Count = 0 }
     )
 
     foreach ($entry in $inventory) {
@@ -1691,6 +1802,7 @@ function Export-HashTableToExcel {
         'SpamFilteringSummary',
         'FederationSummary',
         'MfaRegistrationSummary',
+        'EmailActivitySummary',
         'PrimaryMailboxStatsCollectionSummary',
         'UnifiedGroupMailboxStatsCollectionSummary',
         'PrimaryMailboxStatsCollectionSu',
@@ -1727,7 +1839,7 @@ function Export-HashTableToExcel {
         "Users", "UserFullDetails", "DeviceDetails",
 
         # Mailboxes
-        "AllMailboxes", "PrimaryMailboxStats", "MailboxFullDetails", "ArchiveMailboxes", "ArchiveMailboxStats", "LitigationHoldMailboxes", "InactiveMailboxes", "InactiveMailboxDetails", "NonUserMailboxes", "AllRecipients",
+        "AllMailboxes", "PrimaryMailboxStats", "MailboxFullDetails", "ArchiveMailboxes", "ArchiveMailboxStats", "LitigationHoldMailboxes", "InactiveMailboxes", "InactiveMailboxDetails", "EmailActivityTopSenders", "EmailActivityTopReceivers", "NonUserMailboxes", "AllRecipients",
 
         # Groups
         "AllExchangeGroups", "UnifiedGroups", "EntraIDGroups",
@@ -2189,6 +2301,18 @@ function Get-AllExchangeMailboxDetails {
         $script:tenantStatsHash["PrimaryMailboxStats"] = @{}
         $script:MailboxUsageGraphLookup = @{}
         $activeMailboxes = $script:tenantStatsHash['AllMailboxes'].Values | Where-Object { $_.IsInactiveMailbox -ne $true }
+        $graphLikelyEligibleMailboxCount = @(
+            $activeMailboxes | Where-Object {
+                $_.PSObject.Properties['RecipientTypeDetails'] -and
+                [string]$_.RecipientTypeDetails -eq 'UserMailbox'
+            }
+        ).Count
+        $activeMailboxTypeBreakdown = @(
+            $activeMailboxes |
+                Group-Object -Property RecipientTypeDetails |
+                Sort-Object -Property Count -Descending |
+                ForEach-Object { "{0}={1}" -f $_.Name, $_.Count }
+        ) -join '; '
         $activeMailboxUnmatchedAfterGraphCount = @($activeMailboxes).Count
         $graphStatsCount = 0
         $graphReportRowCount = 0
@@ -2312,11 +2436,8 @@ function Get-AllExchangeMailboxDetails {
             }
         }
         Write-Host ("    Step 1/3 Graph mailbox usage: {0}s | rows={1}, usable={2}, matched={3}/{4}, unresolvedActive={5}" -f $graphPhaseSeconds, $graphReportRowCount, $graphUsablePrincipalRowCount, $graphMatchedMailboxCount, $activeMailboxes.Count, $activeMailboxUnmatchedAfterGraphCount) -ForegroundColor DarkGray
-        Write-Host ("      Graph principal diagnostics: missingPrincipalRows={0}, nonUpnRows={1}, duplicatePrincipalRows={2}, activeWithoutLookupKey={3}, activeLookupMiss={4}" -f $graphRowsWithoutPrincipalCount, $graphRowsPotentiallyObscuredPrincipalCount, $graphRowsDuplicatePrincipalCount, $activeMailboxWithoutLookupKeyCount, $activeMailboxLookupMissCount) -ForegroundColor DarkGray
-        if (-not [string]::IsNullOrWhiteSpace($graphCoverageWarning)) {
-            Write-Host ("      Warning: {0}" -f $graphCoverageWarning) -ForegroundColor Yellow
-        }
         Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Primary mailbox stats step 1/3 (Graph mailbox usage) completed in $graphPhaseSeconds sec; reportRows=$graphReportRowCount; usablePrincipalRows=$graphUsablePrincipalRowCount; missingPrincipalRows=$graphRowsWithoutPrincipalCount; nonUpnRows=$graphRowsPotentiallyObscuredPrincipalCount; duplicatePrincipalRows=$graphRowsDuplicatePrincipalCount; activeMailboxCount=$($activeMailboxes.Count); activeMatched=$activeMailboxMatchedByGraphCount; activeWithoutLookupKey=$activeMailboxWithoutLookupKeyCount; activeLookupMiss=$activeMailboxLookupMissCount; populated=$graphMatchedMailboxCount; unresolvedActive=$activeMailboxUnmatchedAfterGraphCount." -ExportFileLocation $ExportDetails
+        Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Graph mailbox usage endpoint scope diagnostics: likelyEligibleUserMailboxes=$graphLikelyEligibleMailboxCount; activeMailboxCount=$($activeMailboxes.Count); activeMailboxTypeBreakdown='$activeMailboxTypeBreakdown'. This Graph report is user-mailbox activity data and does not fully represent shared/resource/group/system mailbox inventory." -ExportFileLocation $ExportDetails
         if (-not [string]::IsNullOrWhiteSpace($graphCoverageWarning)) {
             Write-Log -Type WARNING -Message "[Get-AllExchangeMailboxDetails] $graphCoverageWarning" -ExportFileLocation $ExportDetails
         }
@@ -2734,6 +2855,237 @@ function Get-AllRecipientDetails {
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
         Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
         Write-Log -Type INFO -Message "[Get-AllRecipientDetails] COMPLETED: Gathering all Exchange Online Recipients" -ExportFileLocation $ExportDetails
+    }
+}
+
+function Get-EmailActivityInsights {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, HelpMessage = 'Provide the level of detail')]
+        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [string]$detailLevel
+    )
+
+    $start = Get-Date
+    if (-not $script:tenantStatsHash) {
+        $script:tenantStatsHash = @{}
+    }
+    $script:tenantStatsHash['EmailActivityTopSenders'] = @{}
+    $script:tenantStatsHash['EmailActivityTopReceivers'] = @{}
+    $script:tenantStatsHash['EmailActivitySummary'] = @{}
+
+    Write-Host "Getting email activity details ..." -ForegroundColor Cyan -NoNewline
+    Write-Log -Type INFO -Message "[Get-EmailActivityInsights] START: Gathering email activity details from Microsoft Graph" -ExportFileLocation $ExportDetails
+
+    function Convert-EmailActivityDateValue {
+        param([string]$Value)
+
+        if ([string]::IsNullOrWhiteSpace($Value)) {
+            return $null
+        }
+
+        $parsed = [datetime]::MinValue
+        if ([datetime]::TryParse($Value, [ref]$parsed)) {
+            return $parsed
+        }
+
+        return $null
+    }
+
+    try {
+        $periodDuration = if ($detailLevel -eq 'minimum') { 'D90' } else { 'D180' }
+        $topLimit = if ($detailLevel -eq 'minimum') { 10 } else { 25 }
+        $emailActivityRows = @()
+        $emailActivitySource = 'Export-ArrayaGraphReportCsv'
+
+        $graphActivityCommand = Get-Command -Name 'Office365Custom\Get-GraphAPIActivityReport' -ErrorAction SilentlyContinue
+        if ($graphActivityCommand) {
+            try {
+                $savedProgressPreference = $ProgressPreference
+                try {
+                    $ProgressPreference = 'SilentlyContinue'
+                    $emailActivityRows = @(
+                        Office365Custom\Get-GraphAPIActivityReport -ServiceName EmailActivity -PeriodDuration $periodDuration -ErrorAction Stop
+                    )
+                }
+                finally {
+                    $ProgressPreference = $savedProgressPreference
+                }
+
+                if ($emailActivityRows.Count -gt 0) {
+                    $emailActivitySource = 'Office365Custom.Get-GraphAPIActivityReport'
+                }
+            }
+            catch {
+                Write-Log -Type WARNING -Message "[Get-EmailActivityInsights] Office365Custom\\Get-GraphAPIActivityReport failed: $($_.Exception.Message). Falling back to direct Graph report URI." -ExportFileLocation $ExportDetails
+                $emailActivityRows = @()
+            }
+        }
+
+        if ($emailActivityRows.Count -eq 0) {
+            $emailActivityUri = "https://graph.microsoft.com/v1.0/reports/getEmailActivityUserDetail(period='$periodDuration')"
+            $emailActivityRows = @(
+                Export-ArrayaGraphReportCsv -Uri $emailActivityUri -Activity "Email activity user detail report ($periodDuration)" -Headers $global:GraphHeaders
+            )
+            $emailActivitySource = 'Export-ArrayaGraphReportCsv'
+        }
+
+        if ($emailActivityRows.Count -eq 0) {
+            $script:tenantStatsHash['EmailActivitySummary']['Summary'] = [PSCustomObject]@{
+                ReportRows        = 0
+                PeriodDuration    = $periodDuration
+                Source            = $emailActivitySource
+                UsersNormalized   = 0
+                ActiveUsers       = 0
+                TotalSendCount    = 0
+                TotalReceiveCount = 0
+                ReportRefreshDate = $null
+            }
+            Write-Log -Type INFO -Message "[Get-EmailActivityInsights] No rows returned for email activity report." -ExportFileLocation $ExportDetails
+            return
+        }
+
+        $activityByUpn = @{}
+        $reportRefreshDates = New-Object System.Collections.Generic.List[datetime]
+
+        foreach ($row in $emailActivityRows) {
+            $upn = Get-GraphReportFieldValue -Row $row -FieldNames @('User Principal Name', 'UserPrincipalName')
+            if ([string]::IsNullOrWhiteSpace($upn)) {
+                continue
+            }
+            $upnKey = $upn.Trim().ToLowerInvariant()
+            $displayName = Get-GraphReportFieldValue -Row $row -FieldNames @('Display Name', 'User Display Name')
+            if ([string]::IsNullOrWhiteSpace($displayName)) {
+                $displayName = $upn
+            }
+
+            $sendCount = Convert-GraphReportValueToInt64 -Value (Get-GraphReportFieldValue -Row $row -FieldNames @('Send Count', 'SendCount'))
+            $receiveCount = Convert-GraphReportValueToInt64 -Value (Get-GraphReportFieldValue -Row $row -FieldNames @('Receive Count', 'ReceiveCount'))
+            $readCount = Convert-GraphReportValueToInt64 -Value (Get-GraphReportFieldValue -Row $row -FieldNames @('Read Count', 'ReadCount'))
+            $lastActivityDate = Get-GraphReportFieldValue -Row $row -FieldNames @('Last Activity Date', 'LastActivityDate')
+            $reportRefreshDate = Get-GraphReportFieldValue -Row $row -FieldNames @('Report Refresh Date', 'ReportRefreshDate')
+            $isDeletedRaw = Get-GraphReportFieldValue -Row $row -FieldNames @('Is Deleted', 'IsDeleted')
+
+            $isDeleted = $false
+            if (-not [string]::IsNullOrWhiteSpace($isDeletedRaw)) {
+                $parsedBool = $false
+                if ([bool]::TryParse($isDeletedRaw, [ref]$parsedBool)) {
+                    $isDeleted = $parsedBool
+                }
+                elseif ($isDeletedRaw -match '^(1|yes|y|true)$') {
+                    $isDeleted = $true
+                }
+            }
+
+            $parsedRefreshDate = Convert-EmailActivityDateValue -Value $reportRefreshDate
+            if ($parsedRefreshDate) {
+                $reportRefreshDates.Add($parsedRefreshDate) | Out-Null
+            }
+
+            if ($activityByUpn.ContainsKey($upnKey)) {
+                $existing = $activityByUpn[$upnKey]
+                $existing.SendCount += [int64]$sendCount
+                $existing.ReceiveCount += [int64]$receiveCount
+                $existing.ReadCount += [int64]$readCount
+                $existing.IsDeleted = ($existing.IsDeleted -or $isDeleted)
+
+                $existingLast = Convert-EmailActivityDateValue -Value $existing.LastActivityDate
+                $currentLast = Convert-EmailActivityDateValue -Value $lastActivityDate
+                if ($currentLast -and (($null -eq $existingLast) -or $currentLast -gt $existingLast)) {
+                    $existing.LastActivityDate = $currentLast.ToString('yyyy-MM-dd')
+                }
+            }
+            else {
+                $activityByUpn[$upnKey] = [PSCustomObject]@{
+                    UserPrincipalName = $upn
+                    DisplayName       = $displayName
+                    SendCount         = [int64]$sendCount
+                    ReceiveCount      = [int64]$receiveCount
+                    ReadCount         = [int64]$readCount
+                    LastActivityDate  = $lastActivityDate
+                    IsDeleted         = $isDeleted
+                }
+            }
+        }
+
+        $normalizedUsers = @($activityByUpn.Values)
+        $topSenders = @(
+            $normalizedUsers |
+                Where-Object { [int64]$_.SendCount -gt 0 } |
+                Sort-Object SendCount, ReceiveCount -Descending |
+                Select-Object -First $topLimit
+        )
+        $topReceivers = @(
+            $normalizedUsers |
+                Where-Object { [int64]$_.ReceiveCount -gt 0 } |
+                Sort-Object ReceiveCount, SendCount -Descending |
+                Select-Object -First $topLimit
+        )
+
+        $senderRank = 0
+        foreach ($sender in $topSenders) {
+            $senderRank++
+            $key = "{0:D3}-{1}" -f $senderRank, (($sender.UserPrincipalName -replace '[^a-zA-Z0-9@._-]', '_').ToLowerInvariant())
+            $script:tenantStatsHash['EmailActivityTopSenders'][$key] = [PSCustomObject]@{
+                Rank              = $senderRank
+                UserPrincipalName = $sender.UserPrincipalName
+                DisplayName       = $sender.DisplayName
+                SendCount         = [int64]$sender.SendCount
+                ReceiveCount      = [int64]$sender.ReceiveCount
+                ReadCount         = [int64]$sender.ReadCount
+                LastActivityDate  = $sender.LastActivityDate
+                IsDeleted         = $sender.IsDeleted
+            }
+        }
+
+        $receiverRank = 0
+        foreach ($receiver in $topReceivers) {
+            $receiverRank++
+            $key = "{0:D3}-{1}" -f $receiverRank, (($receiver.UserPrincipalName -replace '[^a-zA-Z0-9@._-]', '_').ToLowerInvariant())
+            $script:tenantStatsHash['EmailActivityTopReceivers'][$key] = [PSCustomObject]@{
+                Rank              = $receiverRank
+                UserPrincipalName = $receiver.UserPrincipalName
+                DisplayName       = $receiver.DisplayName
+                ReceiveCount      = [int64]$receiver.ReceiveCount
+                SendCount         = [int64]$receiver.SendCount
+                ReadCount         = [int64]$receiver.ReadCount
+                LastActivityDate  = $receiver.LastActivityDate
+                IsDeleted         = $receiver.IsDeleted
+            }
+        }
+
+        $latestRefresh = $null
+        if ($reportRefreshDates.Count -gt 0) {
+            $latestRefresh = ($reportRefreshDates | Sort-Object -Descending | Select-Object -First 1).ToString('yyyy-MM-dd')
+        }
+
+        $activeUsers = @(
+            $normalizedUsers | Where-Object { ([int64]$_.SendCount + [int64]$_.ReceiveCount + [int64]$_.ReadCount) -gt 0 }
+        ).Count
+
+        $script:tenantStatsHash['EmailActivitySummary']['Summary'] = [PSCustomObject]@{
+            ReportRows        = [int]$emailActivityRows.Count
+            PeriodDuration    = $periodDuration
+            Source            = $emailActivitySource
+            UsersNormalized   = [int]$normalizedUsers.Count
+            ActiveUsers       = [int]$activeUsers
+            TotalSendCount    = [int64](($normalizedUsers | Measure-Object -Property SendCount -Sum).Sum)
+            TotalReceiveCount = [int64](($normalizedUsers | Measure-Object -Property ReceiveCount -Sum).Sum)
+            ReportRefreshDate = $latestRefresh
+            TopSenderCount    = [int]$topSenders.Count
+            TopReceiverCount  = [int]$topReceivers.Count
+        }
+
+        Write-Host ("Top senders={0}, top receivers={1}" -f $topSenders.Count, $topReceivers.Count) -ForegroundColor DarkGray -NoNewline
+        Write-Log -Type INFO -Message "[Get-EmailActivityInsights] Email activity summary: source=$emailActivitySource; period=$periodDuration; reportRows=$($emailActivityRows.Count); usersNormalized=$($normalizedUsers.Count); activeUsers=$activeUsers; topSenders=$($topSenders.Count); topReceivers=$($topReceivers.Count)." -ExportFileLocation $ExportDetails
+    }
+    catch {
+        Write-Log -Type ERROR -Message "[Get-EmailActivityInsights] An error occurred while gathering email activity details. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
+    }
+    finally {
+        $completedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
+        Write-Host "Completed in $($completedTime)" -ForegroundColor Green
+        Write-Log -Type INFO -Message "[Get-EmailActivityInsights] COMPLETED: Gathering email activity details in $($completedTime)" -ExportFileLocation $ExportDetails
     }
 }
 
@@ -6264,6 +6616,19 @@ function Get-AllUserDetails {
 
         $scriptLabel = if ($UserRecord.DisplayName) { [string]$UserRecord.DisplayName } elseif ($UserRecord.UserPrincipalName) { [string]$UserRecord.UserPrincipalName } else { 'User record' }
         try {
+            if ($null -eq $script:tenantStatsHash -or -not ($script:tenantStatsHash -is [System.Collections.IDictionary])) {
+                $script:tenantStatsHash = @{}
+            }
+            if ($null -eq $script:tenantStatsHash['Users'] -or -not ($script:tenantStatsHash['Users'] -is [System.Collections.IDictionary])) {
+                $script:tenantStatsHash['Users'] = @{}
+            }
+            if ($null -eq $script:SkuLookupById -or -not ($script:SkuLookupById -is [System.Collections.IDictionary])) {
+                $script:SkuLookupById = @{}
+            }
+            if ($null -eq $script:ServicePlanLookupById -or -not ($script:ServicePlanLookupById -is [System.Collections.IDictionary])) {
+                $script:ServicePlanLookupById = @{}
+            }
+
             $userCollectionState.ProcessedUserCount++
             if ($userCollectionState.ProcessedUserCount -eq 1 -or ($userCollectionState.ProcessedUserCount % $progressStatusInterval) -eq 0) {
                 Write-Progress -Id $userDetailsProgressId -Activity "Gathering Tenant User Details" -Status "Processed $($userCollectionState.ProcessedUserCount) user(s): $scriptLabel"
@@ -6325,7 +6690,9 @@ function Get-AllUserDetails {
                 $assignedLicensesFriendlyString = $null
                 $disabledPlans = $null
                 $enabledServicePlans = $null
-                $assignedLicenseEntries = @($UserRecord.AssignedLicenses)
+                $assignedLicenseEntries = @(
+                    @($UserRecord.AssignedLicenses) | Where-Object { $null -ne $_ }
+                )
                 if ($assignedLicenseEntries.Count -gt 0) {
                     $userCollectionState.LicensedUserCount++
                     $resolvedSkuParts = New-Object 'System.Collections.Generic.HashSet[string]'
@@ -6423,7 +6790,8 @@ function Get-AllUserDetails {
             $script:tenantStatsHash["Users"][$userPrincipalName] = [PSCustomObject]$userProperties
         }
         catch {
-            Write-Log -Type ERROR -Message ("[Get-allUserDetails] An error occurred in Creating User Hash for user '{0}'. $($_.Exception.Message)" -f $scriptLabel) -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
+            $lineNumber = if ($_.InvocationInfo -and $_.InvocationInfo.ScriptLineNumber) { $_.InvocationInfo.ScriptLineNumber } else { 'unknown' }
+            Write-Log -Type ERROR -Message ("[Get-allUserDetails] An error occurred in Creating User Hash for user '{0}'. Line={1}. $($_.Exception.Message)" -f $scriptLabel, $lineNumber) -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
         }
     }
 
@@ -9585,138 +9953,78 @@ function Export-TenantStatsJson {
         [string]$Path
     )
 
-    function ConvertTo-JsonFriendlyValue {
-        param(
-            [Parameter(Mandatory = $false)]
-            $Value,
-            [Parameter(Mandatory = $false)]
-            [int]$Depth = 0,
-            [Parameter(Mandatory = $false)]
-            [System.Collections.Generic.HashSet[int]]$Visited
-        )
+    $metadata = [ordered]@{
+        GeneratedAt        = (Get-Date).ToString('o')
+        OutputProfile      = $OutputProfile
+        OutputProfileLabel = $script:EffectiveOutputProfileLabel
+        ReportingMode      = $reportingMode
+        AuthMode           = $script:CurrentGraphMode
+        CollectionOnly     = [bool]$runCollectionOnly
+        ExportOnly         = [bool]$runExportOnly
+    }
 
-        if ($null -eq $Value) {
-            return $null
+    if ($TenantStatsHash.ContainsKey('TenantInfo') -and $TenantStatsHash['TenantInfo']) {
+        $tenantInfo = $TenantStatsHash['TenantInfo']
+        $metadata['Tenant'] = [ordered]@{
+            TenantId          = $tenantInfo.TenantID
+            DisplayName       = $tenantInfo.DisplayName
+            DefaultDomainName = $tenantInfo.DefaultDomainName
         }
+    }
 
-        if ($null -eq $Visited) {
-            $Visited = [System.Collections.Generic.HashSet[int]]::new()
+    $collectionPlan = [ordered]@{}
+    if ($script:SnapshotCollectionPlan -is [System.Collections.IDictionary]) {
+        foreach ($entry in $script:SnapshotCollectionPlan.GetEnumerator()) {
+            $collectionPlan[[string]$entry.Key] = $entry.Value
         }
-
-        if ($Depth -ge 20) {
-            return '[MaxDepthExceeded]'
-        }
-
-        $valueType = $Value.GetType()
-        $isReferenceType = -not $valueType.IsValueType -and $Value -isnot [string]
-        $referenceId = $null
-        if ($isReferenceType) {
-            $referenceId = [System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($Value)
-            if (-not $Visited.Add($referenceId)) {
-                return '[CircularReference]'
-            }
-        }
-
-        try {
-            if (
-                $Value -is [string] -or
-                $Value -is [char] -or
-                $Value -is [bool] -or
-                $Value -is [byte] -or
-                $Value -is [sbyte] -or
-                $Value -is [int16] -or
-                $Value -is [uint16] -or
-                $Value -is [int32] -or
-                $Value -is [uint32] -or
-                $Value -is [int64] -or
-                $Value -is [uint64] -or
-                $Value -is [single] -or
-                $Value -is [double] -or
-                $Value -is [decimal]
-            ) {
-                return $Value
-            }
-
-            if ($Value -is [datetime]) {
-                return $Value.ToString('o')
-            }
-
-            if ($Value -is [datetimeoffset]) {
-                return $Value.ToString('o')
-            }
-
-            if ($Value -is [timespan] -or $Value -is [guid] -or $Value -is [uri] -or $Value -is [version]) {
-                return $Value.ToString()
-            }
-
-            if ($Value -is [enum]) {
-                return $Value.ToString()
-            }
-
-            if ($Value -is [securestring]) {
-                return '[SecureString]'
-            }
-
-            if ($Value -is [System.Management.Automation.SwitchParameter]) {
-                return [bool]$Value
-            }
-
-            if ($Value -is [System.Collections.IDictionary]) {
-                $result = [ordered]@{}
-                foreach ($key in $Value.Keys) {
-                    $result[[string]$key] = ConvertTo-JsonFriendlyValue -Value $Value[$key] -Depth ($Depth + 1) -Visited $Visited
-                }
-                return $result
-            }
-
-            if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
-                $items = New-Object System.Collections.Generic.List[object]
-                foreach ($item in $Value) {
-                    $items.Add((ConvertTo-JsonFriendlyValue -Value $item -Depth ($Depth + 1) -Visited $Visited))
-                }
-                return $items.ToArray()
-            }
-
-            $serializableProperties = @(
-                $Value.PSObject.Properties |
-                    Where-Object {
-                        $_.MemberType -in @('NoteProperty', 'AliasProperty') -and
-                        $_.Name -ne 'SyncRoot'
-                    }
-            )
-
-            if ($serializableProperties.Count -gt 0) {
-                $result = [ordered]@{}
-                foreach ($property in $serializableProperties) {
-                    try {
-                        $result[$property.Name] = ConvertTo-JsonFriendlyValue -Value $property.Value -Depth ($Depth + 1) -Visited $Visited
-                    } catch {
-                        $result[$property.Name] = "[PropertyReadError] $($_.Exception.Message)"
-                    }
-                }
-                return $result
-            }
-
-            return $Value.ToString()
-        } finally {
-            if ($isReferenceType -and $null -ne $referenceId) {
-                $Visited.Remove($referenceId) | Out-Null
+    }
+    elseif ($script:ProfileCollectionPlan -is [System.Collections.IDictionary]) {
+        foreach ($entry in $script:ProfileCollectionPlan.GetEnumerator()) {
+            $collectionPlan[[string]$entry.Key] = [ordered]@{
+                Status             = if ([bool]$entry.Value) { 'Collected' } else { 'Skipped' }
+                NotCollectedReason = if ([bool]$entry.Value) { $null } else { 'Disabled by output profile policy.' }
             }
         }
     }
 
-    $visited = [System.Collections.Generic.HashSet[int]]::new()
-    $payload = [ordered]@{
-        SchemaVersion = 1
-        GeneratedAt   = (Get-Date).ToString("o")
-        Data          = ConvertTo-JsonFriendlyValue -Value $TenantStatsHash -Visited $visited
+    $warningSummary = @()
+    $errorSummary = @()
+    if ($global:AllDiscoveryErrors) {
+        foreach ($errorRow in $global:AllDiscoveryErrors) {
+            $msg = [string]$errorRow.ErrorMessage
+            if ([string]::IsNullOrWhiteSpace($msg)) {
+                continue
+            }
+            $errorSummary += $msg
+        }
     }
 
-    $jsonOptions = [System.Text.Json.JsonSerializerOptions]::new()
-    $jsonOptions.WriteIndented = $true
-    $jsonOptions.ReferenceHandler = [System.Text.Json.Serialization.ReferenceHandler]::IgnoreCycles
-    $json = [System.Text.Json.JsonSerializer]::Serialize($payload, $jsonOptions)
-    [System.IO.File]::WriteAllText($Path, $json, [System.Text.UTF8Encoding]::new($false))
+    $sourceCoverage = [ordered]@{}
+    if ($TenantStatsHash.ContainsKey('PrimaryMailboxStatsCollectionSummary') -and $TenantStatsHash['PrimaryMailboxStatsCollectionSummary']) {
+        $sourceCoverage['PrimaryMailboxStats'] = $TenantStatsHash['PrimaryMailboxStatsCollectionSummary']
+    }
+    if ($TenantStatsHash.ContainsKey('UnifiedGroupMailboxStatsCollectionSummary') -and $TenantStatsHash['UnifiedGroupMailboxStatsCollectionSummary']) {
+        $sourceCoverage['UnifiedGroupMailboxStats'] = $TenantStatsHash['UnifiedGroupMailboxStatsCollectionSummary']
+    }
+
+    $diagnostics = [ordered]@{
+        WarningCount   = $warningSummary.Count
+        ErrorCount     = $errorSummary.Count
+        WarningSummary = $warningSummary
+        ErrorSummary   = $errorSummary
+        SourceCoverage = $sourceCoverage
+        CollectorStats = [ordered]@{
+            StepMetrics = $script:AssessmentStepMetrics
+        }
+    }
+
+    $snapshot = Convert-ArrayaLegacyTenantStatsToSnapshot `
+        -TenantStatsHash $TenantStatsHash `
+        -Metadata $metadata `
+        -CollectionPlan $collectionPlan `
+        -Diagnostics $diagnostics
+
+    Export-ArrayaTenantSnapshot -Snapshot $snapshot -Path $Path
 }
 
 function Import-TenantStatsJson {
@@ -9730,8 +10038,18 @@ function Import-TenantStatsJson {
         return $null
     }
 
-    $json = Get-Content -Raw -Path $Path | ConvertFrom-Json
-    return $json.Data
+    $snapshot = Import-ArrayaTenantSnapshot -Path $Path
+    $script:LoadedTenantSnapshot = $snapshot
+
+    $validation = Test-ArrayaTenantSnapshot -Snapshot $snapshot -Purpose Export
+    if (-not $validation.Valid) {
+        throw ("Tenant snapshot is invalid: {0}" -f ($validation.Errors -join '; '))
+    }
+    if ($validation.Warnings.Count -gt 0) {
+        Write-Warning ("Tenant snapshot imported with warnings: {0}" -f ($validation.Warnings -join '; '))
+    }
+
+    return Convert-ArrayaSnapshotToLegacyTenantStatsHash -Snapshot $snapshot
 }
 
 #region HTML Report Helpers
@@ -10249,6 +10567,8 @@ function Get-MailboxAnalysis {
     
     $findings = @()
     $largeMailboxes = @()
+    $largeArchiveCount = 0
+    $largestArchiveMailbox = $null
     
     foreach ($mbx in $Mailboxes) {
         # Handle N/A values safely
@@ -10270,12 +10590,12 @@ function Get-MailboxAnalysis {
         
         # Large archive warnings
         if ($archiveSize -gt $script:DefaultThresholds.ArchiveSizeGB) {
-            $findings += @{
-                Type = 'Warning'
-                Category = 'Large Archives'
-                Message = "Archive for '$($mbx.DisplayName)' is $([math]::Round($archiveSize,1)) GB (threshold: $($script:DefaultThresholds.ArchiveSizeGB) GB)"
-                Anchor = 'mailboxes'
-                Priority = 2
+            $largeArchiveCount++
+            if (-not $largestArchiveMailbox -or $archiveSize -gt $largestArchiveMailbox.SizeGB) {
+                $largestArchiveMailbox = [PSCustomObject]@{
+                    DisplayName = [string]$mbx.DisplayName
+                    SizeGB = [math]::Round($archiveSize, 1)
+                }
             }
         }
     }
@@ -10290,10 +10610,27 @@ function Get-MailboxAnalysis {
             Priority = 2
         }
     }
+
+    if ($largeArchiveCount -gt 0) {
+        $largestArchiveLabel = if ($largestArchiveMailbox -and -not [string]::IsNullOrWhiteSpace($largestArchiveMailbox.DisplayName)) {
+            "'$($largestArchiveMailbox.DisplayName)' at $($largestArchiveMailbox.SizeGB) GB"
+        } else {
+            'unavailable'
+        }
+        $findings += @{
+            Type = 'Warning'
+            Category = 'Large Archives'
+            Message = "$largeArchiveCount archive mailbox(es) exceed $($script:DefaultThresholds.ArchiveSizeGB) GB (largest: $largestArchiveLabel)"
+            Anchor = 'mailboxes'
+            Priority = 2
+        }
+    }
     
     return @{
         Findings = $findings
         LargeMailboxes = $largeMailboxes
+        LargeArchiveCount = $largeArchiveCount
+        LargestArchiveMailbox = $largestArchiveMailbox
     }
 }
 
@@ -11354,6 +11691,7 @@ function Get-IdentityAdminAnalysis {
 
     $memberUsers = @(
         $Users | Where-Object {
+            $null -ne $_ -and
             ($_.UserType -ne 'Guest') -and
             ($_.UserType -ne 'GuestUser') -and
             ($_.UserPrincipalName -notlike '*#EXT#*')
@@ -11361,6 +11699,7 @@ function Get-IdentityAdminAnalysis {
     )
     $enabledMemberUsers = @(
         $memberUsers | Where-Object {
+            if ($null -eq $_) { return $false }
             $accountEnabled = $true
             if ($_.PSObject.Properties['AccountEnabled']) {
                 try { $accountEnabled = [bool]$_.AccountEnabled } catch { $accountEnabled = $true }
@@ -11914,6 +12253,55 @@ function Convert-MailboxSizeToGB {
     return 0
 }
 
+function Get-RecordValue {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        $Record,
+        [Parameter(Mandatory)]
+        [string]$Key
+    )
+
+    if ($null -eq $Record) {
+        return $null
+    }
+
+    if ($Record -is [System.Collections.IDictionary] -and $Record.Contains($Key)) {
+        return $Record[$Key]
+    }
+    if ($Record -is [System.Collections.Specialized.OrderedDictionary] -and $Record.Contains($Key)) {
+        return $Record[$Key]
+    }
+    if ($Record.PSObject -and $Record.PSObject.Properties[$Key]) {
+        return $Record.$Key
+    }
+
+    return $null
+}
+
+function Set-RecordValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        $Record,
+        [Parameter(Mandatory)]
+        [string]$Key,
+        [AllowNull()]
+        $Value
+    )
+
+    if ($Record -is [System.Collections.IDictionary]) {
+        $Record[$Key] = $Value
+        return
+    }
+    if ($Record -is [System.Collections.Specialized.OrderedDictionary]) {
+        $Record[$Key] = $Value
+        return
+    }
+
+    $Record | Add-Member -MemberType NoteProperty -Name $Key -Value $Value -Force
+}
+
 function Get-MailboxStatForRecord {
     [CmdletBinding()]
     param(
@@ -11965,37 +12353,42 @@ function Get-NormalizedMailboxRecords {
         # Update in place to avoid duplicating large mailbox objects in memory.
         $targetRecord = $record
 
-        $existingMbxSize = if ($targetRecord.PSObject.Properties['MBXSizeGB']) { Convert-MailboxSizeToGB -SizeValue $targetRecord.MBXSizeGB } else { 0 }
-        $existingArchiveSize = if ($targetRecord.PSObject.Properties['ArchiveSizeGB']) { Convert-MailboxSizeToGB -SizeValue $targetRecord.ArchiveSizeGB } else { 0 }
-        $existingMbxItemCount = if ($targetRecord.PSObject.Properties['MBXItemCount']) { $targetRecord.MBXItemCount } else { 0 }
-        $existingArchiveItemCount = if ($targetRecord.PSObject.Properties['ArchiveItemCount']) { $targetRecord.ArchiveItemCount } else { 0 }
+        $existingMbxSize = Convert-MailboxSizeToGB -SizeValue (Get-RecordValue -Record $targetRecord -Key 'MBXSizeGB')
+        $existingArchiveSize = Convert-MailboxSizeToGB -SizeValue (Get-RecordValue -Record $targetRecord -Key 'ArchiveSizeGB')
+        $existingMbxItemCount = Get-RecordValue -Record $targetRecord -Key 'MBXItemCount'
+        $existingArchiveItemCount = Get-RecordValue -Record $targetRecord -Key 'ArchiveItemCount'
+        if (Test-IsBlankDisplayValue -Value $existingMbxItemCount) { $existingMbxItemCount = 0 }
+        if (Test-IsBlankDisplayValue -Value $existingArchiveItemCount) { $existingArchiveItemCount = 0 }
 
         $primaryStat = Get-MailboxStatForRecord -MailboxRecord $targetRecord -StatsHash $PrimaryMailboxStats
         $archiveStat = Get-MailboxStatForRecord -MailboxRecord $targetRecord -StatsHash $ArchiveMailboxStats -Archive
 
-        $resolvedMbxSize = if ($existingMbxSize -gt 0) { $existingMbxSize } elseif ($primaryStat) { Convert-MailboxSizeToGB -SizeValue $primaryStat.TotalItemSize } else { 0 }
-        $resolvedArchiveSize = if ($existingArchiveSize -gt 0) { $existingArchiveSize } elseif ($archiveStat) { Convert-MailboxSizeToGB -SizeValue $archiveStat.TotalItemSize } else { 0 }
+        $primaryTotalItemSize = Get-RecordValue -Record $primaryStat -Key 'TotalItemSize'
+        $archiveTotalItemSize = Get-RecordValue -Record $archiveStat -Key 'TotalItemSize'
+
+        $resolvedMbxSize = if ($existingMbxSize -gt 0) { $existingMbxSize } elseif ($primaryStat) { Convert-MailboxSizeToGB -SizeValue $primaryTotalItemSize } else { 0 }
+        $resolvedArchiveSize = if ($existingArchiveSize -gt 0) { $existingArchiveSize } elseif ($archiveStat) { Convert-MailboxSizeToGB -SizeValue $archiveTotalItemSize } else { 0 }
 
         $resolvedMbxItemCount = if (-not (Test-IsBlankDisplayValue -Value $existingMbxItemCount) -and [string]$existingMbxItemCount -ne '0') {
             $existingMbxItemCount
-        } elseif ($primaryStat -and $primaryStat.PSObject.Properties['ItemCount']) {
-            $primaryStat.ItemCount
+        } elseif ($primaryStat -and $null -ne (Get-RecordValue -Record $primaryStat -Key 'ItemCount')) {
+            Get-RecordValue -Record $primaryStat -Key 'ItemCount'
         } else {
             0
         }
 
         $resolvedArchiveItemCount = if (-not (Test-IsBlankDisplayValue -Value $existingArchiveItemCount) -and [string]$existingArchiveItemCount -ne '0') {
             $existingArchiveItemCount
-        } elseif ($archiveStat -and $archiveStat.PSObject.Properties['ItemCount']) {
-            $archiveStat.ItemCount
+        } elseif ($archiveStat -and $null -ne (Get-RecordValue -Record $archiveStat -Key 'ItemCount')) {
+            Get-RecordValue -Record $archiveStat -Key 'ItemCount'
         } else {
             0
         }
 
-        $targetRecord | Add-Member -MemberType NoteProperty -Name 'MBXSizeGB' -Value ([math]::Round($resolvedMbxSize, 3)) -Force
-        $targetRecord | Add-Member -MemberType NoteProperty -Name 'ArchiveSizeGB' -Value ([math]::Round($resolvedArchiveSize, 3)) -Force
-        $targetRecord | Add-Member -MemberType NoteProperty -Name 'MBXItemCount' -Value $resolvedMbxItemCount -Force
-        $targetRecord | Add-Member -MemberType NoteProperty -Name 'ArchiveItemCount' -Value $resolvedArchiveItemCount -Force
+        Set-RecordValue -Record $targetRecord -Key 'MBXSizeGB' -Value ([math]::Round($resolvedMbxSize, 3))
+        Set-RecordValue -Record $targetRecord -Key 'ArchiveSizeGB' -Value ([math]::Round($resolvedArchiveSize, 3))
+        Set-RecordValue -Record $targetRecord -Key 'MBXItemCount' -Value $resolvedMbxItemCount
+        Set-RecordValue -Record $targetRecord -Key 'ArchiveItemCount' -Value $resolvedArchiveItemCount
 
         $targetRecord
     }
@@ -12031,6 +12424,55 @@ function Get-TenantAssessmentContext {
         }
 
         return @($value)
+    }
+
+    function Resolve-ContextSummaryRecord {
+        param(
+            [AllowNull()]
+            $Container
+        )
+
+        if ($null -eq $Container) {
+            return $null
+        }
+
+        $summaryValue = $null
+        if ($Container -is [System.Collections.IDictionary]) {
+            if ($Container.Contains('Summary')) {
+                $summaryValue = $Container['Summary']
+            }
+            else {
+                $summaryValue = $Container
+            }
+        }
+        elseif ($Container -is [System.Collections.Specialized.OrderedDictionary]) {
+            if ($Container.Contains('Summary')) {
+                $summaryValue = $Container['Summary']
+            }
+            else {
+                $summaryValue = $Container
+            }
+        }
+        elseif ($Container -is [array]) {
+            $summaryValue = @($Container | Select-Object -First 1)
+            if ($summaryValue.Count -gt 0) {
+                $summaryValue = $summaryValue[0]
+            }
+            else {
+                $summaryValue = $null
+            }
+        }
+        else {
+            $summaryValue = $Container
+        }
+
+        if ($summaryValue -is [System.Collections.IDictionary]) {
+            return [PSCustomObject]$summaryValue
+        }
+        if ($summaryValue -is [System.Collections.Specialized.OrderedDictionary]) {
+            return [PSCustomObject]$summaryValue
+        }
+        return $summaryValue
     }
 
     $authConfig = $null
@@ -12104,18 +12546,14 @@ function Get-TenantAssessmentContext {
         }
     }
 
+    $emailActivitySummary = $null
+    if ($TenantStatsHash.ContainsKey('EmailActivitySummary')) {
+        $emailActivitySummary = Resolve-ContextSummaryRecord -Container $TenantStatsHash['EmailActivitySummary']
+    }
+
     $ownershipGovernanceSummary = $null
     if ($TenantStatsHash.ContainsKey('OwnershipGovernanceSummary')) {
-        $ownershipSummaryContainer = $TenantStatsHash['OwnershipGovernanceSummary']
-        if ($ownershipSummaryContainer -is [hashtable] -and $ownershipSummaryContainer.ContainsKey('Summary')) {
-            $ownershipGovernanceSummary = $ownershipSummaryContainer['Summary']
-        }
-        elseif ($ownershipSummaryContainer -is [System.Collections.Specialized.OrderedDictionary] -and $ownershipSummaryContainer.Contains('Summary')) {
-            $ownershipGovernanceSummary = $ownershipSummaryContainer['Summary']
-        }
-        elseif ($ownershipSummaryContainer -isnot [System.Collections.IEnumerable] -or $ownershipSummaryContainer -is [string]) {
-            $ownershipGovernanceSummary = $ownershipSummaryContainer
-        }
+        $ownershipGovernanceSummary = Resolve-ContextSummaryRecord -Container $TenantStatsHash['OwnershipGovernanceSummary']
     }
 
     $mailboxSourceKey = if ($TenantStatsHash.ContainsKey('MailboxFullDetails')) {
@@ -12167,6 +12605,9 @@ function Get-TenantAssessmentContext {
         TeamsVoice             = $teamsVoice
         SpamFilteringSummary   = $spamFilteringSummary
         SMTPRelaySummary       = $smtpRelaySummary
+        EmailActivitySummary   = $emailActivitySummary
+        EmailActivityTopSenders = Get-ContextArray -Key 'EmailActivityTopSenders'
+        EmailActivityTopReceivers = Get-ContextArray -Key 'EmailActivityTopReceivers'
         OwnershipGovernanceSummary = $ownershipGovernanceSummary
         UnmanagedObjects       = Get-ContextArray -Key 'UnmanagedObjects'
         OneDriveOwnerMismatches = Get-ContextArray -Key 'OneDriveOwnerMismatches'
@@ -12306,8 +12747,38 @@ function Update-AssessmentReportTables {
             'Healthy'
         }
 
-        $topFinding = @($AreaFindings | Sort-Object Priority | Select-Object -First 1)
-        $primaryFindingText = if ($topFinding.Count -gt 0) { $topFinding[0].Message } else { 'No automated findings detected for this assessment area.' }
+        $topFinding = @(
+            $AreaFindings |
+                Sort-Object @{ Expression = {
+                    switch ([string]$_.Type) {
+                        'Risk' { 1 }
+                        'Warning' { 2 }
+                        'Info' { 3 }
+                        default { 9 }
+                    }
+                } }, Priority |
+                Select-Object -First 1
+        )
+        $topCategoryRollups = @(
+            $AreaFindings |
+                Group-Object Category |
+                Sort-Object @{ Expression = 'Count'; Descending = $true }, @{ Expression = 'Name'; Descending = $false } |
+                Select-Object -First 3 |
+                ForEach-Object {
+                    $categoryName = if ([string]::IsNullOrWhiteSpace([string]$_.Name)) { 'Uncategorized' } else { $_.Name }
+                    "{0}: {1}" -f $categoryName, $_.Count
+                }
+        )
+        $primaryFindingText = if ($AreaFindings.Count -gt 0) {
+            $severitySummary = "{0} critical, {1} warning, {2} informational finding(s)" -f $criticalCount, $warningCount, $infoCount
+            if ($topCategoryRollups.Count -gt 0) {
+                "$severitySummary. Top signals: $([string]::Join('; ', $topCategoryRollups))."
+            } else {
+                "$severitySummary."
+            }
+        } else {
+            'No automated findings detected for this assessment area.'
+        }
         $recommendedAction = if ($topFinding.Count -gt 0) { Get-AssessmentRecommendationText -Finding $topFinding[0] } else { 'Use the detailed workload worksheets for validation and migration planning.' }
 
         $summaryRows.Add([PSCustomObject]@{
@@ -12651,6 +13122,7 @@ function Get-HtmlStyle {
         --text-secondary: #605e5c;
         --border-color: #edebe9;
         --shadow: 0 2px 4px rgba(0,0,0,0.1);
+        --anchor-offset: 120px;
     }
     
     * {
@@ -12713,17 +13185,18 @@ function Get-HtmlStyle {
         border-bottom: 2px solid var(--border-color);
         z-index: 100;
         margin: 0 -20px 30px -20px;
-        padding: 0 20px;
+        padding: 0 20px 10px 20px;
     }
     
     .nav {
         display: flex;
-        gap: 5px;
+        flex-wrap: wrap;
+        gap: 10px;
         overflow-x: auto;
-        padding: 10px 0;
+        padding: 10px 0 6px 0;
     }
-    
-    .nav a {
+
+    .nav-link {
         padding: 8px 16px;
         text-decoration: none;
         color: var(--text-primary);
@@ -12731,11 +13204,39 @@ function Get-HtmlStyle {
         white-space: nowrap;
         transition: all 0.2s;
         font-size: 0.9em;
+        background: #f8f9fb;
+        border: 1px solid #e5e7eb;
     }
-    
-    .nav a:hover {
-        background: var(--bg-light);
+
+    .nav-link-primary {
+        background: #e8f3ff;
+        border-color: #b9dbff;
+        font-weight: 600;
+    }
+
+    .nav-link:hover {
+        background: #eef6ff;
         color: var(--primary-color);
+    }
+
+    .nav-group {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 8px;
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        background: #ffffff;
+    }
+
+    .nav-group-label {
+        font-size: 0.72em;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--text-secondary);
+        font-weight: 600;
+        padding: 0 4px 0 2px;
     }
     
     /* KPI Cards */
@@ -12840,6 +13341,11 @@ function Get-HtmlStyle {
         border-radius: 8px;
         box-shadow: var(--shadow);
         margin-bottom: 30px;
+        scroll-margin-top: var(--anchor-offset);
+    }
+
+    #highlights {
+        scroll-margin-top: var(--anchor-offset);
     }
     
     .section h2 {
@@ -12848,6 +13354,20 @@ function Get-HtmlStyle {
         margin-bottom: 20px;
         padding-bottom: 10px;
         border-bottom: 2px solid var(--border-color);
+    }
+
+    .section-workload {
+        display: inline-block;
+        margin-bottom: 10px;
+        padding: 4px 10px;
+        font-size: 0.74em;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        border-radius: 999px;
+        background: #edf7ff;
+        color: #0f5a99;
+        border: 1px solid #c7e4ff;
+        font-weight: 700;
     }
     
     .section-footer {
@@ -13031,6 +13551,10 @@ function Get-HtmlStyle {
         .nav {
             flex-direction: column;
         }
+
+        .nav-group {
+            width: 100%;
+        }
         
         .data-table {
             font-size: 0.8em;
@@ -13173,17 +13697,66 @@ function Get-HtmlScript {
         });
     }
     
-    // Smooth scroll for anchor links
+    // Smooth scroll for anchor links with sticky-nav offset awareness
     document.addEventListener('DOMContentLoaded', function() {
+        function updateAnchorOffset() {
+            const navContainer = document.querySelector('.nav-container');
+            const navHeight = navContainer ? Math.ceil(navContainer.getBoundingClientRect().height) : 0;
+            const offset = Math.max(navHeight + 12, 80);
+            document.documentElement.style.setProperty('--anchor-offset', `${offset}px`);
+            return offset;
+        }
+
+        function getAnchorOffset() {
+            const cssValue = getComputedStyle(document.documentElement).getPropertyValue('--anchor-offset').trim();
+            const parsed = parseInt(cssValue.replace('px', ''), 10);
+            return Number.isFinite(parsed) ? parsed : 120;
+        }
+
+        function scrollToHashTarget(hash, behavior) {
+            if (!hash || hash.length < 2) {
+                return;
+            }
+            const target = document.querySelector(hash);
+            if (!target) {
+                return;
+            }
+
+            const offset = getAnchorOffset();
+            const targetTop = target.getBoundingClientRect().top + window.pageYOffset - offset;
+            window.scrollTo({
+                top: Math.max(targetTop, 0),
+                behavior: behavior || 'smooth'
+            });
+        }
+
+        updateAnchorOffset();
+
         document.querySelectorAll('a[href^="#"]').forEach(anchor => {
             anchor.addEventListener('click', function(e) {
+                const hash = this.getAttribute('href');
+                if (!hash || hash === '#') {
+                    return;
+                }
                 e.preventDefault();
-                const target = document.querySelector(this.getAttribute('href'));
-                if (target) {
-                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                updateAnchorOffset();
+                scrollToHashTarget(hash, 'smooth');
+                if (window.history && window.history.pushState) {
+                    window.history.pushState(null, '', hash);
                 }
             });
         });
+
+        window.addEventListener('resize', function() {
+            updateAnchorOffset();
+        });
+
+        if (window.location.hash) {
+            setTimeout(function() {
+                updateAnchorOffset();
+                scrollToHashTarget(window.location.hash, 'auto');
+            }, 0);
+        }
     });
 </script>
 '@
@@ -13703,6 +14276,130 @@ function Build-MailboxesSection {
     return $kpiHtml + $tableHtml + $inactiveSummaryHtml + $publicFolderSummaryHtml + $chartHtml + $footerHtml
 }
 
+function Build-EmailActivitySection {
+    param(
+        [array]$TopSenders,
+        [array]$TopReceivers,
+        [object]$EmailActivitySummary
+    )
+
+    $summaryRecord = $EmailActivitySummary
+    if ($summaryRecord -is [array]) {
+        $summaryRecord = @($summaryRecord | Select-Object -First 1)
+        if ($summaryRecord.Count -gt 0) {
+            $summaryRecord = $summaryRecord[0]
+        }
+        else {
+            $summaryRecord = $null
+        }
+    }
+
+    if ((@($TopSenders).Count -eq 0) -and (@($TopReceivers).Count -eq 0) -and (-not $summaryRecord)) {
+        return "<div class='empty-state'>No email activity data available</div>"
+    }
+
+    $reportRows = 0
+    $activeUsers = 0
+    $totalSendCount = 0
+    $totalReceiveCount = 0
+    $reportPeriod = 'N/A'
+    $reportRefreshDate = 'N/A'
+    function Get-SummaryValue {
+        param(
+            [AllowNull()]
+            $Record,
+            [string]$Key,
+            [AllowNull()]
+            $Default = $null
+        )
+
+        if ($null -eq $Record) {
+            return $Default
+        }
+        if ($Record -is [System.Collections.IDictionary] -and $Record.Contains($Key)) {
+            return $Record[$Key]
+        }
+        if ($Record -is [System.Collections.Specialized.OrderedDictionary] -and $Record.Contains($Key)) {
+            return $Record[$Key]
+        }
+        if ($Record.PSObject -and $Record.PSObject.Properties[$Key]) {
+            return $Record.$Key
+        }
+        return $Default
+    }
+
+    if ($summaryRecord) {
+        try { $reportRows = [int](Get-SummaryValue -Record $summaryRecord -Key 'ReportRows' -Default 0) } catch { $reportRows = 0 }
+        try { $activeUsers = [int](Get-SummaryValue -Record $summaryRecord -Key 'ActiveUsers' -Default 0) } catch { $activeUsers = 0 }
+        try { $totalSendCount = [int64](Get-SummaryValue -Record $summaryRecord -Key 'TotalSendCount' -Default 0) } catch { $totalSendCount = 0 }
+        try { $totalReceiveCount = [int64](Get-SummaryValue -Record $summaryRecord -Key 'TotalReceiveCount' -Default 0) } catch { $totalReceiveCount = 0 }
+        $periodValue = Get-SummaryValue -Record $summaryRecord -Key 'PeriodDuration'
+        if (-not [string]::IsNullOrWhiteSpace([string]$periodValue)) { $reportPeriod = [string]$periodValue }
+        $refreshValue = Get-SummaryValue -Record $summaryRecord -Key 'ReportRefreshDate'
+        if (-not [string]::IsNullOrWhiteSpace([string]$refreshValue)) { $reportRefreshDate = [string]$refreshValue }
+    }
+
+    if ($reportRows -eq 0 -and ((@($TopSenders).Count -gt 0) -or (@($TopReceivers).Count -gt 0))) {
+        $reportRows = [math]::Max(@($TopSenders).Count, @($TopReceivers).Count)
+    }
+    if ($activeUsers -eq 0 -and @($TopSenders).Count -gt 0) {
+        $activeUsers = @($TopSenders | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.UserPrincipalName) } | Select-Object -ExpandProperty UserPrincipalName -Unique).Count
+    }
+
+    $kpiHtml = "<div class='kpi-grid'>"
+    $kpiHtml += New-KpiCard -Title 'Report Rows' -Value (Format-Number $reportRows)
+    $kpiHtml += New-KpiCard -Title 'Active Users' -Value (Format-Number $activeUsers)
+    $kpiHtml += New-KpiCard -Title 'Total Sends' -Value (Format-Number $totalSendCount)
+    $kpiHtml += New-KpiCard -Title 'Total Receives' -Value (Format-Number $totalReceiveCount)
+    $kpiHtml += New-KpiCard -Title 'Report Period' -Value $reportPeriod
+    $kpiHtml += New-KpiCard -Title 'Report Refresh' -Value $reportRefreshDate
+    $kpiHtml += "</div>"
+
+    $sendersColumns = @('Rank', 'DisplayName', 'UserPrincipalName', 'SendCount', 'ReceiveCount', 'LastActivityDate')
+    $sendersHeaders = @{
+        Rank              = 'Rank'
+        DisplayName       = 'Display Name'
+        UserPrincipalName = 'User Principal Name'
+        SendCount         = 'Send Count'
+        ReceiveCount      = 'Receive Count'
+        LastActivityDate  = 'Last Activity'
+    }
+    $receiversColumns = @('Rank', 'DisplayName', 'UserPrincipalName', 'ReceiveCount', 'SendCount', 'LastActivityDate')
+    $receiversHeaders = @{
+        Rank              = 'Rank'
+        DisplayName       = 'Display Name'
+        UserPrincipalName = 'User Principal Name'
+        ReceiveCount      = 'Receive Count'
+        SendCount         = 'Send Count'
+        LastActivityDate  = 'Last Activity'
+    }
+
+    $topSendersHtml = "<h3 style='margin-top:30px;'>Top Senders</h3>"
+    if (@($TopSenders).Count -gt 0) {
+        $topSendersHtml += New-HtmlTable -Data $TopSenders -Columns $sendersColumns -ColumnHeaders $sendersHeaders
+    }
+    else {
+        $topSendersHtml += "<div class='empty-state'>No sender activity rows were returned.</div>"
+    }
+
+    $topReceiversHtml = "<h3 style='margin-top:30px;'>Top Receivers</h3>"
+    if (@($TopReceivers).Count -gt 0) {
+        $topReceiversHtml += New-HtmlTable -Data $TopReceivers -Columns $receiversColumns -ColumnHeaders $receiversHeaders
+    }
+    else {
+        $topReceiversHtml += "<div class='empty-state'>No receiver activity rows were returned.</div>"
+    }
+
+    $footerHtml = @"
+<div class='section-footer'>
+    <h3>What This Means</h3>
+    <p>This section summarizes Microsoft Graph email activity telemetry and highlights the highest-volume senders and receivers in the organization.</p>
+</div>
+"@
+
+    return $kpiHtml + $topSendersHtml + $topReceiversHtml + $footerHtml
+}
+
 function Build-InactiveMailboxesSection {
     param([array]$InactiveMailboxes)
     
@@ -14070,7 +14767,8 @@ function Build-DomainsSection {
     param(
         [array]$Domains,
         [object]$SpamFilteringSummary,
-        [object]$SMTPRelaySummary
+        [object]$SMTPRelaySummary,
+        [array]$MailFlowConnectors = @()
     )
     
     if ($Domains.Count -eq 0) {
@@ -14078,6 +14776,79 @@ function Build-DomainsSection {
     }
     
     $analysis = Get-DomainAnalysis -Domains $Domains -SpamFilteringSummary $SpamFilteringSummary -SMTPRelaySummary $SMTPRelaySummary
+
+    function Convert-MailFlowValueList {
+        param($Value)
+
+        if ($null -eq $Value) {
+            return @()
+        }
+        if ($Value -is [string]) {
+            return @(
+                $Value -split '[,;]' |
+                    ForEach-Object { $_.Trim() } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+        }
+        if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+            $items = @()
+            foreach ($item in $Value) {
+                if ($null -eq $item) { continue }
+                $itemText = [string]$item
+                if (-not [string]::IsNullOrWhiteSpace($itemText)) {
+                    $items += $itemText.Trim()
+                }
+            }
+            return @($items)
+        }
+
+        $singleText = [string]$Value
+        if ([string]::IsNullOrWhiteSpace($singleText)) {
+            return @()
+        }
+        return @($singleText.Trim())
+    }
+
+    function Test-ConnectorAppliesToDomain {
+        param(
+            [object]$Connector,
+            [string]$DomainName
+        )
+
+        if (-not $Connector -or [string]::IsNullOrWhiteSpace($DomainName)) {
+            return $false
+        }
+
+        $recipientDomains = Convert-MailFlowValueList -Value $Connector.RecipientDomains
+        if ($recipientDomains.Count -eq 0) {
+            return $true
+        }
+
+        $domainLower = $DomainName.ToLowerInvariant()
+        foreach ($recipientDomain in $recipientDomains) {
+            $candidate = ([string]$recipientDomain).Trim().ToLowerInvariant()
+            if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+            if ($candidate -eq '*') { return $true }
+            if ($candidate -eq $domainLower) { return $true }
+            if ($candidate -like "*.$domainLower") { return $true }
+            if ($candidate -eq "*.$domainLower") { return $true }
+        }
+
+        return $false
+    }
+
+    function Get-ConnectorEndpointEvidence {
+        param([object]$Connector)
+
+        $endpointSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($propertyName in @('SmartHosts', 'SenderIPAddresses', 'EFSkipIPs', 'EFSkipMailGateway', 'TlsDomain')) {
+            if (-not $Connector.PSObject.Properties[$propertyName]) { continue }
+            foreach ($value in (Convert-MailFlowValueList -Value $Connector.$propertyName)) {
+                $null = $endpointSet.Add($value)
+            }
+        }
+        return @($endpointSet)
+    }
     
     # Basic domain info
     $tableColumns = @('Domain','Verified','AuthenticationType','DomainType','IsDefault')
@@ -14238,6 +15009,119 @@ function Build-DomainsSection {
 
         $tableHtml += "<h3 id='domains-antispoof' style='margin-top:30px;'>Anti-Spoofing Control Signals</h3>"
         $tableHtml += New-HtmlTable -Data $antiSpoofRows -Columns @('Signal','Value','Assessment') -ColumnHeaders @{ Signal='Control'; Value='Value'; Assessment='Assessment' } -RiskColumns @{ Assessment = { param($val) [string]$val -eq 'Review' } }
+    }
+
+    # Estimated inbound/outbound mail paths per domain (best-effort)
+    $mailFlowEstimateRows = @()
+    $mailRoutingDomains = @(
+        $Domains | Where-Object {
+            ([string]$_.Domain -notmatch '(?i)\.onmicrosoft\.com$') -and
+            ($_.Verified -eq $true) -and
+            ($_.Office365MailExchanger -eq $true -or ([int]$_.TotalDomainRecipients -gt 0))
+        }
+    )
+    $allConnectors = @($MailFlowConnectors)
+    $inboundConnectors = @($allConnectors | Where-Object { [string]$_.ConnectorDirection -eq 'Inbound' -and $_.Enabled -ne $false })
+    $outboundConnectors = @($allConnectors | Where-Object { [string]$_.ConnectorDirection -eq 'Outbound' -and $_.Enabled -ne $false })
+
+    foreach ($domain in $mailRoutingDomains) {
+        $domainName = [string]$domain.Domain
+        if ([string]::IsNullOrWhiteSpace($domainName)) { continue }
+
+        $domainInboundConnectors = @($inboundConnectors | Where-Object { Test-ConnectorAppliesToDomain -Connector $_ -DomainName $domainName })
+        $domainOutboundConnectors = @($outboundConnectors | Where-Object { Test-ConnectorAppliesToDomain -Connector $_ -DomainName $domainName })
+
+        $mxEvidence = Convert-MailFlowValueList -Value $domain.MXRecords
+        $inboundEndpointSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $outboundEndpointSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+        foreach ($mx in $mxEvidence) { $null = $inboundEndpointSet.Add($mx) }
+        foreach ($connector in $domainInboundConnectors) {
+            foreach ($endpoint in (Get-ConnectorEndpointEvidence -Connector $connector)) {
+                $null = $inboundEndpointSet.Add($endpoint)
+            }
+        }
+
+        $usesSmartHostOutbound = $false
+        foreach ($connector in $domainOutboundConnectors) {
+            $smartHosts = Convert-MailFlowValueList -Value $connector.SmartHosts
+            if ($smartHosts.Count -gt 0 -and $connector.UseMXRecord -ne $true) {
+                $usesSmartHostOutbound = $true
+            }
+            foreach ($endpoint in (Get-ConnectorEndpointEvidence -Connector $connector)) {
+                $null = $outboundEndpointSet.Add($endpoint)
+            }
+        }
+
+        if ($outboundEndpointSet.Count -eq 0) {
+            if ($domainOutboundConnectors.Count -gt 0) {
+                $null = $outboundEndpointSet.Add('Recipient MX (connector-managed)')
+            } else {
+                $null = $outboundEndpointSet.Add('Recipient MX (Exchange Online default)')
+            }
+        }
+        if ($inboundEndpointSet.Count -eq 0 -and $domain.Office365MailExchanger -eq $true) {
+            $null = $inboundEndpointSet.Add('Microsoft 365 MX / EOP')
+        }
+
+        $inboundPath = if ($domain.Office365MailExchanger -eq $true) {
+            if ($domainInboundConnectors.Count -gt 0) {
+                'Internet -> Microsoft 365 MX/EOP -> Inbound connector path(s) -> Exchange Online'
+            } else {
+                'Internet -> Microsoft 365 MX/EOP -> Exchange Online'
+            }
+        } elseif ($domainInboundConnectors.Count -gt 0) {
+            'Internet/Partner -> Inbound connector path(s) -> Exchange Online'
+        } else {
+            'External MX or custom path -> Review routing manually'
+        }
+
+        $outboundPath = if ($domainOutboundConnectors.Count -gt 0) {
+            if ($usesSmartHostOutbound) {
+                'Exchange Online -> Outbound connector smarthost(s) -> Destination'
+            } else {
+                'Exchange Online -> Outbound connector(s) -> Recipient MX'
+            }
+        } else {
+            'Exchange Online -> Recipient MX (default)'
+        }
+
+        $confidence = if ($mxEvidence.Count -gt 0 -and ($domainInboundConnectors.Count -gt 0 -or $domainOutboundConnectors.Count -gt 0)) {
+            'High'
+        } elseif ($mxEvidence.Count -gt 0 -or $domain.Office365MailExchanger -eq $true -or $domainInboundConnectors.Count -gt 0 -or $domainOutboundConnectors.Count -gt 0) {
+            'Medium'
+        } else {
+            'Low'
+        }
+
+        $mailFlowEstimateRows += [PSCustomObject]@{
+            Domain = $domainName
+            InboundPath = $inboundPath
+            InboundEndpoints = [string]::Join(', ', @($inboundEndpointSet | Select-Object -First 8))
+            OutboundPath = $outboundPath
+            OutboundEndpoints = [string]::Join(', ', @($outboundEndpointSet | Select-Object -First 8))
+            Confidence = $confidence
+        }
+    }
+
+    if ($mailFlowEstimateRows.Count -gt 0) {
+        $tableHtml += "<h3 id='domains-mailflow' style='margin-top:30px;'>Estimated Domain Mail Flow Paths</h3>"
+        $tableHtml += "<p style='margin-top:8px;color:#5f6b74;font-size:13px;'>Best-effort estimate from domain MX metadata plus Exchange connector configuration. Validate with production transport design before cutover.</p>"
+        $tableHtml += New-HtmlTable `
+            -Data $mailFlowEstimateRows `
+            -Columns @('Domain','InboundPath','InboundEndpoints','OutboundPath','OutboundEndpoints','Confidence') `
+            -ColumnHeaders @{
+                Domain = 'Domain'
+                InboundPath = 'Inbound Path'
+                InboundEndpoints = 'Inbound Endpoints (Estimated)'
+                OutboundPath = 'Outbound Path'
+                OutboundEndpoints = 'Outbound Endpoints (Estimated)'
+                Confidence = 'Confidence'
+            } `
+            -RiskColumns @{
+                Confidence = { param($val) [string]$val -eq 'Low' }
+            } `
+            -CssClass 'data-table wrap-cells'
     }
     
     # Recipient counts
@@ -15013,18 +15897,112 @@ function Build-FindingsPanel {
     return $html
 }
 
+function Get-AssessmentSectionWorkload {
+    [CmdletBinding()]
+    param([string]$SectionId)
+
+    switch ($SectionId) {
+        'tenant-overview' { return 'Foundation' }
+        'licenses' { return 'Commercial' }
+        'domains' { return 'Messaging' }
+        'recipients' { return 'Messaging' }
+        'mailboxes' { return 'Messaging' }
+        'email-activity' { return 'Messaging' }
+        'inactive-mailboxes' { return 'Messaging' }
+        'exchange-hybrid' { return 'Messaging' }
+        'cross-tenant-access' { return 'Messaging' }
+        'identity-admins' { return 'Identity & Security' }
+        'conditional-access-mfa' { return 'Identity & Security' }
+        'devices' { return 'Identity & Security' }
+        'secure-score' { return 'Identity & Security' }
+        'ad-connect' { return 'Platform' }
+        'sharepoint-onedrive' { return 'Collaboration' }
+        'ownership-governance' { return 'Collaboration' }
+        'teams' { return 'Collaboration' }
+        default { return 'Other' }
+    }
+}
+
 function Build-Navigation {
     param([array]$Sections)
-    
-    $html = "<div class='nav-container'><nav class='nav'>"
-    $html += "<a href='#highlights'>Highlights</a>"
-    
-    foreach ($section in $Sections) {
-        $html += "<a href='#$($section.Id)'>$($section.Name)</a>"
+
+    $groupOrder = @('Foundation', 'Commercial', 'Messaging', 'Identity & Security', 'Collaboration', 'Platform', 'Other')
+    $groups = [ordered]@{}
+    foreach ($name in $groupOrder) {
+        $groups[$name] = @()
     }
-    
+
+    foreach ($section in $Sections) {
+        $workload = Get-AssessmentSectionWorkload -SectionId $section.Id
+        if (-not $groups.Contains($workload)) {
+            $groups[$workload] = @()
+        }
+        $groups[$workload] += $section
+    }
+
+    $html = "<div class='nav-container'><nav class='nav'>"
+    $html += "<a href='#highlights' class='nav-link nav-link-primary'>Highlights</a>"
+    foreach ($groupName in $groups.Keys) {
+        $items = @($groups[$groupName])
+        if ($items.Count -eq 0) {
+            continue
+        }
+        $html += "<div class='nav-group'>"
+        $html += "<span class='nav-group-label'>$groupName</span>"
+        foreach ($section in $items) {
+            $html += "<a href='#$($section.Id)' class='nav-link'>$($section.Name)</a>"
+        }
+        $html += "</div>"
+    }
+
     $html += "</nav></div>"
     return $html
+}
+
+function Sort-AssessmentSections {
+    [CmdletBinding()]
+    param([array]$Sections)
+
+    if (-not $Sections -or $Sections.Count -eq 0) {
+        return @()
+    }
+
+    $orderedIds = @(
+        'tenant-overview',
+        'licenses',
+        'domains',
+        'recipients',
+        'mailboxes',
+        'email-activity',
+        'inactive-mailboxes',
+        'exchange-hybrid',
+        'cross-tenant-access',
+        'identity-admins',
+        'conditional-access-mfa',
+        'devices',
+        'secure-score',
+        'sharepoint-onedrive',
+        'ownership-governance',
+        'teams',
+        'ad-connect'
+    )
+
+    $rank = @{}
+    $idx = 0
+    foreach ($id in $orderedIds) {
+        $rank[$id] = $idx
+        $idx++
+    }
+
+    return @(
+        $Sections | Sort-Object @{
+            Expression = {
+                if ($rank.ContainsKey($_.Id)) { $rank[$_.Id] } else { 9999 }
+            }
+        }, @{
+            Expression = { [string]$_.Name }
+        }
+    )
 }
 
 function New-TenantHtmlReport {
@@ -15145,6 +16123,11 @@ function New-TenantHtmlReport {
     $federationExternal = $context.FederationExternal
     $spamFilteringSummary = $context.SpamFilteringSummary
     $smtpRelaySummary = $context.SMTPRelaySummary
+    $mailFlowConnectors = $context.MailFlowConnectors
+    $emailActivitySummary = $context.EmailActivitySummary
+    $emailActivityTopSenders = $context.EmailActivityTopSenders
+    $emailActivityTopReceivers = $context.EmailActivityTopReceivers
+    Write-Verbose "Email activity: TopSenders=$($emailActivityTopSenders.Count), TopReceivers=$($emailActivityTopReceivers.Count)"
     
     Write-Host "  Data extraction complete" -ForegroundColor Green
     
@@ -15182,7 +16165,7 @@ function New-TenantHtmlReport {
         $sectionContents += @{
             Id = 'domains'
             Name = 'Domain Details'
-            Content = Build-DomainsSection -Domains $domains -SpamFilteringSummary $spamFilteringSummary -SMTPRelaySummary $smtpRelaySummary
+            Content = Build-DomainsSection -Domains $domains -SpamFilteringSummary $spamFilteringSummary -SMTPRelaySummary $smtpRelaySummary -MailFlowConnectors $mailFlowConnectors
         }
     }
     
@@ -15217,6 +16200,14 @@ function New-TenantHtmlReport {
             Id = 'mailboxes'
             Name = 'Mailbox Overview'
             Content = Build-MailboxesSection -Mailboxes $mailboxes -InactiveMailboxes $inactiveMailboxes -PublicFolders $publicFolders
+        }
+    }
+
+    if ($emailActivitySummary -or $emailActivityTopSenders.Count -gt 0 -or $emailActivityTopReceivers.Count -gt 0) {
+        $sectionContents += @{
+            Id = 'email-activity'
+            Name = 'Email Activity'
+            Content = Build-EmailActivitySection -TopSenders $emailActivityTopSenders -TopReceivers $emailActivityTopReceivers -EmailActivitySummary $emailActivitySummary
         }
     }
     
@@ -15337,6 +16328,7 @@ function New-TenantHtmlReport {
     }
     
     #Write-Host "  Total findings collected: $($allFindings.Count)" -ForegroundColor Green
+    $sectionContents = Sort-AssessmentSections -Sections $sectionContents
     
     #endregion
     
@@ -15409,8 +16401,10 @@ function New-TenantHtmlReport {
 "@
     
     foreach ($section in $sectionContents) {
+        $sectionWorkload = Get-AssessmentSectionWorkload -SectionId $section.Id
         $htmlContent += @"
         <div class="section" id="$($section.Id)">
+            <div class="section-workload">$sectionWorkload</div>
             <h2>$($section.Name)</h2>
             $($section.Content)
         </div>
@@ -15488,23 +16482,6 @@ function New-TenantHtmlReport {
 # Initialization (Beginning)
 ########################################################
 
-# Check for and import ImportExcel module, installing if needed
-if (!(Get-Module -ListAvailable -Name ImportExcel)) {
-    try {
-        Install-Module -Name ImportExcel -Scope CurrentUser -Force -ErrorAction Stop
-    }
-    catch {
-        Write-Warning "Could not install ImportExcel module. Defaulting to CSV output only."
-        throw
-    }
-}
-try {
-    Import-Module ImportExcel -ErrorAction Stop
-} catch {
-    Write-Warning "Could not import ImportExcel module. Defaulting to CSV output only."
-    throw $_
-}
-
 # Import Office 365 Custom Module
 try {
     if ($PSVersionTable.PSVersion.Major -lt 7) {
@@ -15521,27 +16498,71 @@ catch {
     throw $_
 }
 
-# Connect to Microsoft Office 365 Services
-$connectOffice365Params = @{}
-if ($PSBoundParameters.ContainsKey('TenantId')) { $connectOffice365Params.TenantId = $TenantId }
-if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $connectOffice365Params.CertificateThumbprint = $CertificateThumbprint }
-if ($PSBoundParameters.ContainsKey('ClientId')) { $connectOffice365Params.ClientId = $ClientId }
-if ($PSBoundParameters.ContainsKey('ClientSecret')) {
-    if ([string]::IsNullOrWhiteSpace($ClientId)) {
-        throw "Client secret authentication requires -ClientId."
+# Hash table and per-run caches
+$script:tenantStatsHash = @{}
+$script:MailboxUsageGraphLookup = $null
+$script:UnifiedGroupsInventoryCache = $null
+$script:Office365GroupsActivityMailboxLookup = $null
+
+$connectionResult = $null
+$defaultTenantDisplayName = 'Tenant'
+
+if ($runExportOnly) {
+    $resolvedTenantStatsJsonPath = [System.IO.Path]::GetFullPath($TenantStatsJsonPath)
+    $loadedTenantStats = Import-TenantStatsJson -Path $resolvedTenantStatsJsonPath
+    if (-not $loadedTenantStats) {
+        throw "Export only mode could not load tenant data snapshot: $resolvedTenantStatsJsonPath"
+    }
+    if (-not ($loadedTenantStats -is [hashtable])) {
+        throw "Export only mode requires a hashtable-compatible tenant data snapshot. Snapshot format was not compatible: $resolvedTenantStatsJsonPath"
     }
 
-    $secureClientSecret = ConvertTo-SecureString -String $ClientSecret -AsPlainText -Force
-    $connectOffice365Params.ClientSecretCredential = [System.Management.Automation.PSCredential]::new($ClientId, $secureClientSecret)
+    $script:tenantStatsHash = $loadedTenantStats
+    if (
+        $script:LoadedTenantSnapshot -and
+        $script:LoadedTenantSnapshot.Contains('CollectionPlan') -and
+        $script:LoadedTenantSnapshot['CollectionPlan'] -is [System.Collections.IDictionary]
+    ) {
+        $script:SnapshotCollectionPlan = [ordered]@{}
+        foreach ($entry in $script:LoadedTenantSnapshot['CollectionPlan'].GetEnumerator()) {
+            $script:SnapshotCollectionPlan[[string]$entry.Key] = $entry.Value
+        }
+    }
+
+    if (
+        $script:tenantStatsHash.ContainsKey('TenantInfo') -and
+        $script:tenantStatsHash['TenantInfo'] -and
+        $script:tenantStatsHash['TenantInfo'].PSObject.Properties['DisplayName'] -and
+        -not [string]::IsNullOrWhiteSpace([string]$script:tenantStatsHash['TenantInfo'].DisplayName)
+    ) {
+        $defaultTenantDisplayName = [string]$script:tenantStatsHash['TenantInfo'].DisplayName
+    }
 }
-$connectionResult = Connect-Office365 @connectOffice365Params -ErrorAction Stop
+else {
+    # Connect to Microsoft Office 365 Services
+    $connectOffice365Params = @{}
+    if ($PSBoundParameters.ContainsKey('TenantId')) { $connectOffice365Params.TenantId = $TenantId }
+    if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $connectOffice365Params.CertificateThumbprint = $CertificateThumbprint }
+    if ($PSBoundParameters.ContainsKey('ClientId')) { $connectOffice365Params.ClientId = $ClientId }
+    if ($PSBoundParameters.ContainsKey('ClientSecret')) {
+        if ([string]::IsNullOrWhiteSpace($ClientId)) {
+            throw "Client secret authentication requires -ClientId."
+        }
+
+        $secureClientSecret = ConvertTo-SecureString -String $ClientSecret -AsPlainText -Force
+        $connectOffice365Params.ClientSecretCredential = [System.Management.Automation.PSCredential]::new($ClientId, $secureClientSecret)
+    }
+    $connectionResult = Connect-Office365 @connectOffice365Params -ErrorAction Stop
+
+    # Get default tenant display name from live connection
+    $defaultOrganization = $null
+    try {
+        $defaultOrganization = Get-AssessmentTenantOrganization
+    } catch {}
+    $defaultTenantDisplayName = if ($defaultOrganization -and $defaultOrganization.DisplayName) { $defaultOrganization.DisplayName } else { 'Tenant' }
+}
 
 #Get Export Path
-$defaultOrganization = $null
-try {
-    $defaultOrganization = Get-AssessmentTenantOrganization
-} catch {}
-$defaultTenantDisplayName = if ($defaultOrganization -and $defaultOrganization.DisplayName) { $defaultOrganization.DisplayName } else { 'Tenant' }
 $profileFileTagSource = if ([string]::IsNullOrWhiteSpace($effectiveOutputProfileLabel)) { $OutputProfile } else { $effectiveOutputProfileLabel }
 $profileFileTag = if ([string]::IsNullOrWhiteSpace($profileFileTagSource)) { 'Profile' } else { ($profileFileTagSource -replace '[^A-Za-z0-9_-]', '') }
 $defaultReportFileName = ("{0} Tenant Discovery Report-{1}" -f $defaultTenantDisplayName, $profileFileTag)
@@ -15571,6 +16592,7 @@ if ($OutputProfile -eq 'TenantToTenantMigration' -or $effectiveOutputProfileLabe
 
 $script:ProfileCollectionPlan = [ordered]@{
     CollectExchangeRecipients        = $true
+    CollectEmailActivityDetails      = ($effectiveGenerateTechnicalHtml -or $effectiveGenerateWorkbook -or $effectiveGenerateJson)
     CollectExchangeGroups            = $true
     CollectMailFlowRulesConnectors   = $true
     CollectPublicFolders             = $true
@@ -15589,6 +16611,7 @@ if (-not $isMergedOutputProfileSelection) {
         'ExecutiveLevel' {
             # Best-practices only profile: trim technical/deep transport collectors.
             $script:ProfileCollectionPlan.CollectExchangeRecipients = $false
+            $script:ProfileCollectionPlan.CollectEmailActivityDetails = $false
             $script:ProfileCollectionPlan.CollectExchangeGroups = $false
             $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors = $false
             $script:ProfileCollectionPlan.CollectPublicFolders = $false
@@ -15600,14 +16623,104 @@ if (-not $isMergedOutputProfileSelection) {
     }
 }
 
-Write-Log -Type INFO -Message ("Collection depth policy: Mode={0}; EntraDeep={1}; GroupCounts={2}; GroupLicenses={3}; SSOAppDetails={4}; ExtendedGraphEnrichment={5}; SecureScoreMappings={6}" -f $script:CollectionDepthPolicy.ReportingMode, $script:CollectionDepthPolicy.CollectEntraGroupDeepDetails, $script:CollectionDepthPolicy.CollectEntraGroupMemberCounts, $script:CollectionDepthPolicy.CollectEntraGroupLicenseChecks, $script:CollectionDepthPolicy.CollectSsoApplicationDetails, $script:CollectionDepthPolicy.CollectExtendedGraphEnrichment, $script:CollectionDepthPolicy.CollectSecureScoreMappings) -ExportFileLocation $ExportDetails
-Write-Log -Type INFO -Message ("Profile collection plan ({0}): ExchangeRecipients={1}; ExchangeGroups={2}; MailFlow={3}; PublicFolders={4}; SpamFiltering={5}; SMTPRelay={6}; TeamsVoice={7}; UnifiedGroups={8}; OwnershipTables={9}; AssessmentTables={10}; ConfigSummaryTables={11}; LicenseMetadata={12}" -f $effectiveOutputProfileLabel, $script:ProfileCollectionPlan.CollectExchangeRecipients, $script:ProfileCollectionPlan.CollectExchangeGroups, $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors, $script:ProfileCollectionPlan.CollectPublicFolders, $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering, $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration, $script:ProfileCollectionPlan.CollectTeamsVoiceDetails, $script:ProfileCollectionPlan.CollectUnifiedGroups, $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables, $script:ProfileCollectionPlan.BuildAssessmentReportTables, $script:ProfileCollectionPlan.BuildConfigurationSummaryTables, $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata) -ExportFileLocation $ExportDetails
+$script:SnapshotCollectionPlan = [ordered]@{
+    Exchange = [ordered]@{
+        Status = if (
+            $script:ProfileCollectionPlan.CollectExchangeRecipients -or
+            $script:ProfileCollectionPlan.CollectExchangeGroups -or
+            $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors -or
+            $script:ProfileCollectionPlan.CollectPublicFolders -or
+            $script:ProfileCollectionPlan.CollectEmailActivityDetails
+        ) { 'Collected' } else { 'Skipped' }
+        Collectors = [ordered]@{
+            ExchangeRecipients      = [bool]$script:ProfileCollectionPlan.CollectExchangeRecipients
+            ExchangeGroups          = [bool]$script:ProfileCollectionPlan.CollectExchangeGroups
+            MailFlowRulesConnectors = [bool]$script:ProfileCollectionPlan.CollectMailFlowRulesConnectors
+            PublicFolders           = [bool]$script:ProfileCollectionPlan.CollectPublicFolders
+            EmailActivity           = [bool]$script:ProfileCollectionPlan.CollectEmailActivityDetails
+        }
+        NotCollectedReason = if (
+            $script:ProfileCollectionPlan.CollectExchangeRecipients -or
+            $script:ProfileCollectionPlan.CollectExchangeGroups -or
+            $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors -or
+            $script:ProfileCollectionPlan.CollectPublicFolders -or
+            $script:ProfileCollectionPlan.CollectEmailActivityDetails
+        ) { $null } else { 'All Exchange collectors were disabled by output profile policy.' }
+    }
+    Identity = [ordered]@{
+        Status = 'Collected'
+        Collectors = [ordered]@{
+            Users               = $true
+            Admins              = $true
+            Devices             = $true
+            ConditionalAccess   = $true
+            Authentication      = $true
+            SecureScore         = $true
+            LicenseSkus         = $true
+            Domains             = $true
+        }
+        NotCollectedReason = $null
+    }
+    Collaboration = [ordered]@{
+        Status = if (
+            $script:ProfileCollectionPlan.CollectUnifiedGroups -or
+            $script:ProfileCollectionPlan.CollectTeamsVoiceDetails
+        ) { 'Collected' } else { 'Skipped' }
+        Collectors = [ordered]@{
+            UnifiedGroups  = [bool]$script:ProfileCollectionPlan.CollectUnifiedGroups
+            TeamsVoice     = [bool]$script:ProfileCollectionPlan.CollectTeamsVoiceDetails
+            SharePointSite = $true
+            Teams          = $true
+        }
+        NotCollectedReason = if (
+            $script:ProfileCollectionPlan.CollectUnifiedGroups -or
+            $script:ProfileCollectionPlan.CollectTeamsVoiceDetails
+        ) { $null } else { 'Collaboration enrichment collectors were disabled by output profile policy.' }
+    }
+    Security = [ordered]@{
+        Status = if (
+            $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering -or
+            $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration
+        ) { 'Collected' } else { 'Partial' }
+        Collectors = [ordered]@{
+            ThirdPartySpamFiltering = [bool]$script:ProfileCollectionPlan.CollectThirdPartySpamFiltering
+            SMTPRelayConfiguration  = [bool]$script:ProfileCollectionPlan.CollectSmtpRelayConfiguration
+            SecureScore             = $true
+            ConditionalAccess       = $true
+            Authentication          = $true
+        }
+        NotCollectedReason = $null
+    }
+    Tenant = [ordered]@{
+        Status = 'Collected'
+        Collectors = [ordered]@{
+            TenantInfo          = $true
+            Federation          = $true
+            AdConnect           = $true
+            OwnershipGovernance = [bool]$script:ProfileCollectionPlan.BuildOwnershipGovernanceTables
+            ConfigurationTables = [bool]$script:ProfileCollectionPlan.BuildConfigurationSummaryTables
+            AssessmentTables    = [bool]$script:ProfileCollectionPlan.BuildAssessmentReportTables
+        }
+        NotCollectedReason = $null
+    }
+}
 
-#Hash Table to hold final report data
-$script:tenantStatsHash = @{}
-$script:MailboxUsageGraphLookup = $null
-$script:UnifiedGroupsInventoryCache = $null
-$script:Office365GroupsActivityMailboxLookup = $null
+if (
+    $runExportOnly -and
+    -not (
+        $script:LoadedTenantSnapshot -and
+        $script:LoadedTenantSnapshot.Contains('CollectionPlan') -and
+        $script:LoadedTenantSnapshot['CollectionPlan'] -is [System.Collections.IDictionary]
+    )
+) {
+    foreach ($domainKey in $script:SnapshotCollectionPlan.Keys) {
+        $script:SnapshotCollectionPlan[$domainKey].Status = 'NotCollected'
+        $script:SnapshotCollectionPlan[$domainKey].NotCollectedReason = 'Export-only mode consumed a previously collected snapshot.'
+    }
+}
+
+Write-Log -Type INFO -Message ("Collection depth policy: Mode={0}; EntraDeep={1}; GroupCounts={2}; GroupLicenses={3}; SSOAppDetails={4}; ExtendedGraphEnrichment={5}; SecureScoreMappings={6}" -f $script:CollectionDepthPolicy.ReportingMode, $script:CollectionDepthPolicy.CollectEntraGroupDeepDetails, $script:CollectionDepthPolicy.CollectEntraGroupMemberCounts, $script:CollectionDepthPolicy.CollectEntraGroupLicenseChecks, $script:CollectionDepthPolicy.CollectSsoApplicationDetails, $script:CollectionDepthPolicy.CollectExtendedGraphEnrichment, $script:CollectionDepthPolicy.CollectSecureScoreMappings) -ExportFileLocation $ExportDetails
+Write-Log -Type INFO -Message ("Profile collection plan ({0}): ExchangeRecipients={1}; EmailActivity={2}; ExchangeGroups={3}; MailFlow={4}; PublicFolders={5}; SpamFiltering={6}; SMTPRelay={7}; TeamsVoice={8}; UnifiedGroups={9}; OwnershipTables={10}; AssessmentTables={11}; ConfigSummaryTables={12}; LicenseMetadata={13}" -f $effectiveOutputProfileLabel, $script:ProfileCollectionPlan.CollectExchangeRecipients, $script:ProfileCollectionPlan.CollectEmailActivityDetails, $script:ProfileCollectionPlan.CollectExchangeGroups, $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors, $script:ProfileCollectionPlan.CollectPublicFolders, $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering, $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration, $script:ProfileCollectionPlan.CollectTeamsVoiceDetails, $script:ProfileCollectionPlan.CollectUnifiedGroups, $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables, $script:ProfileCollectionPlan.BuildAssessmentReportTables, $script:ProfileCollectionPlan.BuildConfigurationSummaryTables, $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata) -ExportFileLocation $ExportDetails
 
 #Global Start Time for Script
 $global:InitialStart = Get-Date
@@ -15630,83 +16743,114 @@ try {
 Write-Host "Microsoft 365 Tenant Assessment" -ForegroundColor Cyan
 Write-Host "Progress view: overall step completion is shown after each major task." -ForegroundColor DarkCyan
 
-$GraphTest = if (Get-MgContext -ErrorAction SilentlyContinue) { "SDK" } elseif ($global:GraphHeaders) { "REST" } else { "SDK" }
-$baseCollectionSteps = 11 # Exchange(5) + Hybrid(4) + Collaboration(2)
-$identitySteps = if ($GraphTest -eq 'REST') { 2 } else { 13 }
-$combineSteps = if ($reportingMode -eq "combined" -or $reportingMode -eq "all") { 1 } else { 0 }
-$postProcessingSteps = 4
-$overallCollectionSteps = $baseCollectionSteps + $identitySteps + $combineSteps + $postProcessingSteps
-Initialize-AssessmentProgress -TotalSteps $overallCollectionSteps
-
-Write-ConsoleSection -Step '1/5' -Title 'Exchange inventory'
-Invoke-ProfileAwareAssessmentStep -Name 'Exchange recipients' -Enabled $script:ProfileCollectionPlan.CollectExchangeRecipients -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllRecipientDetails -detailLevel $reportingMode }
-Invoke-AssessmentProgressStep -Name 'Exchange mailboxes' -ScriptBlock { Get-AllExchangeMailboxDetails -detailLevel $reportingMode }
-Invoke-ProfileAwareAssessmentStep -Name 'Exchange groups' -Enabled $script:ProfileCollectionPlan.CollectExchangeGroups -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-ExchangeGroupDetails -detailLevel $reportingMode }
-Invoke-ProfileAwareAssessmentStep -Name 'Mail flow rules/connectors' -Enabled $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors -SkipReason 'Skipped in best-practices-only profile to reduce runtime.' -ScriptBlock { Get-MailFlowRulesandConnectors -detailLevel $reportingMode }
-Invoke-ProfileAwareAssessmentStep -Name 'Public folders' -Enabled $script:ProfileCollectionPlan.CollectPublicFolders -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllPublicFolderDetails -detailLevel $reportingMode }
-
-Write-ConsoleSection -Step '2/5' -Title 'Hybrid and configuration'
-Invoke-AssessmentProgressStep -Name 'Exchange hybrid configuration' -ScriptBlock { Get-ExchangeHybridConfiguration -detailLevel $reportingMode }
-Invoke-AssessmentProgressStep -Name 'Federation/cross-tenant configuration' -ScriptBlock { Get-FederationAndCrossTenantConfiguration }
-Invoke-ProfileAwareAssessmentStep -Name 'Third-party spam filtering configuration' -Enabled $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering -SkipReason 'Requires mail flow connector/rule collection, which is disabled for this profile.' -ScriptBlock { Get-ThirdPartySpamFilteringConfig }
-Invoke-ProfileAwareAssessmentStep -Name 'SMTP relay configuration' -Enabled $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration -SkipReason 'Requires mail flow connector collection, which is disabled for this profile.' -ScriptBlock { Get-SMTPRelayConfiguration }
-
-Write-ConsoleSection -Step '3/5' -Title 'Identity, devices, and licensing'
-# Determine if using REST or SDK Graph API
-switch ($GraphTest) {
-    "REST" {
-        Write-Verbose "Attempting to use Microsoft Graph REST API for Tenant Object and License details"
-        Invoke-AssessmentProgressStep -Name 'Graph user statistics' -ScriptBlock { Get-GraphUserStats }
-        Invoke-AssessmentProgressStep -Name 'Entra groups (REST)' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType REST }
-     }
-    "SDK" {
-        Write-Verbose "Attempting to use Microsoft Graph SDK for Tenant Object and License details"
-        Invoke-AssessmentProgressStep -Name 'Conditional Access policies' -ScriptBlock { Get-ConditionalAccessPoliciesReport -detailLevel $reportingMode }
-        Invoke-AssessmentProgressStep -Name 'License SKUs' -ScriptBlock { Get-AllLicenseSKUs }
-        Invoke-AssessmentProgressStep -Name 'Users' -ScriptBlock { Get-AllUserDetails -detailLevel $reportingMode }
-        Invoke-ProfileAwareAssessmentStep -Name 'Teams voice details' -Enabled $script:ProfileCollectionPlan.CollectTeamsVoiceDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-TeamsVoiceDetails }
-        Invoke-AssessmentProgressStep -Name 'Entra groups (SDK)' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType SDK }
-        Invoke-AssessmentProgressStep -Name 'Domains' -ScriptBlock { Get-AllOffice365Domains }
-        Invoke-AssessmentProgressStep -Name 'Admins' -ScriptBlock { Get-AllOffice365Admins }
-        Invoke-AssessmentProgressStep -Name 'Devices' -ScriptBlock { Get-AllDevicesReport -detailLevel $reportingMode }
-        Invoke-AssessmentProgressStep -Name 'Tenant overview' -ScriptBlock { Get-TenantOverviewInfo }
-        Invoke-AssessmentProgressStep -Name 'Authentication/SSO configuration' -ScriptBlock { Get-AuthenticationConfiguration -detailLevel $reportingMode }
-        Invoke-AssessmentProgressStep -Name 'AD Connect sync details' -ScriptBlock { Get-AdConnectSyncDetails }
-        Invoke-AssessmentProgressStep -Name 'MFA registration details' -ScriptBlock { Get-MfaRegistrationDetails }
-        Invoke-AssessmentProgressStep -Name 'Secure Score report' -ScriptBlock { Get-SecuritySecureScoreReport -detailLevel $reportingMode -MostRecent }
-     }
+$GraphTest = if ($runExportOnly) {
+    'CACHE'
 }
-
-Write-ConsoleSection -Step '4/5' -Title 'Collaboration and SharePoint'
-Invoke-ProfileAwareAssessmentStep -Name 'Unified groups' -Enabled $script:ProfileCollectionPlan.CollectUnifiedGroups -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllUnifiedGroups -detailLevel $reportingMode }
-$sharePointDiscoveryService = if ($connectionResult -and $connectionResult.SharePointOnline) {
-    'SPO'
+elseif (Get-MgContext -ErrorAction SilentlyContinue) {
+    'SDK'
 }
-elseif ($script:CollectionDepthPolicy -and $script:CollectionDepthPolicy.IsMinimum) {
-    'API'
+elseif ($global:GraphHeaders) {
+    'REST'
 }
 else {
-    'MGGraph'
+    'SDK'
 }
-Invoke-AssessmentProgressStep -Name "SharePoint/OneDrive sites ($sharePointDiscoveryService)" -ScriptBlock { Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName $sharePointDiscoveryService }
-Write-Host
+$script:CurrentGraphMode = $GraphTest
 
+if ($runExportOnly) {
+    Write-Host ("Loaded tenant data snapshot for export: {0}" -f ([System.IO.Path]::GetFullPath($TenantStatsJsonPath))) -ForegroundColor DarkCyan
+    if ($script:ProfileCollectionPlan.BuildOwnershipGovernanceTables) {
+        Update-OwnershipGovernanceTables -TenantStatsHash $script:tenantStatsHash
+    }
+    if ($script:ProfileCollectionPlan.BuildLicenseClassificationMetadata) {
+        Update-LicenseClassificationMetadata -TenantStatsHash $script:tenantStatsHash
+    }
+    if ($script:ProfileCollectionPlan.BuildAssessmentReportTables) {
+        Update-AssessmentReportTables -TenantStatsHash $script:tenantStatsHash
+    }
+    if ($script:ProfileCollectionPlan.BuildConfigurationSummaryTables) {
+        Update-ConfigurationSummaryTables -TenantStatsHash $script:tenantStatsHash
+    }
+}
+else {
+    $baseCollectionSteps = 12 # Exchange(6) + Hybrid(4) + Collaboration(2)
+    $identitySteps = if ($GraphTest -eq 'REST') { 2 } else { 13 }
+    $combineSteps = if ($reportingMode -eq "combined" -or $reportingMode -eq "all") { 1 } else { 0 }
+    $postProcessingSteps = 4
+    $overallCollectionSteps = $baseCollectionSteps + $identitySteps + $combineSteps + $postProcessingSteps
+    Initialize-AssessmentProgress -TotalSteps $overallCollectionSteps
 
-#Combine Reporting - Optional
-if ($reportingMode -eq "combined" -or $reportingMode -eq "all") {
+    Write-ConsoleSection -Step '1/5' -Title 'Exchange inventory'
+    Invoke-ProfileAwareAssessmentStep -Name 'Exchange recipients' -Enabled $script:ProfileCollectionPlan.CollectExchangeRecipients -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllRecipientDetails -detailLevel $reportingMode }
+    Invoke-AssessmentProgressStep -Name 'Exchange mailboxes' -ScriptBlock { Get-AllExchangeMailboxDetails -detailLevel $reportingMode }
+    Invoke-ProfileAwareAssessmentStep -Name 'Email activity insights' -Enabled $script:ProfileCollectionPlan.CollectEmailActivityDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-EmailActivityInsights -detailLevel $reportingMode }
+    Invoke-ProfileAwareAssessmentStep -Name 'Exchange groups' -Enabled $script:ProfileCollectionPlan.CollectExchangeGroups -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-ExchangeGroupDetails -detailLevel $reportingMode }
+    Invoke-ProfileAwareAssessmentStep -Name 'Mail flow rules/connectors' -Enabled $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors -SkipReason 'Skipped in best-practices-only profile to reduce runtime.' -ScriptBlock { Get-MailFlowRulesandConnectors -detailLevel $reportingMode }
+    Invoke-ProfileAwareAssessmentStep -Name 'Public folders' -Enabled $script:ProfileCollectionPlan.CollectPublicFolders -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllPublicFolderDetails -detailLevel $reportingMode }
+
+    Write-ConsoleSection -Step '2/5' -Title 'Hybrid and configuration'
+    Invoke-AssessmentProgressStep -Name 'Exchange hybrid configuration' -ScriptBlock { Get-ExchangeHybridConfiguration -detailLevel $reportingMode }
+    Invoke-AssessmentProgressStep -Name 'Federation/cross-tenant configuration' -ScriptBlock { Get-FederationAndCrossTenantConfiguration }
+    Invoke-ProfileAwareAssessmentStep -Name 'Third-party spam filtering configuration' -Enabled $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering -SkipReason 'Requires mail flow connector/rule collection, which is disabled for this profile.' -ScriptBlock { Get-ThirdPartySpamFilteringConfig }
+    Invoke-ProfileAwareAssessmentStep -Name 'SMTP relay configuration' -Enabled $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration -SkipReason 'Requires mail flow connector collection, which is disabled for this profile.' -ScriptBlock { Get-SMTPRelayConfiguration }
+
+    Write-ConsoleSection -Step '3/5' -Title 'Identity, devices, and licensing'
+    # Determine if using REST or SDK Graph API
+    switch ($GraphTest) {
+        "REST" {
+            Write-Verbose "Attempting to use Microsoft Graph REST API for Tenant Object and License details"
+            Invoke-AssessmentProgressStep -Name 'Graph user statistics' -ScriptBlock { Get-GraphUserStats }
+            Invoke-AssessmentProgressStep -Name 'Entra groups (REST)' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType REST }
+         }
+        "SDK" {
+            Write-Verbose "Attempting to use Microsoft Graph SDK for Tenant Object and License details"
+            Invoke-AssessmentProgressStep -Name 'Conditional Access policies' -ScriptBlock { Get-ConditionalAccessPoliciesReport -detailLevel $reportingMode }
+            Invoke-AssessmentProgressStep -Name 'License SKUs' -ScriptBlock { Get-AllLicenseSKUs }
+            Invoke-AssessmentProgressStep -Name 'Users' -ScriptBlock { Get-AllUserDetails -detailLevel $reportingMode }
+            Invoke-ProfileAwareAssessmentStep -Name 'Teams voice details' -Enabled $script:ProfileCollectionPlan.CollectTeamsVoiceDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-TeamsVoiceDetails }
+            Invoke-AssessmentProgressStep -Name 'Entra groups (SDK)' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType SDK }
+            Invoke-AssessmentProgressStep -Name 'Domains' -ScriptBlock { Get-AllOffice365Domains }
+            Invoke-AssessmentProgressStep -Name 'Admins' -ScriptBlock { Get-AllOffice365Admins }
+            Invoke-AssessmentProgressStep -Name 'Devices' -ScriptBlock { Get-AllDevicesReport -detailLevel $reportingMode }
+            Invoke-AssessmentProgressStep -Name 'Tenant overview' -ScriptBlock { Get-TenantOverviewInfo }
+            Invoke-AssessmentProgressStep -Name 'Authentication/SSO configuration' -ScriptBlock { Get-AuthenticationConfiguration -detailLevel $reportingMode }
+            Invoke-AssessmentProgressStep -Name 'AD Connect sync details' -ScriptBlock { Get-AdConnectSyncDetails }
+            Invoke-AssessmentProgressStep -Name 'MFA registration details' -ScriptBlock { Get-MfaRegistrationDetails }
+            Invoke-AssessmentProgressStep -Name 'Secure Score report' -ScriptBlock { Get-SecuritySecureScoreReport -detailLevel $reportingMode -MostRecent }
+         }
+    }
+
+    Write-ConsoleSection -Step '4/5' -Title 'Collaboration and SharePoint'
+    Invoke-ProfileAwareAssessmentStep -Name 'Unified groups' -Enabled $script:ProfileCollectionPlan.CollectUnifiedGroups -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllUnifiedGroups -detailLevel $reportingMode }
+    $sharePointDiscoveryService = if ($connectionResult -and $connectionResult.SharePointOnline) {
+        'SPO'
+    }
+    elseif ($script:CollectionDepthPolicy -and $script:CollectionDepthPolicy.IsMinimum) {
+        'API'
+    }
+    else {
+        'MGGraph'
+    }
+    Invoke-AssessmentProgressStep -Name "SharePoint/OneDrive sites ($sharePointDiscoveryService)" -ScriptBlock { Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName $sharePointDiscoveryService }
     Write-Host
-    Write-Host "Consolidating Discovery Report data for each user / object into one file" -ForegroundColor Black -BackgroundColor Green
-    #Combine Reports
-    Invoke-AssessmentProgressStep -Name 'Combined user/mailbox reporting' -ScriptBlock { Report-UserAndMailboxStats }
-}
 
-Invoke-ProfileAwareAssessmentStep -Name 'Ownership governance tables' -Enabled $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables -SkipReason 'Ownership governance table build is disabled for this profile.' -ScriptBlock { Update-OwnershipGovernanceTables -TenantStatsHash $script:tenantStatsHash }
-Invoke-ProfileAwareAssessmentStep -Name 'License classification metadata' -Enabled $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata -SkipReason 'License classification metadata is disabled for this profile.' -ScriptBlock { Update-LicenseClassificationMetadata -TenantStatsHash $script:tenantStatsHash }
-Invoke-ProfileAwareAssessmentStep -Name 'Best-practice assessment tables' -Enabled $script:ProfileCollectionPlan.BuildAssessmentReportTables -SkipReason 'Best-practice table build is disabled for this profile.' -ScriptBlock { Update-AssessmentReportTables -TenantStatsHash $script:tenantStatsHash }
-Invoke-ProfileAwareAssessmentStep -Name 'Configuration summary tables' -Enabled $script:ProfileCollectionPlan.BuildConfigurationSummaryTables -SkipReason 'Configuration summary tables are disabled for this profile.' -ScriptBlock { Update-ConfigurationSummaryTables -TenantStatsHash $script:tenantStatsHash }
-Complete-AssessmentProgress
-Write-CollectorInventoryMatrix -TenantStatsHash $script:tenantStatsHash -ExportFileLocation $ExportDetails
-Write-AssessmentStepMetricsSummary -ExportFileLocation $ExportDetails
+
+    #Combine Reporting - Optional
+    if ($reportingMode -eq "combined" -or $reportingMode -eq "all") {
+        Write-Host
+        Write-Host "Consolidating Discovery Report data for each user / object into one file" -ForegroundColor Black -BackgroundColor Green
+        #Combine Reports
+        Invoke-AssessmentProgressStep -Name 'Combined user/mailbox reporting' -ScriptBlock { Report-UserAndMailboxStats }
+    }
+
+    Invoke-ProfileAwareAssessmentStep -Name 'Ownership governance tables' -Enabled $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables -SkipReason 'Ownership governance table build is disabled for this profile.' -ScriptBlock { Update-OwnershipGovernanceTables -TenantStatsHash $script:tenantStatsHash }
+    Invoke-ProfileAwareAssessmentStep -Name 'License classification metadata' -Enabled $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata -SkipReason 'License classification metadata is disabled for this profile.' -ScriptBlock { Update-LicenseClassificationMetadata -TenantStatsHash $script:tenantStatsHash }
+    Invoke-ProfileAwareAssessmentStep -Name 'Best-practice assessment tables' -Enabled $script:ProfileCollectionPlan.BuildAssessmentReportTables -SkipReason 'Best-practice table build is disabled for this profile.' -ScriptBlock { Update-AssessmentReportTables -TenantStatsHash $script:tenantStatsHash }
+    Invoke-ProfileAwareAssessmentStep -Name 'Configuration summary tables' -Enabled $script:ProfileCollectionPlan.BuildConfigurationSummaryTables -SkipReason 'Configuration summary tables are disabled for this profile.' -ScriptBlock { Update-ConfigurationSummaryTables -TenantStatsHash $script:tenantStatsHash }
+    Complete-AssessmentProgress
+    Write-CollectorInventoryMatrix -TenantStatsHash $script:tenantStatsHash -ExportFileLocation $ExportDetails
+    Write-AssessmentStepMetricsSummary -ExportFileLocation $ExportDetails
+}
 
 
 ########################################################
@@ -15715,204 +16859,57 @@ Write-AssessmentStepMetricsSummary -ExportFileLocation $ExportDetails
 
 #Exclude specific reports from Export
 Write-ConsoleSection -Step '5/5' -Title 'Exporting results'
-$requiresFilteredExportSnapshot = ((-not $effectiveSkipWorkbook) -or (-not $effectiveSkipJsonReport))
+$requiresFilteredExportSnapshot = (-not $effectiveSkipWorkbook)
 $ExportTenantStatsHash = $null
 if ($requiresFilteredExportSnapshot) {
     $ExportTenantStatsHash = Filter-TenantStatsHash -TenantStatsStore $script:tenantStatsHash -reportingMode $reportingMode -GraphTest $GraphTest
 } else {
-    Write-Log -Type INFO -Message "Skipping filtered export snapshot build because workbook and JSON outputs are both disabled for this profile." -ExportFileLocation $ExportDetails
+    Write-Log -Type INFO -Message "Skipping filtered export snapshot build because workbook output is disabled for this profile." -ExportFileLocation $ExportDetails
 }
-$generatedArtifacts = [ordered]@{
-    Workbook                = $null
-    'Best Practices HTML'   = $null
-    Questionnaire           = $null
-    'Full HTML'             = $null
-    PDF                     = $null
-    JSON                    = $null
-}
+$generatedArtifacts = [ordered]@{}
+try {
+    if (Test-Path -Path $tenantExportPipelinePath) {
+        . $tenantExportPipelinePath
+    }
+    else {
+        throw "Export pipeline script was not found: $tenantExportPipelinePath"
+    }
 
-#Export Reports: Exports each individual hashtable to own CSV file and then combines into Excel file
-if ($effectiveSkipWorkbook) {
-    Write-Log -Type INFO -Message "Skipping workbook generation because the selected output profile disables workbook output." -ExportFileLocation $ExportDetails
-}
-else {
-    Write-Log -Type INFO -Message "Exporting the Tenant Statistics to $($ExportDetails)." -ExportFileLocation $ExportDetails
-    try {
-        Export-HashTableToExcel -hashtable $ExportTenantStatsHash -ExportDetails $ExportDetails
-        $generatedArtifacts['Workbook'] = $ExportDetails
+    if (-not (Get-Command -Name Invoke-M365TenantAssessmentExportPipeline -ErrorAction SilentlyContinue)) {
+        throw "Export pipeline function is unavailable. Expected loader path: $tenantExportPipelinePath"
     }
-    catch {
-        Write-Log -Type ERROR -Message "An error occurred in Exporting the Tenant Statistics to $($ExportDetails). Please re-run the script and verify the location is valid and the file is not open in another application. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
-    }
-}
 
-# Export JSON snapshot for reuse
-if ($effectiveSkipJsonReport) {
-    Write-Log -Type INFO -Message "Skipping JSON report generation because the selected output profile disables it or -SkipJsonReport was provided." -ExportFileLocation $ExportDetails
-} else {
-    try {
-        $jsonExportPath = $ExportDetails -replace '\.xlsx$', '.json'
-        Export-TenantStatsJson -TenantStatsHash $ExportTenantStatsHash -Path $jsonExportPath
-        $generatedArtifacts['JSON'] = $jsonExportPath
-        Write-Log -Type INFO -Message "Exported Tenant Statistics JSON to $jsonExportPath" -ExportFileLocation $ExportDetails
-    } catch {
-        Write-Log -Type WARNING -Message "Unable to export Tenant Statistics JSON: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
-    }
+    $generatedArtifacts = Invoke-M365TenantAssessmentExportPipeline `
+        -TenantStatsHash $script:tenantStatsHash `
+        -ExportTenantStatsHash $ExportTenantStatsHash `
+        -ExportDetails $ExportDetails `
+        -SkipWorkbook $effectiveSkipWorkbook `
+        -SkipBestPracticesHtml $effectiveSkipBestPracticesHtml `
+        -SkipQuestionnaire $effectiveSkipQuestionnaire `
+        -SkipHtmlReport $effectiveSkipHtmlReport `
+        -SkipPdfReport $effectiveSkipPdfReport `
+        -SkipJsonReport $effectiveSkipJsonReport `
+        -OutputProfileLabel $effectiveOutputProfileLabel `
+        -ReportingMode $reportingMode `
+        -CollectionOnly ([bool]$runCollectionOnly) `
+        -ExportOnly ([bool]$runExportOnly) `
+        -LegacyScriptRoot $PSScriptRoot
 }
-
-if ($effectiveSkipQuestionnaire) {
-    Write-Log -Type INFO -Message "Skipping questionnaire export because the selected output profile disables questionnaire output." -ExportFileLocation $ExportDetails
-}
-else {
-    try {
-        if (Get-Command -Name Export-TenantToTenantQuestionnaireMarkdown -ErrorAction SilentlyContinue) {
-            $questionnaireTemplateCandidates = @(
-                [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\..\docs\Microsoft 365 Tenant to Tenant Questionnaire.md')),
-                [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\..\docs\templates\Microsoft 365 Tenant to Tenant Questionnaire.md'))
-            )
-            $questionnaireTemplatePath = $questionnaireTemplateCandidates | Where-Object { Test-Path -Path $_ } | Select-Object -First 1
-            if (-not $questionnaireTemplatePath) {
-                throw "Questionnaire template not found in expected locations: $($questionnaireTemplateCandidates -join '; ')"
-            }
-            $questionnaireExportPath = $ExportDetails -replace '\.xlsx$', '-TenantToTenantQuestionnaire.md'
-            Export-TenantToTenantQuestionnaireMarkdown -TenantStatsHash $script:tenantStatsHash -TemplatePath $questionnaireTemplatePath -Path $questionnaireExportPath
-            $generatedArtifacts['Questionnaire'] = $questionnaireExportPath
-            Write-Log -Type INFO -Message "Exported Tenant to Tenant Questionnaire to $questionnaireExportPath" -ExportFileLocation $ExportDetails
-        } else {
-            Write-Log -Type WARNING -Message "Skipping questionnaire export because Export-TenantToTenantQuestionnaireMarkdown is unavailable." -ExportFileLocation $ExportDetails
-        }
-    } catch {
-        Write-Log -Type WARNING -Message "Unable to export Tenant to Tenant Questionnaire: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
-    }
+catch {
+    Write-Log -Type ERROR -Message "Export pipeline execution failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
+    $generatedArtifacts = [ordered]@{}
 }
 
 Write-Host ""
-
-#Export Errors
 if ($global:AllDiscoveryErrors.Count -gt 0) {
-    #Write-Host "Exporting Error Reports" -ForegroundColor Black -BackgroundColor Yellow
     try {
         $errorReportSummary = Export-ErrorReports -ExportFileLocation $ExportDetails -ErrorData $global:AllDiscoveryErrors -logReportDirectory $ExportDetails
         if ($errorReportSummary -and -not [string]::IsNullOrWhiteSpace([string]$errorReportSummary.FolderPath)) {
             $generatedArtifacts['Error Reports'] = $errorReportSummary.FolderPath
         }
-        }
+    }
     catch {
         Write-Log -Type ERROR -Message "An error occurred in Exporting the Error Reports. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
-    }
-}
-
-########################################################
-### HTML Report Generation (Commented Out) ###
-########################################################
-Write-Host ""
-Write-Host "Generating HTML Report..." -ForegroundColor Black -BackgroundColor Yellow
-
-try {
-        if ($effectiveSkipBestPracticesHtml) {
-            Write-Log -Type INFO -Message "Skipping Best Practices Analysis HTML generation because the selected output profile disables it." -ExportFileLocation $ExportDetails
-        }
-        elseif (Get-Command New-TenantAssessmentHtmlReport -ErrorAction SilentlyContinue) {
-            $assessmentHtmlPath = $ExportDetails -replace '\.xlsx$', '-BestPracticesAnalysis.html'
-            $assessmentHtmlResult = New-TenantAssessmentHtmlReport -TenantStatsHash $script:tenantStatsHash -OutputPath $assessmentHtmlPath
-            if ($assessmentHtmlResult.Success) {
-                $generatedArtifacts['Best Practices HTML'] = $assessmentHtmlResult.OutputPath
-                Write-Log -Type INFO -Message "Best Practices Analysis HTML report generated: $($assessmentHtmlResult.OutputPath)" -ExportFileLocation $ExportDetails
-            } else {
-                Write-Log -Type WARNING -Message "Best Practices Analysis HTML report generation failed: $($assessmentHtmlResult.Error)" -ExportFileLocation $ExportDetails
-            }
-        } else {
-            Write-Log -Type WARNING -Message "Skipping Best Practices Analysis HTML generation because New-TenantAssessmentHtmlReport is unavailable." -ExportFileLocation $ExportDetails
-        }
-    } catch {
-        Write-Log -Type WARNING -Message "Error generating Best Practices Analysis HTML report: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
-    }
-
-if ($effectiveSkipHtmlReport) {
-    Write-Host "Skipping full HTML report generation because the selected output profile disables it or -SkipHtmlReport was provided." -ForegroundColor Yellow
-    Write-Log -Type INFO -Message "Skipping full HTML report generation because the selected output profile disables it or -SkipHtmlReport was provided." -ExportFileLocation $ExportDetails
-}
-elseif (-not (Get-Command New-TenantHtmlReport -ErrorAction SilentlyContinue)) {
-    Write-Warning "New-TenantHtmlReport function is not available. Skipping full HTML report generation."
-    Write-Log -Type WARNING -Message "Skipping full HTML report generation because New-TenantHtmlReport is unavailable." -ExportFileLocation $ExportDetails
-}
-else {
-    try {
-        # Define custom thresholds (optional - remove this block to use defaults)
-        $reportThresholds = @{
-            LicenseUtilization = 85
-            MailboxSizeGB = 50
-            ArchiveSizeGB = 50
-            SharePointSiteGB = 1024
-            OneDriveSiteGB = 1024
-            DeviceStaleMonths = 6
-            DeviceCompliancePercent = 80
-        }
-        
-        # Generate the HTML report
-        Write-Log -Type INFO -Message "Generating HTML report from hashtable data" -ExportFileLocation $ExportDetails
-        
-        # Enable verbose output for debugging (comment out after testing)
-        #$VerbosePreference = 'SilentlyContinue'
-        $HTMLExportPath = $ExportDetails -replace '\.xlsx$', '.html'
-        
-        $htmlResult = New-TenantHtmlReport `
-            -TenantStatsHash $script:tenantStatsHash `
-            -Thresholds $reportThresholds `
-            -OutputPath $HTMLExportPath
-        
-        # Reset verbose preference
-        #$VerbosePreference = 'SilentlyContinue'
-        
-        if ($htmlResult.Success) {
-            $generatedArtifacts['Full HTML'] = $htmlResult.OutputPath
-            ##Write-Host "   Location: $($htmlResult.OutputPath)" -ForegroundColor Cyan
-            #Write-Host "   Sections: $($htmlResult.SectionCounts.TotalSections)" -ForegroundColor Gray
-            #Write-Host "   Findings: $($htmlResult.SectionCounts.TotalFindings)" -ForegroundColor Gray
-            
-            Write-Log -Type INFO -Message "HTML report generated: $($htmlResult.OutputPath)" -ExportFileLocation $ExportDetails
-            #Write-Log -Type INFO -Message "HTML report sections: $($htmlResult.SectionCounts.TotalSections)" -ExportFileLocation $ExportDetails
-            #Write-Log -Type INFO -Message "HTML report findings: $($htmlResult.SectionCounts.TotalFindings)" -ExportFileLocation $ExportDetails
-
-            if ($effectiveSkipPdfReport) {
-                #Write-Host "Skipping PDF report generation because -SkipPdfReport was provided or the selected output profile disables it." -ForegroundColor Yellow
-                #Write-Log -Type INFO -Message "Skipping PDF report generation because -SkipPdfReport was provided or the selected output profile disables it." -ExportFileLocation $ExportDetails
-            }
-            elseif (-not (Get-Command Export-TenantHtmlReportPdf -ErrorAction SilentlyContinue)) {
-                Write-Warning "PDF report helper is unavailable. HTML report was generated, but PDF export was skipped."
-                Write-Log -Type WARNING -Message "Skipping PDF report generation because Export-TenantHtmlReportPdf is unavailable." -ExportFileLocation $ExportDetails
-            }
-            else {
-                try {
-                    $pdfExportPath = $htmlResult.OutputPath -replace '\.html$', '.pdf'
-                    $pdfResult = Export-TenantHtmlReportPdf -HtmlPath $htmlResult.OutputPath -PdfPath $pdfExportPath
-
-                    if ($pdfResult.Success) {
-                        $generatedArtifacts['PDF'] = $pdfResult.PdfPath
-                        Write-Log -Type INFO -Message "PDF report generated: $($pdfResult.PdfPath) using $($pdfResult.Renderer)" -ExportFileLocation $ExportDetails
-                    } else {
-                        Write-Warning "PDF report generation failed: $($pdfResult.Error)"
-                        Write-Log -Type WARNING -Message "PDF report generation failed: $($pdfResult.Error)" -ExportFileLocation $ExportDetails
-                    }
-                } catch {
-                    Write-Warning "Error generating PDF report: $($_.Exception.Message)"
-                    Write-Log -Type WARNING -Message "Error generating PDF report: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
-                }
-            }
-        } else {
-            Write-Warning "HTML report generation failed: $($htmlResult.Error)"
-            Write-Log -Type ERROR -Message "HTML report generation failed: $($htmlResult.Error)" -ExportFileLocation $ExportDetails
-        }
-        
-    } catch {
-        Write-Warning "Error generating HTML report: $($_.Exception.Message)"
-        if ($generatedArtifacts['Workbook']) {
-            Write-Warning "Excel report is still available at: $ExportDetails"
-        }
-        Write-Log -Type ERROR -Message "HTML report generation error: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
-        
-        # Capture error but don't stop script
-        Write-Log -Type ERROR -Message "An error occurred generating HTML report. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
     }
 }
 

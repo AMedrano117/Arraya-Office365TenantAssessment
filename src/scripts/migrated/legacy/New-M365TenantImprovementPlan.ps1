@@ -44,7 +44,10 @@ function Import-ArrayaCommonModuleForPlanningScripts {
         'Get-ArrayaObjectValue',
         'Convert-ArrayaToNumber',
         'Convert-ArrayaToDate',
-        'Get-ArrayaGraphResource'
+        'Get-ArrayaGraphResource',
+        'Import-ArrayaTenantSnapshot',
+        'Convert-ArrayaSnapshotToLegacyTenantStatsHash',
+        'Test-ArrayaTenantSnapshot'
     )
     $missingCommonCommands = @(
         $requiredCommonCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
@@ -129,8 +132,29 @@ if (-not (Test-Path -Path $AssessmentJsonPath)) {
     throw "Assessment JSON not found: $AssessmentJsonPath"
 }
 
-$jsonRoot = Get-Content -Raw -Path $AssessmentJsonPath | ConvertFrom-Json
-$tenantData = if ($jsonRoot.PSObject.Properties.Name -contains 'Data') { $jsonRoot.Data } else { $jsonRoot }
+$snapshot = Import-ArrayaTenantSnapshot -Path $AssessmentJsonPath
+$snapshotValidation = Test-ArrayaTenantSnapshot -Snapshot $snapshot -Purpose ImprovementPlan
+if (-not $snapshotValidation.Valid) {
+    throw "Assessment snapshot failed validation for improvement plan: $($snapshotValidation.Errors -join '; ')"
+}
+if ($snapshotValidation.Warnings.Count -gt 0) {
+    Write-Warning "Assessment snapshot validation warnings: $($snapshotValidation.Warnings -join '; ')"
+}
+
+$tenantData = Convert-ArrayaSnapshotToLegacyTenantStatsHash -Snapshot $snapshot
+
+$snapshotDerived = @{}
+if ($snapshot.Contains('Derived') -and ($snapshot['Derived'] -is [System.Collections.IDictionary])) {
+    foreach ($entry in $snapshot['Derived'].GetEnumerator()) {
+        $snapshotDerived[[string]$entry.Key] = $entry.Value
+    }
+}
+$snapshotDiagnostics = @{}
+if ($snapshot.Contains('Diagnostics') -and ($snapshot['Diagnostics'] -is [System.Collections.IDictionary])) {
+    foreach ($entry in $snapshot['Diagnostics'].GetEnumerator()) {
+        $snapshotDiagnostics[[string]$entry.Key] = $entry.Value
+    }
+}
 
 if ([string]::IsNullOrWhiteSpace($OutputFolder)) {
     $OutputFolder = Split-Path -Path $AssessmentJsonPath -Parent
@@ -144,6 +168,55 @@ if ([string]::IsNullOrWhiteSpace($OutputPrefix)) {
 }
 
 $findings = New-Object System.Collections.Generic.List[object]
+
+$derivedFindingRows = @()
+if ($snapshotDerived.ContainsKey('Findings')) {
+    $derivedFindingRows = Convert-ArrayaObjectToArray $snapshotDerived['Findings']
+}
+elseif ($snapshotDerived.ContainsKey('BestPracticeFindings')) {
+    $derivedFindingRows = Convert-ArrayaObjectToArray $snapshotDerived['BestPracticeFindings']
+}
+
+foreach ($row in $derivedFindingRows) {
+    $derivedSeverity = [string](Get-ArrayaObjectValue -Object $row -Names @('Severity', 'Status'))
+    if ([string]::IsNullOrWhiteSpace($derivedSeverity)) {
+        $derivedSeverity = 'Medium'
+    }
+    $derivedCategory = [string](Get-ArrayaObjectValue -Object $row -Names @('Area', 'Category'))
+    if ([string]::IsNullOrWhiteSpace($derivedCategory)) {
+        $derivedCategory = 'Best Practices'
+    }
+    $derivedFinding = [string](Get-ArrayaObjectValue -Object $row -Names @('Issue', 'Finding', 'CurrentState'))
+    if ([string]::IsNullOrWhiteSpace($derivedFinding)) {
+        continue
+    }
+    $derivedRecommendation = [string](Get-ArrayaObjectValue -Object $row -Names @('Recommendation', 'NextAction', 'RoadmapStep'))
+    if ([string]::IsNullOrWhiteSpace($derivedRecommendation)) {
+        $derivedRecommendation = 'Review this recommendation and assign an implementation owner.'
+    }
+    $derivedValue = [string](Get-ArrayaObjectValue -Object $row -Names @('CurrentValue', 'CurrentState', 'Status'))
+    if ([string]::IsNullOrWhiteSpace($derivedValue)) {
+        $derivedValue = 'N/A'
+    }
+    $derivedTarget = [string](Get-ArrayaObjectValue -Object $row -Names @('TargetValue', 'BestPracticeTarget', 'TargetState'))
+    if ([string]::IsNullOrWhiteSpace($derivedTarget)) {
+        $derivedTarget = 'N/A'
+    }
+    $derivedRuleId = [string](Get-ArrayaObjectValue -Object $row -Names @('RecommendationId', 'RuleId'))
+    if ([string]::IsNullOrWhiteSpace($derivedRuleId)) {
+        $derivedRuleId = "DERIVED-$([math]::Abs($derivedFinding.GetHashCode()))"
+    }
+
+    $findings.Add((New-Finding -RuleId $derivedRuleId -Category $derivedCategory -Severity $derivedSeverity -Finding $derivedFinding -Recommendation $derivedRecommendation -Value $derivedValue -Target $derivedTarget)) | Out-Null
+}
+
+if ($snapshotDiagnostics.Count -gt 0) {
+    $diagWarningCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $snapshotDiagnostics -Names @('WarningCount'))
+    $diagErrorCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $snapshotDiagnostics -Names @('ErrorCount'))
+    if ($null -ne $diagWarningCount -or $null -ne $diagErrorCount) {
+        $findings.Add((New-Finding -RuleId 'DIAG-001' -Category 'Collection Diagnostics' -Severity 'Info' -Finding 'Snapshot contains collection diagnostics.' -Recommendation 'Review diagnostics and resolve recurring warnings/errors before final remediation planning.' -Value "Warnings=$diagWarningCount; Errors=$diagErrorCount" -Target 'Warnings=0; Errors=0')) | Out-Null
+    }
+}
 
 # Rule: Secure Score
 $secureScoreRows = Get-ImprovementPlanDataset -DataRoot $tenantData -Names @('SecuritySecureScore', 'SecureScore') -GraphUri '/v1.0/security/secureScores?$top=10' -Activity 'Secure Score fallback' -UseGraphFallback:$graphFallbackEnabled
