@@ -201,6 +201,7 @@ $requiredCommonCommands = @(
     'Get-ArrayaAssessmentOutputRoot',
     'Get-ArrayaAssessmentOutputProfilePolicy',
     'Get-ArrayaGraphResource',
+    'Get-ArrayaGraphAdminReportSettings',
     'Export-ArrayaGraphReportCsv',
     'Get-ArrayaEntraGroupClassification',
     'Invoke-ArrayaCollectionStepSafe',
@@ -225,6 +226,28 @@ if (
     $missingCommonCommands.Count -gt 0
 ) {
     Import-Module -Name $resolvedCommonManifestPath -Force -ErrorAction Stop
+}
+
+$reportingModuleManifestPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\modules\Arraya.M365.Reporting\Arraya.M365.Reporting.psd1'))
+if (-not (Test-Path -Path $reportingModuleManifestPath)) {
+    throw "Required reporting module manifest not found: $reportingModuleManifestPath"
+}
+$resolvedReportingManifestPath = (Resolve-Path -Path $reportingModuleManifestPath).Path
+$loadedReportingModule = Get-Module -Name 'Arraya.M365.Reporting' -ErrorAction SilentlyContinue | Select-Object -First 1
+$requiredReportingCommands = @(
+    'Get-ArrayaAssessmentWorksheetName',
+    'Get-ArrayaAssessmentRecommendationText',
+    'Get-ArrayaEmployeeExperienceInsightsAnalysis'
+)
+$missingReportingCommands = @(
+    $requiredReportingCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
+)
+if (
+    -not $loadedReportingModule -or
+    $loadedReportingModule.Path -ne $resolvedReportingManifestPath -or
+    $missingReportingCommands.Count -gt 0
+) {
+    Import-Module -Name $resolvedReportingManifestPath -Force -ErrorAction Stop
 }
 
 $profilePolicy = Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile $OutputProfile
@@ -445,6 +468,7 @@ function Write-ConsoleSection {
 
     Write-Host ""
     Write-Host "[$Step] $Title" -ForegroundColor Cyan
+    Write-Host ('-' * 72) -ForegroundColor DarkCyan
 }
 
 function Invoke-QuietRestMethod {
@@ -727,7 +751,7 @@ function Invoke-AssessmentProgressStep {
     Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Status "[$current/$total] $Name" -PercentComplete $percent
     try {
         & $ScriptBlock
-        Write-Host ("  Overall progress: {0}/{1} ({2}%) - {3}" -f $current, $total, $percent, $Name) -ForegroundColor DarkGray
+        Write-Host ("  Overall progress: {0}/{1} ({2}%) - {3}" -f $current, $total, $percent, $Name) -ForegroundColor Cyan
     }
     finally {
         $memoryAfter = Get-CurrentProcessMemorySnapshot
@@ -858,6 +882,9 @@ function Write-CollectorInventoryMatrix {
         [PSCustomObject]@{ Collector = 'License SKUs'; Key = 'LicenseSKUs'; Source = 'Graph'; Consumers = 'Workbook, BestPractices, HTML'; Count = 0 }
         [PSCustomObject]@{ Collector = 'Email Activity Top Senders'; Key = 'EmailActivityTopSenders'; Source = 'Graph'; Consumers = 'Workbook, HTML'; Count = 0 }
         [PSCustomObject]@{ Collector = 'Email Activity Top Receivers'; Key = 'EmailActivityTopReceivers'; Source = 'Graph'; Consumers = 'Workbook, HTML'; Count = 0 }
+        [PSCustomObject]@{ Collector = 'Teams Activity Top Users'; Key = 'TeamsActivityTopUsers'; Source = 'Graph'; Consumers = 'Workbook, BestPractices, HTML'; Count = 0 }
+        [PSCustomObject]@{ Collector = 'Office 365 Groups Activity Top Groups'; Key = 'Office365GroupsActivityTopGroups'; Source = 'Graph'; Consumers = 'Workbook, BestPractices, HTML'; Count = 0 }
+        [PSCustomObject]@{ Collector = 'Employee Experience Summary'; Key = 'EmployeeExperienceInsightsSummary'; Source = 'Graph'; Consumers = 'Workbook, BestPractices'; Count = 0 }
     )
 
     foreach ($entry in $inventory) {
@@ -1792,7 +1819,10 @@ function Export-HashTableToExcel {
         'SMTPRelaySummary',
         'TeamsVoiceSummary',
         'UnmanagedObjects',
-        'OneDriveOwnerMismatches'
+        'OneDriveOwnerMismatches',
+        'TeamsActivityTopUsers',
+        'Office365GroupsActivityTopGroups',
+        'EmployeeExperienceInsightsSummary'
     )
 
     $excludedWorksheets = @(
@@ -1839,7 +1869,7 @@ function Export-HashTableToExcel {
         "Users", "UserFullDetails", "DeviceDetails",
 
         # Mailboxes
-        "AllMailboxes", "PrimaryMailboxStats", "MailboxFullDetails", "ArchiveMailboxes", "ArchiveMailboxStats", "LitigationHoldMailboxes", "InactiveMailboxes", "InactiveMailboxDetails", "EmailActivityTopSenders", "EmailActivityTopReceivers", "NonUserMailboxes", "AllRecipients",
+        "AllMailboxes", "PrimaryMailboxStats", "MailboxFullDetails", "ArchiveMailboxes", "ArchiveMailboxStats", "LitigationHoldMailboxes", "InactiveMailboxes", "InactiveMailboxDetails", "EmailActivityTopSenders", "EmailActivityTopReceivers", "TeamsActivityTopUsers", "Office365GroupsActivityTopGroups", "EmployeeExperienceInsightsSummary", "NonUserMailboxes", "AllRecipients",
 
         # Groups
         "AllExchangeGroups", "UnifiedGroups", "EntraIDGroups",
@@ -2127,7 +2157,8 @@ function Get-AllExchangeMailboxDetails {
                     "ExternalDirectoryObjectId", "DisplayName", "UserPrincipalName", "RecipientTypeDetails", "PrimarySmtpAddress"
                     "Identity", "Guid", "ExchangeGuid", "ArchiveStatus", "ArchiveState", "ArchiveGuid", "ArchiveName"
                     "WhenMailboxCreated", "UsageLocation", "IsInactiveMailbox", "WasInactiveMailbox", "WhenSoftDeleted"
-                    "LitigationHoldEnabled", "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias", "EmailAddresses"
+                    "LitigationHoldEnabled", "RetentionHoldEnabled", "DelayHoldApplied", "RetentionPolicy"
+                    "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias", "EmailAddresses"
                 )
 
                 $DesiredProperties = @(
@@ -2135,7 +2166,8 @@ function Get-AllExchangeMailboxDetails {
                     "Identity", "Guid", "ExchangeGuid", "ArchiveStatus", "ArchiveState", "ArchiveGuid",
                     @{Name="ArchiveName"; Expression={$_.ArchiveName -join ","}},
                     "WhenMailboxCreated", "UsageLocation", "IsInactiveMailbox", "WasInactiveMailbox", "WhenSoftDeleted",
-                    "LitigationHoldEnabled", "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias",
+                    "LitigationHoldEnabled", "RetentionHoldEnabled", "DelayHoldApplied", "RetentionPolicy",
+                    "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias",
                     @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}}
                 )
 
@@ -2337,7 +2369,7 @@ function Get-AllExchangeMailboxDetails {
             }
         ).Count
         if ($shouldPreCacheUnifiedGroupStats) {
-            Write-Host ("    Step 3/3 Unified group pre-cache: scheduled | estimated group mailboxes in inventory={0}" -f $estimatedGroupMailboxCount) -ForegroundColor DarkGray
+            #Write-Host ("    Step 3/3 Unified group pre-cache: scheduled | estimated group mailboxes in inventory={0}" -f $estimatedGroupMailboxCount) -ForegroundColor DarkGray
         }
 
         # Try Graph mailbox usage report (fast) for active mailboxes
@@ -2873,6 +2905,10 @@ function Get-EmailActivityInsights {
     $script:tenantStatsHash['EmailActivityTopSenders'] = @{}
     $script:tenantStatsHash['EmailActivityTopReceivers'] = @{}
     $script:tenantStatsHash['EmailActivitySummary'] = @{}
+    $script:tenantStatsHash['TeamsActivityTopUsers'] = @{}
+    $script:tenantStatsHash['Office365GroupsActivityTopGroups'] = @{}
+    $script:tenantStatsHash['EmployeeExperienceInsightsSummary'] = @{}
+    $adminReportSettings = $null
 
     Write-Host "Getting email activity details ..." -ForegroundColor Cyan -NoNewline
     Write-Log -Type INFO -Message "[Get-EmailActivityInsights] START: Gathering email activity details from Microsoft Graph" -ExportFileLocation $ExportDetails
@@ -2892,43 +2928,82 @@ function Get-EmailActivityInsights {
         return $null
     }
 
-    try {
-        $periodDuration = if ($detailLevel -eq 'minimum') { 'D90' } else { 'D180' }
-        $topLimit = if ($detailLevel -eq 'minimum') { 10 } else { 25 }
-        $emailActivityRows = @()
-        $emailActivitySource = 'Export-ArrayaGraphReportCsv'
+    function Get-ActivityReportRows {
+        param(
+            [Parameter(Mandatory)]
+            [string]$ServiceName,
+            [Parameter(Mandatory)]
+            [string]$PeriodDuration,
+            [Parameter(Mandatory)]
+            [string]$FallbackUri,
+            [Parameter(Mandatory)]
+            [string]$FallbackActivity
+        )
 
+        $rows = @()
+        $source = 'Export-ArrayaGraphReportCsv'
         $graphActivityCommand = Get-Command -Name 'Office365Custom\Get-GraphAPIActivityReport' -ErrorAction SilentlyContinue
         if ($graphActivityCommand) {
             try {
                 $savedProgressPreference = $ProgressPreference
                 try {
                     $ProgressPreference = 'SilentlyContinue'
-                    $emailActivityRows = @(
-                        Office365Custom\Get-GraphAPIActivityReport -ServiceName EmailActivity -PeriodDuration $periodDuration -ErrorAction Stop
+                    $rows = @(
+                        Office365Custom\Get-GraphAPIActivityReport -ServiceName $ServiceName -PeriodDuration $PeriodDuration -ErrorAction Stop
                     )
                 }
                 finally {
                     $ProgressPreference = $savedProgressPreference
                 }
 
-                if ($emailActivityRows.Count -gt 0) {
-                    $emailActivitySource = 'Office365Custom.Get-GraphAPIActivityReport'
+                if ($rows.Count -gt 0) {
+                    $source = 'Office365Custom.Get-GraphAPIActivityReport'
                 }
             }
             catch {
-                Write-Log -Type WARNING -Message "[Get-EmailActivityInsights] Office365Custom\\Get-GraphAPIActivityReport failed: $($_.Exception.Message). Falling back to direct Graph report URI." -ExportFileLocation $ExportDetails
-                $emailActivityRows = @()
+                Write-Log -Type WARNING -Message "[Get-EmailActivityInsights] Office365Custom\\Get-GraphAPIActivityReport failed for service '$ServiceName': $($_.Exception.Message). Falling back to direct Graph report URI." -ExportFileLocation $ExportDetails
+                $rows = @()
             }
         }
 
-        if ($emailActivityRows.Count -eq 0) {
-            $emailActivityUri = "https://graph.microsoft.com/v1.0/reports/getEmailActivityUserDetail(period='$periodDuration')"
-            $emailActivityRows = @(
-                Export-ArrayaGraphReportCsv -Uri $emailActivityUri -Activity "Email activity user detail report ($periodDuration)" -Headers $global:GraphHeaders
+        if ($rows.Count -eq 0) {
+            $rows = @(
+                Export-ArrayaGraphReportCsv -Uri $FallbackUri -Activity $FallbackActivity -Headers $global:GraphHeaders
             )
-            $emailActivitySource = 'Export-ArrayaGraphReportCsv'
+            $source = 'Export-ArrayaGraphReportCsv'
         }
+
+        return [PSCustomObject]@{
+            Rows   = @($rows)
+            Source = $source
+        }
+    }
+
+    try {
+        $periodDuration = if ($detailLevel -eq 'minimum') { 'D90' } else { 'D180' }
+        $topLimit = if ($detailLevel -eq 'minimum') { 10 } else { 25 }
+        $emailActivityRows = @()
+        $emailActivitySource = 'Export-ArrayaGraphReportCsv'
+        $adminReportSettings = Get-ArrayaGraphAdminReportSettings -Headers $global:GraphHeaders
+        if ($adminReportSettings) {
+            $script:tenantStatsHash['EmailActivitySummary']['AdminReportSettings'] = $adminReportSettings
+            if (
+                $adminReportSettings.PSObject.Properties['Available'] -and
+                $adminReportSettings.Available -eq $false -and
+                $adminReportSettings.PSObject.Properties['ErrorMessage'] -and
+                -not [string]::IsNullOrWhiteSpace([string]$adminReportSettings.ErrorMessage)
+            ) {
+                Write-Log -Type WARNING -Message "[Get-EmailActivityInsights] Unable to read admin report settings: $($adminReportSettings.ErrorMessage)" -ExportFileLocation $ExportDetails
+            }
+        }
+
+        $emailActivityReport = Get-ActivityReportRows `
+            -ServiceName 'EmailActivity' `
+            -PeriodDuration $periodDuration `
+            -FallbackUri "https://graph.microsoft.com/v1.0/reports/getEmailActivityUserDetail(period='$periodDuration')" `
+            -FallbackActivity "Email activity user detail report ($periodDuration)"
+        $emailActivityRows = @($emailActivityReport.Rows)
+        $emailActivitySource = [string]$emailActivityReport.Source
 
         if ($emailActivityRows.Count -eq 0) {
             $script:tenantStatsHash['EmailActivitySummary']['Summary'] = [PSCustomObject]@{
@@ -2940,9 +3015,9 @@ function Get-EmailActivityInsights {
                 TotalSendCount    = 0
                 TotalReceiveCount = 0
                 ReportRefreshDate = $null
+                DisplayConcealedNames = if ($adminReportSettings -and $adminReportSettings.PSObject.Properties['DisplayConcealedNames']) { $adminReportSettings.DisplayConcealedNames } else { $null }
             }
             Write-Log -Type INFO -Message "[Get-EmailActivityInsights] No rows returned for email activity report." -ExportFileLocation $ExportDetails
-            return
         }
 
         $activityByUpn = @{}
@@ -3074,10 +3149,160 @@ function Get-EmailActivityInsights {
             ReportRefreshDate = $latestRefresh
             TopSenderCount    = [int]$topSenders.Count
             TopReceiverCount  = [int]$topReceivers.Count
+            DisplayConcealedNames = if ($adminReportSettings -and $adminReportSettings.PSObject.Properties['DisplayConcealedNames']) { $adminReportSettings.DisplayConcealedNames } else { $null }
         }
 
-        Write-Host ("Top senders={0}, top receivers={1}" -f $topSenders.Count, $topReceivers.Count) -ForegroundColor DarkGray -NoNewline
+        $teamsReportRows = @()
+        $teamsReportSource = 'Unavailable'
+        $teamsActiveUsers = 0
+        try {
+            $teamsActivityReport = Get-ActivityReportRows `
+                -ServiceName 'TeamsUserActivity' `
+                -PeriodDuration $periodDuration `
+                -FallbackUri "https://graph.microsoft.com/v1.0/reports/getTeamsUserActivityUserDetail(period='$periodDuration')" `
+                -FallbackActivity "Teams user activity detail report ($periodDuration)"
+            $teamsReportRows = @($teamsActivityReport.Rows)
+            $teamsReportSource = [string]$teamsActivityReport.Source
+
+            $teamsNormalizedUsers = @()
+            foreach ($row in $teamsReportRows) {
+                $upn = Get-GraphReportFieldValue -Row $row -FieldNames @('User Principal Name', 'UserPrincipalName')
+                $displayName = Get-GraphReportFieldValue -Row $row -FieldNames @('Display Name', 'User Display Name')
+                if ([string]::IsNullOrWhiteSpace($upn) -and [string]::IsNullOrWhiteSpace($displayName)) {
+                    continue
+                }
+                $teamChatCount = Convert-GraphReportValueToInt64 -Value (Get-GraphReportFieldValue -Row $row -FieldNames @('Team Chat Message Count', 'TeamChatMessageCount'))
+                $privateChatCount = Convert-GraphReportValueToInt64 -Value (Get-GraphReportFieldValue -Row $row -FieldNames @('Private Chat Message Count', 'PrivateChatMessageCount'))
+                $callCount = Convert-GraphReportValueToInt64 -Value (Get-GraphReportFieldValue -Row $row -FieldNames @('Call Count', 'CallCount'))
+                $meetingCount = Convert-GraphReportValueToInt64 -Value (Get-GraphReportFieldValue -Row $row -FieldNames @('Meeting Count', 'MeetingCount'))
+                $activityScore = [int64]($teamChatCount + $privateChatCount + $callCount + $meetingCount)
+
+                $teamsNormalizedUsers += [PSCustomObject]@{
+                    UserPrincipalName       = if ([string]::IsNullOrWhiteSpace($upn)) { $displayName } else { $upn }
+                    DisplayName             = if ([string]::IsNullOrWhiteSpace($displayName)) { $upn } else { $displayName }
+                    TeamChatMessageCount    = [int64]$teamChatCount
+                    PrivateChatMessageCount = [int64]$privateChatCount
+                    CallCount               = [int64]$callCount
+                    MeetingCount            = [int64]$meetingCount
+                    ActivityScore           = [int64]$activityScore
+                    LastActivityDate        = Get-GraphReportFieldValue -Row $row -FieldNames @('Last Activity Date', 'LastActivityDate')
+                }
+            }
+
+            $teamsActiveUsers = @($teamsNormalizedUsers | Where-Object { [int64]$_.ActivityScore -gt 0 }).Count
+            $teamsTopUsers = @(
+                $teamsNormalizedUsers |
+                    Where-Object { [int64]$_.ActivityScore -gt 0 } |
+                    Sort-Object ActivityScore, TeamChatMessageCount, PrivateChatMessageCount -Descending |
+                    Select-Object -First $topLimit
+            )
+
+            $teamsRank = 0
+            foreach ($teamsUser in $teamsTopUsers) {
+                $teamsRank++
+                $identityForKey = if ([string]::IsNullOrWhiteSpace([string]$teamsUser.UserPrincipalName)) { [string]$teamsUser.DisplayName } else { [string]$teamsUser.UserPrincipalName }
+                $key = "{0:D3}-{1}" -f $teamsRank, (($identityForKey -replace '[^a-zA-Z0-9@._-]', '_').ToLowerInvariant())
+                $script:tenantStatsHash['TeamsActivityTopUsers'][$key] = [PSCustomObject]@{
+                    Rank                    = $teamsRank
+                    UserPrincipalName       = $teamsUser.UserPrincipalName
+                    DisplayName             = $teamsUser.DisplayName
+                    TeamChatMessageCount    = [int64]$teamsUser.TeamChatMessageCount
+                    PrivateChatMessageCount = [int64]$teamsUser.PrivateChatMessageCount
+                    CallCount               = [int64]$teamsUser.CallCount
+                    MeetingCount            = [int64]$teamsUser.MeetingCount
+                    ActivityScore           = [int64]$teamsUser.ActivityScore
+                    LastActivityDate        = $teamsUser.LastActivityDate
+                }
+            }
+        }
+        catch {
+            Write-Log -Type WARNING -Message "[Get-EmailActivityInsights] Unable to process Teams activity insight report. $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        }
+
+        $groupsReportRows = @()
+        $groupsReportSource = 'Unavailable'
+        $activeGroups = 0
+        try {
+            $groupsActivityReport = Get-ActivityReportRows `
+                -ServiceName 'Office365GroupsActivity' `
+                -PeriodDuration $periodDuration `
+                -FallbackUri "https://graph.microsoft.com/v1.0/reports/getOffice365GroupsActivityDetail(period='$periodDuration')" `
+                -FallbackActivity "Office 365 groups activity detail report ($periodDuration)"
+            $groupsReportRows = @($groupsActivityReport.Rows)
+            $groupsReportSource = [string]$groupsActivityReport.Source
+
+            $normalizedGroups = @()
+            foreach ($row in $groupsReportRows) {
+                $groupDisplayName = Get-GraphReportFieldValue -Row $row -FieldNames @('Group Display Name', 'GroupDisplayName')
+                $groupId = Get-GraphReportFieldValue -Row $row -FieldNames @('Group Id', 'GroupId')
+                if ([string]::IsNullOrWhiteSpace($groupDisplayName) -and [string]::IsNullOrWhiteSpace($groupId)) {
+                    continue
+                }
+                $receivedEmailCount = Convert-GraphReportValueToInt64 -Value (Get-GraphReportFieldValue -Row $row -FieldNames @('Exchange Received Email Count', 'ExchangeReceivedEmailCount'))
+                $mailboxItemCount = Convert-GraphReportValueToInt64 -Value (Get-GraphReportFieldValue -Row $row -FieldNames @('Exchange Mailbox Total Item Count', 'ExchangeMailboxTotalItemCount'))
+                $sharePointActiveFileCount = Convert-GraphReportValueToInt64 -Value (Get-GraphReportFieldValue -Row $row -FieldNames @('SharePoint Active File Count', 'SharePointActiveFileCount'))
+                $yammerPostedMessageCount = Convert-GraphReportValueToInt64 -Value (Get-GraphReportFieldValue -Row $row -FieldNames @('Yammer Posted Message Count', 'YammerPostedMessageCount'))
+                $activityScore = [int64]($receivedEmailCount + $mailboxItemCount + $sharePointActiveFileCount + $yammerPostedMessageCount)
+
+                $normalizedGroups += [PSCustomObject]@{
+                    GroupDisplayName              = if ([string]::IsNullOrWhiteSpace($groupDisplayName)) { $groupId } else { $groupDisplayName }
+                    GroupId                       = $groupId
+                    ExchangeReceivedEmailCount    = [int64]$receivedEmailCount
+                    ExchangeMailboxTotalItemCount = [int64]$mailboxItemCount
+                    SharePointActiveFileCount     = [int64]$sharePointActiveFileCount
+                    YammerPostedMessageCount      = [int64]$yammerPostedMessageCount
+                    ActivityScore                 = [int64]$activityScore
+                    LastActivityDate              = Get-GraphReportFieldValue -Row $row -FieldNames @('Last Activity Date', 'LastActivityDate')
+                }
+            }
+
+            $activeGroups = @($normalizedGroups | Where-Object { [int64]$_.ActivityScore -gt 0 }).Count
+            $topGroups = @(
+                $normalizedGroups |
+                    Where-Object { [int64]$_.ActivityScore -gt 0 } |
+                    Sort-Object ActivityScore, ExchangeReceivedEmailCount -Descending |
+                    Select-Object -First $topLimit
+            )
+
+            $groupsRank = 0
+            foreach ($group in $topGroups) {
+                $groupsRank++
+                $identityForKey = if ([string]::IsNullOrWhiteSpace([string]$group.GroupId)) { [string]$group.GroupDisplayName } else { [string]$group.GroupId }
+                $key = "{0:D3}-{1}" -f $groupsRank, (($identityForKey -replace '[^a-zA-Z0-9@._-]', '_').ToLowerInvariant())
+                $script:tenantStatsHash['Office365GroupsActivityTopGroups'][$key] = [PSCustomObject]@{
+                    Rank                           = $groupsRank
+                    GroupDisplayName               = $group.GroupDisplayName
+                    GroupId                        = $group.GroupId
+                    ActivityScore                  = [int64]$group.ActivityScore
+                    ExchangeReceivedEmailCount     = [int64]$group.ExchangeReceivedEmailCount
+                    ExchangeMailboxTotalItemCount  = [int64]$group.ExchangeMailboxTotalItemCount
+                    SharePointActiveFileCount      = [int64]$group.SharePointActiveFileCount
+                    YammerPostedMessageCount       = [int64]$group.YammerPostedMessageCount
+                    LastActivityDate               = $group.LastActivityDate
+                }
+            }
+        }
+        catch {
+            Write-Log -Type WARNING -Message "[Get-EmailActivityInsights] Unable to process Office 365 groups activity insight report. $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        }
+
+        $script:tenantStatsHash['EmployeeExperienceInsightsSummary']['Summary'] = [PSCustomObject]@{
+            PeriodDuration               = $periodDuration
+            EmailReportRows              = [int]$emailActivityRows.Count
+            EmailActiveUsers             = [int]$activeUsers
+            TeamsReportRows              = [int]$teamsReportRows.Count
+            TeamsActiveUsers             = [int]$teamsActiveUsers
+            GroupsReportRows             = [int]$groupsReportRows.Count
+            ActiveGroups                 = [int]$activeGroups
+            EmailSource                  = $emailActivitySource
+            TeamsSource                  = $teamsReportSource
+            GroupsSource                 = $groupsReportSource
+            ReportRefreshDate            = $latestRefresh
+        }
+
+        #Write-Host ("Top senders={0}, top receivers={1}" -f $topSenders.Count, $topReceivers.Count) -ForegroundColor DarkGray -NoNewline
         Write-Log -Type INFO -Message "[Get-EmailActivityInsights] Email activity summary: source=$emailActivitySource; period=$periodDuration; reportRows=$($emailActivityRows.Count); usersNormalized=$($normalizedUsers.Count); activeUsers=$activeUsers; topSenders=$($topSenders.Count); topReceivers=$($topReceivers.Count)." -ExportFileLocation $ExportDetails
+        Write-Log -Type INFO -Message "[Get-EmailActivityInsights] Collaboration insight summary: teamsRows=$($teamsReportRows.Count); teamsActiveUsers=$teamsActiveUsers; groupsRows=$($groupsReportRows.Count); activeGroups=$activeGroups; teamsSource=$teamsReportSource; groupsSource=$groupsReportSource." -ExportFileLocation $ExportDetails
     }
     catch {
         Write-Log -Type ERROR -Message "[Get-EmailActivityInsights] An error occurred while gathering email activity details. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
@@ -4129,13 +4354,8 @@ function Get-AllPublicFolderDetails {
     } else {
         Get-ArrayaCollectionDepthPolicy -ReportingMode ((Get-Culture).TextInfo.ToTitleCase($detailLevel.ToLowerInvariant()))
     }
+    # Collect permissions in all detail modes so combined-mode output keeps full public-folder governance visibility.
     $collectPublicFolderPermissions = $true
-    if (
-        ($detailLevel -eq 'combined') -or
-        ($depthPolicy -and $depthPolicy.PSObject.Properties['IsCombined'] -and ($depthPolicy.IsCombined -eq $true))
-    ) {
-        $collectPublicFolderPermissions = $false
-    }
     # Ensure global hash table structure
     if (-not $script:tenantStatsHash) {
         $script:tenantStatsHash = @{}
@@ -4243,10 +4463,6 @@ function Get-AllPublicFolderDetails {
         finally {
             Write-ProgressHelper -Total $publicFolderPermProgressTotal -Id $publicFolderPermProgressId -Activity "Processing all public folder permissions" -Completed
         }
-    }
-    else {
-        Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] Combined mode optimization active. Skipping public folder permission expansion and exporting an empty PublicFolderPerms table." -ExportFileLocation $ExportDetails
-        Write-Host "Skipping Public Folder Permissions in combined mode..." -ForegroundColor DarkGray -nonewline
     }
     
     #Combine Stats with Details
@@ -10634,6 +10850,160 @@ function Get-MailboxAnalysis {
     }
 }
 
+function Get-ComplianceRetentionAnalysis {
+    <#
+    .SYNOPSIS
+        Summarizes oversized mailbox/archive compliance posture against litigation and retention holds
+    #>
+    param([array]$Mailboxes)
+
+    function Convert-ToMailboxBoolean {
+        param([AllowNull()]$Value)
+        if ($null -eq $Value) { return $false }
+        if ($Value -is [bool]) { return $Value }
+        $valueText = ([string]$Value).Trim()
+        if ([string]::IsNullOrWhiteSpace($valueText)) { return $false }
+        switch -Regex ($valueText.ToLowerInvariant()) {
+            '^(true|1|yes|y)$' { return $true }
+            default {
+                try { return [bool]$Value } catch { return $false }
+            }
+        }
+    }
+
+    function Get-MailboxNumericSize {
+        param([AllowNull()]$Value)
+        if ($null -eq $Value) { return 0 }
+        $valueText = [string]$Value
+        if ([string]::IsNullOrWhiteSpace($valueText) -or $valueText -eq 'N/A') { return 0 }
+        try { return [double]$valueText } catch { return 0 }
+    }
+
+    function Get-MailboxHoldCoverageSummary {
+        param([array]$Records)
+
+        $summary = [ordered]@{
+            TotalOversized          = 0
+            LitigationHoldCount     = 0
+            RetentionHoldCount      = 0
+            RetentionControlCount   = 0
+            BothCount               = 0
+            UncoveredCount          = 0
+            UnknownCoverageCount    = 0
+        }
+
+        if (-not $Records -or $Records.Count -eq 0) {
+            return [PSCustomObject]$summary
+        }
+
+        foreach ($record in $Records) {
+            if ($null -eq $record) {
+                continue
+            }
+            $summary.TotalOversized++
+
+            $hasLitProp = ($record.PSObject -and $record.PSObject.Properties['LitigationHoldEnabled'])
+            $hasRetentionProp = ($record.PSObject -and $record.PSObject.Properties['RetentionHoldEnabled'])
+            $hasDelayHoldProp = ($record.PSObject -and $record.PSObject.Properties['DelayHoldApplied'])
+            $hasRetentionPolicyProp = ($record.PSObject -and $record.PSObject.Properties['RetentionPolicy'])
+            $hasInPlaceHoldsProp = ($record.PSObject -and $record.PSObject.Properties['InPlaceHolds'])
+
+            $litigationHold = $hasLitProp -and (Convert-ToMailboxBoolean -Value $record.LitigationHoldEnabled)
+            $retentionHold = $hasRetentionProp -and (Convert-ToMailboxBoolean -Value $record.RetentionHoldEnabled)
+            $delayHold = $hasDelayHoldProp -and (Convert-ToMailboxBoolean -Value $record.DelayHoldApplied)
+            $hasRetentionPolicy = $hasRetentionPolicyProp -and -not [string]::IsNullOrWhiteSpace([string]$record.RetentionPolicy)
+            $hasInPlaceHolds = $hasInPlaceHoldsProp -and -not [string]::IsNullOrWhiteSpace([string]$record.InPlaceHolds)
+            $retentionControl = ($retentionHold -or $delayHold -or $hasRetentionPolicy -or $hasInPlaceHolds)
+
+            if ($litigationHold) { $summary.LitigationHoldCount++ }
+            if ($retentionHold) { $summary.RetentionHoldCount++ }
+            if ($retentionControl) { $summary.RetentionControlCount++ }
+            if ($litigationHold -and $retentionControl) { $summary.BothCount++ }
+
+            $coverageSignalsKnown = ($hasLitProp -or $hasRetentionProp -or $hasDelayHoldProp -or $hasRetentionPolicyProp -or $hasInPlaceHoldsProp)
+            if (-not $coverageSignalsKnown) {
+                $summary.UnknownCoverageCount++
+            }
+            elseif (-not $litigationHold -and -not $retentionControl) {
+                $summary.UncoveredCount++
+            }
+        }
+
+        return [PSCustomObject]$summary
+    }
+
+    $findings = @()
+    if (-not $Mailboxes -or $Mailboxes.Count -eq 0) {
+        return @{
+            Findings = @()
+            PrimaryOversizedSummary = [PSCustomObject]@{}
+            ArchiveOversizedSummary = [PSCustomObject]@{}
+        }
+    }
+
+    $mailboxThreshold = [double]$script:DefaultThresholds.MailboxSizeGB
+    $archiveThreshold = [double]$script:DefaultThresholds.ArchiveSizeGB
+
+    $oversizedPrimary = @(
+        $Mailboxes | Where-Object {
+            (Get-MailboxNumericSize -Value $_.MBXSizeGB) -gt $mailboxThreshold
+        }
+    )
+    $oversizedArchive = @(
+        $Mailboxes | Where-Object {
+            (Get-MailboxNumericSize -Value $_.ArchiveSizeGB) -gt $archiveThreshold
+        }
+    )
+
+    $primarySummary = Get-MailboxHoldCoverageSummary -Records $oversizedPrimary
+    $archiveSummary = Get-MailboxHoldCoverageSummary -Records $oversizedArchive
+
+    $findings += @{
+        Type = 'Info'
+        Category = 'Oversized Mailbox Compliance Coverage'
+        Message = "Primary > $mailboxThreshold GB: $($primarySummary.TotalOversized) (litigation hold=$($primarySummary.LitigationHoldCount), retention hold=$($primarySummary.RetentionHoldCount), any retention control=$($primarySummary.RetentionControlCount), both=$($primarySummary.BothCount), uncovered=$($primarySummary.UncoveredCount), unknown=$($primarySummary.UnknownCoverageCount)). Archive > $archiveThreshold GB: $($archiveSummary.TotalOversized) (litigation hold=$($archiveSummary.LitigationHoldCount), retention hold=$($archiveSummary.RetentionHoldCount), any retention control=$($archiveSummary.RetentionControlCount), both=$($archiveSummary.BothCount), uncovered=$($archiveSummary.UncoveredCount), unknown=$($archiveSummary.UnknownCoverageCount))."
+        Anchor = 'compliance-retention'
+        Priority = 2
+    }
+
+    $totalUncovered = [int]$primarySummary.UncoveredCount + [int]$archiveSummary.UncoveredCount
+    if ($totalUncovered -gt 0) {
+        $findings += @{
+            Type = 'Warning'
+            Category = 'Oversized Mailboxes Without Hold Controls'
+            Message = "$totalUncovered oversized mailbox/archive object(s) have neither litigation hold nor retention controls."
+            Anchor = 'compliance-retention'
+            Priority = 2
+        }
+    }
+    elseif (($primarySummary.TotalOversized + $archiveSummary.TotalOversized) -gt 0) {
+        $findings += @{
+            Type = 'Info'
+            Category = 'Oversized Mailbox Hold Coverage'
+            Message = 'All oversized mailbox/archive objects have at least one hold signal (litigation hold and/or retention control).'
+            Anchor = 'compliance-retention'
+            Priority = 3
+        }
+    }
+
+    $totalUnknown = [int]$primarySummary.UnknownCoverageCount + [int]$archiveSummary.UnknownCoverageCount
+    if ($totalUnknown -gt 0) {
+        $findings += @{
+            Type = 'Info'
+            Category = 'Hold Signal Coverage'
+            Message = "$totalUnknown oversized object(s) did not expose hold properties in this profile; rerun with a deeper profile for full hold comparison fidelity."
+            Anchor = 'compliance-retention'
+            Priority = 3
+        }
+    }
+
+    return @{
+        Findings = @($findings)
+        PrimaryOversizedSummary = $primarySummary
+        ArchiveOversizedSummary = $archiveSummary
+    }
+}
+
 function Get-DomainAnalysis {
     <#
     .SYNOPSIS
@@ -12547,8 +12917,26 @@ function Get-TenantAssessmentContext {
     }
 
     $emailActivitySummary = $null
+    $adminReportSettings = $null
+    $employeeExperienceInsightsSummary = $null
     if ($TenantStatsHash.ContainsKey('EmailActivitySummary')) {
-        $emailActivitySummary = Resolve-ContextSummaryRecord -Container $TenantStatsHash['EmailActivitySummary']
+        $emailActivityContainer = $TenantStatsHash['EmailActivitySummary']
+        $emailActivitySummary = Resolve-ContextSummaryRecord -Container $emailActivityContainer
+        if ($emailActivityContainer -is [System.Collections.IDictionary] -and $emailActivityContainer.Contains('AdminReportSettings')) {
+            $adminReportSettings = Resolve-ContextSummaryRecord -Container $emailActivityContainer['AdminReportSettings']
+        }
+        elseif ($emailActivitySummary -is [System.Collections.IDictionary] -and $emailActivitySummary.Contains('AdminReportSettings')) {
+            $adminReportSettings = Resolve-ContextSummaryRecord -Container $emailActivitySummary['AdminReportSettings']
+        }
+        elseif ($emailActivitySummary -and $emailActivitySummary.PSObject.Properties['AdminReportSettings']) {
+            $adminReportSettings = Resolve-ContextSummaryRecord -Container $emailActivitySummary.AdminReportSettings
+        }
+    }
+    if (-not $adminReportSettings -and $TenantStatsHash.ContainsKey('AdminReportSettings')) {
+        $adminReportSettings = Resolve-ContextSummaryRecord -Container $TenantStatsHash['AdminReportSettings']
+    }
+    if ($TenantStatsHash.ContainsKey('EmployeeExperienceInsightsSummary')) {
+        $employeeExperienceInsightsSummary = Resolve-ContextSummaryRecord -Container $TenantStatsHash['EmployeeExperienceInsightsSummary']
     }
 
     $ownershipGovernanceSummary = $null
@@ -12608,95 +12996,13 @@ function Get-TenantAssessmentContext {
         EmailActivitySummary   = $emailActivitySummary
         EmailActivityTopSenders = Get-ContextArray -Key 'EmailActivityTopSenders'
         EmailActivityTopReceivers = Get-ContextArray -Key 'EmailActivityTopReceivers'
+        TeamsActivityTopUsers  = Get-ContextArray -Key 'TeamsActivityTopUsers'
+        Office365GroupsActivityTopGroups = Get-ContextArray -Key 'Office365GroupsActivityTopGroups'
+        EmployeeExperienceInsightsSummary = $employeeExperienceInsightsSummary
+        AdminReportSettings    = $adminReportSettings
         OwnershipGovernanceSummary = $ownershipGovernanceSummary
         UnmanagedObjects       = Get-ContextArray -Key 'UnmanagedObjects'
         OneDriveOwnerMismatches = Get-ContextArray -Key 'OneDriveOwnerMismatches'
-    }
-}
-
-function Get-AssessmentWorksheetName {
-    [CmdletBinding()]
-    param([string]$Anchor)
-
-    switch ($Anchor) {
-        'licenses' { return 'LicenseSKUs' }
-        'domains' { return 'Domains' }
-        'domains-dns' { return 'Domains' }
-        'identity-admins' { return 'Users' }
-        'mailboxes' { return 'MailboxFullDetails' }
-        'inactive-mailboxes' { return 'InactiveMailboxDetails' }
-        'sharepoint-onedrive' { return 'SharePoint / OneDrive' }
-        'devices' { return 'DeviceDetails' }
-        'ad-connect' { return 'AdConnectConfiguration' }
-        'conditional-access-mfa' { return 'ConditionalAccessPolicies' }
-        'exchange-hybrid' { return 'HybridConfiguration' }
-        'cross-tenant-access' { return 'FederationConfiguration' }
-        'secure-score' { return 'SecureScoreActions' }
-        'ownership-governance' { return 'UnmanagedObjects' }
-        default { return $null }
-    }
-}
-
-function Get-AssessmentRecommendationText {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [object]$Finding
-    )
-
-    switch ($Finding.Anchor) {
-        'licenses' { return 'Review SKU capacity, reclaim unused assignments, and align target-tenant licensing before cutover.' }
-        'domains' { return 'Verify all domains and confirm authoritative routing before migration sequencing.' }
-        'domains-dns' {
-            switch ([string]$Finding.Category) {
-                'DMARC' { return 'Publish and enforce DMARC for custom email domains to improve spoofing protection and align with Microsoft email security guidance.' }
-                'SPF' { return 'Ensure SPF includes Microsoft 365 mail protection endpoints and remains within DNS lookup limits.' }
-                'DKIM' { return 'Configure both DKIM selectors and enable DKIM signing for custom domains used for mail flow.' }
-                'Email Authentication Coverage' { return 'Raise SPF/DKIM/DMARC coverage on all active custom mail domains and prioritize DMARC enforcement (quarantine/reject).' }
-                'Anti-Spoofing Bypass' { return 'Review trusted-IP and bypass rules to ensure anti-spoofing controls are not unintentionally bypassed.' }
-                'Anti-Spoofing Controls' { return 'Track anti-spoofing controls over time and keep trusted bypasses and relay exceptions tightly scoped.' }
-                'SMTP AUTH Exposure' { return 'Disable SMTP AUTH where possible and use modern authentication or scoped relay alternatives for legacy apps/devices.' }
-                default { return 'Review MX, autodiscover, and mail-routing records to plan coexistence and cutover.' }
-            }
-        }
-        'identity-admins' {
-            switch ([string]$Finding.Category) {
-                'Inactive Users' { return 'Follow Microsoft identity hygiene guidance: disable or investigate member accounts inactive for 180+ days and keep only justified exceptions.' }
-                'Inactive Guest Users' { return 'Review stale guest accounts and use Entra access reviews/lifecycle governance to remove unneeded external identities.' }
-                'Inactive Admin Accounts' { return 'Remove or time-bound stale privileged assignments and use Entra PIM eligible roles instead of standing admin access.' }
-                'Global Admin Count' { return 'Follow least-privilege guidance: keep only a small set of Global Administrators (typically 2-4) and delegate other tasks to scoped roles.' }
-                'Admin Sign-in Telemetry' { return 'Ensure sign-in telemetry is available for privileged accounts (app permissions/log retention) so stale-admin monitoring is reliable.' }
-                'Emergency Access Accounts' { return 'Maintain at least two cloud-only emergency access accounts, monitor them, and keep them excluded from daily operational use.' }
-                'Emergency Access CA Exclusions' { return 'Validate Conditional Access emergency-access exclusions so break-glass accounts can sign in during policy or identity outages.' }
-                default { return 'Validate admin access, guest usage, and group ownership before identity migration activities.' }
-            }
-        }
-        'mailboxes' { return 'Identify oversized or specialized mailboxes early to plan batching, archives, and exception handling.' }
-        'inactive-mailboxes' { return 'Decide whether inactive mailboxes need retention, restore, or exclusion from scope.' }
-        'sharepoint-onedrive' { return 'Use site inventory, ownership, and storage metrics to prioritize high-risk collaboration workloads.' }
-        'devices' { return 'Review stale and non-compliant devices before identity and endpoint cutover.' }
-        'ad-connect' { return 'Document synchronization dependencies and plan cloud identity cutover or staged decommissioning.' }
-        'conditional-access-mfa' {
-            switch ([string]$Finding.Category) {
-                'Legacy Authentication' { return 'Block legacy authentication with Conditional Access and verify modern-auth readiness before enforcement.' }
-                'Risk-based Conditional Access' { return 'Implement sign-in risk and user risk Conditional Access policies to align with Microsoft identity protection practices.' }
-                'Admin Consent Workflow' { return 'Enable and tune the admin consent request workflow so app consent escalations follow governance controls.' }
-                'App Consent Governance' { return 'Harden app consent and app registration settings to reduce over-privileged or unmanaged enterprise app risk.' }
-                default { return 'Review CA and MFA design to avoid post-migration lockouts or authentication regressions.' }
-            }
-        }
-        'exchange-hybrid' { return 'Validate hybrid, connectors, and migration endpoints because they affect tenant-to-tenant messaging strategy.' }
-        'cross-tenant-access' { return 'Review cross-tenant and B2B settings for coexistence, external collaboration, and post-migration cleanup.' }
-        'secure-score' { return 'Use the mapped Microsoft Secure Score action to prioritize remediation with the highest security impact.' }
-        'ownership-governance' {
-            switch ([string]$Finding.Category) {
-                'Unowned Objects' { return 'Assign at least one accountable owner to each collaboration object and validate ownership handoff before migration or governance workflows.' }
-                'Owner Health' { return 'Reassign ownership from disabled or stale accounts to active custodians and formalize backup ownership coverage.' }
-                'OneDrive Ownership Mismatch' { return 'Review OneDrive sites where the current owner differs from the URL-derived default user and confirm documented stewardship.' }
-                default { return 'Review ownership governance tables and assign healthy owners for all unmanaged or mismatched objects.' }
-            }
-        }
-        default { return 'Review the related worksheet and validate whether remediation is required for your migration or security objectives.' }
     }
 }
 
@@ -12779,7 +13085,7 @@ function Update-AssessmentReportTables {
         } else {
             'No automated findings detected for this assessment area.'
         }
-        $recommendedAction = if ($topFinding.Count -gt 0) { Get-AssessmentRecommendationText -Finding $topFinding[0] } else { 'Use the detailed workload worksheets for validation and migration planning.' }
+        $recommendedAction = if ($topFinding.Count -gt 0) { Get-ArrayaAssessmentRecommendationText -Finding $topFinding[0] } else { 'Use the detailed workload worksheets for validation and migration planning.' }
 
         $summaryRows.Add([PSCustomObject]@{
             Area               = $Area
@@ -12803,8 +13109,8 @@ function Update-AssessmentReportTables {
                 Message            = $finding.Message
                 Priority           = $finding.Priority
                 RelatedSection     = $finding.Anchor
-                RelatedWorksheet   = Get-AssessmentWorksheetName -Anchor $finding.Anchor
-                RecommendedAction  = Get-AssessmentRecommendationText -Finding $finding
+                RelatedWorksheet   = Get-ArrayaAssessmentWorksheetName -Anchor $finding.Anchor
+                RecommendedAction  = Get-ArrayaAssessmentRecommendationText -Finding $finding
                 SourceType         = $AssessmentType
             }) | Out-Null
         }
@@ -12850,6 +13156,31 @@ function Update-AssessmentReportTables {
     if ($context.Mailboxes.Count -gt 0 -or $context.PublicFolders.Count -gt 0) {
         $mailboxAnalysis = Get-MailboxAnalysis -Mailboxes $context.Mailboxes
         Add-AreaSummary -Area 'Mailboxes' -AreaFindings $mailboxAnalysis.Findings -AssessmentType 'Assessment heuristic using Exchange mailbox inventory' -RelatedWorksheet 'MailboxFullDetails' -Notes 'Flags mailbox sizing and archive patterns that influence batch and exception planning.'
+    }
+
+    if ($context.Mailboxes.Count -gt 0) {
+        $complianceRetentionAnalysis = Get-ComplianceRetentionAnalysis -Mailboxes $context.Mailboxes
+        Add-AreaSummary -Area 'Compliance & Retention' -AreaFindings $complianceRetentionAnalysis.Findings -AssessmentType 'Assessment heuristic using oversized Exchange mailbox/archive inventory and hold coverage' -RelatedWorksheet 'MailboxFullDetails' -Notes 'Compares mailboxes and archives above size thresholds to litigation hold and retention-hold/control signals.'
+    }
+
+    if (
+        $context.EmailActivitySummary -or
+        $context.EmailActivityTopSenders.Count -gt 0 -or
+        $context.EmailActivityTopReceivers.Count -gt 0 -or
+        $context.EmployeeExperienceInsightsSummary -or
+        $context.TeamsActivityTopUsers.Count -gt 0 -or
+        $context.Office365GroupsActivityTopGroups.Count -gt 0
+    ) {
+        $employeeExperienceAnalysis = Get-ArrayaEmployeeExperienceInsightsAnalysis `
+            -EmailActivitySummary $context.EmailActivitySummary `
+            -EmployeeExperienceInsightsSummary $context.EmployeeExperienceInsightsSummary `
+            -TopSenders $context.EmailActivityTopSenders `
+            -TopReceivers $context.EmailActivityTopReceivers `
+            -TeamsTopUsers $context.TeamsActivityTopUsers `
+            -GroupsTopGroups $context.Office365GroupsActivityTopGroups `
+            -AdminReportSettings $context.AdminReportSettings `
+            -TotalUsers $context.Users.Count
+        Add-AreaSummary -Area 'Employee Experience & Insights' -AreaFindings $employeeExperienceAnalysis.Findings -AssessmentType 'Assessment heuristic using Microsoft 365 activity telemetry and report privacy settings' -RelatedWorksheet 'EmployeeExperienceInsightsSummary' -Notes 'Uses email, Teams, and Microsoft 365 group activity trends plus report-identity visibility settings to surface adoption and analytics quality signals.'
     }
 
     if ($context.InactiveMailboxes.Count -gt 0) {
@@ -16611,7 +16942,7 @@ if (-not $isMergedOutputProfileSelection) {
         'ExecutiveLevel' {
             # Best-practices only profile: trim technical/deep transport collectors.
             $script:ProfileCollectionPlan.CollectExchangeRecipients = $false
-            $script:ProfileCollectionPlan.CollectEmailActivityDetails = $false
+            $script:ProfileCollectionPlan.CollectEmailActivityDetails = $true
             $script:ProfileCollectionPlan.CollectExchangeGroups = $false
             $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors = $false
             $script:ProfileCollectionPlan.CollectPublicFolders = $false
@@ -16742,6 +17073,7 @@ try {
 }
 Write-Host "Microsoft 365 Tenant Assessment" -ForegroundColor Cyan
 Write-Host "Progress view: overall step completion is shown after each major task." -ForegroundColor DarkCyan
+Write-Host "Legend: cyan=section/progress, green=completed, yellow=warnings/skips." -ForegroundColor DarkCyan
 
 $GraphTest = if ($runExportOnly) {
     'CACHE'

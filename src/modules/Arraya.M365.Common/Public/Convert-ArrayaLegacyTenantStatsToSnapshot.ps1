@@ -29,7 +29,8 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
         )
         Collaboration = @(
             'UnifiedGroups', 'AllTeams', 'TeamsVoice', 'TeamsVoiceSummary',
-            'SharePoint', 'OneDrive', 'UnmanagedObjects', 'OneDriveOwnerMismatches', 'OwnershipGovernanceSummary'
+            'SharePoint', 'OneDrive', 'TeamsActivityTopUsers', 'Office365GroupsActivityTopGroups',
+            'UnmanagedObjects', 'OneDriveOwnerMismatches', 'OwnershipGovernanceSummary'
         )
         Security = @(
             'SecuritySecureScore', 'SecureScoreActions', 'SpamFilteringConfig', 'SpamFilteringSummary',
@@ -45,7 +46,8 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
     foreach ($key in @(
         'BestPractices', 'BestPracticeFindings', 'Findings', 'MigrationReadiness',
         'OwnershipGovernanceSummary', 'UnmanagedObjects', 'OneDriveOwnerMismatches',
-        'LicenseClassificationMetadata', 'TenantInfoSummary', 'AuthenticationConfigSummary',
+        'EmployeeExperienceInsightsSummary', 'LicenseClassificationMetadata',
+        'TenantInfoSummary', 'AuthenticationConfigSummary',
         'SpamFilteringSummary', 'FederationSummary', 'MfaRegistrationSummary'
     )) {
         $null = $derivedKeys.Add($key)
