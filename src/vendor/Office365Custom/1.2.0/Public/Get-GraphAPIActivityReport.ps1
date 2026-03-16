@@ -61,29 +61,79 @@ function Get-GraphAPIActivityReport {
     # $result = Get-GraphData -Uri $ActivityReport
     # Convert the result from CSV format
     # return $result | ConvertFrom-Csv
+    $tempFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ([System.IO.Path]::GetRandomFileName() + ".csv"))
+    $headers = $null
+    if ($global:GraphHeaders) {
+        $headers = $global:GraphHeaders
+    }
+    elseif ($global:GraphToken) {
+        $headers = @{
+            'Content-Type'     = 'application/json'
+            'Authorization'    = "Bearer $global:GraphToken"
+            'ConsistencyLevel' = 'eventual'
+        }
+    }
+
+    $canUseSdk = $false
+    if (Get-Command -Name Invoke-MgGraphRequest -ErrorAction SilentlyContinue) {
+        $mgContext = Get-MgContext -ErrorAction SilentlyContinue
+        if ($mgContext) {
+            $canUseSdk = $true
+        }
+    }
+
     try {
-        # Generate a temporary file name with a .csv extension
-        $tempFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ([System.IO.Path]::GetRandomFileName() + ".csv"))
         Write-Verbose "Saving report to temporary file: $tempFile"
+        if ($canUseSdk) {
+            try {
+                Invoke-MgGraphRequest -Method GET -Uri $ActivityReport -ErrorAction Stop -OutputFilePath $tempFile | Out-Null
+            }
+            catch {
+                if (-not $headers) {
+                    throw
+                }
+                $canUseSdk = $false
+            }
+        }
 
-        # Invoke the Graph API request and output the result to the temporary file
-        $resulttmp = Invoke-MgGraphRequest -Method GET -Uri $ActivityReport -ErrorAction Stop -OutputFilePath $tempFile
+        if (-not $canUseSdk) {
+            if (-not $headers) {
+                throw 'No Microsoft Graph authentication context is available for activity report retrieval.'
+            }
 
-        # Import the CSV data from the temporary file
-        $result = Import-Csv -Path $tempFile
+            $savedProgressPreference = $ProgressPreference
+            try {
+                $ProgressPreference = 'SilentlyContinue'
+                $response = Invoke-WebRequest -Uri $ActivityReport -Headers $headers -Method GET -MaximumRedirection 5 -ErrorAction Stop
+            }
+            finally {
+                $ProgressPreference = $savedProgressPreference
+            }
 
-        # Clean up: remove the temporary file
-        Remove-Item -Path $tempFile -Force
+            if ($null -eq $response -or [string]::IsNullOrWhiteSpace($response.Content)) {
+                throw "No activity report content was returned for service '$ServiceName'."
+            }
 
-        return $result
+            Set-Content -Path $tempFile -Value $response.Content -Encoding UTF8 -Force
+        }
 
-    } catch {
+        if (-not (Test-Path -Path $tempFile)) {
+            throw "Activity report download did not create a temporary CSV file for service '$ServiceName'."
+        }
+
+        return @(Import-Csv -Path $tempFile -ErrorAction Stop)
+    }
+    catch {
         if ($_.Exception.Message -like '*Authentication needed. Please call Connect-MgGraph*') {
-            Write-Error "Error retrieving data from Microsoft Graph. Please call Connect-MgGraph first."
-            #throw $_.Exception.Message 
-        } else {
-            #Write-Warning "Error retrieving data from Microsoft Graph."
+            Write-Error 'Error retrieving data from Microsoft Graph. Please call Connect-MgGraph first.'
+        }
+        else {
             Write-Error $_.Exception.Message
+        }
+    }
+    finally {
+        if (Test-Path -Path $tempFile) {
+            Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
         }
     }
 }

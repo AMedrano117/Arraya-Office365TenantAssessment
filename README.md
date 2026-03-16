@@ -38,6 +38,7 @@ Examples:
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
   -CertificateThumbprint '<cert-thumbprint>' `
+  -ExportPath 'C:\Assessment-Outputs' `
   -OutputProfile SolutionsEngineer,ExecutiveLevel
 ```
 

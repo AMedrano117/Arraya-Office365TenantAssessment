@@ -49,10 +49,21 @@ function Get-ArrayaAssessmentRecommendationText {
         }
         'employee-experience-insights' {
             switch ([string]$Finding.Category) {
-                'Report Identity Visibility' { return 'Adjust Microsoft 365 usage report settings so actor-level names are available to authorized analysts when needed for operations and investigations.' }
-                'Usage Telemetry Coverage' { return 'Confirm reports permissions and data-retention windows so usage telemetry is complete for business and adoption analysis.' }
-                'Collaboration Activity Baseline' { return 'Track high-volume collaboration patterns and low-adoption areas to prioritize enablement and governance workstreams.' }
-                default { return 'Use collaboration activity telemetry to guide adoption, governance, and operational readiness improvements.' }
+                'Report Identity Visibility' { return 'Adjust Microsoft 365 report privacy settings so authorized security responders can use actor-level telemetry during investigations.' }
+                'Security Telemetry Coverage' { return 'Validate Graph report permissions, report settings, and retention windows so telemetry supports detection and baseline analysis.' }
+                'Conditional Access Enforcement' { return 'Ensure baseline Conditional Access policies are enabled and mapped to core zero-trust controls across identities and sessions.' }
+                'MFA Coverage' { return 'Enforce MFA and authentication-strength policies for all users, with scoped exclusions only for documented break-glass accounts.' }
+                'Passwordless Readiness' { return 'Adopt phishing-resistant/passwordless methods for privileged and high-risk users as part of zero-trust hardening.' }
+                'Threat Surface Baseline' { return 'Review high-volume sender accounts and validate expected behavior, service-account governance, and abuse monitoring controls.' }
+                default { return 'Use security telemetry and authentication-control findings to prioritize zero-trust posture improvements.' }
+            }
+        }
+        'teams-collaboration' {
+            switch ([string]$Finding.Category) {
+                'Teams Ownership' { return 'Assign at least two accountable owners to each Team and remediate unowned teams before governance or migration cutover.' }
+                'Private Channel Footprint' { return 'Review private/shared channel lifecycle and ensure eDiscovery, retention, and ownership controls are applied consistently.' }
+                'Usage Telemetry Coverage' { return 'Confirm Teams usage-report permissions and retention windows so adoption analysis is complete and actionable.' }
+                default { return 'Use Teams inventory and activity telemetry to prioritize governance cleanup, ownership remediation, and migration wave planning.' }
             }
         }
         default { return 'Review the related worksheet and validate whether remediation is required for your migration or security objectives.' }

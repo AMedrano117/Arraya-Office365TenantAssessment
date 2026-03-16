@@ -331,16 +331,15 @@ function Connect-Office365 {
                                 return
                             }
                             Write-Host "Connecting to SharePoint Online (certificate)..." -ForegroundColor Cyan
-                            Write-Verbose "Running Connect-SPOService with -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint"
-                            Connect-SPOService -Url $spoAdminUrl -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -ErrorAction Stop
+                            Write-Verbose "Running Connect-SPOService with -ClientId $ClientId -TenantId $TenantId -CertificateThumbprint $CertificateThumbprint"
+                            Connect-SPOService -Url $spoAdminUrl -ClientId $ClientId -TenantId $TenantId -CertificateThumbprint $CertificateThumbprint -ErrorAction Stop
                             $result.SharePointOnline = $true
                         }
                         'ClientSecret' {
                             Write-Warning "SharePoint Online does not support client secret authentication via Connect-SPOService. Will Rely on Microsoft Graph API instead."
                             #Write-Host "✗ SharePoint Online: SharePoint Online does not support client secret authentication via Connect-SPOService. Will Rely on Microsoft Graph API instead." -ForegroundColor Red
                             $result.SharePointOnline = $false
-
-                            continue
+                            break
                         }
                         Default {
                             Write-Verbose "Connecting to SharePoint Online ($spoAdminUrl) with Delegate authentication..."
@@ -354,13 +353,14 @@ function Connect-Office365 {
                     Write-Host "✓ SharePoint Online connected" -ForegroundColor Green
                 } catch {
                     Write-Host "✗ SharePoint Online: $($_.Exception.Message)" -ForegroundColor Red
-                    return
+                    $result.SharePointOnline = $false
+                    $result.SharePointAdmin = $spoAdminUrl
                 }
             }
         }
         catch { 
             Write-Host "✗ SharePoint Online: $($_.Exception.Message)" -ForegroundColor Red
-            return 
+            $result.SharePointOnline = $false
         }
 
         #region Connect to Exchange Online
@@ -451,26 +451,33 @@ function Connect-Office365 {
 
         #region Connect to Microsoft Teams
         try {
-            $existingTeamsOrg = $null
-            try {
-                Write-Verbose "Checking if already connected to Microsoft Teams..."
-                $existingTeamsOrg = (Get-CsTenant -ErrorAction Stop).DisplayName
-            } catch {}
-            
-            if ($existingTeamsOrg -and -not $Force) {
-                Write-Host "✓ Microsoft Teams (already connected)" -ForegroundColor Green
-                Write-Verbose "Existing Microsoft Teams session detected for '$existingTeamsOrg', skipping reconnect."
-                $result.Teams = $true
-            } else {
-                Write-Verbose "Connecting to Microsoft Teams (delegate authentication only)..."
-                Write-Host "Connecting to Microsoft Teams..." -ForegroundColor Cyan
-                if ($CertificateThumbprint -or $usingApplicationAuth) {
-                    Write-Warning "Microsoft Teams connection currently supports delegate authentication only. Attempting connection..."
-                }
+            if ($usingApplicationAuth) {
+                Write-Warning "Microsoft Teams PowerShell connection is delegate-only in this workflow. Skipping Teams session for app-based authentication."
+                $result.Teams = $false
+            }
+
+            if (-not $usingApplicationAuth) {
+                $existingTeamsOrg = $null
+                try {
+                    Write-Verbose "Checking if already connected to Microsoft Teams..."
+                    $existingTeamsOrg = (Get-CsTenant -ErrorAction Stop).DisplayName
+                } catch {}
                 
-                Connect-MicrosoftTeams -ErrorAction Stop | Out-Null
-                $result.Teams = $true
-                Write-Host "✓ Microsoft Teams connected" -ForegroundColor Green
+                if ($existingTeamsOrg -and -not $Force) {
+                    Write-Host "✓ Microsoft Teams (already connected)" -ForegroundColor Green
+                    Write-Verbose "Existing Microsoft Teams session detected for '$existingTeamsOrg', skipping reconnect."
+                    $result.Teams = $true
+                } else {
+                    Write-Verbose "Connecting to Microsoft Teams (delegate authentication only)..."
+                    Write-Host "Connecting to Microsoft Teams..." -ForegroundColor Cyan
+                    if ($CertificateThumbprint -or $usingApplicationAuth) {
+                        Write-Warning "Microsoft Teams connection currently supports delegate authentication only. Attempting connection..."
+                    }
+                    
+                    Connect-MicrosoftTeams -ErrorAction Stop | Out-Null
+                    $result.Teams = $true
+                    Write-Host "✓ Microsoft Teams connected" -ForegroundColor Green
+                }
             }
         }
         catch { 
@@ -481,7 +488,7 @@ function Connect-Office365 {
     }
 
     end {
-        if ($result.Graph -eq $false -or $result.SharePointOnline -eq $false -or $result.ExchangeOnline -eq $false -or $result.Teams -eq $false) {
+        if ($result.Graph -eq $false -or $result.ExchangeOnline -eq $false) {
             Throw "Failed to connect to tenant. One or more services failed to connect. Check errors above for connection problems encountered. Error: $($_.Exception.Message)"
         } else {
             Write-Verbose "Returning connection result object."
@@ -493,7 +500,13 @@ function Connect-Office365 {
             Write-Host "  SharePoint Online: $($result.SharePointOnline)" -ForegroundColor White
             Write-Host "  Tenant DirSync Enabled: $($result.OnPremisesSyncEnabled)" -ForegroundColor White
             Write-Host "  Tenant DirSync Last Successful Sync: $($result.OnPremisesLastSyncDateTime)" -ForegroundColor White
+            if ($result.SharePointOnline -eq $false) {
+                Write-Host "  SharePoint: Not connected (non-blocking; Graph-based collection remains available)" -ForegroundColor Yellow
+            }
+            if ($result.Teams -eq $false) {
+                Write-Host "  Teams: Not connected (non-blocking for app auth)" -ForegroundColor Yellow
+            }
         }
-        #return [pscustomobject]$result
+        return [pscustomobject]$result
     }
 }

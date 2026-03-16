@@ -21,7 +21,8 @@ function Get-ArrayaAssessmentWorksheetName {
         'cross-tenant-access' { return 'FederationConfiguration' }
         'secure-score' { return 'SecureScoreActions' }
         'ownership-governance' { return 'UnmanagedObjects' }
-        'employee-experience-insights' { return 'EmployeeExperienceInsightsSummary' }
+        'employee-experience-insights' { return 'EmployeeExpInsights' }
+        'teams-collaboration' { return 'AllTeams' }
         default { return 'N/A' }
     }
 }

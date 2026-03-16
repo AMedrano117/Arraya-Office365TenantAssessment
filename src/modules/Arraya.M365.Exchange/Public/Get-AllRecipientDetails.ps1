@@ -1,0 +1,64 @@
+function Get-AllRecipientDetails {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$True,HelpMessage='Provide the level of detail')]
+        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [string]$detailLevel,
+        [Parameter(Mandatory = $false)]
+        $Context
+    )
+    $Context = Resolve-ArrayaExchangeCollectorContext -Context $Context -DetailLevel $detailLevel
+    $tenantStatsHash = $Context.TenantStats
+    $exportDetails = $Context.ExportFileLocation
+    $initialStart = Get-ArrayaExchangeCollectorStartTime -Context $Context
+    $recipientProgressId = 33
+    try {
+        $start = Get-Date
+        $tenantStatsHash["AllRecipients"] = @{}
+        Write-Host "Getting all Exchange Online Recipients $($detailLevel) details ..." -ForegroundColor Cyan -nonewline
+        Write-Log -Type INFO -Message "[Get-AllRecipientDetails] START: Gathering all Exchange Online Recipients $($detailLevel) details" -ExportFileLocation $exportDetails
+        Write-Progress -Id $recipientProgressId -Activity "Gathering All Exchange Online Recipients" -Status (((Get-Date) - $initialStart).ToString('hh\:mm\:ss'))
+
+        switch ($detailLevel) {
+            {$_ -in "minimum", "combined", "all"} { 
+                $Properties = @(
+                    "ExternalDirectoryObjectId", "DisplayName", "Identity", "RecipientTypeDetails", "PrimarySMTPAddress"
+                    "EmailAddresses", "HiddenFromAddressListsEnabled", "AddressBookPolicy"
+                    "ManagedBy", "SKUAssigned", "WhenCreated", "WhenSoftDeleted", "GUID"
+                    "alias", "Notes"
+                )
+                # Properties for Select-Object
+                $DesiredProperties = @(
+                    "ExternalDirectoryObjectId", "DisplayName", "Identity", "RecipientTypeDetails", "PrimarySMTPAddress",
+                    @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}}, 
+                    "HiddenFromAddressListsEnabled", "AddressBookPolicy",
+                    @{Name="ManagedBy"; Expression={$_.ManagedBy -join ","}}, 
+                    "SKUAssigned", "WhenCreated", "WhenSoftDeleted", "GUID",
+                    "alias", "Notes"
+                )
+                $allRecipients = Invoke-QuietCommand -ScriptBlock {
+                    Get-EXORecipient -Properties $Properties -ResultSize Unlimited -Filter "RecipientTypeDetails -ne 'DiscoveryMailbox' -and RecipientTypeDetails -ne 'MailContact' -and RecipientTypeDetails -ne 'GuestMailUser' -and RecipientTypeDetails -ne 'MailUser'" -ErrorAction Stop | select $DesiredProperties
+                }
+            }           
+            geek {
+                $allRecipients = Invoke-QuietCommand -ScriptBlock {
+                    Get-EXORecipient -PropertySets All -ResultSize Unlimited -Filter "RecipientTypeDetails -ne 'DiscoveryMailbox' -and RecipientTypeDetails -ne 'MailContact' -and RecipientTypeDetails -ne 'GuestMailUser' -and RecipientTypeDetails -ne 'MailUser'" -ErrorAction Stop
+                }
+            }
+        }
+        Write-Log -Type INFO -Message "[Get-AllRecipientDetails] FOUND $($allRecipients.count) Exchange Online Recipients $($detailLevel) details" -ExportFileLocation $exportDetails
+        Write-Log -Type INFO -Message "[Get-AllRecipientDetails] Adding Exchange Online Recipients to Tenant Stats Hash" -ExportFileLocation $exportDetails
+        foreach ($recipient in $allRecipients) {
+            $tenantStatsHash["AllRecipients"][$recipient.PrimarySmtpAddress] = $recipient
+        }
+    }
+    catch {
+        Write-Log -Type ERROR -Message "[Get-AllRecipientDetails] An error occurred in running Get-AllRecipientDetails function. $($_.Exception.Message)" -ExportFileLocation $exportDetails -CaptureError -ErrorRecordVar $_
+    }
+    finally {
+        Write-Progress -Id $recipientProgressId -Activity "Gathering All Exchange Online Recipients" -Completed
+        $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
+        Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+        Write-Log -Type INFO -Message "[Get-AllRecipientDetails] COMPLETED: Gathering all Exchange Online Recipients" -ExportFileLocation $exportDetails
+    }
+}

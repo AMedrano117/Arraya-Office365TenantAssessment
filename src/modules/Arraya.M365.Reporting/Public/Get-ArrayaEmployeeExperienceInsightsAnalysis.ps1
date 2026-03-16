@@ -16,6 +16,10 @@ function Get-ArrayaEmployeeExperienceInsightsAnalysis {
         [Parameter(Mandatory = $false)]
         [object]$AdminReportSettings,
         [Parameter(Mandatory = $false)]
+        [object]$AuthConfig,
+        [Parameter(Mandatory = $false)]
+        [array]$ConditionalAccessPolicies = @(),
+        [Parameter(Mandatory = $false)]
         [int]$TotalUsers = 0
     )
 
@@ -36,32 +40,73 @@ function Get-ArrayaEmployeeExperienceInsightsAnalysis {
         return $Default
     }
 
+    function Convert-ToInt {
+        param(
+            [AllowNull()]
+            $Value,
+            [int]$Default = 0
+        )
+
+        if ($null -eq $Value) {
+            return $Default
+        }
+
+        try {
+            if ($Value -is [string]) {
+                $normalized = ($Value -replace ',', '').Trim()
+                if ([string]::IsNullOrWhiteSpace($normalized)) {
+                    return $Default
+                }
+                return [int]$normalized
+            }
+            return [int]$Value
+        }
+        catch {
+            return $Default
+        }
+    }
+
+    function Add-Finding {
+        param(
+            [Parameter(Mandatory)]
+            [ValidateSet('Risk', 'Warning', 'Info')]
+            [string]$Type,
+            [Parameter(Mandatory)]
+            [string]$Category,
+            [Parameter(Mandatory)]
+            [string]$Message,
+            [int]$Priority = 3
+        )
+
+        $findings += @{
+            Type     = $Type
+            Category = $Category
+            Message  = $Message
+            Anchor   = 'employee-experience-insights'
+            Priority = $Priority
+        }
+    }
+
     $findings = @()
+
     $summaryRecord = $EmailActivitySummary
     if ($summaryRecord -is [array]) {
         $summaryRecord = @($summaryRecord | Select-Object -First 1)
         $summaryRecord = if ($summaryRecord.Count -gt 0) { $summaryRecord[0] } else { $null }
     }
 
-    $reportRows = 0
-    $activeUsers = 0
-    $period = 'Unknown'
-    $teamsReportRows = 0
-    $teamsActiveUsers = 0
-    $groupsReportRows = 0
-    $activeGroups = 0
-    if ($summaryRecord) {
-        try { $reportRows = [int](Get-SummaryValue -Record $summaryRecord -Key 'ReportRows' -Default 0) } catch { $reportRows = 0 }
-        try { $activeUsers = [int](Get-SummaryValue -Record $summaryRecord -Key 'ActiveUsers' -Default 0) } catch { $activeUsers = 0 }
-        $rawPeriod = [string](Get-SummaryValue -Record $summaryRecord -Key 'PeriodDuration' -Default '')
-        if (-not [string]::IsNullOrWhiteSpace($rawPeriod)) { $period = $rawPeriod }
+    $reportRows = Convert-ToInt -Value (Get-SummaryValue -Record $summaryRecord -Key 'ReportRows' -Default 0)
+    $activeUsers = Convert-ToInt -Value (Get-SummaryValue -Record $summaryRecord -Key 'ActiveUsers' -Default 0)
+    $period = [string](Get-SummaryValue -Record $summaryRecord -Key 'PeriodDuration' -Default 'Unknown')
+    if ([string]::IsNullOrWhiteSpace($period)) {
+        $period = 'Unknown'
     }
-    if ($EmployeeExperienceInsightsSummary) {
-        try { $teamsReportRows = [int](Get-SummaryValue -Record $EmployeeExperienceInsightsSummary -Key 'TeamsReportRows' -Default 0) } catch { $teamsReportRows = 0 }
-        try { $teamsActiveUsers = [int](Get-SummaryValue -Record $EmployeeExperienceInsightsSummary -Key 'TeamsActiveUsers' -Default 0) } catch { $teamsActiveUsers = 0 }
-        try { $groupsReportRows = [int](Get-SummaryValue -Record $EmployeeExperienceInsightsSummary -Key 'GroupsReportRows' -Default 0) } catch { $groupsReportRows = 0 }
-        try { $activeGroups = [int](Get-SummaryValue -Record $EmployeeExperienceInsightsSummary -Key 'ActiveGroups' -Default 0) } catch { $activeGroups = 0 }
-    }
+
+    $teamsReportRows = Convert-ToInt -Value (Get-SummaryValue -Record $EmployeeExperienceInsightsSummary -Key 'TeamsReportRows' -Default 0)
+    $teamsActiveUsers = Convert-ToInt -Value (Get-SummaryValue -Record $EmployeeExperienceInsightsSummary -Key 'TeamsActiveUsers' -Default 0)
+    $groupsReportRows = Convert-ToInt -Value (Get-SummaryValue -Record $EmployeeExperienceInsightsSummary -Key 'GroupsReportRows' -Default 0)
+    $activeGroups = Convert-ToInt -Value (Get-SummaryValue -Record $EmployeeExperienceInsightsSummary -Key 'ActiveGroups' -Default 0)
+
     if ($teamsReportRows -eq 0 -and @($TeamsTopUsers).Count -gt 0) {
         $teamsReportRows = @($TeamsTopUsers).Count
     }
@@ -76,124 +121,120 @@ function Get-ArrayaEmployeeExperienceInsightsAnalysis {
         $teamsReportRows -eq 0 -and
         $groupsReportRows -eq 0
     ) {
-        $findings += @{
-            Type     = 'Warning'
-            Category = 'Usage Telemetry Coverage'
-            Message  = 'No collaboration activity detail rows were collected from Microsoft 365 usage reports.'
-            Anchor   = 'employee-experience-insights'
-            Priority = 2
-        }
+        Add-Finding -Type Warning -Category 'Security Telemetry Coverage' -Priority 2 -Message 'No collaboration activity detail rows were collected from Microsoft 365 usage reports. This limits behavior-baseline and anomaly-review usefulness.'
     }
     else {
-        $findings += @{
-            Type     = 'Info'
-            Category = 'Collaboration Activity Baseline'
-            Message  = "Collaboration activity telemetry collected (period=$period; emailRows=$reportRows; teamsRows=$teamsReportRows; groupRows=$groupsReportRows)."
-            Anchor   = 'employee-experience-insights'
-            Priority = 3
-        }
+        Add-Finding -Type Info -Category 'Security Telemetry Coverage' -Priority 3 -Message "Telemetry collected for baseline analysis (period=$period; emailRows=$reportRows; teamsRows=$teamsReportRows; groupRows=$groupsReportRows)."
     }
 
     if ($TotalUsers -gt 0 -and $activeUsers -ge 0) {
         $coveragePct = [math]::Round((($activeUsers / [double]$TotalUsers) * 100), 1)
         if ($coveragePct -lt 25) {
-            $findings += @{
-                Type     = 'Warning'
-                Category = 'Usage Telemetry Coverage'
-                Message  = "Only $activeUsers of $TotalUsers users show activity in the selected period ($coveragePct%). Validate scope, period, and telemetry completeness."
-                Anchor   = 'employee-experience-insights'
-                Priority = 2
-            }
-        }
-    }
-
-    if ($TotalUsers -gt 0 -and $teamsActiveUsers -gt 0) {
-        $teamsCoveragePct = [math]::Round((($teamsActiveUsers / [double]$TotalUsers) * 100), 1)
-        if ($teamsCoveragePct -lt 20) {
-            $findings += @{
-                Type     = 'Info'
-                Category = 'Usage Telemetry Coverage'
-                Message  = "Teams activity coverage is $teamsCoveragePct% of users ($teamsActiveUsers of $TotalUsers) for period $period."
-                Anchor   = 'employee-experience-insights'
-                Priority = 3
-            }
-        }
-    }
-
-    if ($groupsReportRows -gt 0) {
-        if ($activeGroups -eq 0) {
-            $findings += @{
-                Type     = 'Info'
-                Category = 'Collaboration Activity Baseline'
-                Message  = 'Office 365 Groups activity report was collected but no active groups were detected in the selected period.'
-                Anchor   = 'employee-experience-insights'
-                Priority = 3
-            }
-        }
-        elseif ($activeGroups -lt 10) {
-            $findings += @{
-                Type     = 'Info'
-                Category = 'Collaboration Activity Baseline'
-                Message  = "Only $activeGroups group(s) show recent activity in the selected period."
-                Anchor   = 'employee-experience-insights'
-                Priority = 3
-            }
+            Add-Finding -Type Warning -Category 'Security Telemetry Coverage' -Priority 2 -Message "Only $activeUsers of $TotalUsers users show activity in the selected period ($coveragePct%). Validate report scope, period, and data-retention visibility."
         }
     }
 
     $displayConcealedNames = $null
     if ($AdminReportSettings) {
-        if ($AdminReportSettings -is [System.Collections.IDictionary] -and $AdminReportSettings.Contains('DisplayConcealedNames')) {
-            $rawDisplayConcealed = $AdminReportSettings['DisplayConcealedNames']
-            if ($null -ne $rawDisplayConcealed -and -not [string]::IsNullOrWhiteSpace([string]$rawDisplayConcealed)) {
-                try { $displayConcealedNames = [bool]$rawDisplayConcealed } catch { $displayConcealedNames = $null }
-            }
-        }
-        elseif ($AdminReportSettings.PSObject -and $AdminReportSettings.PSObject.Properties['DisplayConcealedNames']) {
-            $rawDisplayConcealed = $AdminReportSettings.DisplayConcealedNames
-            if ($null -ne $rawDisplayConcealed -and -not [string]::IsNullOrWhiteSpace([string]$rawDisplayConcealed)) {
-                try { $displayConcealedNames = [bool]$rawDisplayConcealed } catch { $displayConcealedNames = $null }
-            }
+        $rawDisplayConcealed = Get-SummaryValue -Record $AdminReportSettings -Key 'DisplayConcealedNames' -Default $null
+        if ($null -ne $rawDisplayConcealed -and -not [string]::IsNullOrWhiteSpace([string]$rawDisplayConcealed)) {
+            try { $displayConcealedNames = [bool]$rawDisplayConcealed } catch { $displayConcealedNames = $null }
         }
     }
 
     if ($displayConcealedNames -eq $true) {
-        $findings += @{
-            Type     = 'Warning'
-            Category = 'Report Identity Visibility'
-            Message  = 'Microsoft 365 usage reports are configured to conceal names, which reduces actor-level visibility in activity insights.'
-            Anchor   = 'employee-experience-insights'
-            Priority = 2
-        }
+        Add-Finding -Type Warning -Category 'Report Identity Visibility' -Priority 2 -Message 'Microsoft 365 usage reports are configured to conceal user names. This reduces actor-level investigation fidelity for security and incident response.'
     }
     elseif ($displayConcealedNames -eq $false) {
-        $findings += @{
-            Type     = 'Info'
-            Category = 'Report Identity Visibility'
-            Message  = 'Microsoft 365 usage reports are configured to show identifiable names for authorized analysis.'
-            Anchor   = 'employee-experience-insights'
-            Priority = 3
+        Add-Finding -Type Info -Category 'Report Identity Visibility' -Priority 3 -Message 'Microsoft 365 usage reports are configured to show identifiable names for authorized security and operations analysis.'
+    }
+
+    $allPolicies = @($ConditionalAccessPolicies)
+    $enabledPolicies = @(
+        $allPolicies | Where-Object {
+            $state = [string](Get-SummaryValue -Record $_ -Key 'State' -Default (Get-SummaryValue -Record $_ -Key 'PolicyState' -Default ''))
+            $state -match '(?i)enabled'
+        }
+    )
+
+    if ($allPolicies.Count -eq 0) {
+        Add-Finding -Type Warning -Category 'Conditional Access Enforcement' -Priority 2 -Message 'No Conditional Access policies were collected. Validate Graph permissions and ensure baseline zero-trust controls are configured.'
+    }
+    elseif ($enabledPolicies.Count -eq 0) {
+        Add-Finding -Type Warning -Category 'Conditional Access Enforcement' -Priority 2 -Message "Conditional Access policies were collected ($($allPolicies.Count)) but none are in an enabled state."
+    }
+    else {
+        Add-Finding -Type Info -Category 'Conditional Access Enforcement' -Priority 3 -Message "Conditional Access enabled policies detected: $($enabledPolicies.Count) of $($allPolicies.Count) collected."
+    }
+
+    $mfaNamedPolicies = @(
+        $enabledPolicies | Where-Object {
+            $displayName = [string](Get-SummaryValue -Record $_ -Key 'DisplayName' -Default '')
+            $grantControls = [string](Get-SummaryValue -Record $_ -Key 'GrantControls' -Default '')
+            $displayName -match '(?i)mfa|multi[- ]?factor|authentication strength|auth strength|phishing-resistant' -or
+            $grantControls -match '(?i)mfa|authenticationstrength|phishing'
+        }
+    )
+    if ($enabledPolicies.Count -gt 0 -and $mfaNamedPolicies.Count -eq 0) {
+        Add-Finding -Type Warning -Category 'MFA Coverage' -Priority 2 -Message 'Enabled Conditional Access policies were found, but none were clearly identified as MFA/authentication-strength enforcement policies.'
+    }
+
+    $mfaEnabled = $null
+    if ($AuthConfig) {
+        $rawMfaEnabled = Get-SummaryValue -Record $AuthConfig -Key 'MFAEnabled' -Default $null
+        if ($null -ne $rawMfaEnabled -and -not [string]::IsNullOrWhiteSpace([string]$rawMfaEnabled)) {
+            try { $mfaEnabled = [bool]$rawMfaEnabled } catch { $mfaEnabled = $null }
         }
     }
-    elseif (
-        $displayConcealedNames -eq $null -and
-        $AdminReportSettings -and
-        $AdminReportSettings.PSObject -and
-        $AdminReportSettings.PSObject.Properties['Available'] -and
-        [bool]$AdminReportSettings.Available -eq $false
-    ) {
-        $reason = if ($AdminReportSettings.PSObject.Properties['ErrorMessage'] -and -not [string]::IsNullOrWhiteSpace([string]$AdminReportSettings.ErrorMessage)) {
-            [string]$AdminReportSettings.ErrorMessage
-        } else {
-            'Access to admin report settings is unavailable.'
+
+    if ($mfaEnabled -eq $false) {
+        Add-Finding -Type Risk -Category 'MFA Coverage' -Priority 1 -Message 'MFA is not enabled in the collected authentication summary. This is a high-priority gap for zero-trust posture.'
+    }
+    elseif ($mfaEnabled -eq $true) {
+        Add-Finding -Type Info -Category 'MFA Coverage' -Priority 3 -Message 'MFA is enabled in the collected authentication summary.'
+    }
+
+    $passwordlessMethods = @()
+    if ($AuthConfig) {
+        $rawPasswordlessMethods = Get-SummaryValue -Record $AuthConfig -Key 'PasswordlessMethods' -Default @()
+        if ($rawPasswordlessMethods -is [string]) {
+            if (-not [string]::IsNullOrWhiteSpace($rawPasswordlessMethods)) {
+                $passwordlessMethods = @($rawPasswordlessMethods)
+            }
         }
-        $findings += @{
-            Type     = 'Info'
-            Category = 'Report Identity Visibility'
-            Message  = "Could not determine report identity-visibility setting. $reason"
-            Anchor   = 'employee-experience-insights'
-            Priority = 3
+        else {
+            $passwordlessMethods = @($rawPasswordlessMethods)
         }
+    }
+    $passwordlessMethodCount = @($passwordlessMethods | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count
+    if ($passwordlessMethodCount -eq 0) {
+        Add-Finding -Type Warning -Category 'Passwordless Readiness' -Priority 2 -Message 'No passwordless method signals were detected in the authentication summary. Consider phishing-resistant authentication adoption planning.'
+    }
+    else {
+        Add-Finding -Type Info -Category 'Passwordless Readiness' -Priority 3 -Message "Passwordless methods detected in authentication summary: $passwordlessMethodCount."
+    }
+
+    $topSenderRows = @($TopSenders)
+    if ($topSenderRows.Count -gt 1) {
+        $orderedSenders = @(
+            $topSenderRows |
+                Sort-Object {
+                    Convert-ToInt -Value (Get-SummaryValue -Record $_ -Key 'SendCount' -Default 0)
+                } -Descending
+        )
+        $topSender = $orderedSenders | Select-Object -First 1
+        $topSenderCount = Convert-ToInt -Value (Get-SummaryValue -Record $topSender -Key 'SendCount' -Default 0)
+        $topTenTotal = Convert-ToInt -Value (($orderedSenders | Select-Object -First 10 | Measure-Object -Property SendCount -Sum).Sum)
+        if ($topTenTotal -gt 0) {
+            $topSenderPct = [math]::Round((($topSenderCount / [double]$topTenTotal) * 100), 1)
+            if ($topSenderPct -ge 45) {
+                Add-Finding -Type Warning -Category 'Threat Surface Baseline' -Priority 2 -Message "A single account contributes $topSenderPct% of top sender volume in the sampled telemetry. Validate whether this is expected service-account behavior."
+            }
+        }
+    }
+
+    if ($groupsReportRows -gt 0 -and $activeGroups -eq 0) {
+        Add-Finding -Type Info -Category 'Threat Surface Baseline' -Priority 3 -Message 'Office 365 Groups activity report was collected but no active groups were detected in the selected period.'
     }
 
     return @{

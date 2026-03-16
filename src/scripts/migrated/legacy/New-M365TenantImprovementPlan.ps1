@@ -44,7 +44,7 @@ function Import-ArrayaCommonModuleForPlanningScripts {
         'Get-ArrayaObjectValue',
         'Convert-ArrayaToNumber',
         'Convert-ArrayaToDate',
-        'Get-ArrayaGraphResource',
+        'Import-ArrayaOffice365CustomLocal',
         'Import-ArrayaTenantSnapshot',
         'Convert-ArrayaSnapshotToLegacyTenantStatsHash',
         'Test-ArrayaTenantSnapshot'
@@ -59,6 +59,9 @@ function Import-ArrayaCommonModuleForPlanningScripts {
     ) {
         Import-Module -Name $resolvedCommonManifestPath -Force -ErrorAction Stop
     }
+
+    $repoRoot = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\'))
+    Import-ArrayaOffice365CustomLocal -RepoRoot $repoRoot -RequiredCommands @('Office365Custom\Get-GraphData') | Out-Null
 
     return $true
 }
@@ -87,6 +90,27 @@ function New-Finding {
         Value          = $Value
         Target         = $Target
     }
+}
+
+function Get-ArrayaGraphResource {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+        [Parameter(Mandatory = $false)]
+        [int]$PageSize = 999,
+        [Parameter(Mandatory = $false)]
+        [string]$Activity = 'Graph fallback dataset fetch'
+    )
+
+    $resolvedUri = if ($Uri -match '^https?://') {
+        $Uri
+    }
+    else {
+        "https://graph.microsoft.com$Uri"
+    }
+
+    return Office365Custom\Get-GraphData -Uri $resolvedUri -PageSize $PageSize -Activity $Activity
 }
 
 function Get-ImprovementPlanDataset {
