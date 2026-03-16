@@ -5,29 +5,11 @@ param(
     [string]$Action
 )
 
-function Resolve-ArrayaRepoRoot {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$StartPath
-    )
-
-    $candidate = (Resolve-Path -Path $StartPath).Path
-    while ($true) {
-        $launcherPath = Join-Path $candidate 'src\scripts\operations\Start-M365TenantAssessment.ps1'
-        if (Test-Path -Path $launcherPath) {
-            return $candidate
-        }
-
-        $parent = Split-Path -Path $candidate -Parent
-        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $candidate) {
-            break
-        }
-        $candidate = $parent
-    }
-
-    throw "Could not resolve repository root from: $StartPath"
+$resolveRepoRootHelperPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\shared\Resolve-ArrayaRepoRoot.ps1'))
+if (-not (Test-Path -Path $resolveRepoRootHelperPath)) {
+    throw "Repo-root helper script not found: $resolveRepoRootHelperPath"
 }
+. $resolveRepoRootHelperPath
 
 $repoRoot = Resolve-ArrayaRepoRoot -StartPath $PSScriptRoot
 $newLauncher = Join-Path $repoRoot 'src\scripts\operations\Start-M365TenantAssessment.ps1'

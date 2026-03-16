@@ -5,9 +5,14 @@
     Author            = 'Arraya Solutions'
     CompanyName       = 'Arraya Solutions'
     PowerShellVersion = '7.0'
-    FunctionsToExport = '*' 
+    FunctionsToExport = @(
+        'Get-ArrayaAssessmentRecommendationText'
+        'Get-ArrayaAssessmentWorksheetName'
+        'Get-ArrayaEmployeeExperienceInsightsAnalysis'
+        'Get-GraphUserStats'
+    )
     CmdletsToExport   = @()
-    VariablesToExport = '*'
+    VariablesToExport = @()
     AliasesToExport   = @()
 }
 

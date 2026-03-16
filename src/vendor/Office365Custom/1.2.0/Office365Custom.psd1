@@ -9,6 +9,7 @@
     PowerShellVersion    = '5.1'
     CompatiblePSEditions = @('Desktop', 'Core')
     FunctionsToExport    = @(
+        'Connect-Office365',
         'Capture-ErrorHelper',
         'Connect-MicrosoftGraph',
         'Connect-MicrosoftGraphAPI',

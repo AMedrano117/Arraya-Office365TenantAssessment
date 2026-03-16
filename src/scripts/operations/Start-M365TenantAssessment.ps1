@@ -15,6 +15,8 @@ param(
     [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
     [string[]]$OutputProfile = @('SolutionsEngineer'),
     [Parameter(Mandatory = $false)]
+    [string]$ExportPath,
+    [Parameter(Mandatory = $false)]
     [switch]$UseGraphFallback,
     [Parameter(Mandatory = $false)]
     [switch]$SkipPdfReport,
@@ -22,29 +24,11 @@ param(
     [switch]$SkipJsonReport
 )
 
-function Resolve-ArrayaRepoRoot {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$StartPath
-    )
-
-    $candidate = (Resolve-Path -Path $StartPath).Path
-    while ($true) {
-        $runnerManifestPath = Join-Path $candidate 'src\modules\Arraya.M365.AssessmentRunner\Arraya.M365.AssessmentRunner.psd1'
-        if (Test-Path -Path $runnerManifestPath) {
-            return $candidate
-        }
-
-        $parent = Split-Path -Path $candidate -Parent
-        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $candidate) {
-            break
-        }
-        $candidate = $parent
-    }
-
-    throw "Could not resolve repository root from: $StartPath"
+$resolveRepoRootHelperPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\shared\Resolve-ArrayaRepoRoot.ps1'))
+if (-not (Test-Path -Path $resolveRepoRootHelperPath)) {
+    throw "Repo-root helper script not found: $resolveRepoRootHelperPath"
 }
+. $resolveRepoRootHelperPath
 
 $repoRoot = Resolve-ArrayaRepoRoot -StartPath $PSScriptRoot
 $commonManifestPath = Join-Path $repoRoot 'src\modules\Arraya.M365.Common\Arraya.M365.Common.psd1'
@@ -116,7 +100,11 @@ if ([string]::IsNullOrWhiteSpace($Action)) {
 switch ($Action) {
     'M365' {
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
-        $exportPathInput = Read-Host "Export path (.xlsx or folder) - default $defaultOutputRoot"
+        $exportPathInput = if (-not [string]::IsNullOrWhiteSpace($ExportPath)) {
+            $ExportPath
+        } else {
+            Read-Host "Export path (.xlsx or folder) - default $defaultOutputRoot"
+        }
         $selectedOutputProfiles = @($OutputProfile)
         if (-not $PSBoundParameters.ContainsKey('OutputProfile')) {
             $outputProfileInput = Read-Host 'Output profile(s) (Presales, SolutionsEngineer, ExecutiveLevel, TenantToTenantMigration, Geek, Machine) - comma-separated, default SolutionsEngineer'
@@ -147,7 +135,11 @@ switch ($Action) {
     }
     'M365Collect' {
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
-        $exportPathInput = Read-Host "Snapshot output path (.xlsx or folder) - default $defaultOutputRoot"
+        $exportPathInput = if (-not [string]::IsNullOrWhiteSpace($ExportPath)) {
+            $ExportPath
+        } else {
+            Read-Host "Snapshot output path (.xlsx or folder) - default $defaultOutputRoot"
+        }
         $selectedOutputProfiles = @($OutputProfile)
         if (-not $PSBoundParameters.ContainsKey('OutputProfile')) {
             $outputProfileInput = Read-Host 'Collection profile(s) (Presales, SolutionsEngineer, ExecutiveLevel, TenantToTenantMigration, Geek, Machine) - comma-separated, default SolutionsEngineer'
@@ -180,7 +172,11 @@ switch ($Action) {
         if ([string]::IsNullOrWhiteSpace($jsonPath)) {
             throw 'A JSON snapshot path is required for export.'
         }
-        $exportPathInput = Read-Host "Export path (.xlsx or folder) - default $defaultOutputRoot"
+        $exportPathInput = if (-not [string]::IsNullOrWhiteSpace($ExportPath)) {
+            $ExportPath
+        } else {
+            Read-Host "Export path (.xlsx or folder) - default $defaultOutputRoot"
+        }
 
         $selectedOutputProfiles = @($OutputProfile)
         if (-not $PSBoundParameters.ContainsKey('OutputProfile')) {

@@ -5,9 +5,11 @@
     Author            = 'Arraya Solutions'
     CompanyName       = 'Arraya Solutions'
     PowerShellVersion = '7.0'
-    FunctionsToExport = '*' 
+    FunctionsToExport = @(
+        'Get-EntraIDGroups'
+    )
     CmdletsToExport   = @()
-    VariablesToExport = '*'
+    VariablesToExport = @()
     AliasesToExport   = @()
 }
 

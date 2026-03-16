@@ -69,12 +69,13 @@ function Export-ArrayaErrorReports {
     $resolvedDirectory = $null
     $resolvedFolderName = $ErrorReportFolderName
     $resolvedFolderPath = $null
+    $useDedicatedFolder = $false
 
     if (-not [string]::IsNullOrWhiteSpace($ExportFileLocation)) {
         $cleanExportFileLocation = $ExportFileLocation -replace '"', ''
         $resolvedDirectory = [System.IO.Path]::GetDirectoryName($cleanExportFileLocation)
         $resolvedBaseName = [System.IO.Path]::GetFileNameWithoutExtension($cleanExportFileLocation)
-        $resolvedFolderName = "$resolvedBaseName Error Reporting"
+        $resolvedFolderPath = $resolvedDirectory
     }
     else {
         if (-not [string]::IsNullOrWhiteSpace($ErrorReportFolderDirectory)) {
@@ -87,13 +88,21 @@ function Export-ArrayaErrorReports {
         if ([string]::IsNullOrWhiteSpace($resolvedFolderName)) {
             $resolvedFolderName = "$BaseName Error Reporting"
         }
+
+        $useDedicatedFolder = $true
     }
 
     if ([string]::IsNullOrWhiteSpace($resolvedDirectory)) {
         $resolvedDirectory = (Get-Location).Path
     }
 
-    $resolvedFolderPath = Join-Path -Path $resolvedDirectory -ChildPath $resolvedFolderName
+    if ($useDedicatedFolder) {
+        $resolvedFolderPath = Join-Path -Path $resolvedDirectory -ChildPath $resolvedFolderName
+    }
+    elseif ([string]::IsNullOrWhiteSpace($resolvedFolderPath)) {
+        $resolvedFolderPath = $resolvedDirectory
+    }
+
     Write-ArrayaErrorExportLog -Type 'INFO' -Message "INFO: Exporting Error Logs to directory $resolvedFolderPath"
 
     if (-not (Test-Path -Path $resolvedFolderPath)) {

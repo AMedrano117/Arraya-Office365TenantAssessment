@@ -56,6 +56,28 @@ function Invoke-M365TenantAssessmentExportPipeline {
         }
     }
 
+    function Try-OpenHtmlArtifact {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Path,
+            [Parameter(Mandatory = $true)]
+            [string]$Label
+        )
+
+        if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -Path $Path)) {
+            return
+        }
+
+        try {
+            Start-Process -FilePath $Path | Out-Null
+            Write-PipelineLog -Type INFO -Message "$Label opened in the default browser: $Path"
+        }
+        catch {
+            Write-PipelineLog -Type INFO -Message "Could not auto-open ${Label}: $($_.Exception.Message)"
+        }
+    }
+
     $generatedArtifacts = [ordered]@{
         Workbook              = $null
         'Best Practices HTML' = $null
@@ -169,11 +191,9 @@ function Invoke-M365TenantAssessmentExportPipeline {
             if (Get-Command -Name Ensure-TenantHtmlHelpersLoaded -ErrorAction SilentlyContinue) {
                 Ensure-TenantHtmlHelpersLoaded
             }
-            if (-not (Get-Command -Name New-TenantAssessmentHtmlReport -ErrorAction SilentlyContinue)) {
-                $bestPracticesHelperPath = [System.IO.Path]::GetFullPath((Join-Path -Path (Resolve-LegacyHelperRoot) -ChildPath 'New-TenantHtmlReport.ps1'))
-                if (Test-Path -Path $bestPracticesHelperPath) {
-                    . $bestPracticesHelperPath
-                }
+            $bestPracticesHelperPath = [System.IO.Path]::GetFullPath((Join-Path -Path (Resolve-LegacyHelperRoot) -ChildPath 'New-TenantHtmlReport.ps1'))
+            if (Test-Path -Path $bestPracticesHelperPath) {
+                . $bestPracticesHelperPath
             }
             if (Get-Command -Name New-TenantAssessmentHtmlReport -ErrorAction SilentlyContinue) {
                 $assessmentHtmlPath = $ExportDetails -replace '\.xlsx$', '-BestPracticesAnalysis.html'
@@ -181,6 +201,7 @@ function Invoke-M365TenantAssessmentExportPipeline {
                 if ($assessmentHtmlResult.Success) {
                     $generatedArtifacts['Best Practices HTML'] = $assessmentHtmlResult.OutputPath
                     Write-PipelineLog -Type INFO -Message "Best Practices Analysis HTML report generated: $($assessmentHtmlResult.OutputPath)"
+                    Try-OpenHtmlArtifact -Path $assessmentHtmlResult.OutputPath -Label 'Best Practices Analysis HTML'
                 }
                 else {
                     Write-PipelineLog -Type WARNING -Message "Best Practices Analysis HTML report generation failed: $($assessmentHtmlResult.Error)"
@@ -203,6 +224,10 @@ function Invoke-M365TenantAssessmentExportPipeline {
             if (Get-Command -Name Ensure-TenantHtmlHelpersLoaded -ErrorAction SilentlyContinue) {
                 Ensure-TenantHtmlHelpersLoaded
             }
+            $fullHtmlHelperPath = [System.IO.Path]::GetFullPath((Join-Path -Path (Resolve-LegacyHelperRoot) -ChildPath 'New-TenantHtmlReport.ps1'))
+            if (Test-Path -Path $fullHtmlHelperPath) {
+                . $fullHtmlHelperPath
+            }
             if (-not (Get-Command -Name New-TenantHtmlReport -ErrorAction SilentlyContinue)) {
                 Write-PipelineLog -Type WARNING -Message 'Skipping full HTML report generation because New-TenantHtmlReport is unavailable.'
             }
@@ -221,6 +246,7 @@ function Invoke-M365TenantAssessmentExportPipeline {
                 if ($htmlResult.Success) {
                     $generatedArtifacts['Full HTML'] = $htmlResult.OutputPath
                     Write-PipelineLog -Type INFO -Message "HTML report generated: $($htmlResult.OutputPath)"
+                    Try-OpenHtmlArtifact -Path $htmlResult.OutputPath -Label 'Technical HTML report'
 
                     if ($SkipPdfReport) {
                         # Intentionally no-op for profile-based PDF skips.

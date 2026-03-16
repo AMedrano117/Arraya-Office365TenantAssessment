@@ -1,23 +1,36 @@
 Describe 'Arraya.M365.AssessmentRunner' {
-    It 'has manifest' {
-        (Test-Path './src/modules/Arraya.M365.AssessmentRunner/Arraya.M365.AssessmentRunner.psd1') | Should Be $true
+    BeforeAll {
+        $script:repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+        $script:manifestPath = Join-Path $script:repoRoot 'src\modules\Arraya.M365.AssessmentRunner\Arraya.M365.AssessmentRunner.psd1'
+        $script:runnerPath = Join-Path $script:repoRoot 'src\modules\Arraya.M365.AssessmentRunner\Arraya.M365.AssessmentRunner.psm1'
     }
 
-    It 'has primary wrapper scripts' {
-        (Test-Path './src/scripts/operations/Start-M365TenantAssessment.ps1') | Should Be $true
-        (Test-Path './src/scripts/assessments/tenant-wide/Invoke-M365FullTenantAssessment.ps1') | Should Be $true
-        (Test-Path './src/scripts/assessments/identity/Invoke-ActiveDirectoryTenantAssessment.ps1') | Should Be $true
-        (Test-Path './src/scripts/assessments/tenant-wide/Invoke-M365GraphActivityReport.ps1') | Should Be $true
-        (Test-Path './src/scripts/reporting/Invoke-M365TenantImprovementPlan.ps1') | Should Be $true
-        (Test-Path './src/scripts/reporting/Invoke-M365TenantAssessmentComparison.ps1') | Should Be $true
+    It 'has a manifest and top-level wrapper scripts' {
+        Test-Path $script:manifestPath | Should -BeTrue
+        @(
+            'src\scripts\operations\Start-M365TenantAssessment.ps1'
+            'src\scripts\assessments\tenant-wide\Invoke-M365FullTenantAssessment.ps1'
+            'src\scripts\assessments\tenant-wide\Invoke-M365TenantDataCollection.ps1'
+            'src\scripts\assessments\tenant-wide\Invoke-M365GraphActivityReport.ps1'
+            'src\scripts\reporting\Invoke-M365TenantAssessmentExport.ps1'
+            'src\scripts\reporting\Invoke-M365TenantImprovementPlan.ps1'
+            'src\scripts\reporting\Invoke-M365TenantAssessmentComparison.ps1'
+            'src\scripts\reporting\New-M365TenantImprovementPlan.ps1'
+            'src\scripts\reporting\Compare-M365TenantAssessmentSnapshots.ps1'
+        ) | ForEach-Object {
+            Test-Path (Join-Path $script:repoRoot $_) | Should -BeTrue
+        }
     }
 
-    It 'has migrated legacy scripts' {
-        (Test-Path './src/scripts/migrated/legacy/Get-FullTenantReportDetails.ps1') | Should Be $true
-        (Test-Path './src/scripts/migrated/legacy/Get-ActiveDirectoryReport.ps1') | Should Be $true
-        (Test-Path './src/scripts/migrated/legacy/Get-GraphAPIActivityReport.ps1') | Should Be $true
-        (Test-Path './src/scripts/migrated/legacy/New-M365TenantImprovementPlan.ps1') | Should Be $true
-        (Test-Path './src/scripts/migrated/legacy/Compare-M365TenantAssessmentSnapshots.ps1') | Should Be $true
+    It 'uses assessment-script helpers and modern script roots' {
+        $runnerSource = Get-Content -Raw -Path $script:runnerPath
+        $runnerSource | Should -Match 'function Invoke-AssessmentScript'
+        $runnerSource | Should -Match 'function Resolve-AssessmentScriptPath'
+        $runnerSource | Should -Match 'function Resolve-AssessmentExportPathInput'
+        $runnerSource | Should -Match 'Get-ArrayaAssessmentOutputRoot -FallbackPath \$script:RepoRoot'
+        $runnerSource | Should -Match 'src\\scripts\\reporting'
+        $runnerSource | Should -Match 'src\\scripts\\migrated\\legacy'
+        $runnerSource | Should -Not -Match 'function Invoke-LegacyScriptCompat'
+        $runnerSource | Should -Not -Match 'function Get-LegacyScriptPath'
     }
 }
-

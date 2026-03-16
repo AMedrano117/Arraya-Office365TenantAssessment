@@ -58,15 +58,20 @@ function Write-Log {
         # Get the directory, filename without extension, and the extension
         $directory = [System.IO.Path]::GetDirectoryName($ExportFileLocation)
         $baseName = [System.IO.Path]::GetFileNameWithoutExtension($ExportFileLocation)
-        $txtFileName = $baseName + "-FullReportLog.txt"
-        $NewLogFolder = $baseName + " Reporting"
-        $Newdirectory = Join-Path -Path $directory -ChildPath $NewLogFolder
-        $LogFile = Join-Path -Path $Newdirectory -ChildPath $txtFileName
-
-        # Create the 'Log Reporting' directory if it doesn't exist
-        if (-not (Test-Path $Newdirectory)) {
-            $newfolder = New-Item -Path $Newdirectory -ItemType Directory
+        if ([string]::IsNullOrWhiteSpace($directory)) {
+            $directory = (Get-Location).Path
         }
+        if ([string]::IsNullOrWhiteSpace($baseName)) {
+            $baseName = 'Assessment'
+        }
+
+        $txtFileName = $baseName + "-FullReportLog.txt"
+        $LogFile = Join-Path -Path $directory -ChildPath $txtFileName
+
+        if (-not (Test-Path $directory)) {
+            $newfolder = New-Item -Path $directory -ItemType Directory -Force
+        }
+
         try {
             # Prepare the log message with a timestamp
             $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"

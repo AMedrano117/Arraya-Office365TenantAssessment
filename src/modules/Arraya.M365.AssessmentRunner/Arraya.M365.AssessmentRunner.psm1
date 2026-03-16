@@ -1,9 +1,12 @@
 Set-StrictMode -Version Latest
 
 $script:RepoRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..\..\..')).Path
-$script:LegacyScriptRoot = Join-Path $script:RepoRoot 'src\scripts\migrated\legacy'
+$script:AssessmentScriptRoots = @(
+    (Join-Path $script:RepoRoot 'src\scripts\reporting'),
+    (Join-Path $script:RepoRoot 'src\scripts\migrated\legacy')
+)
 
-function Invoke-LegacyScriptCompat {
+function Invoke-AssessmentScript {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
@@ -53,19 +56,39 @@ function Import-AssessmentRunnerDependencies {
     Import-ArrayaOffice365CustomLocal -RepoRoot $script:RepoRoot -RequiredCommands $RequiredCommands | Out-Null
 }
 
-function Get-LegacyScriptPath {
+function Resolve-AssessmentScriptPath {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [string]$Name
     )
 
-    $scriptPath = Join-Path $script:LegacyScriptRoot $Name
-    if (-not (Test-Path -Path $scriptPath)) {
-        throw "Legacy script not found: $scriptPath"
+    foreach ($scriptRoot in $script:AssessmentScriptRoots) {
+        $scriptPath = Join-Path $scriptRoot $Name
+        if (Test-Path -Path $scriptPath) {
+            return (Resolve-Path -Path $scriptPath).Path
+        }
     }
 
-    return $scriptPath
+    throw "Assessment script not found in configured roots: $Name"
+}
+
+function Resolve-AssessmentExportPathInput {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$ExportPath
+    )
+
+    if (-not (Get-Command -Name 'Get-ArrayaAssessmentOutputRoot' -ErrorAction SilentlyContinue)) {
+        Import-AssessmentRunnerDependencies
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ExportPath)) {
+        return (Get-ArrayaAssessmentOutputRoot -FallbackPath $script:RepoRoot)
+    }
+
+    return $ExportPath
 }
 
 function Resolve-M365OutputProfileExecutionPlan {
@@ -191,14 +214,14 @@ function Invoke-M365TenantAssessment {
 
     $plan = Resolve-M365OutputProfileExecutionPlan -OutputProfile $OutputProfile
 
-    $scriptPath = Get-LegacyScriptPath -Name 'Get-FullTenantReportDetails.ps1'
+    $scriptPath = Resolve-AssessmentScriptPath -Name 'Get-FullTenantReportDetails.ps1'
     if ($plan.IsMergedSelection) {
         Write-Host ("Running merged profile pass for: {0}" -f ($plan.SelectedOutputProfiles -join ', ')) -ForegroundColor Cyan
         Write-Host ("Merged reporting mode: {0}" -f $plan.ReportingMode) -ForegroundColor DarkCyan
     }
 
     $invokeParams = @{}
-    if ($PSBoundParameters.ContainsKey('ExportPath')) { $invokeParams.ExportPath = $ExportPath }
+    $invokeParams.ExportPath = Resolve-AssessmentExportPathInput -ExportPath $ExportPath
     $invokeParams.OutputProfile = $plan.PrimaryProfile
     $invokeParams.OutputProfileLabel = $plan.ProfileLabel
     $invokeParams.ReportingModeOverride = $plan.ReportingMode
@@ -216,7 +239,7 @@ function Invoke-M365TenantAssessment {
     if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
     if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
 
-    Invoke-LegacyScriptCompat -ScriptPath $scriptPath -Parameters $invokeParams
+    Invoke-AssessmentScript -ScriptPath $scriptPath -Parameters $invokeParams
 }
 
 function Invoke-M365TenantDataCollection {
@@ -238,7 +261,7 @@ function Invoke-M365TenantDataCollection {
     )
 
     $plan = Resolve-M365OutputProfileExecutionPlan -OutputProfile $OutputProfile
-    $scriptPath = Get-LegacyScriptPath -Name 'Get-FullTenantReportDetails.ps1'
+    $scriptPath = Resolve-AssessmentScriptPath -Name 'Get-FullTenantReportDetails.ps1'
 
     if ($plan.IsMergedSelection) {
         Write-Host ("Running merged profile collection pass for: {0}" -f ($plan.SelectedOutputProfiles -join ', ')) -ForegroundColor Cyan
@@ -246,7 +269,7 @@ function Invoke-M365TenantDataCollection {
     }
 
     $invokeParams = @{}
-    if ($PSBoundParameters.ContainsKey('ExportPath')) { $invokeParams.ExportPath = $ExportPath }
+    $invokeParams.ExportPath = Resolve-AssessmentExportPathInput -ExportPath $ExportPath
     $invokeParams.OutputProfile = $plan.PrimaryProfile
     $invokeParams.OutputProfileLabel = "Collection-$($plan.ProfileLabel)"
     $invokeParams.ReportingModeOverride = $plan.ReportingMode
@@ -262,7 +285,7 @@ function Invoke-M365TenantDataCollection {
     if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
     if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
 
-    Invoke-LegacyScriptCompat -ScriptPath $scriptPath -Parameters $invokeParams
+    Invoke-AssessmentScript -ScriptPath $scriptPath -Parameters $invokeParams
 }
 
 function Invoke-M365TenantAssessmentExport {
@@ -284,10 +307,10 @@ function Invoke-M365TenantAssessmentExport {
     )
 
     $plan = Resolve-M365OutputProfileExecutionPlan -OutputProfile $OutputProfile
-    $scriptPath = Get-LegacyScriptPath -Name 'Get-FullTenantReportDetails.ps1'
+    $scriptPath = Resolve-AssessmentScriptPath -Name 'Get-FullTenantReportDetails.ps1'
 
     $invokeParams = @{}
-    if ($PSBoundParameters.ContainsKey('ExportPath')) { $invokeParams.ExportPath = $ExportPath }
+    $invokeParams.ExportPath = Resolve-AssessmentExportPathInput -ExportPath $ExportPath
     $invokeParams.OutputProfile = $plan.PrimaryProfile
     $invokeParams.OutputProfileLabel = "Export-$($plan.ProfileLabel)"
     $invokeParams.ReportingModeOverride = $plan.ReportingMode
@@ -303,15 +326,15 @@ function Invoke-M365TenantAssessmentExport {
     if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
     if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
 
-    Invoke-LegacyScriptCompat -ScriptPath $scriptPath -Parameters $invokeParams
+    Invoke-AssessmentScript -ScriptPath $scriptPath -Parameters $invokeParams
 }
 
 function Invoke-ADTenantAssessment {
     [CmdletBinding()]
     param()
 
-    $scriptPath = Get-LegacyScriptPath -Name 'Get-ActiveDirectoryReport.ps1'
-    Invoke-LegacyScriptCompat -ScriptPath $scriptPath
+    $scriptPath = Resolve-AssessmentScriptPath -Name 'Get-ActiveDirectoryReport.ps1'
+    Invoke-AssessmentScript -ScriptPath $scriptPath
 }
 
 function Invoke-GraphActivityAssessment {
@@ -364,12 +387,12 @@ function Invoke-M365ImprovementPlan {
         [switch]$UseGraphFallback
     )
 
-    $scriptPath = Get-LegacyScriptPath -Name 'New-M365TenantImprovementPlan.ps1'
+    $scriptPath = Resolve-AssessmentScriptPath -Name 'New-M365TenantImprovementPlan.ps1'
     $invokeParams = @{ AssessmentJsonPath = $AssessmentJsonPath }
     if ($PSBoundParameters.ContainsKey('OutputFolder')) { $invokeParams.OutputFolder = $OutputFolder }
     if ($PSBoundParameters.ContainsKey('UseGraphFallback')) { $invokeParams.UseGraphFallback = $UseGraphFallback }
 
-    Invoke-LegacyScriptCompat -ScriptPath $scriptPath -Parameters $invokeParams
+    Invoke-AssessmentScript -ScriptPath $scriptPath -Parameters $invokeParams
 }
 
 function Invoke-M365AssessmentComparison {
@@ -383,14 +406,14 @@ function Invoke-M365AssessmentComparison {
         [string]$OutputFolder
     )
 
-    $scriptPath = Get-LegacyScriptPath -Name 'Compare-M365TenantAssessmentSnapshots.ps1'
+    $scriptPath = Resolve-AssessmentScriptPath -Name 'Compare-M365TenantAssessmentSnapshots.ps1'
     $invokeParams = @{
         BaselineJsonPath = $BaselineJsonPath
         CurrentJsonPath  = $CurrentJsonPath
     }
     if ($PSBoundParameters.ContainsKey('OutputFolder')) { $invokeParams.OutputFolder = $OutputFolder }
 
-    Invoke-LegacyScriptCompat -ScriptPath $scriptPath -Parameters $invokeParams
+    Invoke-AssessmentScript -ScriptPath $scriptPath -Parameters $invokeParams
 }
 
 Export-ModuleMember -Function @(
