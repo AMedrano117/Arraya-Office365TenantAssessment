@@ -7017,6 +7017,7 @@ $runLogDirectory = [System.IO.Path]::GetDirectoryName($ExportDetails)
 if ([string]::IsNullOrWhiteSpace($runLogDirectory)) {
     $runLogDirectory = (Get-Location).Path
 }
+$runLogDirectory = Join-Path -Path $runLogDirectory -ChildPath 'Debugging'
 $runLogBaseName = [System.IO.Path]::GetFileNameWithoutExtension($ExportDetails)
 if (-not [string]::IsNullOrWhiteSpace($runLogBaseName)) {
     $runLogPath = Join-Path -Path $runLogDirectory -ChildPath ($runLogBaseName + '-FullReportLog.txt')

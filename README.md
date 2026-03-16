@@ -79,6 +79,8 @@ For a Microsoft 365 tenant assessment run, the primary deliverables are:
 - `*.json`: the machine-readable snapshot used for reuse, comparison, and downstream reporting when enabled.
 - `*.pdf`: the fixed-layout PDF generated from the full HTML report through headless Chrome/Edge when enabled and available.
 
+Operational logs and exported error/debug bundles are written into a `Debugging` subfolder inside each assessment output folder so primary deliverables stay easier to scan.
+
 The workbook is the file that contains the assessment summary and findings. The most assessment-oriented worksheets are:
 
 - `BestPractices`

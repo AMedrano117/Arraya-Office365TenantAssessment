@@ -75,7 +75,16 @@ function Export-ArrayaErrorReports {
         $cleanExportFileLocation = $ExportFileLocation -replace '"', ''
         $resolvedDirectory = [System.IO.Path]::GetDirectoryName($cleanExportFileLocation)
         $resolvedBaseName = [System.IO.Path]::GetFileNameWithoutExtension($cleanExportFileLocation)
-        $resolvedFolderPath = $resolvedDirectory
+        if ([string]::IsNullOrWhiteSpace($resolvedDirectory)) {
+            $resolvedDirectory = (Get-Location).Path
+        }
+
+        if ([string]::Equals((Split-Path -Path $resolvedDirectory -Leaf), 'Debugging', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $resolvedFolderPath = $resolvedDirectory
+        }
+        else {
+            $resolvedFolderPath = Join-Path -Path $resolvedDirectory -ChildPath 'Debugging'
+        }
     }
     else {
         if (-not [string]::IsNullOrWhiteSpace($ErrorReportFolderDirectory)) {

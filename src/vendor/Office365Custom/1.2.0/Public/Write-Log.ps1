@@ -37,18 +37,37 @@ function Write-Log {
         [string]$ExportFileLocation
 
     )
+
+    function Resolve-DebugLogDirectory {
+        param(
+            [Parameter(Mandatory=$true)]
+            [string]$BaseDirectory
+        )
+
+        if ([string]::IsNullOrWhiteSpace($BaseDirectory)) {
+            $BaseDirectory = (Get-Location).Path
+        }
+
+        if ([string]::Equals((Split-Path -Path $BaseDirectory -Leaf), 'Debugging', [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $BaseDirectory
+        }
+
+        return (Join-Path -Path $BaseDirectory -ChildPath 'Debugging')
+    }
+
     # If the log file path is provided, append the log message to the file
     if ($LogPath) {
         # Get the directory, filename without extension, and the extension
         # Create the 'Log Reporting' directory if it doesn't exist
-        if (-not (Test-Path $LogPath)) {
-            $newfolder = New-Item -Path $LogPath -ItemType Directory
+        $resolvedLogDirectory = Resolve-DebugLogDirectory -BaseDirectory $LogPath
+        if (-not (Test-Path $resolvedLogDirectory)) {
+            $newfolder = New-Item -Path $resolvedLogDirectory -ItemType Directory -Force
         }
         try {
             # Prepare the log message with a timestamp
             $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
             $logMessage = "$timestamp : [$Type] $Message"
-            $LogFile = $LogPath + "\FullTenantReportLog.txt"
+            $LogFile = Join-Path -Path $resolvedLogDirectory -ChildPath 'FullTenantReportLog.txt'
             $logMessage | Out-File -Append -FilePath $LogFile
         } catch {
             Write-Error "Failed to write to log file at '$LogFile': $_"
@@ -65,6 +84,7 @@ function Write-Log {
             $baseName = 'Assessment'
         }
 
+        $directory = Resolve-DebugLogDirectory -BaseDirectory $directory
         $txtFileName = $baseName + "-FullReportLog.txt"
         $LogFile = Join-Path -Path $directory -ChildPath $txtFileName
 

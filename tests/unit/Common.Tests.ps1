@@ -77,7 +77,7 @@ Describe 'Arraya.M365.Common' {
         }
     }
 
-    It 'writes error exports beside the base artifact instead of creating a per-run folder' {
+    It 'writes error exports into a Debugging folder beside the base artifact' {
         Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
 
         $exportFileLocation = Join-Path $TestDrive 'Tenant Discovery Report-SolutionsEngineer.xlsx'
@@ -88,7 +88,7 @@ Describe 'Arraya.M365.Common' {
             }
         )
 
-        $expectedDirectory = Split-Path -Path $exportFileLocation -Parent
+        $expectedDirectory = Join-Path (Split-Path -Path $exportFileLocation -Parent) 'Debugging'
         $errorSummary.FolderPath | Should -Be $expectedDirectory
         Split-Path -Path $errorSummary.JsonPath -Parent | Should -Be $expectedDirectory
         Split-Path -Path $errorSummary.LogPath -Parent | Should -Be $expectedDirectory
