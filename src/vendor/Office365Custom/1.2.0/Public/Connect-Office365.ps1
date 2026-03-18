@@ -31,6 +31,10 @@ function Connect-Office365 {
     [CmdletBinding()]
     param(
         [Parameter()]
+        [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
+        [string]$AuthMode,
+
+        [Parameter()]
         [switch]$WriteGraph,
 
         [Parameter()]
@@ -52,6 +56,12 @@ function Connect-Office365 {
     )
 
     begin {
+        # Suppress Microsoft Graph SDK progress records so they do not leave stale
+        # WriteRequestProgressActivity bars in the console during assessment runs.
+        $global:PSDefaultParameterValues['Get-Mg*:ProgressAction'] = 'SilentlyContinue'
+        $global:PSDefaultParameterValues['Find-Mg*:ProgressAction'] = 'SilentlyContinue'
+        $global:PSDefaultParameterValues['Invoke-MgGraphRequest:ProgressAction'] = 'SilentlyContinue'
+
         $result = [ordered]@{
             Graph              = $false
             TenantName         = $null
@@ -67,12 +77,18 @@ function Connect-Office365 {
         }
 
         $usingApplicationAuth = $false
-        $AuthenticationType = if ($CertificateThumbprint) { 
-            'Certificate' 
-        } elseif ($ClientSecretCredential) { 
-            'ClientSecret' 
-        } else { 
-            'Delegate' 
+        $AuthenticationType = if ($PSBoundParameters.ContainsKey('AuthMode') -and -not [string]::IsNullOrWhiteSpace($AuthMode)) {
+            switch ($AuthMode) {
+                'Interactive' { 'Delegate' }
+                'Certificate' { 'Certificate' }
+                'ClientSecret' { 'ClientSecret' }
+            }
+        } elseif ($CertificateThumbprint) {
+            'Certificate'
+        } elseif ($ClientSecretCredential) {
+            'ClientSecret'
+        } else {
+            'Delegate'
         }
         $result.AuthenticationType = $AuthenticationType
 
@@ -89,6 +105,28 @@ function Connect-Office365 {
                 ) {
                     $ClientIdPrompt = Read-Host "Please enter ClientId (username for the App Registration)"
                     $ClientSecretCredential = Get-Credential -UserName $ClientIdPrompt -Message "Please enter the client secret as the password"
+                }
+            }
+        }
+
+        switch ($AuthenticationType) {
+            'Certificate' {
+                if ([string]::IsNullOrWhiteSpace($TenantId)) {
+                    throw "Certificate authentication requires -TenantId."
+                }
+                if ([string]::IsNullOrWhiteSpace($ClientId)) {
+                    throw "Certificate authentication requires -ClientId."
+                }
+                if ([string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
+                    throw "Certificate authentication requires -CertificateThumbprint."
+                }
+            }
+            'ClientSecret' {
+                if ([string]::IsNullOrWhiteSpace($TenantId)) {
+                    throw "Client secret authentication requires -TenantId."
+                }
+                if ([string]::IsNullOrWhiteSpace($ClientId) -and $null -eq $ClientSecretCredential) {
+                    throw "Client secret authentication requires -ClientId."
                 }
             }
         }
@@ -118,8 +156,7 @@ function Connect-Office365 {
         # Load ExchangeOnlineManagement before Graph to avoid MSAL assembly
         # version conflicts that can break Connect-ExchangeOnline in PS7.
         if (-not (Get-Module -ListAvailable -Name 'ExchangeOnlineManagement')) {
-            Write-Host "✗ Exchange Online: The module 'ExchangeOnlineManagement' is not installed. Please install it before proceeding." -ForegroundColor Red
-            return
+            throw "Exchange Online: The module 'ExchangeOnlineManagement' is not installed. Please install it before proceeding."
         }
         else { 
             if (-not (Get-Module -Name 'ExchangeOnlineManagement')) {
@@ -134,15 +171,15 @@ function Connect-Office365 {
             "Organization.Read.All","User.Read.All","AuditLog.Read.All",
             "Group.Read.All","GroupMember.Read.All","RoleManagement.Read.Directory",
             "Domain.Read.All","Device.Read.All","Reports.Read.All",
-            "Policy.Read.All","CrossTenantInformation.ReadBasic.All",
-            "Security.Read.All","Application.Read.All",
+            "ReportSettings.Read.All","Policy.Read.All","CrossTenantInformation.ReadBasic.All",
+            "SecurityEvents.Read.All","Application.Read.All","Sites.Read.All","Files.Read.All",
             "Team.ReadBasic.All","Channel.ReadBasic.All"
         )
         $AdditionalScopes = @(
-            "Directory.Read.All","Sites.Read.All","Files.Read.All",
+            "Directory.Read.All",
             "MailboxSettings.ReadWrite","TeamSettings.Read.All","TeamsTab.Read.All",
             "LicenseAssignment.ReadWrite.All","User.EnableDisableAccount.All","User.Export.All",
-            "SecurityEvents.Read.All","SharePointTenantSettings.Read.All",
+            "SharePointTenantSettings.Read.All",
             "Mail.Read","MailboxSettings.Read","DirectoryRecommendations.Read.All",
             "Policy.ReadWrite.CrossTenantAccess"
         )
@@ -229,16 +266,50 @@ function Connect-Office365 {
                         Default {
                             Write-Verbose "Using delegated authentication for Graph. Scopes: $($GraphScopes -join ', ')"
                             Write-Host "Connecting to Graph (delegate)..." -ForegroundColor Cyan
-                            Write-Verbose "Running Connect-MgGraph with $($GraphScopes.Count) scopes"
-                            Connect-MgGraph -Scopes $GraphScopes -NoWelcome -ErrorAction Stop | Out-Null
+                            $graphConnectParams = @{
+                                Scopes      = $GraphScopes
+                                NoWelcome   = $true
+                                ErrorAction = 'Stop'
+                            }
+                            if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
+                                $graphConnectParams.TenantId = $TenantId
+                            }
+
+                            Write-Verbose "Running Connect-MgGraph with $($GraphScopes.Count) scopes$(if ($graphConnectParams.ContainsKey('TenantId')) { " for tenant $TenantId" } else { '' })"
+                            try {
+                                Connect-MgGraph @graphConnectParams | Out-Null
+                            }
+                            catch {
+                                $interactiveAuthError = $_.Exception.Message
+                                if (
+                                    $interactiveAuthError -like '*InteractiveBrowserCredential*' -and
+                                    (Get-Command -Name Connect-MgGraph -ErrorAction SilentlyContinue).Parameters.ContainsKey('UseDeviceCode')
+                                ) {
+                                    Write-Warning "Interactive browser authentication failed. Retrying Microsoft Graph sign-in with device code."
+                                    Write-Verbose "Running Connect-MgGraph with -UseDeviceCode after interactive browser failure."
+                                    $graphConnectParams.UseDeviceCode = $true
+                                    Connect-MgGraph @graphConnectParams | Out-Null
+                                }
+                                else {
+                                    throw
+                                }
+                            }
                         }
                     }
                     Write-Host "✓ Graph connected" -ForegroundColor Green
                 }
                 catch {
-                    Write-Host "✗ Graph: $($_.Exception.Message)" -ForegroundColor Red
                     $result.Graph = $false
-                    return
+                    $graphAuthFailureMessage = $_.Exception.Message
+                    if (
+                        $AuthenticationType -eq 'Delegate' -and
+                        [string]::IsNullOrWhiteSpace($TenantId) -and
+                        $graphAuthFailureMessage -like '*AADSTS70011*'
+                    ) {
+                        $graphAuthFailureMessage = "$graphAuthFailureMessage Rerun the assessment with -TenantId '<tenant-guid>' so delegated Graph sign-in is scoped to your organization."
+                    }
+
+                    throw "Graph authentication failed: $graphAuthFailureMessage"
                 }
             }
             
@@ -251,8 +322,7 @@ function Connect-Office365 {
             Write-Verbose "Connected to tenant: '$($result.TenantName)'"
         }
         catch {
-            Write-Host "✗ Graph: $($_.Exception.Message)" -ForegroundColor Red
-            return
+            throw "Graph connection bootstrap failed: $($_.Exception.Message)"
         }
         #endregion Check if already connected to Microsoft Graph
 
@@ -263,8 +333,7 @@ function Connect-Office365 {
             $defaultDomain = $verifiedDomains | Where-Object { $_.IsInitial -eq $true } | Select-Object -First 1
             if (-not $defaultDomain) { $defaultDomain = $verifiedDomains | Select-Object -First 1 }
             if (-not $defaultDomain) { 
-                Write-Host "✗ Could not determine SharePoint tenant name: Unable to determine tenant default domain from Graph Organization object." -ForegroundColor Red
-                return
+                throw "Could not determine SharePoint tenant name: Unable to determine tenant default domain from Graph Organization object."
             }
             
             $domainPart = $defaultDomain.Name.Split('.')[0]
@@ -273,8 +342,7 @@ function Connect-Office365 {
             Write-Verbose "Using tenant name '$TenantName' derived from domain '$($defaultDomain.Name)'"
         }
         catch {
-            Write-Host "✗ Could not determine SharePoint tenant name: $($_.Exception.Message)" -ForegroundColor Red
-            return
+            throw "Could not determine SharePoint tenant name: $($_.Exception.Message)"
         }
         #endregion Get Tenant Name from Graph if needed
 
@@ -378,37 +446,87 @@ function Connect-Office365 {
                 $result.ExchangeOnline = $true
             } else {
                 Write-Host "Connecting to Exchange Online..." -ForegroundColor Cyan
+                $exchangeConnectParams = @{
+                    ShowBanner  = $false
+                    ErrorAction = 'Stop'
+                }
                 # Only support Certificate and delegate auth; warn and default to delegate if ClientSecretCredential is requested
                 if ($authenticationType -eq 'Certificate') {
                     Write-Verbose "Using certificate-based authentication for Exchange Online."
                     if (-not $ClientId) { 
-                        Write-Host "✗ Exchange Online: ExchangeOnline certificate auth requires -ClientId (AppId)." -ForegroundColor Red
-                        return
+                        throw "Exchange Online: ExchangeOnline certificate auth requires -ClientId (AppId)."
                     }
                     if (-not $result.InitialDomain) { 
-                        Write-Host "✗ Exchange Online: ExchangeOnline certificate auth requires Organization (initial domain)." -ForegroundColor Red
-                        return
+                        throw "Exchange Online: ExchangeOnline certificate auth requires Organization (initial domain)."
                     }
-                    Write-Verbose "Running Connect-ExchangeOnline -AppId $ClientId -Organization $($result.InitialDomain) -CertificateThumbprint $CertificateThumbprint"
-                    Connect-ExchangeOnline -AppId $ClientId -Organization $result.InitialDomain -CertificateThumbprint $CertificateThumbprint -ShowBanner:$false -ErrorAction Stop | Out-Null
+                    $exchangeConnectParams.AppId = $ClientId
+                    $exchangeConnectParams.Organization = $result.InitialDomain
+                    $exchangeConnectParams.CertificateThumbprint = $CertificateThumbprint
+                    Write-Verbose "Running Connect-ExchangeOnline with certificate authentication."
+                    Connect-ExchangeOnline @exchangeConnectParams | Out-Null
                 }
                 elseif ($authenticationType -eq 'ClientSecret') {
                     Write-Warning "Exchange Online does not support ClientSecretCredential (App/Secret) authentication. Falling back to delegated authentication."
-                    #Write-Verbose "Running Connect-ExchangeOnline with ShowBanner disabled (delegate authentication fallback)"
-                    Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop | Out-Null
+                    try {
+                        Write-Verbose "Running Connect-ExchangeOnline with delegated authentication fallback."
+                        Connect-ExchangeOnline @exchangeConnectParams | Out-Null
+                    }
+                    catch {
+                        $exoAuthError = $_.Exception.Message
+                        if (
+                            $exoAuthError -like '*RuntimeBroker*' -or
+                            $exoAuthError -like '*Object reference not set to an instance of an object*' -or
+                            $exoAuthError -like '*Error Acquiring Token*' -or
+                            $exoAuthError -like '*A window handle must be configured*'
+                        ) {
+                            if ((Get-Command -Name Connect-ExchangeOnline -ErrorAction SilentlyContinue).Parameters.ContainsKey('DisableWAM')) {
+                                Write-Warning "Exchange Online delegated authentication failed with WAM. Retrying with -DisableWAM."
+                                $exchangeConnectParams.DisableWAM = $true
+                                Connect-ExchangeOnline @exchangeConnectParams | Out-Null
+                            }
+                            else {
+                                throw
+                            }
+                        }
+                        else {
+                            throw
+                        }
+                    }
                 }
                 else {
                     Write-Verbose "Using delegated authentication for Exchange Online."
-                    Write-Verbose "Running Connect-ExchangeOnline with ShowBanner disabled"
-                    Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop | Out-Null
+                    try {
+                        Write-Verbose "Running Connect-ExchangeOnline with delegated authentication."
+                        Connect-ExchangeOnline @exchangeConnectParams | Out-Null
+                    }
+                    catch {
+                        $exoAuthError = $_.Exception.Message
+                        if (
+                            $exoAuthError -like '*RuntimeBroker*' -or
+                            $exoAuthError -like '*Object reference not set to an instance of an object*' -or
+                            $exoAuthError -like '*Error Acquiring Token*' -or
+                            $exoAuthError -like '*A window handle must be configured*'
+                        ) {
+                            if ((Get-Command -Name Connect-ExchangeOnline -ErrorAction SilentlyContinue).Parameters.ContainsKey('DisableWAM')) {
+                                Write-Warning "Exchange Online delegated authentication failed with WAM. Retrying with -DisableWAM."
+                                $exchangeConnectParams.DisableWAM = $true
+                                Connect-ExchangeOnline @exchangeConnectParams | Out-Null
+                            }
+                            else {
+                                throw
+                            }
+                        }
+                        else {
+                            throw
+                        }
+                    }
                 }
                 $result.ExchangeOnline = $true
                 Write-Host "✓ Exchange Online connected" -ForegroundColor Green
             }
         }
         catch { 
-            Write-Host "✗ Exchange Online: $($_.Exception.Message)" -ForegroundColor Red
-            return 
+            throw "Exchange Online authentication failed: $($_.Exception.Message)"
         }
 
         # ===== CONNECT TO TEAMS =====

@@ -3126,14 +3126,13 @@ function Get-TenantAssessmentContext {
         }
     }
 
-    $mailboxSourceKey = if ($null -ne (Resolve-ContextValue -Key 'MailboxFullDetails')) {
-        'MailboxFullDetails'
-    } elseif ($null -ne (Resolve-ContextValue -Key 'AllMailboxes')) {
-        'AllMailboxes'
-    } elseif ($null -ne (Resolve-ContextValue -Key 'ArchiveMailboxes')) {
-        'ArchiveMailboxes'
-    } else {
-        $null
+    $mailboxSourceKey = $null
+    foreach ($candidateKey in @('MailboxFullDetails', 'AllMailboxes', 'ArchiveMailboxes')) {
+        $candidateRows = @(Get-ContextArray -Key $candidateKey)
+        if ($candidateRows.Count -gt 0) {
+            $mailboxSourceKey = $candidateKey
+            break
+        }
     }
     $rawMailboxes = if ($mailboxSourceKey) { Get-ContextArray -Key $mailboxSourceKey } else { @() }
     $primaryMailboxStats = Resolve-ContextValue -Key 'PrimaryMailboxStats'
@@ -4755,6 +4754,148 @@ function Build-RecipientsSection {
     return $tableHtml + $chartHtml + $footerHtml
 }
 
+# Helper for isolated mailbox overview testing without a full assessment run.
+function New-SampleMailboxOverviewData {
+    [CmdletBinding()]
+    param()
+
+    $mailboxes = @(
+        [PSCustomObject]@{
+            ExternalDirectoryObjectId     = '11111111-1111-1111-1111-111111111111'
+            DisplayName                   = 'Adele Vance'
+            Identity                      = 'Adele Vance'
+            RecipientTypeDetails          = 'UserMailbox'
+            PrimarySmtpAddress            = 'adele.vance@contoso.com'
+            EmailAddresses                = @('SMTP:adele.vance@contoso.com', 'smtp:adele@contoso.com')
+            HiddenFromAddressListsEnabled = $false
+            AddressBookPolicy             = $null
+            ManagedBy                     = $null
+            SKUAssigned                   = $true
+            WhenCreated                   = [datetime]'2022-10-11T10:31:39'
+            WhenSoftDeleted               = $null
+            Guid                          = 'aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb'
+            Alias                         = 'adele.vance'
+            Notes                         = $null
+            DriveURL                      = 'https://contoso-my.sharepoint.com/personal/adele_vance_contoso_com'
+            DriveStorageGB                = 12.4
+            MBXSizeGB                     = 0.034
+            ArchiveSizeGB                 = 0.034
+            MBXItemCount                  = 4935
+            ArchiveItemCount              = 94
+            IsInactiveMailbox             = $false
+        }
+        [PSCustomObject]@{
+            ExternalDirectoryObjectId     = '22222222-2222-2222-2222-222222222222'
+            DisplayName                   = 'Megan Bowen'
+            Identity                      = 'Megan Bowen'
+            RecipientTypeDetails          = 'UserMailbox'
+            PrimarySmtpAddress            = 'megan.bowen@contoso.com'
+            EmailAddresses                = @('SMTP:megan.bowen@contoso.com')
+            HiddenFromAddressListsEnabled = $false
+            AddressBookPolicy             = $null
+            ManagedBy                     = $null
+            SKUAssigned                   = $true
+            WhenCreated                   = [datetime]'2021-06-02T08:14:00'
+            WhenSoftDeleted               = $null
+            Guid                          = 'cccccccc-1111-2222-3333-dddddddddddd'
+            Alias                         = 'megan.bowen'
+            Notes                         = $null
+            DriveURL                      = 'https://contoso-my.sharepoint.com/personal/megan_bowen_contoso_com'
+            DriveStorageGB                = 51.2
+            MBXSizeGB                     = 24.781
+            ArchiveSizeGB                 = 3.551
+            MBXItemCount                  = 18245
+            ArchiveItemCount              = 882
+            IsInactiveMailbox             = $false
+        }
+        [PSCustomObject]@{
+            ExternalDirectoryObjectId     = '33333333-3333-3333-3333-333333333333'
+            DisplayName                   = 'Alex Wilber'
+            Identity                      = 'Alex Wilber'
+            RecipientTypeDetails          = 'SharedMailbox'
+            PrimarySmtpAddress            = 'sales@contoso.com'
+            EmailAddresses                = @('SMTP:sales@contoso.com')
+            HiddenFromAddressListsEnabled = $false
+            AddressBookPolicy             = $null
+            ManagedBy                     = $null
+            SKUAssigned                   = $false
+            WhenCreated                   = [datetime]'2020-03-15T15:20:00'
+            WhenSoftDeleted               = $null
+            Guid                          = 'eeeeeeee-1111-2222-3333-ffffffffffff'
+            Alias                         = 'sales'
+            Notes                         = 'Shared Sales mailbox'
+            DriveURL                      = $null
+            DriveStorageGB                = 0
+            MBXSizeGB                     = 63.442
+            ArchiveSizeGB                 = 18.005
+            MBXItemCount                  = 64120
+            ArchiveItemCount              = 6421
+            IsInactiveMailbox             = $false
+        }
+        [PSCustomObject]@{
+            ExternalDirectoryObjectId     = '44444444-4444-4444-4444-444444444444'
+            DisplayName                   = 'Old Project Mailbox'
+            Identity                      = 'Old Project Mailbox'
+            RecipientTypeDetails          = 'UserMailbox'
+            PrimarySmtpAddress            = 'old.project@contoso.com'
+            EmailAddresses                = @('SMTP:old.project@contoso.com')
+            HiddenFromAddressListsEnabled = $true
+            AddressBookPolicy             = $null
+            ManagedBy                     = $null
+            SKUAssigned                   = $false
+            WhenCreated                   = [datetime]'2019-01-08T09:00:00'
+            WhenSoftDeleted               = $null
+            Guid                          = '12121212-3434-5656-7878-909090909090'
+            Alias                         = 'old.project'
+            Notes                         = 'Inactive test mailbox'
+            DriveURL                      = $null
+            DriveStorageGB                = 0
+            MBXSizeGB                     = 8.117
+            ArchiveSizeGB                 = 0.512
+            MBXItemCount                  = 7211
+            ArchiveItemCount              = 141
+            IsInactiveMailbox             = $true
+        }
+    )
+
+    $inactiveMailboxes = @($mailboxes | Where-Object { $_.IsInactiveMailbox -eq $true })
+
+    $publicFolders = @(
+        [PSCustomObject]@{
+            MailEnabled   = $true
+            HasSubfolders = $true
+        }
+    )
+
+    $mailboxStatsSummary = [PSCustomObject]@{
+        TotalMailboxes       = $mailboxes.Count
+        ActiveMailboxes      = (@($mailboxes | Where-Object { $_.IsInactiveMailbox -ne $true })).Count
+        GraphPopulated       = 2
+        ExoFallbackPopulated = 2
+        Populated            = $mailboxes.Count
+        Missing              = 0
+    }
+
+    return [PSCustomObject]@{
+        Mailboxes           = $mailboxes
+        InactiveMailboxes   = $inactiveMailboxes
+        PublicFolders       = $publicFolders
+        MailboxStatsSummary = $mailboxStatsSummary
+    }
+}
+
+function New-SampleMailboxOverviewHtml {
+    [CmdletBinding()]
+    param()
+
+    $sampleData = New-SampleMailboxOverviewData
+    return Build-MailboxesSection `
+        -Mailboxes $sampleData.Mailboxes `
+        -InactiveMailboxes $sampleData.InactiveMailboxes `
+        -PublicFolders $sampleData.PublicFolders `
+        -MailboxStatsSummary $sampleData.MailboxStatsSummary
+}
+
 # Updated Build-MailboxesSection
 function Build-MailboxesSection {
     param(
@@ -4795,24 +4936,24 @@ function Build-MailboxesSection {
         }
     }
 
-    $mailboxes = @()
+    $mailboxRows = @()
     if ($null -ne $Mailboxes) {
-        $mailboxes = @($Mailboxes | Where-Object { $null -ne $_ })
+        $mailboxRows = @($Mailboxes | Where-Object { $null -ne $_ })
     }
 
-    $inactiveMailboxes = @()
+    $inactiveMailboxRows = @()
     if ($null -ne $InactiveMailboxes) {
-        $inactiveMailboxes = @($InactiveMailboxes | Where-Object { $null -ne $_ })
+        $inactiveMailboxRows = @($InactiveMailboxes | Where-Object { $null -ne $_ })
     }
 
-    $publicFolders = @()
+    $publicFolderRows = @()
     if ($null -ne $PublicFolders) {
-        $publicFolders = @($PublicFolders | Where-Object { $null -ne $_ })
+        $publicFolderRows = @($PublicFolders | Where-Object { $null -ne $_ })
     }
 
-    $publicFolderCount = $publicFolders.Count
-    $publicFolderMailEnabled = ($publicFolders | Where-Object { $_.MailEnabled -eq $true }).Count
-    $publicFolderHasSubfolders = ($publicFolders | Where-Object { $_.HasSubfolders -eq $true }).Count
+    $publicFolderCount = $publicFolderRows.Count
+    $publicFolderMailEnabled = ($publicFolderRows | Where-Object { $_.MailEnabled -eq $true }).Count
+    $publicFolderHasSubfolders = ($publicFolderRows | Where-Object { $_.HasSubfolders -eq $true }).Count
 
     $summaryTotalMailboxes = [int](Get-MailboxSummaryValue -Record $MailboxStatsSummary -Key 'TotalMailboxes' -Default 0)
     $summaryActiveMailboxes = [int](Get-MailboxSummaryValue -Record $MailboxStatsSummary -Key 'ActiveMailboxes' -Default 0)
@@ -4821,16 +4962,16 @@ function Build-MailboxesSection {
     $summaryExoPopulated = [int](Get-MailboxSummaryValue -Record $MailboxStatsSummary -Key 'ExoFallbackPopulated' -Default 0)
     $summaryMissing = [int](Get-MailboxSummaryValue -Record $MailboxStatsSummary -Key 'Missing' -Default 0)
 
-    if ($mailboxes.Count -eq 0 -and $publicFolderCount -eq 0 -and $summaryTotalMailboxes -eq 0) {
+    if ($mailboxRows.Count -eq 0 -and $publicFolderCount -eq 0 -and $summaryTotalMailboxes -eq 0) {
         return "<div class='empty-state'>No mailbox data available</div>"
     }
 
-    $hasDetailedMailboxRows = $mailboxes.Count -gt 0
+    $hasDetailedMailboxRows = $mailboxRows.Count -gt 0
 
     # Group by type and calculate stats when detailed mailbox rows are available.
     $summary = @()
     if ($hasDetailedMailboxRows) {
-        $summary = $mailboxes | Group-Object RecipientTypeDetails | ForEach-Object {
+        $summary = $mailboxRows | Group-Object RecipientTypeDetails | ForEach-Object {
             $mbxs = $_.Group
 
             $validMbxSizes = $mbxs | ForEach-Object {
@@ -4890,9 +5031,9 @@ function Build-MailboxesSection {
     $largeTheme = if ($null -eq $totalLarge) { 'default' } elseif ($totalLarge -gt ($totalMbx * 0.1)) { 'warning' } else { 'success' }
     $kpiHtml += New-KpiCard -Title "Over 50 GB" -Value $(if ($null -ne $totalLarge) { Format-AssessmentHtmlNumber $totalLarge } else { 'Not Collected' }) -Theme $largeTheme
 
-    $inactiveCount = if ($inactiveMailboxes.Count -gt 0) { $inactiveMailboxes.Count } elseif ($summaryTotalMailboxes -gt 0) { $summaryInactiveMailboxes } else { 0 }
-    $inactiveSize = if ($inactiveMailboxes.Count -gt 0) {
-        ($inactiveMailboxes | Measure-Object MBXSizeGB -Sum).Sum
+    $inactiveCount = if ($inactiveMailboxRows.Count -gt 0) { $inactiveMailboxRows.Count } elseif ($summaryTotalMailboxes -gt 0) { $summaryInactiveMailboxes } else { 0 }
+    $inactiveSize = if ($inactiveMailboxRows.Count -gt 0) {
+        ($inactiveMailboxRows | Measure-Object MBXSizeGB -Sum).Sum
     } else { $null }
     $kpiHtml += New-KpiCard -Title "Inactive Mailboxes" -Value (Format-AssessmentHtmlNumber $inactiveCount)
     $kpiHtml += New-KpiCard -Title "Inactive Storage" -Value $(if ($null -ne $inactiveSize) { Format-AssessmentHtmlDataSize $inactiveSize } else { 'Not Collected' })
@@ -4939,8 +5080,8 @@ function Build-MailboxesSection {
     
     # Inactive mailbox summary table
     $inactiveSummaryHtml = ""
-    if ($inactiveMailboxes.Count -gt 0) {
-        $inactiveSummary = $inactiveMailboxes | Group-Object RecipientTypeDetails | ForEach-Object {
+    if ($inactiveMailboxRows.Count -gt 0) {
+        $inactiveSummary = $inactiveMailboxRows | Group-Object RecipientTypeDetails | ForEach-Object {
             $mbxs = $_.Group
             $totalSize = ($mbxs | Measure-Object MBXSizeGB -Sum).Sum
             $avgSize = if ($mbxs.Count -gt 0) { $totalSize / $mbxs.Count } else { 0 }
@@ -7184,13 +7325,6 @@ function New-TenantHtmlReport {
         }
         if ($infoCount -gt 0) {
             Write-Host "   ℹ️  Info: $infoCount" -ForegroundColor Cyan
-        }
-        
-        # Open in browser
-        try {
-            Start-Process $OutputPath
-        } catch {
-            Write-Verbose "Could not auto-open report in browser: $_"
         }
         
         return [PSCustomObject]@{

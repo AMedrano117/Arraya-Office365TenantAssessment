@@ -4,6 +4,15 @@ param(
     [ValidateSet('M365', 'M365Collect', 'M365Export', 'AD', 'Graph', 'Improve', 'Compare')]
     [string]$Action,
     [Parameter(Mandatory = $false)]
+    [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
+    [string]$AuthMode,
+    [Parameter(Mandatory = $false)]
+    [switch]$StoreTenantStatsGlobal,
+    [Parameter(Mandatory = $false)]
+    [string]$TenantStatsVariableName = 'ArrayaTenantStats',
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipAuth,
+    [Parameter(Mandatory = $false)]
     [string]$TenantId,
     [Parameter(Mandatory = $false)]
     [string]$CertificateThumbprint,
@@ -126,6 +135,10 @@ switch ($Action) {
         $invokeParams.ExportPath = if (-not [string]::IsNullOrWhiteSpace($exportPathInput)) { $exportPathInput } else { $defaultOutputRoot }
         if ($SkipPdfReport) { $invokeParams.SkipPdfReport = $true }
         if ($SkipJsonReport) { $invokeParams.SkipJsonReport = $true }
+        if ($StoreTenantStatsGlobal) { $invokeParams.StoreTenantStatsGlobal = $true }
+        if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
+        if ($SkipAuth) { $invokeParams.SkipAuth = $true }
+        if (-not [string]::IsNullOrWhiteSpace($AuthMode)) { $invokeParams.AuthMode = $AuthMode }
         if (-not [string]::IsNullOrWhiteSpace($TenantId)) { $invokeParams.TenantId = $TenantId }
         if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
         if (-not [string]::IsNullOrWhiteSpace($ClientId)) { $invokeParams.ClientId = $ClientId }
@@ -159,6 +172,10 @@ switch ($Action) {
         $invokeParams = @{}
         $invokeParams.OutputProfile = $selectedOutputProfiles
         $invokeParams.ExportPath = if (-not [string]::IsNullOrWhiteSpace($exportPathInput)) { $exportPathInput } else { $defaultOutputRoot }
+        if ($StoreTenantStatsGlobal) { $invokeParams.StoreTenantStatsGlobal = $true }
+        if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
+        if ($SkipAuth) { $invokeParams.SkipAuth = $true }
+        if (-not [string]::IsNullOrWhiteSpace($AuthMode)) { $invokeParams.AuthMode = $AuthMode }
         if (-not [string]::IsNullOrWhiteSpace($TenantId)) { $invokeParams.TenantId = $TenantId }
         if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
         if (-not [string]::IsNullOrWhiteSpace($ClientId)) { $invokeParams.ClientId = $ClientId }

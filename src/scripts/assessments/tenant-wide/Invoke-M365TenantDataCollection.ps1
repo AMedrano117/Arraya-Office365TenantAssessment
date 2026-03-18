@@ -6,6 +6,15 @@ param(
     [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
     [string[]]$OutputProfile = @('SolutionsEngineer'),
     [Parameter(Mandatory = $false)]
+    [switch]$StoreTenantStatsGlobal,
+    [Parameter(Mandatory = $false)]
+    [string]$TenantStatsVariableName = 'ArrayaTenantStats',
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipAuth,
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
+    [string]$AuthMode,
+    [Parameter(Mandatory = $false)]
     [string]$TenantId,
     [Parameter(Mandatory = $false)]
     [string]$CertificateThumbprint,
@@ -30,6 +39,10 @@ if (-not (Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction SilentlyC
 $invokeParams = @{}
 if ($PSBoundParameters.ContainsKey('ExportPath')) { $invokeParams.ExportPath = $ExportPath }
 if ($PSBoundParameters.ContainsKey('OutputProfile')) { $invokeParams.OutputProfile = $OutputProfile }
+if ($PSBoundParameters.ContainsKey('StoreTenantStatsGlobal')) { $invokeParams.StoreTenantStatsGlobal = $StoreTenantStatsGlobal }
+if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
+if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
+if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
 if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
 if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
 if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }

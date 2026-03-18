@@ -33,4 +33,10 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Not -Match 'function Invoke-LegacyScriptCompat'
         $runnerSource | Should -Not -Match 'function Get-LegacyScriptPath'
     }
+
+    It 'surfaces AuthMode on tenant assessment entrypoints' {
+        $runnerSource = Get-Content -Raw -Path $script:runnerPath
+        $runnerSource | Should -Match "\[ValidateSet\('Interactive', 'Certificate', 'ClientSecret'\)\]\s*\[string\]\$AuthMode"
+        $runnerSource | Should -Match '\$invokeParams\.AuthMode = \$AuthMode'
+    }
 }

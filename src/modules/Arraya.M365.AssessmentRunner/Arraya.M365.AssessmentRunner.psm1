@@ -203,6 +203,15 @@ function Invoke-M365TenantAssessment {
         [Parameter(Mandatory = $false)]
         [switch]$SkipJsonReport,
         [Parameter(Mandatory = $false)]
+        [switch]$StoreTenantStatsGlobal,
+        [Parameter(Mandatory = $false)]
+        [string]$TenantStatsVariableName = 'ArrayaTenantStats',
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipAuth,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
+        [string]$AuthMode,
+        [Parameter(Mandatory = $false)]
         [string]$TenantId,
         [Parameter(Mandatory = $false)]
         [string]$CertificateThumbprint,
@@ -234,6 +243,10 @@ function Invoke-M365TenantAssessment {
     if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
     if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
     if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
+    if ($PSBoundParameters.ContainsKey('StoreTenantStatsGlobal')) { $invokeParams.StoreTenantStatsGlobal = $StoreTenantStatsGlobal }
+    if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
+    if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
+    if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
     if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
     if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
     if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
@@ -250,6 +263,15 @@ function Invoke-M365TenantDataCollection {
         [Parameter(Mandatory = $false)]
         [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
         [string[]]$OutputProfile = @('SolutionsEngineer'),
+        [Parameter(Mandatory = $false)]
+        [switch]$StoreTenantStatsGlobal,
+        [Parameter(Mandatory = $false)]
+        [string]$TenantStatsVariableName = 'ArrayaTenantStats',
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipAuth,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
+        [string]$AuthMode,
         [Parameter(Mandatory = $false)]
         [string]$TenantId,
         [Parameter(Mandatory = $false)]
@@ -280,6 +302,10 @@ function Invoke-M365TenantDataCollection {
     $invokeParams.GenerateJsonOverride = $true
     $invokeParams.GeneratePdfOverride = $false
     $invokeParams.DataCollectionOnly = $true
+    if ($PSBoundParameters.ContainsKey('StoreTenantStatsGlobal')) { $invokeParams.StoreTenantStatsGlobal = $StoreTenantStatsGlobal }
+    if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
+    if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
+    if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
     if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
     if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
     if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }

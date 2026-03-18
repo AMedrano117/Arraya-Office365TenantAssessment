@@ -107,6 +107,15 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$SkipJsonReport,
     [Parameter(Mandatory = $false)]
+    [switch]$StoreTenantStatsGlobal,
+    [Parameter(Mandatory = $false)]
+    [string]$TenantStatsVariableName = 'ArrayaTenantStats',
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipAuth,
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
+    [string]$AuthMode,
+    [Parameter(Mandatory = $false)]
     [string]$TenantId,
     [Parameter(Mandatory = $false)]
     [string]$CertificateThumbprint,
@@ -146,6 +155,12 @@ if (-not (Get-Variable -Name GraphHeaders -Scope Global -ErrorAction SilentlyCon
 if (-not (Get-Variable -Name GraphToken -Scope Global -ErrorAction SilentlyContinue)) {
     $global:GraphToken = $null
 }
+
+# Suppress Microsoft Graph SDK progress records so the assessment's own
+# progress bars remain readable and transient Graph SDK bars do not stick.
+$global:PSDefaultParameterValues['Get-Mg*:ProgressAction'] = 'SilentlyContinue'
+$global:PSDefaultParameterValues['Find-Mg*:ProgressAction'] = 'SilentlyContinue'
+$global:PSDefaultParameterValues['Invoke-MgGraphRequest:ProgressAction'] = 'SilentlyContinue'
 
 $effectiveSkipWorkbook = $false
 $effectiveSkipBestPracticesHtml = $false
@@ -1117,7 +1132,9 @@ function Initialize-AssessmentProgress {
     }
     $script:AssessmentStepMetrics = New-Object System.Collections.Generic.List[object]
 
-    Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Status "[0/$($script:AssessmentProgressState.Total)] Starting" -PercentComplete 0
+    if (Test-ShowAssessmentProgress) {
+        Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Status "[0/$($script:AssessmentProgressState.Total)] Starting" -PercentComplete 0
+    }
 }
 
 function Clear-TransientGraphProgress {
@@ -1150,10 +1167,12 @@ function Invoke-AssessmentProgressStep {
     $memoryBefore = Get-CurrentProcessMemorySnapshot
     $stepStart = Get-Date
 
-    Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Status "[$current/$total] $Name" -PercentComplete $percent
+    if (Test-ShowAssessmentProgress) {
+        Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Status "[$current/$total] $Name" -PercentComplete $percent
+    }
     try {
         Sync-CollectorModuleRuntimeContext
-        & $ScriptBlock
+        $null = & $ScriptBlock
         Sync-CollectorModuleRuntimeContextBack
         Write-Host ("  Overall progress: {0}/{1} ({2}%) - {3}" -f $current, $total, $percent, $Name) -ForegroundColor Cyan
     }
@@ -1209,8 +1228,17 @@ function Complete-AssessmentProgress {
     [CmdletBinding()]
     param()
 
-    Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Completed
+    if (Test-ShowAssessmentProgress) {
+        Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Completed
+    }
     Clear-TransientGraphProgress
+}
+
+function Test-ShowAssessmentProgress {
+    [CmdletBinding()]
+    param()
+
+    return ($env:ARRAYA_SHOW_ASSESSMENT_PROGRESS -match '^(1|true|yes)$')
 }
 
 function Test-ShowCollectorDiagnostics {
@@ -6565,7 +6593,9 @@ function Ensure-AssessmentServiceContext {
         }
     }
     else {
-        Write-Log -Type WARNING -Message "[Ensure-AssessmentServiceContext] Microsoft Graph context is unavailable after connection bootstrap; Graph SDK collectors may fail." -ExportFileLocation $ExportDetails
+        $graphMessage = "[Ensure-AssessmentServiceContext] Microsoft Graph context is unavailable after connection bootstrap."
+        Write-Log -Type ERROR -Message $graphMessage -ExportFileLocation $ExportDetails
+        throw $graphMessage
     }
 
     $hasExoMailboxCommand = [bool](Get-Command -Name 'Get-EXOMailbox' -ErrorAction SilentlyContinue)
@@ -6600,6 +6630,14 @@ function Ensure-AssessmentServiceContext {
         catch {
             Write-Log -Type WARNING -Message "[Ensure-AssessmentServiceContext] Unable to reconnect Exchange Online cmdlets in caller scope: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
+    }
+
+    $hasExoMailboxCommand = [bool](Get-Command -Name 'Get-EXOMailbox' -ErrorAction SilentlyContinue)
+    $hasUnifiedGroupCommand = [bool](Get-Command -Name 'Get-UnifiedGroup' -ErrorAction SilentlyContinue)
+    if (-not ($hasExoMailboxCommand -and $hasUnifiedGroupCommand)) {
+        $exchangeMessage = "[Ensure-AssessmentServiceContext] Exchange Online cmdlets are unavailable after connection bootstrap."
+        Write-Log -Type ERROR -Message $exchangeMessage -ExportFileLocation $ExportDetails
+        throw $exchangeMessage
     }
 }
 
@@ -6638,20 +6676,63 @@ if ($runExportOnly) {
     }
 }
 else {
-    # Connect to Microsoft Office 365 Services
-    $connectOffice365Params = @{}
-    if ($PSBoundParameters.ContainsKey('TenantId')) { $connectOffice365Params.TenantId = $TenantId }
-    if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $connectOffice365Params.CertificateThumbprint = $CertificateThumbprint }
-    if ($PSBoundParameters.ContainsKey('ClientId')) { $connectOffice365Params.ClientId = $ClientId }
-    if ($PSBoundParameters.ContainsKey('ClientSecret')) {
-        if ([string]::IsNullOrWhiteSpace($ClientId)) {
-            throw "Client secret authentication requires -ClientId."
+    if ($SkipAuth) {
+        Write-Host "Skipping authentication bootstrap and validating existing sessions..." -ForegroundColor Cyan
+        $existingGraphContext = Get-MgContext -ErrorAction SilentlyContinue
+        if (-not $existingGraphContext) {
+            throw "SkipAuth was requested, but no existing Microsoft Graph session was found. Connect first, then rerun with -SkipAuth."
         }
 
-        $secureClientSecret = ConvertTo-SecureString -String $ClientSecret -AsPlainText -Force
-        $connectOffice365Params.ClientSecretCredential = [System.Management.Automation.PSCredential]::new($ClientId, $secureClientSecret)
+        $hasExoMailboxCommand = [bool](Get-Command -Name 'Get-EXOMailbox' -ErrorAction SilentlyContinue)
+        $hasUnifiedGroupCommand = [bool](Get-Command -Name 'Get-UnifiedGroup' -ErrorAction SilentlyContinue)
+        if (-not ($hasExoMailboxCommand -and $hasUnifiedGroupCommand)) {
+            throw "SkipAuth was requested, but Exchange Online cmdlets are not available in the current session. Connect to Exchange Online first, then rerun with -SkipAuth."
+        }
+
+        $connectionResult = [pscustomobject]@{
+            Graph          = $true
+            ExchangeOnline = $true
+            AuthenticationType = 'ExistingSession'
+            InitialDomain  = $null
+        }
     }
-    $connectionResult = Connect-Office365 @connectOffice365Params -ErrorAction Stop
+    else {
+        # Connect to Microsoft Office 365 Services
+        $resolvedAuthMode = if ($PSBoundParameters.ContainsKey('AuthMode') -and -not [string]::IsNullOrWhiteSpace($AuthMode)) {
+            $AuthMode
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
+            'Certificate'
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($ClientSecret)) {
+            'ClientSecret'
+        }
+        else {
+            'Interactive'
+        }
+
+        $connectOffice365Params = @{}
+        $connectOffice365Params.AuthMode = $resolvedAuthMode
+        if ($PSBoundParameters.ContainsKey('TenantId')) { $connectOffice365Params.TenantId = $TenantId }
+        if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $connectOffice365Params.CertificateThumbprint = $CertificateThumbprint }
+        if ($PSBoundParameters.ContainsKey('ClientId')) { $connectOffice365Params.ClientId = $ClientId }
+        if ($PSBoundParameters.ContainsKey('ClientSecret')) {
+            if ([string]::IsNullOrWhiteSpace($ClientId)) {
+                throw "Client secret authentication requires -ClientId."
+            }
+
+            $secureClientSecret = ConvertTo-SecureString -String $ClientSecret -AsPlainText -Force
+            $connectOffice365Params.ClientSecretCredential = [System.Management.Automation.PSCredential]::new($ClientId, $secureClientSecret)
+        }
+        $connectionResult = Connect-Office365 @connectOffice365Params -ErrorAction Stop
+        if (
+            -not $connectionResult -or
+            -not $connectionResult.Graph -or
+            -not $connectionResult.ExchangeOnline
+        ) {
+            throw "Authentication bootstrap did not complete successfully. Graph=$($connectionResult.Graph); ExchangeOnline=$($connectionResult.ExchangeOnline)"
+        }
+    }
 
     # Get default tenant display name from live connection
     $defaultOrganization = $null
@@ -6726,7 +6807,6 @@ if (-not $isMergedOutputProfileSelection) {
             $script:ProfileCollectionPlan.CollectPublicFolders = $false
             $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering = $false
             $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration = $false
-            $script:ProfileCollectionPlan.CollectTeamsVoiceDetails = $false
             $script:ProfileCollectionPlan.CollectUnifiedGroups = $false
         }
     }
@@ -6936,14 +7016,14 @@ else {
 
     Write-ConsoleSection -Step '4/5' -Title 'Collaboration and SharePoint'
     Invoke-ProfileAwareAssessmentStep -Name 'Unified groups' -Enabled $script:ProfileCollectionPlan.CollectUnifiedGroups -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllUnifiedGroups -detailLevel $reportingMode }
-    $sharePointDiscoveryService = if ($connectionResult -and $connectionResult.SharePointOnline) {
-        'SPO'
-    }
-    elseif ($script:CollectionDepthPolicy -and $script:CollectionDepthPolicy.IsMinimum) {
+    $sharePointDiscoveryService = if ($GraphTest -in @('REST', 'SDK')) {
         'API'
     }
+    elseif ($connectionResult -and $connectionResult.SharePointOnline) {
+        'SPO'
+    }
     else {
-        'MGGraph'
+        'API'
     }
     Invoke-AssessmentProgressStep -Name "SharePoint/OneDrive sites ($sharePointDiscoveryService)" -ScriptBlock { Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName $sharePointDiscoveryService }
     $teamsDiscoveryService = if ($GraphTest -in @('SDK', 'REST')) { 'MGGraph' } else { 'Teams' }
@@ -7056,6 +7136,13 @@ Write-ConsoleArtifactSummary -Artifacts $generatedArtifacts -DurationText $timeS
 
 $finalMemory = Get-CurrentProcessMemorySnapshot
 Write-Log -Type INFO -Message ("Final process memory snapshot: WorkingSetMB={0}; PrivateMB={1}; PagedMB={2}; ManagedHeapMB={3}" -f $finalMemory.WorkingSetMB, $finalMemory.PrivateMB, $finalMemory.PagedMB, $finalMemory.HeapMB) -ExportFileLocation $ExportDetails
+
+if ($StoreTenantStatsGlobal) {
+    $resolvedTenantStatsVariableName = if ([string]::IsNullOrWhiteSpace($TenantStatsVariableName)) { 'ArrayaTenantStats' } else { $TenantStatsVariableName }
+    Set-Variable -Scope Global -Name $resolvedTenantStatsVariableName -Value $script:tenantStatsHash -Force
+    Write-Host ("Published tenant stats to global variable `${0}" -f $resolvedTenantStatsVariableName) -ForegroundColor DarkCyan
+    Write-Log -Type INFO -Message ("Published tenant stats to global variable '{0}' for interactive inspection." -f $resolvedTenantStatsVariableName) -ExportFileLocation $ExportDetails
+}
 
 ########################################################
 ### End of HTML Report Integration ###
