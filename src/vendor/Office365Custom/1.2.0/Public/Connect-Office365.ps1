@@ -131,6 +131,99 @@ function Connect-Office365 {
             }
         }
         Write-Verbose "Authentication Type: $AuthenticationType"
+
+        function Test-IsExchangeInteractiveAuthFailure {
+            param(
+                [AllowNull()]
+                [string]$Message
+            )
+
+            if ([string]::IsNullOrWhiteSpace($Message)) {
+                return $false
+            }
+
+            return (
+                $Message -like '*RuntimeBroker*' -or
+                $Message -like '*Object reference not set to an instance of an object*' -or
+                $Message -like '*Error Acquiring Token*' -or
+                $Message -like '*A window handle must be configured*' -or
+                $Message -like '*broker*' -or
+                $Message -like '*MSAL*'
+            )
+        }
+
+        function Invoke-ExchangeOnlineDelegatedConnect {
+            param(
+                [Parameter(Mandatory)]
+                [hashtable]$BaseParameters,
+                [AllowNull()]
+                [string]$GraphAccount
+            )
+
+            $connectCommand = Get-Command -Name 'Connect-ExchangeOnline' -ErrorAction Stop
+            $attempts = New-Object System.Collections.Generic.List[hashtable]
+            $attempts.Add(@{
+                Label  = 'interactive authentication'
+                Params = @{}
+            }) | Out-Null
+
+            if ($connectCommand.Parameters.ContainsKey('DisableWAM')) {
+                $attempts.Add(@{
+                    Label  = 'interactive authentication with -DisableWAM'
+                    Params = @{ DisableWAM = $true }
+                }) | Out-Null
+            }
+
+            if ($connectCommand.Parameters.ContainsKey('Device')) {
+                $deviceParams = @{ Device = $true }
+                if (
+                    -not [string]::IsNullOrWhiteSpace($GraphAccount) -and
+                    $connectCommand.Parameters.ContainsKey('UserPrincipalName')
+                ) {
+                    $deviceParams.UserPrincipalName = $GraphAccount
+                }
+                $attempts.Add(@{
+                    Label  = 'device code authentication'
+                    Params = $deviceParams
+                }) | Out-Null
+            }
+
+            $lastErrorMessage = $null
+            for ($attemptIndex = 0; $attemptIndex -lt $attempts.Count; $attemptIndex++) {
+                $attempt = $attempts[$attemptIndex]
+                $attemptParams = @{}
+                foreach ($key in $BaseParameters.Keys) {
+                    $attemptParams[$key] = $BaseParameters[$key]
+                }
+                foreach ($key in $attempt.Params.Keys) {
+                    $attemptParams[$key] = $attempt.Params[$key]
+                }
+
+                try {
+                    if ($attemptIndex -eq 0) {
+                        Write-Verbose "Running Connect-ExchangeOnline with $($attempt.Label)."
+                    }
+                    else {
+                        Write-Warning "Exchange Online delegated authentication failed. Retrying with $($attempt.Label)."
+                    }
+
+                    Connect-ExchangeOnline @attemptParams | Out-Null
+                    return
+                }
+                catch {
+                    $lastErrorMessage = $_.Exception.Message
+                    if (-not (Test-IsExchangeInteractiveAuthFailure -Message $lastErrorMessage)) {
+                        throw
+                    }
+                }
+            }
+
+            if ($attempts.Count -gt 1) {
+                throw "All delegated Exchange Online authentication attempts failed. Last error: $lastErrorMessage"
+            }
+
+            throw $lastErrorMessage
+        }
     }
 
     process {
@@ -467,59 +560,25 @@ function Connect-Office365 {
                 }
                 elseif ($authenticationType -eq 'ClientSecret') {
                     Write-Warning "Exchange Online does not support ClientSecretCredential (App/Secret) authentication. Falling back to delegated authentication."
+                    $graphAccount = $null
                     try {
-                        Write-Verbose "Running Connect-ExchangeOnline with delegated authentication fallback."
-                        Connect-ExchangeOnline @exchangeConnectParams | Out-Null
+                        $graphContext = Get-MgContext -ErrorAction Stop
+                        $graphAccount = $graphContext.Account
                     }
-                    catch {
-                        $exoAuthError = $_.Exception.Message
-                        if (
-                            $exoAuthError -like '*RuntimeBroker*' -or
-                            $exoAuthError -like '*Object reference not set to an instance of an object*' -or
-                            $exoAuthError -like '*Error Acquiring Token*' -or
-                            $exoAuthError -like '*A window handle must be configured*'
-                        ) {
-                            if ((Get-Command -Name Connect-ExchangeOnline -ErrorAction SilentlyContinue).Parameters.ContainsKey('DisableWAM')) {
-                                Write-Warning "Exchange Online delegated authentication failed with WAM. Retrying with -DisableWAM."
-                                $exchangeConnectParams.DisableWAM = $true
-                                Connect-ExchangeOnline @exchangeConnectParams | Out-Null
-                            }
-                            else {
-                                throw
-                            }
-                        }
-                        else {
-                            throw
-                        }
-                    }
+                    catch {}
+
+                    Invoke-ExchangeOnlineDelegatedConnect -BaseParameters $exchangeConnectParams -GraphAccount $graphAccount
                 }
                 else {
                     Write-Verbose "Using delegated authentication for Exchange Online."
+                    $graphAccount = $null
                     try {
-                        Write-Verbose "Running Connect-ExchangeOnline with delegated authentication."
-                        Connect-ExchangeOnline @exchangeConnectParams | Out-Null
+                        $graphContext = Get-MgContext -ErrorAction Stop
+                        $graphAccount = $graphContext.Account
                     }
-                    catch {
-                        $exoAuthError = $_.Exception.Message
-                        if (
-                            $exoAuthError -like '*RuntimeBroker*' -or
-                            $exoAuthError -like '*Object reference not set to an instance of an object*' -or
-                            $exoAuthError -like '*Error Acquiring Token*' -or
-                            $exoAuthError -like '*A window handle must be configured*'
-                        ) {
-                            if ((Get-Command -Name Connect-ExchangeOnline -ErrorAction SilentlyContinue).Parameters.ContainsKey('DisableWAM')) {
-                                Write-Warning "Exchange Online delegated authentication failed with WAM. Retrying with -DisableWAM."
-                                $exchangeConnectParams.DisableWAM = $true
-                                Connect-ExchangeOnline @exchangeConnectParams | Out-Null
-                            }
-                            else {
-                                throw
-                            }
-                        }
-                        else {
-                            throw
-                        }
-                    }
+                    catch {}
+
+                    Invoke-ExchangeOnlineDelegatedConnect -BaseParameters $exchangeConnectParams -GraphAccount $graphAccount
                 }
                 $result.ExchangeOnline = $true
                 Write-Host "✓ Exchange Online connected" -ForegroundColor Green

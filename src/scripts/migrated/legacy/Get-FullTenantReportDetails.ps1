@@ -240,7 +240,7 @@ if (
     $loadedCommonModule.Path -ne $resolvedCommonManifestPath -or
     $missingCommonCommands.Count -gt 0
 ) {
-    Import-Module -Name $resolvedCommonManifestPath -Force -ErrorAction Stop
+    Import-Module -Name $resolvedCommonManifestPath -Force -DisableNameChecking -ErrorAction Stop
 }
 
 $reportingModuleManifestPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\modules\Arraya.M365.Reporting\Arraya.M365.Reporting.psd1'))
@@ -263,7 +263,7 @@ if (
     $loadedReportingModule.Path -ne $resolvedReportingManifestPath -or
     $missingReportingCommands.Count -gt 0
 ) {
-    Import-Module -Name $resolvedReportingManifestPath -Force -ErrorAction Stop
+    Import-Module -Name $resolvedReportingManifestPath -Force -DisableNameChecking -ErrorAction Stop
 }
 
 function Import-AssessmentCollectorModules {

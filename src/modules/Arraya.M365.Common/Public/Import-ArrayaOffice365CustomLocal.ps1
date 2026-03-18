@@ -55,7 +55,7 @@ function Import-ArrayaOffice365CustomLocal {
     }
 
     # Force import globally so code changes in the repo are reflected in the current session.
-    Import-Module -Name $latestManifest.FullName -Global -Force -ErrorAction Stop
+    Import-Module -Name $latestManifest.FullName -Global -Force -DisableNameChecking -ErrorAction Stop
 
     if ($RequiredCommands.Count -gt 0) {
         $missingAfterImport = @(
