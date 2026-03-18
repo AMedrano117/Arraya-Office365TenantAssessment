@@ -57,7 +57,7 @@ if (
     $loadedCommonModule.Path -ne $resolvedCommonManifestPath -or
     $missingCommonCommands.Count -gt 0
 ) {
-    Import-Module -Name $resolvedCommonManifestPath -Force -ErrorAction Stop
+    Import-Module -Name $resolvedCommonManifestPath -Force -DisableNameChecking -ErrorAction Stop
 }
 
 if (-not (Test-Path -Path $runnerManifestPath)) {
@@ -78,7 +78,7 @@ if (
     $loadedRunnerModule.Path -ne $resolvedRunnerManifestPath -or
     $missingRunnerCommands.Count -gt 0
 ) {
-    Import-Module -Name $resolvedRunnerManifestPath -Force -ErrorAction Stop
+    Import-Module -Name $resolvedRunnerManifestPath -Force -DisableNameChecking -ErrorAction Stop
 }
 
 if ([string]::IsNullOrWhiteSpace($Action)) {

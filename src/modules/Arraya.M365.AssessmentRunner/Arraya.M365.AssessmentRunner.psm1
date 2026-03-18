@@ -50,7 +50,7 @@ function Import-AssessmentRunnerDependencies {
         $loadedCommonModule.Path -ne $resolvedCommonManifestPath -or
         $missingCommonCommands.Count -gt 0
     ) {
-        Import-Module -Name $resolvedCommonManifestPath -Force -ErrorAction Stop
+        Import-Module -Name $resolvedCommonManifestPath -Force -DisableNameChecking -ErrorAction Stop
     }
 
     Import-ArrayaOffice365CustomLocal -RepoRoot $script:RepoRoot -RequiredCommands $RequiredCommands | Out-Null
