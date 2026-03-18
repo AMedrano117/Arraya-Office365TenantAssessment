@@ -16,6 +16,9 @@ Users do not need to manually import modules. The launcher imports `Arraya.M365.
 - `Certificate`: noninteractive app auth for Graph and Exchange, with Graph-based SharePoint fallback in PowerShell 7.
 - `Client secret`: noninteractive app auth for Graph and Exchange app-only; Teams PowerShell remains limited in app-secret mode.
 
+If you do not pass `-AuthMode`, the assessment defaults to delegated interactive sign-in. For backward compatibility, supplying `-CertificateThumbprint` still switches the run to certificate auth, and supplying `-ClientSecret` still switches the run to client-secret auth.
+If you already connected to Microsoft Graph and Exchange Online in the current session, you can run with `-SkipAuth` to reuse those sessions and bypass the repo's authentication bootstrap.
+
 Examples:
 
 ```powershell
@@ -23,12 +26,22 @@ Examples:
 
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
   -Action M365 `
+  -AuthMode Interactive
+
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365 `
+  -SkipAuth
+
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365 `
+  -AuthMode Certificate `
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
   -CertificateThumbprint '<cert-thumbprint>'
 
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
   -Action M365 `
+  -AuthMode ClientSecret `
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
   -ClientSecret '<client-secret>'

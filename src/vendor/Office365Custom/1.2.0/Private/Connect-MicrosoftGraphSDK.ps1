@@ -20,8 +20,14 @@
             [Parameter(Mandatory = $false, HelpMessage = 'Choose if Read Only Graph Connection')]
             [switch]$WriteGraph,
             [Parameter(Mandatory = $false, HelpMessage = 'Provide the Graph authentication')]
-            [ValidateSet('Delegate', 'Application')]
-            [string]$AuthenticationType,
+            [ValidateSet('Delegate', 'Application', 'Certificate')]
+            [string]$AuthenticationType = 'Delegate',
+            [Parameter(Mandatory = $false)]
+            [string]$TenantId,
+            [Parameter(Mandatory = $false)]
+            [string]$ClientId,
+            [Parameter(Mandatory = $false)]
+            [string]$CertificateThumbprint,
             [Parameter(Mandatory = $false, HelpMessage = 'Force Re-authentication')]
             [switch]$Force
         )
@@ -62,25 +68,6 @@
                     Disconnect-MgGraph | out-null
                 }
             }
-            # Prompt for authentication method if not provided
-            if (!($AuthenticationType)) {      
-                Write-Verbose "Graph Authentication not provided. Prompting user..."
-                $userInput = Read-Host -Prompt "Use Application Authentication with Microsoft Graph? (Yes/No). Default (blank) is No (Delegate)"
-                $userInput = $userInput.ToLower()
-                switch ($userInput) {
-                    {$_ -in 'yes', 'y'} {
-                        $AuthenticationType = 'application'
-                    }
-                    {$_ -in 'no', 'n',""} {
-                        $AuthenticationType = 'delegate'
-                    }
-                    default {
-                        Write-Warning "Invalid input. Defaulting to Delegate Authentication."
-                        $AuthenticationType = 'delegate'
-                    }
-                }   
-            }                
-    
             switch ($AuthenticationType) {
                 'application' { 
                     # Define tenant credentials
@@ -89,6 +76,24 @@
     
                     # Authenticate to source tenant
                     Connect-MgGraph -TenantId $targetTenantId -ClientSecretCredential $targetClientSecretCredential }
+                'certificate' {
+                    if ([string]::IsNullOrWhiteSpace($TenantId)) {
+                        $TenantId = Read-Host "Tenant ID"
+                    }
+                    if ([string]::IsNullOrWhiteSpace($ClientId)) {
+                        $ClientId = Read-Host "Application (Client) ID"
+                    }
+                    if ([string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
+                        $CertificateThumbprint = Read-Host "Certificate Thumbprint"
+                    }
+
+                    if ([string]::IsNullOrWhiteSpace($TenantId) -or [string]::IsNullOrWhiteSpace($ClientId) -or [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
+                        throw "Certificate authentication requires TenantId, ClientId, and CertificateThumbprint."
+                    }
+
+                    Write-Verbose "Connecting to Microsoft Graph using certificate authentication..."
+                    Connect-MgGraph -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -ErrorAction Stop
+                }
                 Default {
                     # Define Core Scopes for Microsoft Graph SDK
                     $CommonScopes = @(
