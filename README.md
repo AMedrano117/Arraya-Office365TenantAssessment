@@ -2,6 +2,8 @@
 
 PowerShell automation for Microsoft 365 tenant assessments, reporting, and improvement planning.
 
+For operator-focused setup and execution guidance, use [RUN.md](RUN.md).
+
 ## User Quick Start
 Run the launcher and pick an action from the menu:
 
