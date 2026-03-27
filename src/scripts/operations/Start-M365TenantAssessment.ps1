@@ -28,6 +28,10 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$UseGraphFallback,
     [Parameter(Mandatory = $false)]
+    [switch]$RunImprove,
+    [Parameter(Mandatory = $false)]
+    [string]$ImproveOutputFolder,
+    [Parameter(Mandatory = $false)]
     [switch]$SkipPdfReport,
     [Parameter(Mandatory = $false)]
     [switch]$SkipJsonReport
@@ -81,6 +85,167 @@ if (
     Import-Module -Name $resolvedRunnerManifestPath -Force -DisableNameChecking -ErrorAction Stop
 }
 
+function Test-LauncherOutputProfilesGenerateJson {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string[]]$OutputProfile = @('SolutionsEngineer')
+    )
+
+    foreach ($rawProfile in @($OutputProfile)) {
+        if ([string]::IsNullOrWhiteSpace([string]$rawProfile)) {
+            continue
+        }
+
+        foreach ($token in ([string]$rawProfile -split ',')) {
+            $profile = $token.Trim()
+            if ([string]::IsNullOrWhiteSpace($profile)) {
+                continue
+            }
+
+            $policy = Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile $profile
+            if ([bool]$policy.GenerateJson) {
+                return $true
+            }
+        }
+    }
+
+    return $false
+}
+
+function Add-LauncherOutputProfile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string[]]$OutputProfile = @('SolutionsEngineer'),
+        [Parameter(Mandatory = $true)]
+        [string]$ProfileToAdd
+    )
+
+    $resolvedProfiles = New-Object System.Collections.Generic.List[string]
+    $profileSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($rawProfile in @($OutputProfile)) {
+        if ([string]::IsNullOrWhiteSpace([string]$rawProfile)) {
+            continue
+        }
+
+        foreach ($token in ([string]$rawProfile -split ',')) {
+            $profile = $token.Trim()
+            if ([string]::IsNullOrWhiteSpace($profile)) {
+                continue
+            }
+
+            $null = Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile $profile
+            if ($profileSet.Add($profile)) {
+                $resolvedProfiles.Add($profile)
+            }
+        }
+    }
+
+    if ($profileSet.Add($ProfileToAdd)) {
+        $resolvedProfiles.Add($ProfileToAdd)
+    }
+
+    if ($resolvedProfiles.Count -eq 0) {
+        $resolvedProfiles.Add('SolutionsEngineer')
+    }
+
+    return $resolvedProfiles.ToArray()
+}
+
+function Resolve-LauncherLatestManifestPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ExportPath
+    )
+
+    $candidateManifestPaths = New-Object System.Collections.Generic.List[string]
+    $fullExportPath = [System.IO.Path]::GetFullPath($ExportPath)
+
+    if (Test-Path -Path $fullExportPath -PathType Leaf) {
+        if ($fullExportPath -match '\.manifest\.json$') {
+            $candidateManifestPaths.Add($fullExportPath)
+        }
+        elseif ($fullExportPath -match '\.xlsx$') {
+            $candidateManifestPaths.Add(($fullExportPath -replace '\.xlsx$', '.manifest.json'))
+        }
+        else {
+            $candidateManifestPaths.Add("$fullExportPath.manifest.json")
+        }
+    }
+    else {
+        if ([System.IO.Path]::HasExtension($fullExportPath)) {
+            if ($fullExportPath -match '\.xlsx$') {
+                $candidateManifestPaths.Add(($fullExportPath -replace '\.xlsx$', '.manifest.json'))
+            }
+            elseif ($fullExportPath -match '\.manifest\.json$') {
+                $candidateManifestPaths.Add($fullExportPath)
+            }
+            else {
+                $candidateManifestPaths.Add("$fullExportPath.manifest.json")
+            }
+        }
+    }
+
+    foreach ($candidatePath in $candidateManifestPaths) {
+        if (Test-Path -Path $candidatePath -PathType Leaf) {
+            return (Resolve-Path -Path $candidatePath).Path
+        }
+    }
+
+    $searchRoot = if (Test-Path -Path $fullExportPath -PathType Container) {
+        $fullExportPath
+    }
+    else {
+        $parent = Split-Path -Path $fullExportPath -Parent
+        if (-not [string]::IsNullOrWhiteSpace($parent) -and (Test-Path -Path $parent -PathType Container)) {
+            $parent
+        }
+        else {
+            $null
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($searchRoot)) {
+        $latestManifest = Get-ChildItem -Path $searchRoot -Recurse -Filter '*.manifest.json' -File -ErrorAction SilentlyContinue |
+            Sort-Object -Property LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+        if ($latestManifest) {
+            return $latestManifest.FullName
+        }
+    }
+
+    return $null
+}
+
+function Invoke-LauncherImproveFromLatestRun {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ExportPath,
+        [Parameter(Mandatory = $false)]
+        [string]$OutputFolder,
+        [Parameter(Mandatory = $false)]
+        [switch]$UseGraphFallback
+    )
+
+    $manifestPath = Resolve-LauncherLatestManifestPath -ExportPath $ExportPath
+    if ([string]::IsNullOrWhiteSpace($manifestPath)) {
+        throw "Could not find a manifest for the completed assessment run under: $ExportPath"
+    }
+
+    $resolvedOutputFolder = $OutputFolder
+    if ([string]::IsNullOrWhiteSpace($resolvedOutputFolder)) {
+        $manifestDirectory = Split-Path -Path $manifestPath -Parent
+        $resolvedOutputFolder = Join-Path -Path $manifestDirectory -ChildPath 'Improve'
+    }
+
+    Write-Host ("Launching Improve from manifest: {0}" -f $manifestPath) -ForegroundColor Cyan
+    Invoke-M365ImprovementPlan -AssessmentJsonPath $manifestPath -OutputFolder $resolvedOutputFolder -UseGraphFallback:$UseGraphFallback
+}
+
 if ([string]::IsNullOrWhiteSpace($Action)) {
     Write-Host ''
     Write-Host 'Tenant Assessment Launcher' -ForegroundColor Cyan
@@ -128,11 +293,21 @@ switch ($Action) {
             $selectedOutputProfiles = @('SolutionsEngineer')
         }
 
+        if ($RunImprove -and -not (Test-LauncherOutputProfilesGenerateJson -OutputProfile $selectedOutputProfiles)) {
+            $selectedOutputProfiles = Add-LauncherOutputProfile -OutputProfile $selectedOutputProfiles -ProfileToAdd 'Machine'
+            Write-Warning "RunImprove requested. Added output profile 'Machine' so the run preserves a reusable JSON snapshot."
+        }
+
         $invokeParams = @{}
         $invokeParams.OutputProfile = $selectedOutputProfiles
         $invokeParams.ExportPath = if (-not [string]::IsNullOrWhiteSpace($exportPathInput)) { $exportPathInput } else { $defaultOutputRoot }
         if ($SkipPdfReport) { $invokeParams.SkipPdfReport = $true }
-        if ($SkipJsonReport) { $invokeParams.SkipJsonReport = $true }
+        if ($SkipJsonReport -and -not $RunImprove) {
+            $invokeParams.SkipJsonReport = $true
+        }
+        elseif ($SkipJsonReport -and $RunImprove) {
+            Write-Warning 'RunImprove requires a JSON snapshot. Ignoring -SkipJsonReport for this run.'
+        }
         if ($StoreTenantStatsGlobal) { $invokeParams.StoreTenantStatsGlobal = $true }
         if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
         if ($SkipAuth) { $invokeParams.SkipAuth = $true }
@@ -143,6 +318,9 @@ switch ($Action) {
         if (-not [string]::IsNullOrWhiteSpace($ClientSecret)) { $invokeParams.ClientSecret = $ClientSecret }
 
         Invoke-M365TenantAssessment @invokeParams
+        if ($RunImprove) {
+            Invoke-LauncherImproveFromLatestRun -ExportPath $invokeParams.ExportPath -OutputFolder $ImproveOutputFolder -UseGraphFallback:$UseGraphFallback
+        }
     }
     'M365Collect' {
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
@@ -167,6 +345,11 @@ switch ($Action) {
             $selectedOutputProfiles = @('SolutionsEngineer')
         }
 
+        if ($RunImprove -and -not (Test-LauncherOutputProfilesGenerateJson -OutputProfile $selectedOutputProfiles)) {
+            $selectedOutputProfiles = Add-LauncherOutputProfile -OutputProfile $selectedOutputProfiles -ProfileToAdd 'Machine'
+            Write-Warning "RunImprove requested. Added output profile 'Machine' so the run preserves a reusable JSON snapshot."
+        }
+
         $invokeParams = @{}
         $invokeParams.OutputProfile = $selectedOutputProfiles
         $invokeParams.ExportPath = if (-not [string]::IsNullOrWhiteSpace($exportPathInput)) { $exportPathInput } else { $defaultOutputRoot }
@@ -180,6 +363,9 @@ switch ($Action) {
         if (-not [string]::IsNullOrWhiteSpace($ClientSecret)) { $invokeParams.ClientSecret = $ClientSecret }
 
         Invoke-M365TenantDataCollection @invokeParams
+        if ($RunImprove) {
+            Invoke-LauncherImproveFromLatestRun -ExportPath $invokeParams.ExportPath -OutputFolder $ImproveOutputFolder -UseGraphFallback:$UseGraphFallback
+        }
     }
     'M365Export' {
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
@@ -221,7 +407,7 @@ switch ($Action) {
         Invoke-ADTenantAssessment
     }
     'Improve' {
-        $jsonPath = Read-Host 'Path to tenant assessment JSON'
+        $jsonPath = Read-Host 'Path to tenant assessment JSON or manifest JSON'
         $outputFolder = Read-Host 'Output folder (leave blank to use JSON folder)'
 
         $invokeParams = @{ AssessmentJsonPath = $jsonPath }

@@ -8,11 +8,60 @@ function Import-ArrayaTenantSnapshotContext {
         [string]$Purpose = 'Export'
     )
 
-    if (-not (Test-Path -Path $Path)) {
-        throw "Snapshot JSON not found: $Path"
+    function Resolve-SnapshotPathFromInput {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$InputPath
+        )
+
+        if (-not (Test-Path -Path $InputPath)) {
+            throw "Snapshot JSON not found: $InputPath"
+        }
+
+        $resolvedInputPath = (Resolve-Path -Path $InputPath).Path
+        if ($resolvedInputPath -notmatch '\.manifest\.json$') {
+            return $resolvedInputPath
+        }
+
+        $manifest = Get-Content -Raw -Path $resolvedInputPath | ConvertFrom-Json -AsHashtable
+        if (-not ($manifest -is [System.Collections.IDictionary])) {
+            throw "Manifest did not deserialize to a hashtable: $resolvedInputPath"
+        }
+
+        $artifactRows = @()
+        if ($manifest.Contains('Artifacts')) {
+            $artifactRows = Convert-ArrayaObjectToArray $manifest['Artifacts']
+        }
+
+        $jsonArtifact = $artifactRows |
+            Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('Type')) -eq 'JSON' } |
+            Select-Object -First 1
+
+        if (-not $jsonArtifact) {
+            throw "Manifest does not contain a JSON snapshot artifact. Use a snapshot JSON directly or rerun with a JSON-enabled output profile: $resolvedInputPath"
+        }
+
+        $artifactPath = [string](Get-ArrayaObjectValue -Object $jsonArtifact -Names @('Path'))
+        if ([string]::IsNullOrWhiteSpace($artifactPath)) {
+            throw "Manifest JSON artifact is missing its path value: $resolvedInputPath"
+        }
+
+        $resolvedArtifactPath = if ([System.IO.Path]::IsPathRooted($artifactPath)) {
+            $artifactPath
+        }
+        else {
+            Join-Path -Path (Split-Path -Path $resolvedInputPath -Parent) -ChildPath $artifactPath
+        }
+
+        if (-not (Test-Path -Path $resolvedArtifactPath)) {
+            throw "Manifest JSON artifact was not found on disk: $resolvedArtifactPath"
+        }
+
+        return (Resolve-Path -Path $resolvedArtifactPath).Path
     }
 
-    $resolvedPath = (Resolve-Path -Path $Path).Path
+    $resolvedPath = Resolve-SnapshotPathFromInput -InputPath $Path
     $snapshot = Import-ArrayaTenantSnapshot -Path $resolvedPath
     $validation = Test-ArrayaTenantSnapshot -Snapshot $snapshot -Purpose $Purpose
     if (-not $validation.Valid) {

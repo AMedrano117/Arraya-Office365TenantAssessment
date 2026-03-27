@@ -1,8 +1,18 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [ValidateSet('M365', 'AD', 'Improve', 'Compare')]
-    [string]$Action
+    [ValidateSet('M365', 'M365Collect', 'M365Export', 'AD', 'Improve', 'Compare')]
+    [string]$Action,
+    [Parameter(Mandatory = $false)]
+    [switch]$RunImprove,
+    [Parameter(Mandatory = $false)]
+    [string[]]$OutputProfile,
+    [Parameter(Mandatory = $false)]
+    [string]$ExportPath,
+    [Parameter(Mandatory = $false)]
+    [switch]$UseGraphFallback,
+    [Parameter(Mandatory = $false)]
+    [string]$ImproveOutputFolder
 )
 
 $resolveRepoRootHelperPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\shared\Resolve-ArrayaRepoRoot.ps1'))
@@ -17,8 +27,9 @@ if (-not (Test-Path -Path $newLauncher)) {
     throw "Launcher script not found: $newLauncher"
 }
 
-if ($PSBoundParameters.ContainsKey('Action')) {
-    & $newLauncher -Action $Action
-} else {
+if ($PSBoundParameters.Count -gt 0) {
+    & $newLauncher @PSBoundParameters
+}
+else {
     & $newLauncher
 }
