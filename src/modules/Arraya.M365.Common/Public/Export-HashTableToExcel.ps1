@@ -66,13 +66,15 @@ function Export-HashTableToExcel {
 
     $optionalEmptySheets = @(
         'AuthenticationSSOApplications',
+        'EnterpriseApplications',
         'SMTPRelaySummary',
         'TeamsVoiceSummary',
         'UnmanagedObjects',
         'OneDriveOwnerMismatches',
         'TeamsActivityTopUsers',
         'Office365GroupsActivityTopGroups',
-        'EmployeeExperienceInsightsSummary'
+        'EmployeeExperienceInsightsSummary',
+        'InboxRulesExternalForwarding'
     )
 
     $excludedWorksheets = @(
@@ -113,13 +115,13 @@ function Export-HashTableToExcel {
         "BestPractices", "BestPracticeFindings", "MigrationReadiness", "SecureScoreActions", "UnmanagedObjects", "OneDriveOwnerMismatches",
 
         # Licensing & Tenant Info
-        "LicenseSKUs", "Domains", "AuthenticationMethods", "AuthenticationSSOApplications", "AuthenticationConfig", "Admins",
+        "LicenseSKUs", "Domains", "AuthenticationMethods", "AuthenticationSSOApplications", "EnterpriseApplications", "AuthenticationConfig", "ConditionalAccessPolicySummary", "SecurityDefaultsPolicy", "GuestSignInSummary", "PrivilegedAccessSummary", "Admins",
 
         # Users
         "Users", "UserFullDetails", "DeviceDetails",
 
         # Mailboxes
-        "AllMailboxes", "PrimaryMailboxStats", "MailboxFullDetails", "ArchiveMailboxes", "ArchiveMailboxStats", "LitigationHoldMailboxes", "InactiveMailboxes", "InactiveMailboxDetails", "EmailActivityTopSenders", "EmailActivityTopReceivers", "TeamsActivityTopUsers", "Office365GroupsActivityTopGroups", "EmployeeExperienceInsightsSummary", "NonUserMailboxes", "AllRecipients",
+        "AllMailboxes", "PrimaryMailboxStats", "MailboxFullDetails", "SharedMailboxGovernanceSummary", "InboxRuleForwardingSummary", "InboxRulesExternalForwarding", "ArchiveMailboxes", "ArchiveMailboxStats", "LitigationHoldMailboxes", "InactiveMailboxes", "InactiveMailboxDetails", "EmailActivityTopSenders", "EmailActivityTopReceivers", "TeamsActivityTopUsers", "Office365GroupsActivityTopGroups", "EmployeeExperienceInsightsSummary", "CollaborationActivitySummary", "NonUserMailboxes", "AllRecipients",
 
         # Groups
         "AllExchangeGroups", "UnifiedGroups", "AllTeams", "EntraIDGroups",
@@ -135,10 +137,10 @@ function Export-HashTableToExcel {
 
         # Cloud Services
         "OneDrive",
-        "SharePoint",
+        "SharePoint", "SharePointSharingSummary",
 
         # Hybrid / Infra
-        "HybridConfiguration", "TenantInfo"
+        "HybridConfiguration", "TenantInfo", "DeviceManagementSummary"
     )
 
     $orderedTables = @()

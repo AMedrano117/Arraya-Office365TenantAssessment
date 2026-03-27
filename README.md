@@ -4,6 +4,11 @@ PowerShell automation for Microsoft 365 tenant assessments, reporting, and impro
 
 For operator-focused setup and execution guidance, use [RUN.md](RUN.md).
 
+## Operator References
+- [RUN.md](RUN.md)
+- [Tenant Assessment Quick Start](docs/runbooks/tenant-assessment-quick-start.md)
+- [Improvement Plan Rule Taxonomy](docs/runbooks/improvement-plan-rule-taxonomy.md)
+
 ## User Quick Start
 Run the launcher and pick an action from the menu:
 
@@ -105,6 +110,8 @@ The workbook is the file that contains the assessment summary and findings. The 
 
 The questionnaire Markdown is intended as a migration intake companion, not a replacement for the workbook.
 
+For operator guidance on how to interpret `Improve` findings and rule IDs, see [Improvement Plan Rule Taxonomy](docs/runbooks/improvement-plan-rule-taxonomy.md).
+
 ## Output Profiles
 The assessment run supports six need-based output profiles:
 
@@ -140,7 +147,6 @@ If a supported browser is unavailable, the workbook, questionnaire, and HTML out
 - `src/scripts/assessments/tenant-wide/Invoke-M365FullTenantAssessment.ps1`
 - `src/scripts/assessments/tenant-wide/Invoke-M365TenantDataCollection.ps1`
 - `src/scripts/assessments/identity/Invoke-ActiveDirectoryTenantAssessment.ps1`
-- `src/scripts/assessments/tenant-wide/Invoke-M365GraphActivityReport.ps1`
 - `src/scripts/reporting/Invoke-M365TenantAssessmentExport.ps1`
 - `src/scripts/reporting/Invoke-M365TenantImprovementPlan.ps1`
 - `src/scripts/reporting/Invoke-M365TenantAssessmentComparison.ps1`

@@ -221,6 +221,7 @@ $requiredCommonCommands = @(
     'Export-ArrayaErrorReports',
     'Convert-ArrayaObjectToArray',
     'Get-ArrayaObjectValue',
+    'Import-ArrayaTenantSnapshotContext',
     'Convert-ArrayaToNumber',
     'New-ArrayaAssessmentContext',
     'New-ArrayaTenantSnapshot',
@@ -1697,6 +1698,7 @@ function Get-EmailActivityInsights {
     $script:tenantStatsHash['TeamsActivityTopUsers'] = @{}
     $script:tenantStatsHash['Office365GroupsActivityTopGroups'] = @{}
     $script:tenantStatsHash['EmployeeExperienceInsightsSummary'] = @{}
+    $script:tenantStatsHash['CollaborationActivitySummary'] = @{}
     $adminReportSettings = $null
 
     Write-Host "Getting email activity details ..." -ForegroundColor Cyan -NoNewline
@@ -1773,6 +1775,8 @@ function Get-EmailActivityInsights {
         $topLimit = if ($detailLevel -eq 'minimum') { 10 } else { 25 }
         $emailActivityRows = @()
         $emailActivitySource = 'Export-ArrayaGraphReportCsv'
+        $teamsNormalizedUsers = @()
+        $normalizedGroups = @()
         $adminReportSettings = Get-ArrayaGraphAdminReportSettings -Headers $global:GraphHeaders
         if ($adminReportSettings) {
             $script:tenantStatsHash['EmailActivitySummary']['AdminReportSettings'] = $adminReportSettings
@@ -2087,6 +2091,20 @@ function Get-EmailActivityInsights {
             TeamsSource                  = $teamsReportSource
             GroupsSource                 = $groupsReportSource
             ReportRefreshDate            = $latestRefresh
+        }
+        $dormantGroups = @($normalizedGroups | Where-Object { [int64]$_.ActivityScore -le 0 }).Count
+        $inactiveTeamsUsers = @($teamsNormalizedUsers | Where-Object { [int64]$_.ActivityScore -le 0 }).Count
+        $script:tenantStatsHash['CollaborationActivitySummary']['Summary'] = [PSCustomObject]@{
+            PeriodDuration     = $periodDuration
+            TeamsReportRows    = [int]$teamsReportRows.Count
+            TeamsActiveUsers   = [int]$teamsActiveUsers
+            TeamsInactiveUsers = [int]$inactiveTeamsUsers
+            GroupsReportRows   = [int]$groupsReportRows.Count
+            ActiveGroups       = [int]$activeGroups
+            DormantGroups      = [int]$dormantGroups
+            TeamsSource        = $teamsReportSource
+            GroupsSource       = $groupsReportSource
+            ReportRefreshDate  = $latestRefresh
         }
 
         #Write-Host ("Top senders={0}, top receivers={1}" -f $topSenders.Count, $topReceivers.Count) -ForegroundColor DarkGray -NoNewline
@@ -2613,6 +2631,9 @@ function Get-SharePointAndOneDriveSites {
         $archiveStatus = $null
         $lockState = $null
         $storageQuota = $null
+        $sharingCapability = $null
+        $defaultLinkPermission = $null
+        $defaultSharingLinkType = $null
 
         switch ($Source) {
             'SPO' {
@@ -2629,6 +2650,9 @@ function Get-SharePointAndOneDriveSites {
                 $archiveStatus = $Site.ArchiveStatus
                 $lockState = $Site.LockState
                 $storageQuota = $Site.StorageQuota
+                $sharingCapability = $Site.SharingCapability
+                $defaultLinkPermission = $Site.DefaultLinkPermission
+                $defaultSharingLinkType = $Site.DefaultSharingLinkType
             }
             'API' {
                 $additionalProperties = $Site.additionalProperties
@@ -2645,6 +2669,9 @@ function Get-SharePointAndOneDriveSites {
                 $archiveStatus = $additionalProperties.archiveStatus
                 $lockState = $additionalProperties.lockState
                 $storageQuota = $additionalProperties.storageQuota
+                $sharingCapability = $additionalProperties.sharingCapability
+                $defaultLinkPermission = $additionalProperties.defaultLinkPermission
+                $defaultSharingLinkType = $additionalProperties.defaultSharingLinkType
             }
             default {
                 $storageUsageCurrent = [int]($Site.Usage.Storage ?? 0)
@@ -2675,6 +2702,9 @@ function Get-SharePointAndOneDriveSites {
                 $archiveStatus = $Site.AdditionalProperties.ArchiveStatus
                 $lockState = $Site.AdditionalProperties.LockState
                 $storageQuota = $Site.AdditionalProperties.StorageQuota
+                $sharingCapability = $Site.AdditionalProperties.SharingCapability
+                $defaultLinkPermission = $Site.AdditionalProperties.DefaultLinkPermission
+                $defaultSharingLinkType = $Site.AdditionalProperties.DefaultSharingLinkType
             }
         }
 
@@ -2760,6 +2790,9 @@ function Get-SharePointAndOneDriveSites {
             StorageUsedGB             = [math]::Round($storageUsageCurrentGB, 3)
             IsOffice365GroupsConnected = ($groupId -and $groupId -ne '00000000-0000-0000-0000-000000000000')
             IsOneDrive                = $IsOneDrive
+            SharingCapability         = $sharingCapability
+            DefaultLinkPermission     = $defaultLinkPermission
+            DefaultSharingLinkType    = $defaultSharingLinkType
         }
     }
 
@@ -2834,7 +2867,7 @@ function Get-SharePointAndOneDriveSites {
             switch ($detailLevel) {
                 geek { $sites = Get-SPOSite -IncludePersonalSite $True -Limit All }
                 Default {  
-                    $DesiredProperties = @("Template", "IsHubSite", "Title", "LastContentModifiedDate", "Status", "ArchiveStatus", "StorageUsageCurrent", "LockState", "Url", "Owner", "StorageQuota", "GroupId", "IsTeamsConnected", "IsTeamsChannelConnected")
+                    $DesiredProperties = @("Template", "IsHubSite", "Title", "LastContentModifiedDate", "Status", "ArchiveStatus", "StorageUsageCurrent", "LockState", "Url", "Owner", "StorageQuota", "GroupId", "IsTeamsConnected", "IsTeamsChannelConnected", "SharingCapability", "DefaultLinkPermission", "DefaultSharingLinkType")
                     $sites = Get-SPOSite -IncludePersonalSite $True -Limit All | Select-Object -Property $DesiredProperties
                 }
             }
@@ -3058,6 +3091,14 @@ function Get-TeamsDetails {
                 }
             }
         }
+        $groupsActivityById = @{}
+        if ($script:tenantStatsHash.ContainsKey('Office365GroupsActivityTopGroups') -and $script:tenantStatsHash['Office365GroupsActivityTopGroups'] -is [System.Collections.IDictionary]) {
+            foreach ($groupActivity in @($script:tenantStatsHash['Office365GroupsActivityTopGroups'].Values)) {
+                if ($groupActivity -and $groupActivity.PSObject.Properties['GroupId'] -and -not [string]::IsNullOrWhiteSpace([string]$groupActivity.GroupId)) {
+                    $groupsActivityById[[string]$groupActivity.GroupId] = $groupActivity
+                }
+            }
+        }
 
         $collectChannelDetails = ($detailLevel -ne 'minimum')
         $totalCount = [Math]::Max($allTeams.Count, 1)
@@ -3095,6 +3136,12 @@ function Get-TeamsDetails {
                 $publicChannels = @()
                 $privateChannels = @()
                 $sharedChannels = @()
+                $memberCount = $null
+                $guestCount = $null
+                $lastActivityDate = if ($spoSiteDetails -and $spoSiteDetails.PSObject.Properties['LastContentModifiedDate']) { $spoSiteDetails.LastContentModifiedDate } else { $null }
+                if (-not $lastActivityDate -and -not [string]::IsNullOrWhiteSpace($teamId) -and $groupsActivityById.ContainsKey($teamId)) {
+                    $lastActivityDate = $groupsActivityById[$teamId].LastActivityDate
+                }
 
                 if ($collectChannelDetails -and -not [string]::IsNullOrWhiteSpace($teamId)) {
                     $channels = @()
@@ -3130,6 +3177,34 @@ function Get-TeamsDetails {
                     }
                 }
 
+                if ($detailLevel -ne 'minimum' -and -not [string]::IsNullOrWhiteSpace($teamId)) {
+                    $memberObjects = @()
+                    if ($selectedSource -eq 'MGGraph-SDK') {
+                        if (Get-Command -Name 'Get-MgTeamMember' -ErrorAction SilentlyContinue) {
+                            $memberObjects = @(Get-MgTeamMember -TeamId $teamId -All -ErrorAction SilentlyContinue)
+                        }
+                    }
+                    elseif ($selectedSource -eq 'MGGraph-REST') {
+                        $memberObjects = @(Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/teams/{0}/members?`$select=id,email,userId,roles" -f $teamId) -Activity "Teams members [$displayName]" -PreferRest -Headers $global:GraphHeaders)
+                    }
+                    elseif ($selectedSource -eq 'TeamsPowerShell' -and (Get-Command -Name 'Get-TeamUser' -ErrorAction SilentlyContinue)) {
+                        $memberObjects = @(Get-TeamUser -GroupId $teamId -ErrorAction SilentlyContinue)
+                    }
+
+                    if ($memberObjects.Count -gt 0) {
+                        $memberCount = $memberObjects.Count
+                        $guestCount = @(
+                            $memberObjects | Where-Object {
+                                $odataType = if ($_.AdditionalProperties -and $_.AdditionalProperties.ContainsKey('@odata.type')) { [string]$_.AdditionalProperties['@odata.type'] } else { '' }
+                                $emailValue = if ($_.PSObject.Properties['Email']) { [string]$_.Email } elseif ($_.AdditionalProperties -and $_.AdditionalProperties.ContainsKey('email')) { [string]$_.AdditionalProperties['email'] } else { '' }
+                                $userValue = if ($_.PSObject.Properties['User']) { [string]$_.User } else { '' }
+                                $upnValue = if ($_.AdditionalProperties -and $_.AdditionalProperties.ContainsKey('userPrincipalName')) { [string]$_.AdditionalProperties['userPrincipalName'] } else { '' }
+                                ($odataType -match 'aadUserConversationMember') -and (($emailValue -like '*#EXT#*') -or ($userValue -like '*#EXT#*') -or ($upnValue -like '*#EXT#*'))
+                            }
+                        ).Count
+                    }
+                }
+
                 $ownerCount = $null
                 if (-not [string]::IsNullOrWhiteSpace($teamId) -and $unifiedGroupsById.ContainsKey($teamId)) {
                     $groupRecord = $unifiedGroupsById[$teamId]
@@ -3162,6 +3237,9 @@ function Get-TeamsDetails {
                     SharedChannelCount  = [int]$sharedChannels.Count
                     OwnerCount          = $ownerCount
                     OwnershipState      = if ($null -eq $ownerCount) { 'Unknown' } elseif ($ownerCount -eq 0) { 'Unowned' } else { 'Owned' }
+                    MemberCount         = $memberCount
+                    GuestCount          = $guestCount
+                    LastActivityDate    = $lastActivityDate
                     DataSource          = $selectedSource
                 }
             }
@@ -5177,6 +5255,7 @@ function Get-ConditionalAccessPoliciesReport {
         $script:tenantStatsHash = @{}
     }
     $script:tenantStatsHash["ConditionalAccessPolicies"] = @{}
+    $script:tenantStatsHash["ConditionalAccessPolicySummary"] = @{}
 
     Write-Host "Getting Entra Conditional Access Policies Details ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-ConditionalAccessPoliciesReport] START: Gathering all Entra Conditional Access Policies  with $($detailLevel) details" -ExportFileLocation $ExportDetails
@@ -5218,9 +5297,53 @@ function Get-ConditionalAccessPoliciesReport {
         $totalCount = $conditionalAccessPolicies.Count
         $conditionalAccessProgressTotal = [Math]::Max($totalCount, 1)
 
+        $summaryRows = New-Object System.Collections.Generic.List[object]
         foreach ($policy in $conditionalAccessPolicies) {
             Write-ProgressHelper -Total $conditionalAccessProgressTotal -Id $conditionalAccessProgressId -Activity "Processing all Conditional Access Policies" -Operation "Expanding Policy Details for $($policy.DisplayName)"
             Write-Log -Type INFO -Message "[Get-ConditionalAccessPoliciesReport] Expanding Conditional Access Policies for $($policy.DisplayName)" -ExportFileLocation $ExportDetails
+
+            $includeGuestsOrExternalUsers = $null
+            $excludeGuestsOrExternalUsers = $null
+            if ($policy.Conditions.Users) {
+                if ($policy.Conditions.Users.PSObject.Properties['IncludeGuestsOrExternalUsers']) {
+                    $includeGuestsOrExternalUsers = $policy.Conditions.Users.IncludeGuestsOrExternalUsers
+                }
+                if ($policy.Conditions.Users.PSObject.Properties['ExcludeGuestsOrExternalUsers']) {
+                    $excludeGuestsOrExternalUsers = $policy.Conditions.Users.ExcludeGuestsOrExternalUsers
+                }
+            }
+
+            $clientAppTypes = @($policy.Conditions.ClientAppTypes)
+            $grantControlsBuiltIn = @($policy.GrantControls.BuiltInControls)
+            $includeUsers = @($policy.Conditions.Users.IncludeUsers)
+            $excludeUsers = @($policy.Conditions.Users.ExcludeUsers)
+            $includeGroups = @($policy.Conditions.Users.IncludeGroups)
+            $excludeGroups = @($policy.Conditions.Users.ExcludeGroups)
+            $includeRoles = @($policy.Conditions.Users.IncludeRoles)
+            $excludeRoles = @($policy.Conditions.Users.ExcludeRoles)
+            $includeLocations = @($policy.Conditions.Locations.IncludeLocations)
+            $excludeLocations = @($policy.Conditions.Locations.ExcludeLocations)
+            $includeApps = @($policy.Conditions.Applications.IncludeApplications)
+            $excludeApps = @($policy.Conditions.Applications.ExcludeApplications)
+            $signInRiskInclude = @($policy.Conditions.SignInRiskLevels.IncludeLevels)
+            $servicePrincipalRiskInclude = @($policy.Conditions.ServicePrincipalRiskLevels.IncludeLevels)
+
+            $hasExclusions = (
+                $excludeUsers.Count -gt 0 -or
+                $excludeGroups.Count -gt 0 -or
+                $excludeRoles.Count -gt 0 -or
+                $excludeLocations.Count -gt 0 -or
+                $excludeApps.Count -gt 0 -or
+                ($null -ne $excludeGuestsOrExternalUsers)
+            )
+            $targetsGuestsOrExternal = (
+                ($null -ne $includeGuestsOrExternalUsers) -or
+                (($includeUsers -join ',') -match 'guest|external')
+            )
+            $targetsPrivilegedRoles = ($includeRoles.Count -gt 0 -or $excludeRoles.Count -gt 0)
+            $blocksLegacyAuth = (($clientAppTypes -join ',') -match 'exchangeactivesync|other' -and (($grantControlsBuiltIn -join ',') -match 'block'))
+            $requiresCompliantDevice = (($grantControlsBuiltIn -join ',') -match 'compliantdevice|domainjoineddevice')
+            $usesRiskSignals = ($signInRiskInclude.Count -gt 0 -or $servicePrincipalRiskInclude.Count -gt 0)
 
             $policyDetailsHash = [ordered]@{
                 PolicyID         = $policy.Id
@@ -5293,9 +5416,56 @@ function Get-ConditionalAccessPoliciesReport {
                 # Top-level DeviceStates
                 DeviceStates_IncludeDeviceStates = $(if ($policy.Conditions.DeviceStates) { $policy.Conditions.DeviceStates.IncludeDeviceStates -join ',' } else { '' })
                 DeviceStates_ExcludeDeviceStates = $(if ($policy.Conditions.DeviceStates) { $policy.Conditions.DeviceStates.ExcludeDeviceStates -join ',' } else { '' })
+                IncludeGuestsOrExternalUsers = $(if ($null -ne $includeGuestsOrExternalUsers) { ($includeGuestsOrExternalUsers | ConvertTo-Json -Compress -Depth 5) } else { '' })
+                ExcludeGuestsOrExternalUsers = $(if ($null -ne $excludeGuestsOrExternalUsers) { ($excludeGuestsOrExternalUsers | ConvertTo-Json -Compress -Depth 5) } else { '' })
+                IsReportOnly                = (($policy.State -as [string]) -match 'report')
+                HasExclusions               = [bool]$hasExclusions
+                TargetsGuestsOrExternalUsers = [bool]$targetsGuestsOrExternal
+                TargetsPrivilegedRoles      = [bool]$targetsPrivilegedRoles
+                BlocksLegacyAuth            = [bool]$blocksLegacyAuth
+                RequiresCompliantDevice     = [bool]$requiresCompliantDevice
+                UsesRiskSignals             = [bool]$usesRiskSignals
             }
 
             $script:tenantStatsHash["ConditionalAccessPolicies"][$policy.DisplayName] = $policyDetailsHash
+            $summaryRows.Add([pscustomobject]@{
+                DisplayName                 = $policy.DisplayName
+                State                       = $policy.State
+                IsEnabled                   = ([string]$policy.State).ToLowerInvariant() -eq 'enabled'
+                IsReportOnly                = (($policy.State -as [string]) -match 'report')
+                HasExclusions               = [bool]$hasExclusions
+                TargetsGuestsOrExternalUsers = [bool]$targetsGuestsOrExternal
+                TargetsPrivilegedRoles      = [bool]$targetsPrivilegedRoles
+                BlocksLegacyAuth            = [bool]$blocksLegacyAuth
+                RequiresCompliantDevice     = [bool]$requiresCompliantDevice
+                UsesRiskSignals             = [bool]$usesRiskSignals
+            }) | Out-Null
+        }
+
+        $enabledPolicies = @($summaryRows | Where-Object { $_.IsEnabled })
+        $reportOnlyPolicies = @($summaryRows | Where-Object { $_.IsReportOnly })
+        $policiesWithExclusions = @($summaryRows | Where-Object { $_.HasExclusions })
+        $guestPolicies = @($summaryRows | Where-Object { $_.TargetsGuestsOrExternalUsers })
+        $privilegedPolicies = @($summaryRows | Where-Object { $_.TargetsPrivilegedRoles })
+        $legacyAuthPolicies = @($summaryRows | Where-Object { $_.BlocksLegacyAuth })
+        $compliantDevicePolicies = @($summaryRows | Where-Object { $_.RequiresCompliantDevice })
+        $riskPolicies = @($summaryRows | Where-Object { $_.UsesRiskSignals })
+
+        $script:tenantStatsHash["ConditionalAccessPolicySummary"]["Summary"] = [pscustomobject]@{
+            TotalPolicies                     = $summaryRows.Count
+            EnabledPolicies                   = $enabledPolicies.Count
+            ReportOnlyPolicies                = $reportOnlyPolicies.Count
+            PoliciesWithExclusions            = $policiesWithExclusions.Count
+            PoliciesTargetingGuestsOrExternal = $guestPolicies.Count
+            PoliciesTargetingPrivilegedRoles  = $privilegedPolicies.Count
+            PoliciesBlockingLegacyAuth        = $legacyAuthPolicies.Count
+            PoliciesRequiringCompliantDevice  = $compliantDevicePolicies.Count
+            PoliciesUsingRiskSignals          = $riskPolicies.Count
+            HasGuestCoverage                  = ($guestPolicies.Count -gt 0)
+            HasPrivilegedRoleCoverage         = ($privilegedPolicies.Count -gt 0)
+            HasLegacyAuthProtection           = ($legacyAuthPolicies.Count -gt 0)
+            HasCompliantDeviceRequirement     = ($compliantDevicePolicies.Count -gt 0)
+            HasRiskBasedCoverage              = ($riskPolicies.Count -gt 0)
         }
     }
     catch {
@@ -5558,6 +5728,11 @@ function Get-AuthenticationConfiguration {
     $script:tenantStatsHash["AuthenticationConfigSummary"] = @{}
     $script:tenantStatsHash["AuthenticationMethods"] = @{}
     $script:tenantStatsHash["AuthenticationSSOApplications"] = @{}
+    $script:tenantStatsHash["EnterpriseApplications"] = @{}
+    $script:tenantStatsHash["EnterpriseApplicationSummary"] = @{}
+    $script:tenantStatsHash["SecurityDefaultsPolicy"] = @{}
+    $script:tenantStatsHash["GuestSignInSummary"] = @{}
+    $script:tenantStatsHash["PrivilegedAccessSummary"] = @{}
     
     Write-Host "Checking Authentication and SSO Configuration ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] START: Checking Authentication Configuration" -ExportFileLocation $ExportDetails
@@ -5569,6 +5744,7 @@ function Get-AuthenticationConfiguration {
             Get-ArrayaCollectionDepthPolicy -ReportingMode ((Get-Culture).TextInfo.ToTitleCase($detailLevel.ToLowerInvariant()))
         }
         $collectSsoAppDetails = ($depthPolicy.CollectSsoApplicationDetails -eq $true)
+        $collectExtendedIdentityTierB = ($depthPolicy.CollectExtendedGraphEnrichment -eq $true)
 
         # Get authentication methods policy
         $authMethodsPolicy = [PSCustomObject]@{
@@ -5720,6 +5896,135 @@ function Get-AuthenticationConfiguration {
         } catch {
             Write-Log -Type WARNING -Message "[Get-AuthenticationConfiguration] Unable to retrieve admin consent workflow policy: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
+
+        # Check Security Defaults policy state
+        try {
+            $securityDefaultsResponse = Office365Custom\Get-GraphData -Uri "https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy" -Activity "Fetching security defaults policy"
+            $securityDefaultsPolicy = @($securityDefaultsResponse | Select-Object -First 1)
+            if ($securityDefaultsPolicy.Count -gt 0 -and $securityDefaultsPolicy[0]) {
+                $isEnabled = $null
+                if ($securityDefaultsPolicy[0].PSObject.Properties['isEnabled']) {
+                    $isEnabled = [bool]$securityDefaultsPolicy[0].isEnabled
+                } elseif ($securityDefaultsPolicy[0].PSObject.Properties['IsEnabled']) {
+                    $isEnabled = [bool]$securityDefaultsPolicy[0].IsEnabled
+                }
+
+                $script:tenantStatsHash["SecurityDefaultsPolicy"]["Configuration"] = [PSCustomObject]@{
+                    IsEnabled   = $isEnabled
+                    Description = $(if ($isEnabled -eq $true) { 'Security Defaults are enabled.' } elseif ($isEnabled -eq $false) { 'Security Defaults are disabled.' } else { 'Security Defaults state unavailable.' })
+                }
+            }
+        } catch {
+            Write-Log -Type WARNING -Message "[Get-AuthenticationConfiguration] Unable to retrieve Security Defaults policy: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        }
+
+        if ($collectExtendedIdentityTierB) {
+            try {
+                Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] Collecting enterprise application permission posture for Tier B findings" -ExportFileLocation $ExportDetails
+                $resourceServicePrincipalCache = @{}
+                $highPrivilegePatterns = @(
+                    'Directory.ReadWrite.All', 'Directory.AccessAsUser.All', 'RoleManagement.ReadWrite.Directory',
+                    'AppRoleAssignment.ReadWrite.All', 'Application.ReadWrite.All', 'Group.ReadWrite.All',
+                    'User.ReadWrite.All', 'Mail.ReadWrite', 'Files.ReadWrite.All', 'Sites.FullControl.All',
+                    'Sites.ReadWrite.All', 'Exchange.ManageAsApp', 'Policy.ReadWrite.ConditionalAccess',
+                    'DeviceManagementManagedDevices.ReadWrite.All', 'DeviceManagementConfiguration.ReadWrite.All'
+                )
+                $servicePrincipals = @(Get-ArrayaGraphResource -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=id,displayName,appId,servicePrincipalType,accountEnabled,preferredSingleSignOnMode,tags,appRoleAssignmentRequired&`$top=250" -Activity 'Enterprise applications inventory' -Headers $global:GraphHeaders)
+                $enterpriseAppIndex = 0
+                $highPrivilegeAppCount = 0
+                foreach ($servicePrincipal in $servicePrincipals) {
+                    if ($null -eq $servicePrincipal -or [string]::IsNullOrWhiteSpace([string]$servicePrincipal.Id)) {
+                        continue
+                    }
+                    $enterpriseAppIndex++
+                    $spId = [string]$servicePrincipal.Id
+                    $delegatedGrants = @()
+                    $applicationPermissionValues = @()
+                    try {
+                        $delegatedGrants = @(Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '{0}'&`$top=50" -f $spId) -Activity "Enterprise app delegated grants [$($servicePrincipal.DisplayName)]" -Headers $global:GraphHeaders)
+                    } catch {
+                        Write-Log -Type DEBUG -Message "[Get-AuthenticationConfiguration] Delegated grant lookup failed for '$($servicePrincipal.DisplayName)': $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+                    }
+
+                    try {
+                        $appRoleAssignments = @(Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/servicePrincipals/{0}/appRoleAssignments?`$top=50" -f $spId) -Activity "Enterprise app role assignments [$($servicePrincipal.DisplayName)]" -Headers $global:GraphHeaders)
+                        foreach ($assignment in $appRoleAssignments) {
+                            $resourceId = if ($assignment.PSObject.Properties['ResourceId']) { [string]$assignment.ResourceId } else { $null }
+                            $appRoleId = if ($assignment.PSObject.Properties['AppRoleId']) { [string]$assignment.AppRoleId } else { $null }
+                            if (-not $resourceId) { continue }
+
+                            if (-not $resourceServicePrincipalCache.ContainsKey($resourceId)) {
+                                try {
+                                    $resourceServicePrincipalCache[$resourceId] = Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/servicePrincipals/{0}?`$select=id,displayName,appRoles" -f $resourceId) -Activity "Enterprise app resource lookup [$resourceId]" -Headers $global:GraphHeaders
+                                } catch {
+                                    $resourceServicePrincipalCache[$resourceId] = $null
+                                }
+                            }
+
+                            $resourcePrincipal = $resourceServicePrincipalCache[$resourceId]
+                            $resourceDisplayName = if ($resourcePrincipal -and $resourcePrincipal.PSObject.Properties['DisplayName']) { [string]$resourcePrincipal.DisplayName } else { $resourceId }
+                            $permissionValue = $null
+                            if ($resourcePrincipal -and $resourcePrincipal.PSObject.Properties['AppRoles']) {
+                                $permissionValue = @($resourcePrincipal.AppRoles | Where-Object { $_.Id -and ([string]$_.Id -eq $appRoleId) } | Select-Object -First 1 | ForEach-Object { $_.Value }) | Select-Object -First 1
+                            }
+                            if ([string]::IsNullOrWhiteSpace([string]$permissionValue)) {
+                                $permissionValue = $appRoleId
+                            }
+                            $applicationPermissionValues += ("{0}:{1}" -f $resourceDisplayName, $permissionValue)
+                        }
+                    } catch {
+                        Write-Log -Type DEBUG -Message "[Get-AuthenticationConfiguration] App-role assignment lookup failed for '$($servicePrincipal.DisplayName)': $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+                    }
+
+                    $delegatedScopes = @(
+                        $delegatedGrants |
+                            ForEach-Object {
+                                if ($_.PSObject.Properties['Scope']) { [string]$_.Scope } elseif ($_.PSObject.Properties['scope']) { [string]$_.scope } else { $null }
+                            } |
+                            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                    )
+                    $flattenedDelegatedScopes = @(
+                        $delegatedScopes |
+                            ForEach-Object { $_ -split ' ' } |
+                            ForEach-Object { $_.Trim() } |
+                            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                    )
+                    $combinedPermissionText = (@($applicationPermissionValues) + @($flattenedDelegatedScopes)) -join ';'
+                    $highPrivilegeMatches = @(
+                        $highPrivilegePatterns | Where-Object { $combinedPermissionText -match [regex]::Escape($_) }
+                    )
+                    if ($highPrivilegeMatches.Count -gt 0) {
+                        $highPrivilegeAppCount++
+                    }
+
+                    $script:tenantStatsHash["EnterpriseApplications"][("{0:D3}-{1}" -f $enterpriseAppIndex, ($servicePrincipal.DisplayName -replace '[^a-zA-Z0-9._-]', '_'))] = [PSCustomObject]@{
+                        DisplayName                     = $servicePrincipal.DisplayName
+                        AppId                           = $servicePrincipal.AppId
+                        ServicePrincipalId              = $spId
+                        ServicePrincipalType            = $servicePrincipal.ServicePrincipalType
+                        AccountEnabled                  = $servicePrincipal.AccountEnabled
+                        PreferredSingleSignOnMode       = $servicePrincipal.PreferredSingleSignOnMode
+                        AppRoleAssignmentRequired       = $servicePrincipal.AppRoleAssignmentRequired
+                        Tags                            = @($servicePrincipal.Tags) -join ','
+                        DelegatedPermissionScopes       = $flattenedDelegatedScopes -join ','
+                        DelegatedPermissionGrantCount   = @($delegatedGrants).Count
+                        ApplicationPermissions          = $applicationPermissionValues -join ','
+                        ApplicationPermissionCount      = @($applicationPermissionValues).Count
+                        HighPrivilegePermissionCount    = $highPrivilegeMatches.Count
+                        HighPrivilegePermissions        = $highPrivilegeMatches -join ','
+                    }
+                }
+
+                $script:tenantStatsHash["EnterpriseApplicationSummary"]["Summary"] = [PSCustomObject]@{
+                    TotalEnterpriseApplications       = $script:tenantStatsHash["EnterpriseApplications"].Count
+                    ApplicationsWithHighPrivilege     = $highPrivilegeAppCount
+                    ApplicationsWithDelegatedGrants   = @($script:tenantStatsHash["EnterpriseApplications"].Values | Where-Object { $_.DelegatedPermissionGrantCount -gt 0 }).Count
+                    ApplicationsWithApplicationPerms  = @($script:tenantStatsHash["EnterpriseApplications"].Values | Where-Object { $_.ApplicationPermissionCount -gt 0 }).Count
+                }
+            } catch {
+                Write-Log -Type WARNING -Message "[Get-AuthenticationConfiguration] Unable to collect enterprise application permission posture: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+            }
+        }
         
         $script:tenantStatsHash["AuthenticationConfig"]["Configuration"] = $authMethodsPolicy
 
@@ -5768,6 +6073,47 @@ function Get-AuthenticationConfiguration {
         foreach ($app in @($authMethodsPolicy.SSOApplications)) {
             $ssoIndex++
             $script:tenantStatsHash["AuthenticationSSOApplications"][("{0:D3}-{1}" -f $ssoIndex, $app.DisplayName)] = $app
+        }
+
+        $guestUsers = @(
+            $script:tenantStatsHash["Users"].Values |
+                Where-Object { ([string]$_.UserType).ToLowerInvariant() -eq 'guest' -or ([string]$_.UserPrincipalName -like '*#EXT#*') }
+        )
+        $inactiveGuests = @(
+            $guestUsers |
+                Where-Object {
+                    $lastSignIn = $null
+                    try { $lastSignIn = [datetime]$_.LastSignInDateTime } catch { $lastSignIn = $null }
+                    ($null -eq $lastSignIn) -or ($lastSignIn -lt (Get-Date).AddDays(-90))
+                }
+        )
+        $script:tenantStatsHash["GuestSignInSummary"]["Summary"] = [PSCustomObject]@{
+            TotalGuests            = $guestUsers.Count
+            InactiveGuests90Days   = $inactiveGuests.Count
+            GuestsNeverSignedIn    = @($guestUsers | Where-Object { -not $_.LastSignInDateTime }).Count
+            GuestAccountsEnabled   = @($guestUsers | Where-Object { $_.AccountEnabled -eq $true }).Count
+        }
+
+        $privilegedAdmins = @($script:tenantStatsHash["Admins"].Values)
+        $staleAdmins = @(
+            $privilegedAdmins |
+                Where-Object {
+                    $lastSignIn = $null
+                    try { $lastSignIn = [datetime]$_.LastSignInDateTime } catch { $lastSignIn = $null }
+                    ($_.AccountEnabled -eq $true) -and $lastSignIn -and ($lastSignIn -lt (Get-Date).AddDays(-90))
+                }
+        )
+        $guestAdmins = @(
+            $privilegedAdmins |
+                Where-Object {
+                    ([string]$_.UserPrincipalName -like '*#EXT#*') -or ([string]$_.UserType).ToLowerInvariant() -eq 'guest'
+                }
+        )
+        $script:tenantStatsHash["PrivilegedAccessSummary"]["Summary"] = [PSCustomObject]@{
+            TotalPrivilegedIdentities = $privilegedAdmins.Count
+            StalePrivilegedAccounts90Days = $staleAdmins.Count
+            GuestPrivilegedAccounts   = $guestAdmins.Count
+            GlobalAdministratorCount  = @($privilegedAdmins | Where-Object { ([string]$_.Role) -match 'Global Administrator' }).Count
         }
         
     } catch {
@@ -6420,18 +6766,10 @@ function Import-TenantStatsJson {
         return $null
     }
 
-    $snapshot = Import-ArrayaTenantSnapshot -Path $Path
-    $script:LoadedTenantSnapshot = $snapshot
+    $snapshotContext = Import-ArrayaTenantSnapshotContext -Path $Path -Purpose Export
+    $script:LoadedTenantSnapshot = $snapshotContext.Snapshot
 
-    $validation = Test-ArrayaTenantSnapshot -Snapshot $snapshot -Purpose Export
-    if (-not $validation.Valid) {
-        throw ("Tenant snapshot is invalid: {0}" -f ($validation.Errors -join '; '))
-    }
-    if ($validation.Warnings.Count -gt 0) {
-        Write-Warning ("Tenant snapshot imported with warnings: {0}" -f ($validation.Warnings -join '; '))
-    }
-
-    return Convert-ArrayaSnapshotToLegacyTenantStatsHash -Snapshot $snapshot
+    return $snapshotContext.LegacyData
 }
 
 #region HTML Report Helpers
@@ -6918,6 +7256,223 @@ Write-Log -Type INFO -Message ("Profile collection plan ({0}): ExchangeRecipient
 $global:InitialStart = Get-Date
 Sync-CollectorModuleRuntimeContext
 
+function Update-ExchangeGovernanceTables {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$TenantStatsHash,
+        [Parameter(Mandatory = $true)]
+        [string]$DetailLevel
+    )
+
+    if (-not $TenantStatsHash.ContainsKey('InboxRulesExternalForwarding')) { $TenantStatsHash['InboxRulesExternalForwarding'] = @{} }
+    if (-not $TenantStatsHash.ContainsKey('InboxRuleForwardingSummary')) { $TenantStatsHash['InboxRuleForwardingSummary'] = @{} }
+    if (-not $TenantStatsHash.ContainsKey('SharedMailboxGovernanceSummary')) { $TenantStatsHash['SharedMailboxGovernanceSummary'] = @{} }
+
+    $allMailboxRows = if ($TenantStatsHash.ContainsKey('AllMailboxes') -and $TenantStatsHash['AllMailboxes'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['AllMailboxes'].Values) } else { @() }
+    $mailboxFullRows = if ($TenantStatsHash.ContainsKey('MailboxFullDetails') -and $TenantStatsHash['MailboxFullDetails'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['MailboxFullDetails'].Values) } else { @() }
+    $sharedMailboxRows = @(
+        $allMailboxRows | Where-Object {
+            $_ -and $_.PSObject.Properties['RecipientTypeDetails'] -and ([string]$_.RecipientTypeDetails -match 'SharedMailbox')
+        }
+    )
+    $oversizedSharedMailboxes = @(
+        $mailboxFullRows | Where-Object {
+            $_ -and $_.PSObject.Properties['RecipientTypeDetails'] -and ([string]$_.RecipientTypeDetails -match 'SharedMailbox') -and
+            $_.PSObject.Properties['TotalItemSizeGB'] -and $null -ne $_.TotalItemSizeGB -and ([double]$_.TotalItemSizeGB -gt 50)
+        }
+    )
+    $ownerSignalMissing = @(
+        $sharedMailboxRows | Where-Object {
+            $grantSendOnBehalf = if ($_.PSObject.Properties['GrantSendOnBehalfTo']) { [string]$_.GrantSendOnBehalfTo } else { '' }
+            [string]::IsNullOrWhiteSpace($grantSendOnBehalf)
+        }
+    )
+    $TenantStatsHash['SharedMailboxGovernanceSummary']['Summary'] = [pscustomobject]@{
+        SharedMailboxCount          = $sharedMailboxRows.Count
+        OversizedSharedMailboxes    = $oversizedSharedMailboxes.Count
+        SharedMailboxesWithoutOwnerSignal = $ownerSignalMissing.Count
+    }
+
+    if ($DetailLevel -eq 'minimum') {
+        $TenantStatsHash['InboxRuleForwardingSummary']['Summary'] = [pscustomobject]@{
+            InspectedMailboxCount = 0
+            ExternalForwardingRuleCount = 0
+            CollectionState = 'Skipped in minimum mode'
+        }
+        return
+    }
+
+    $acceptedDomains = @()
+    if ($TenantStatsHash.ContainsKey('Domains') -and $TenantStatsHash['Domains'] -is [System.Collections.IDictionary]) {
+        $acceptedDomains = @(
+            $TenantStatsHash['Domains'].Values |
+                ForEach-Object { if ($_.PSObject.Properties['Domain']) { [string]$_.Domain } elseif ($_.PSObject.Properties['Id']) { [string]$_.Id } } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                ForEach-Object { $_.Trim().ToLowerInvariant() } |
+                Select-Object -Unique
+        )
+    }
+
+    $mailboxesToInspect = @(
+        $allMailboxRows | Where-Object {
+            $_ -and $_.PSObject.Properties['PrimarySmtpAddress'] -and $_.PrimarySmtpAddress -and
+            ([string]$_.RecipientTypeDetails -in @('UserMailbox', 'SharedMailbox'))
+        }
+    )
+    $ruleIndex = 0
+    foreach ($mailbox in $mailboxesToInspect) {
+        $mailboxAddress = [string]$mailbox.PrimarySmtpAddress
+        try {
+            $inboxRules = @(Get-InboxRule -Mailbox $mailboxAddress -ErrorAction Stop)
+            foreach ($rule in $inboxRules) {
+                $forwardTargets = @()
+                foreach ($propertyName in @('ForwardTo', 'ForwardAsAttachmentTo', 'RedirectTo')) {
+                    if ($rule.PSObject.Properties[$propertyName] -and $rule.$propertyName) {
+                        $forwardTargets += @($rule.$propertyName | ForEach-Object { [string]$_ })
+                    }
+                }
+                if ($forwardTargets.Count -eq 0) { continue }
+
+                $externalTargets = @(
+                    $forwardTargets |
+                        ForEach-Object {
+                            $addressText = $_
+                            $domainPart = $null
+                            if ($addressText -match '@') {
+                                $domainPart = ($addressText -split '@')[-1].Trim().Trim('>',';').ToLowerInvariant()
+                            }
+                            if (-not [string]::IsNullOrWhiteSpace($domainPart) -and ($acceptedDomains -notcontains $domainPart)) {
+                                $addressText
+                            }
+                        } |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                )
+                if ($externalTargets.Count -eq 0) { continue }
+
+                $ruleIndex++
+                $TenantStatsHash['InboxRulesExternalForwarding'][("{0:D4}-{1}" -f $ruleIndex, ($mailboxAddress -replace '[^a-zA-Z0-9@._-]', '_'))] = [pscustomobject]@{
+                    Mailbox            = $mailboxAddress
+                    RuleName           = $rule.Name
+                    Enabled            = $rule.Enabled
+                    Description        = $rule.Description
+                    ExternalTargets    = ($externalTargets -join ',')
+                    ForwardTargetCount = $externalTargets.Count
+                }
+            }
+        }
+        catch {
+            Write-Log -Type DEBUG -Message "[Update-ExchangeGovernanceTables] Inbox rule lookup failed for ${mailboxAddress}: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        }
+    }
+
+    $TenantStatsHash['InboxRuleForwardingSummary']['Summary'] = [pscustomobject]@{
+        InspectedMailboxCount        = $mailboxesToInspect.Count
+        ExternalForwardingRuleCount  = $TenantStatsHash['InboxRulesExternalForwarding'].Count
+        CollectionState              = 'Collected'
+    }
+}
+
+function Update-TierBOperationalSummaries {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$TenantStatsHash
+    )
+
+    if (-not $TenantStatsHash.ContainsKey('SharePointSharingSummary')) { $TenantStatsHash['SharePointSharingSummary'] = @{} }
+    if (-not $TenantStatsHash.ContainsKey('DeviceManagementSummary')) { $TenantStatsHash['DeviceManagementSummary'] = @{} }
+
+    $deviceRows = if ($TenantStatsHash.ContainsKey('DeviceDetails') -and $TenantStatsHash['DeviceDetails'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['DeviceDetails'].Values) } else { @() }
+    $sharePointRows = if ($TenantStatsHash.ContainsKey('SharePoint') -and $TenantStatsHash['SharePoint'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['SharePoint'].Values) } else { @() }
+    $oneDriveRows = if ($TenantStatsHash.ContainsKey('OneDrive') -and $TenantStatsHash['OneDrive'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['OneDrive'].Values) } else { @() }
+    $managedDeviceCount = @($deviceRows | Where-Object { $_.PSObject.Properties['IsManaged'] -and $_.IsManaged -eq $true }).Count
+    $compliantDeviceCount = @($deviceRows | Where-Object { $_.PSObject.Properties['IsCompliant'] -and $_.IsCompliant -eq $true }).Count
+    $unsupportedOsCount = @(
+        $deviceRows | Where-Object {
+            $os = [string]$_.OperatingSystem
+            $version = [string]$_.OperatingSystemVersion
+            ($os -match 'Windows' -and $version -match '^10\.0\.(1[0-8]\d{3}|9\d{3})') -or
+            ($os -match 'Windows' -and $version -match '^6\.') -or
+            ($os -match 'Android' -and $version -match '^[0-9]+(\.[0-9]+)?' -and ([double]($version.Split('.')[0]) -lt 10)) -or
+            ($os -match 'iOS' -and $version -match '^[0-9]+(\.[0-9]+)?' -and ([double]($version.Split('.')[0]) -lt 16))
+        }
+    ).Count
+    $TenantStatsHash['DeviceManagementSummary']['Summary'] = [pscustomobject]@{
+        TotalDevices          = $deviceRows.Count
+        ManagedDevices        = $managedDeviceCount
+        UnmanagedDevices      = $deviceRows.Count - $managedDeviceCount
+        CompliantDevices      = $compliantDeviceCount
+        NonCompliantDevices   = $deviceRows.Count - $compliantDeviceCount
+        UnsupportedOsDevices  = $unsupportedOsCount
+    }
+
+    $sharePointSummary = [ordered]@{
+        TenantSharingCapability          = 'Not collected'
+        DefaultSharingLinkType           = 'Not collected'
+        DefaultLinkPermission            = 'Not collected'
+        FileAnonymousLinkType            = 'Not collected'
+        AnonymousLinkExpirationInDays    = 'Not collected'
+    }
+    if (Get-Command -Name 'Get-SPOTenant' -ErrorAction SilentlyContinue) {
+        try {
+            $spoTenant = Get-SPOTenant -ErrorAction Stop
+            foreach ($propertyName in $sharePointSummary.Keys) {
+                if ($spoTenant.PSObject.Properties[$propertyName]) {
+                    $sharePointSummary[$propertyName] = $spoTenant.$propertyName
+                }
+            }
+        }
+        catch {
+            Write-Log -Type DEBUG -Message "[Update-TierBOperationalSummaries] SharePoint tenant sharing summary lookup failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        }
+    }
+
+    $sharePointInventoryRows = @($sharePointRows) + @($oneDriveRows)
+    if ($sharePointInventoryRows.Count -gt 0) {
+        $sharingCapabilities = @(
+            $sharePointInventoryRows |
+                ForEach-Object {
+                    if ($_.PSObject.Properties['SharingCapability']) { [string]$_.SharingCapability } else { $null }
+                } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Select-Object -Unique
+        )
+        $defaultSharingLinkTypes = @(
+            $sharePointInventoryRows |
+                ForEach-Object {
+                    if ($_.PSObject.Properties['DefaultSharingLinkType']) { [string]$_.DefaultSharingLinkType } else { $null }
+                } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Select-Object -Unique
+        )
+        $defaultLinkPermissions = @(
+            $sharePointInventoryRows |
+                ForEach-Object {
+                    if ($_.PSObject.Properties['DefaultLinkPermission']) { [string]$_.DefaultLinkPermission } else { $null }
+                } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Select-Object -Unique
+        )
+
+        if ($sharingCapabilities.Count -gt 0 -and [string]$sharePointSummary['TenantSharingCapability'] -eq 'Not collected') {
+            $sharePointSummary['TenantSharingCapability'] = ($sharingCapabilities -join ', ')
+        }
+        if ($defaultSharingLinkTypes.Count -gt 0 -and [string]$sharePointSummary['DefaultSharingLinkType'] -eq 'Not collected') {
+            $sharePointSummary['DefaultSharingLinkType'] = ($defaultSharingLinkTypes -join ', ')
+        }
+        if ($defaultLinkPermissions.Count -gt 0 -and [string]$sharePointSummary['DefaultLinkPermission'] -eq 'Not collected') {
+            $sharePointSummary['DefaultLinkPermission'] = ($defaultLinkPermissions -join ', ')
+        }
+        if ($sharingCapabilities.Count -gt 0 -or $defaultSharingLinkTypes.Count -gt 0 -or $defaultLinkPermissions.Count -gt 0) {
+            $sharePointSummary['DerivedFromSiteInventory'] = $true
+            $sharePointSummary['DerivedSiteCount'] = $sharePointInventoryRows.Count
+        }
+    }
+
+    $TenantStatsHash['SharePointSharingSummary']['Summary'] = [pscustomobject]$sharePointSummary
+}
+
 ########################################################
 # Main Execution (Main Block)
 ########################################################
@@ -6969,7 +7524,7 @@ if ($runExportOnly) {
 else {
     $baseCollectionSteps = 13 # Exchange(6) + Hybrid(4) + Collaboration(3)
     $identitySteps = if ($GraphTest -eq 'REST') { 2 } else { 13 }
-    $combineSteps = 1
+    $combineSteps = 3
     $postProcessingSteps = 4
     $overallCollectionSteps = $baseCollectionSteps + $identitySteps + $combineSteps + $postProcessingSteps
     Initialize-AssessmentProgress -TotalSteps $overallCollectionSteps
@@ -7035,6 +7590,8 @@ else {
     Write-Host
     Write-Host "Consolidating Discovery Report data for each user / object into one file" -ForegroundColor Black -BackgroundColor Green
     Invoke-AssessmentProgressStep -Name 'Combined user/mailbox reporting' -ScriptBlock { Report-UserAndMailboxStats }
+    Invoke-AssessmentProgressStep -Name 'Exchange governance Tier B summaries' -ScriptBlock { Update-ExchangeGovernanceTables -TenantStatsHash $script:tenantStatsHash -DetailLevel $reportingMode }
+    Invoke-AssessmentProgressStep -Name 'Operational Tier B summaries' -ScriptBlock { Update-TierBOperationalSummaries -TenantStatsHash $script:tenantStatsHash }
 
     Invoke-ProfileAwareAssessmentStep -Name 'Ownership governance tables' -Enabled $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables -SkipReason 'Ownership governance table build is disabled for this profile.' -ScriptBlock { Update-OwnershipGovernanceTables -TenantStatsHash $script:tenantStatsHash }
     Invoke-ProfileAwareAssessmentStep -Name 'License classification metadata' -Enabled $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata -SkipReason 'License classification metadata is disabled for this profile.' -ScriptBlock { Update-LicenseClassificationMetadata -TenantStatsHash $script:tenantStatsHash }

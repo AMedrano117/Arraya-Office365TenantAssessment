@@ -32,7 +32,10 @@ function Import-ArrayaCommonModuleForSnapshotComparison {
         'Convert-ArrayaObjectToArray',
         'Get-ArrayaObjectValue',
         'Convert-ArrayaToNumber',
-        'Convert-ArrayaToDate'
+        'Convert-ArrayaToDate',
+        'Get-ArrayaTenantSnapshotMetricSet',
+        'Import-ArrayaTenantSnapshotContext',
+        'Resolve-ArrayaSnapshotOutputContext'
     )
     $missingCommonCommands = @(
         $requiredCommonCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
@@ -46,116 +49,6 @@ function Import-ArrayaCommonModuleForSnapshotComparison {
     }
 }
 Import-ArrayaCommonModuleForSnapshotComparison
-
-function Get-AssessmentContent {
-    param([string]$Path)
-
-    if (-not (Test-Path -Path $Path)) {
-        throw "Snapshot JSON not found: $Path"
-    }
-
-    $jsonRoot = Get-Content -Raw -Path $Path | ConvertFrom-Json
-    $data = if ($jsonRoot.PSObject.Properties.Name -contains 'Data') { $jsonRoot.Data } else { $jsonRoot }
-    [PSCustomObject]@{
-        Raw        = $jsonRoot
-        Data       = $data
-        GeneratedAt = (Get-ArrayaObjectValue -Object $jsonRoot -Names @('GeneratedAt'))
-        Path       = (Resolve-Path -Path $Path).Path
-    }
-}
-
-function Get-Metrics {
-    param(
-        [Parameter(Mandatory = $true)]
-        $AssessmentData,
-        [Parameter(Mandatory = $true)]
-        [int]$StaleDeviceDays
-    )
-
-    $data = $AssessmentData.Data
-
-    $secureScoreRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $data -Names @('SecuritySecureScore', 'SecureScore'))
-    $latestSecureScore = $secureScoreRows |
-        Sort-Object { Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('CreatedDateTime', 'createdDateTime')) } -Descending |
-        Select-Object -First 1
-    $currentScore = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $latestSecureScore -Names @('CurrentScore', 'currentScore'))
-    $maxScore = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $latestSecureScore -Names @('MaxScore', 'maxScore'))
-    $secureScorePct = if ($null -ne $currentScore -and $null -ne $maxScore -and $maxScore -gt 0) {
-        [math]::Round(($currentScore / $maxScore) * 100, 2)
-    } else { $null }
-
-    $caPolicies = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $data -Names @('ConditionalAccessPolicies', 'ConditionalAccess'))
-    $enabledCaPolicies = @(
-        $caPolicies | Where-Object {
-            $state = (Get-ArrayaObjectValue -Object $_ -Names @('State', 'state'))
-            $null -ne $state -and $state.ToString().ToLower().Contains('enabled')
-        }
-    )
-
-    $adminRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $data -Names @('AllOffice365Admins', 'Office365Admins', 'Admins'))
-    $globalAdmins = @(
-        $adminRows | Where-Object {
-            $role = (Get-ArrayaObjectValue -Object $_ -Names @('Role', 'RoleName', 'DirectoryRole', 'AdminRole'))
-            $null -ne $role -and $role.ToString() -match 'Global Administrator|Company Administrator'
-        }
-    )
-    $globalAdminCount = if ($globalAdmins.Count -gt 0) { $globalAdmins.Count } else { $adminRows.Count }
-
-    $domainRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $data -Names @('Domains'))
-    $unverifiedDomains = @(
-        $domainRows | Where-Object {
-            $isVerified = Get-ArrayaObjectValue -Object $_ -Names @('IsVerified', 'Verified', 'isVerified')
-            if ($isVerified -is [bool]) { return (-not $isVerified) }
-            if ($null -eq $isVerified) { return $false }
-            return ($isVerified.ToString().ToLower() -notin @('true', 'verified'))
-        }
-    )
-
-    $licenseRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $data -Names @('LicenseSKUs', 'Licenses'))
-    $maxLicenseUtilizationPct = $null
-    foreach ($sku in $licenseRows) {
-        $consumed = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $sku -Names @('ConsumedUnits', 'Consumed', 'Assigned'))
-        $active = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $sku -Names @('ActiveUnits', 'EnabledUnits', 'TotalUnits'))
-        if ($null -eq $active) {
-            $prepaid = Get-ArrayaObjectValue -Object $sku -Names @('PrepaidUnits')
-            if ($prepaid) {
-                $active = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $prepaid -Names @('Enabled', 'enabled'))
-            }
-        }
-        if ($null -ne $consumed -and $null -ne $active -and $active -gt 0) {
-            $util = [math]::Round(($consumed / $active) * 100, 2)
-            if ($null -eq $maxLicenseUtilizationPct -or $util -gt $maxLicenseUtilizationPct) {
-                $maxLicenseUtilizationPct = $util
-            }
-        }
-    }
-
-    $deviceRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $data -Names @('DeviceDetails', 'Devices'))
-    $staleDevicePct = $null
-    if ($deviceRows.Count -gt 0) {
-        $cutoff = (Get-Date).AddDays(-1 * $StaleDeviceDays)
-        $staleDevices = @(
-            $deviceRows | Where-Object {
-                $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('ApproximateLastSignInDateTime', 'LastSignInDateTime', 'LastSignInDate', 'LastLogonDateTime'))
-                $null -ne $lastSignIn -and $lastSignIn -lt $cutoff
-            }
-        )
-        $staleDevicePct = [math]::Round((($staleDevices.Count / $deviceRows.Count) * 100), 2)
-    }
-
-    [PSCustomObject]@{
-        GeneratedAt                    = $AssessmentData.GeneratedAt
-        Path                           = $AssessmentData.Path
-        SecureScorePercent             = $secureScorePct
-        ConditionalAccessPolicyCount   = $caPolicies.Count
-        EnabledConditionalAccessCount  = $enabledCaPolicies.Count
-        GlobalAdminCount               = $globalAdminCount
-        UnverifiedDomainCount          = $unverifiedDomains.Count
-        MaxLicenseUtilizationPercent   = $maxLicenseUtilizationPct
-        StaleDevicePercent             = $staleDevicePct
-        DeviceCount                    = $deviceRows.Count
-    }
-}
 
 function New-MetricComparison {
     param(
@@ -196,11 +89,30 @@ function New-MetricComparison {
     }
 }
 
-$baseline = Get-AssessmentContent -Path $BaselineJsonPath
-$current = Get-AssessmentContent -Path $CurrentJsonPath
+$baseline = Import-ArrayaTenantSnapshotContext -Path $BaselineJsonPath -Purpose Export
+$current = Import-ArrayaTenantSnapshotContext -Path $CurrentJsonPath -Purpose Export
 
-$baselineMetrics = Get-Metrics -AssessmentData $baseline -StaleDeviceDays $StaleDeviceDays
-$currentMetrics = Get-Metrics -AssessmentData $current -StaleDeviceDays $StaleDeviceDays
+$baselineMetrics = Get-ArrayaTenantSnapshotMetricSet `
+    -SecureScoreRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $baseline.LegacyData -Names @('SecuritySecureScore', 'SecureScore'))) `
+    -ConditionalAccessRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $baseline.LegacyData -Names @('ConditionalAccessPolicies', 'ConditionalAccess'))) `
+    -AdminRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $baseline.LegacyData -Names @('AllOffice365Admins', 'Office365Admins', 'Admins'))) `
+    -DomainRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $baseline.LegacyData -Names @('Domains'))) `
+    -LicenseRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $baseline.LegacyData -Names @('LicenseSKUs', 'Licenses'))) `
+    -DeviceRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $baseline.LegacyData -Names @('DeviceDetails', 'Devices'))) `
+    -StaleDeviceDays $StaleDeviceDays
+$baselineMetrics | Add-Member -MemberType NoteProperty -Name GeneratedAt -Value $baseline.GeneratedAt -Force
+$baselineMetrics | Add-Member -MemberType NoteProperty -Name Path -Value $baseline.Path -Force
+
+$currentMetrics = Get-ArrayaTenantSnapshotMetricSet `
+    -SecureScoreRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $current.LegacyData -Names @('SecuritySecureScore', 'SecureScore'))) `
+    -ConditionalAccessRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $current.LegacyData -Names @('ConditionalAccessPolicies', 'ConditionalAccess'))) `
+    -AdminRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $current.LegacyData -Names @('AllOffice365Admins', 'Office365Admins', 'Admins'))) `
+    -DomainRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $current.LegacyData -Names @('Domains'))) `
+    -LicenseRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $current.LegacyData -Names @('LicenseSKUs', 'Licenses'))) `
+    -DeviceRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $current.LegacyData -Names @('DeviceDetails', 'Devices'))) `
+    -StaleDeviceDays $StaleDeviceDays
+$currentMetrics | Add-Member -MemberType NoteProperty -Name GeneratedAt -Value $current.GeneratedAt -Force
+$currentMetrics | Add-Member -MemberType NoteProperty -Name Path -Value $current.Path -Force
 
 $comparisons = @(
     New-MetricComparison -Metric 'SecureScorePercent' -Baseline $baselineMetrics.SecureScorePercent -Current $currentMetrics.SecureScorePercent -Direction HigherIsBetter
@@ -212,12 +124,9 @@ $comparisons = @(
     New-MetricComparison -Metric 'StaleDevicePercent' -Baseline $baselineMetrics.StaleDevicePercent -Current $currentMetrics.StaleDevicePercent -Direction LowerIsBetter
 )
 
-if ([string]::IsNullOrWhiteSpace($OutputFolder)) {
-    $OutputFolder = Split-Path -Path $CurrentJsonPath -Parent
-}
-if (-not (Test-Path -Path $OutputFolder)) {
-    $null = New-Item -ItemType Directory -Path $OutputFolder -Force
-}
+$outputContext = Resolve-ArrayaSnapshotOutputContext -PrimaryInputPath $current.Path -OutputFolder $OutputFolder -OutputPrefix $OutputPrefix
+$OutputFolder = $outputContext.OutputFolder
+$OutputPrefix = $outputContext.OutputPrefix
 
 $jsonOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix.json"
 $csvOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix.csv"

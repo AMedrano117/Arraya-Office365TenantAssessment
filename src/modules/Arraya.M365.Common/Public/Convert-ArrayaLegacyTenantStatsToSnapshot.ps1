@@ -20,17 +20,20 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
             'InactiveMailboxes', 'InactiveMailboxDetails', 'LitigationHoldMailboxes', 'NonUserMailboxes',
             'AllExchangeGroups', 'MailFlowRules', 'MailFlowConnectors', 'PublicFolderDetails', 'PublicFolderPerms',
             'RemoteDomains', 'EmailActivityTopSenders', 'EmailActivityTopReceivers', 'EmailActivitySummary',
-            'MailboxFullDetails'
+            'MailboxFullDetails', 'InboxRulesExternalForwarding', 'InboxRuleForwardingSummary', 'SharedMailboxGovernanceSummary'
         )
         Identity = @(
             'Users', 'UserFullDetails', 'Admins', 'EntraIDGroups', 'DeviceDetails', 'ConditionalAccessPolicies',
             'AuthenticationConfig', 'AuthenticationConfigSummary', 'AuthenticationMethods',
-            'AuthenticationSSOApplications', 'LicenseSKUs', 'MfaRegistrationDetails', 'MfaRegistrationSummary'
+            'AuthenticationSSOApplications', 'LicenseSKUs', 'MfaRegistrationDetails', 'MfaRegistrationSummary',
+            'ConditionalAccessPolicySummary', 'EnterpriseApplications', 'EnterpriseApplicationSummary',
+            'SecurityDefaultsPolicy', 'GuestSignInSummary', 'PrivilegedAccessSummary', 'DeviceManagementSummary'
         )
         Collaboration = @(
             'UnifiedGroups', 'AllTeams', 'TeamsVoice', 'TeamsVoiceSummary',
             'SharePoint', 'OneDrive', 'TeamsActivityTopUsers', 'Office365GroupsActivityTopGroups',
-            'UnmanagedObjects', 'OneDriveOwnerMismatches', 'OwnershipGovernanceSummary'
+            'UnmanagedObjects', 'OneDriveOwnerMismatches', 'OwnershipGovernanceSummary',
+            'SharePointSharingSummary', 'CollaborationActivitySummary'
         )
         Security = @(
             'SecuritySecureScore', 'SecureScoreActions', 'SpamFilteringConfig', 'SpamFilteringSummary',

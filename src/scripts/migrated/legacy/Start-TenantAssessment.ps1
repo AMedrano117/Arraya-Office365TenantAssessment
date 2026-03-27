@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [ValidateSet('M365', 'AD', 'Graph', 'Improve', 'Compare')]
+    [ValidateSet('M365', 'AD', 'Improve', 'Compare')]
     [string]$Action
 )
 

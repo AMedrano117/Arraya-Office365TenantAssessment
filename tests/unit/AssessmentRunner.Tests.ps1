@@ -25,6 +25,7 @@ Describe 'Arraya.M365.AssessmentRunner' {
     It 'uses assessment-script helpers and modern script roots' {
         $runnerSource = Get-Content -Raw -Path $script:runnerPath
         $runnerSource | Should -Match 'function Invoke-AssessmentScript'
+        $runnerSource | Should -Match 'function Invoke-M365TenantWorkflow'
         $runnerSource | Should -Match 'function Resolve-AssessmentScriptPath'
         $runnerSource | Should -Match 'function Resolve-AssessmentExportPathInput'
         $runnerSource | Should -Match 'Get-ArrayaAssessmentOutputRoot -FallbackPath \$script:RepoRoot'
@@ -32,6 +33,14 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match 'src\\scripts\\migrated\\legacy'
         $runnerSource | Should -Not -Match 'function Invoke-LegacyScriptCompat'
         $runnerSource | Should -Not -Match 'function Get-LegacyScriptPath'
+    }
+
+    It 'routes the M365 family through the internal mode-based workflow helper' {
+        $runnerSource = Get-Content -Raw -Path $script:runnerPath
+        $runnerSource | Should -Match "ValidateSet\('Full', 'CollectOnly', 'ExportOnly'\)"
+        $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode Full'
+        $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode CollectOnly'
+        $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode ExportOnly'
     }
 
     It 'surfaces AuthMode on tenant assessment entrypoints' {

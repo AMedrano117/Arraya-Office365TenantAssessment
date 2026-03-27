@@ -37,7 +37,6 @@ Examples:
 ```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action AD
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Graph
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Improve
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Compare
 ```
