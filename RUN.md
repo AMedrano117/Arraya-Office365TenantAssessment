@@ -218,7 +218,7 @@ Collect tenant data only and save a JSON snapshot for later export:
 The following actions prompt you for additional inputs at runtime:
 
 - `M365Export`: asks for the saved JSON snapshot path.
-- `Improve`: asks for the tenant assessment JSON path and optional output folder.
+- `Improve`: asks for the tenant assessment JSON path or manifest path and optional output folder.
 - `Compare`: asks for baseline and current JSON snapshot paths.
 
 Generate artifacts from an existing JSON snapshot:
@@ -239,6 +239,16 @@ Build an improvement plan from an existing tenant JSON file:
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Improve
 ```
 
+Run a full assessment and automatically chain `Improve` from the artifacts that same run produced:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365 `
+  -RunImprove
+```
+
+If the selected output profile does not normally emit JSON, `-RunImprove` automatically adds the `Machine` profile for that run so a reusable snapshot is preserved. If you pass `-SkipJsonReport`, the launcher ignores it when `-RunImprove` is present.
+
 End-to-end example to collect a snapshot and then build an improvement plan from it:
 
 ```powershell
@@ -253,6 +263,8 @@ End-to-end example to collect a snapshot and then build an improvement plan from
 ```
 
 `Improve` is a separate workflow. A standard `M365` run does not automatically create an improvement plan, and the default `SolutionsEngineer` profile does not emit JSON unless you use `M365Collect` or choose a JSON-enabled profile such as `Geek` or `Machine`.
+
+As a temporary operator shortcut, `-RunImprove` removes most of that manual coordination by preserving JSON automatically and invoking `Improve` against the latest manifest from the just-finished run.
 
 For a fully non-interactive improvement-plan run, call the reporting wrapper directly:
 

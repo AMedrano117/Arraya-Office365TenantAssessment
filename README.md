@@ -33,6 +33,10 @@ Examples:
 
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
   -Action M365 `
+  -RunImprove
+
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365 `
   -AuthMode Interactive
 
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
@@ -125,6 +129,7 @@ The assessment run supports six need-based output profiles:
 `SolutionsEngineer` is the default profile.
 You can run multiple profiles in one command by passing a comma-separated list (for example `SolutionsEngineer,ExecutiveLevel`).
 When multiple profiles are supplied, the assessment runs once using the highest required reporting scope and produces the union of requested artifacts.
+If you use `-RunImprove` and the selected profile list would not normally emit JSON, the launcher temporarily appends `Machine` so the run preserves a reusable snapshot for the improvement-plan step.
 
 Reporting scope is not prompted interactively. Scope is automatically derived from the selected output profile.
 

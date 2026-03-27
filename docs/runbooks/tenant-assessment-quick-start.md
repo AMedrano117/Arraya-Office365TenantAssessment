@@ -13,6 +13,7 @@ Run one script and choose from the menu:
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action AD
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Improve
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Compare
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365 -RunImprove
 ```
 
 ## Script entry points
@@ -37,6 +38,9 @@ The legacy `Import-Office365CustomLocal.ps1` now delegates to the shared Common 
 
 ## Improve workflow notes
 - `Improve` is a separate post-processing workflow that consumes an assessment JSON snapshot.
+- The launcher now supports `-RunImprove` on `M365` and `M365Collect` as a temporary operator shortcut.
+- When `-RunImprove` is used and the chosen profile would not normally emit JSON, the launcher appends `Machine` for that run so the snapshot is preserved.
+- `Improve` can now take either the snapshot JSON path or the `*.manifest.json` path from the same run.
 - The improvement plan combines derived assessment findings with built-in remediation heuristics.
 - Rule IDs such as `ID-007`, `CA-012`, `DEV-006`, and `EX-007` are internal repo rule identifiers, not Microsoft-native control IDs.
 - Use the taxonomy guide when you need to explain where a finding came from or how to trace it back to the supporting worksheet.
