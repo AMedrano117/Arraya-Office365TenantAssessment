@@ -188,6 +188,123 @@ function Resolve-M365OutputProfileExecutionPlan {
     }
 }
 
+function Invoke-M365TenantWorkflow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Full', 'CollectOnly', 'ExportOnly')]
+        [string]$Mode,
+        [Parameter(Mandatory = $false)]
+        [string]$ExportPath,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
+        [string[]]$OutputProfile = @('SolutionsEngineer'),
+        [Parameter(Mandatory = $false)]
+        [string]$AssessmentJsonPath,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipHtmlReport,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipPdfReport,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipJsonReport,
+        [Parameter(Mandatory = $false)]
+        [switch]$StoreTenantStatsGlobal,
+        [Parameter(Mandatory = $false)]
+        [string]$TenantStatsVariableName = 'ArrayaTenantStats',
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipAuth,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
+        [string]$AuthMode,
+        [Parameter(Mandatory = $false)]
+        [string]$TenantId,
+        [Parameter(Mandatory = $false)]
+        [string]$CertificateThumbprint,
+        [Parameter(Mandatory = $false)]
+        [string]$ClientId,
+        [Parameter(Mandatory = $false)]
+        [string]$ClientSecret
+    )
+
+    $plan = Resolve-M365OutputProfileExecutionPlan -OutputProfile $OutputProfile
+    $scriptPath = Resolve-AssessmentScriptPath -Name 'Get-FullTenantReportDetails.ps1'
+
+    if ($plan.IsMergedSelection) {
+        $modeLabel = switch ($Mode) {
+            'CollectOnly' { 'collection pass' }
+            'ExportOnly' { 'export pass' }
+            default { 'pass' }
+        }
+        Write-Host ("Running merged profile {0} for: {1}" -f $modeLabel, ($plan.SelectedOutputProfiles -join ', ')) -ForegroundColor Cyan
+        Write-Host ("Merged reporting mode: {0}" -f $plan.ReportingMode) -ForegroundColor DarkCyan
+    }
+
+    $invokeParams = @{}
+    $invokeParams.ExportPath = Resolve-AssessmentExportPathInput -ExportPath $ExportPath
+    $invokeParams.OutputProfile = $plan.PrimaryProfile
+    $invokeParams.ReportingModeOverride = $plan.ReportingMode
+
+    switch ($Mode) {
+        'Full' {
+            $invokeParams.OutputProfileLabel = $plan.ProfileLabel
+            $invokeParams.GenerateWorkbookOverride = [bool]$plan.GenerateWorkbook
+            $invokeParams.GenerateTechnicalHtmlOverride = [bool]$plan.GenerateTechnicalHtml
+            $invokeParams.GenerateBestPracticesHtmlOverride = [bool]$plan.GenerateBestPracticesHtml
+            $invokeParams.GenerateQuestionnaireOverride = [bool]$plan.GenerateQuestionnaire
+            $invokeParams.GenerateJsonOverride = [bool]$plan.GenerateJson
+            $invokeParams.GeneratePdfOverride = [bool]$plan.GeneratePdf
+            if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
+            if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
+            if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
+            if ($PSBoundParameters.ContainsKey('StoreTenantStatsGlobal')) { $invokeParams.StoreTenantStatsGlobal = $StoreTenantStatsGlobal }
+            if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
+            if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
+            if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
+            if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
+            if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
+            if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
+            if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
+        }
+        'CollectOnly' {
+            $invokeParams.OutputProfileLabel = "Collection-$($plan.ProfileLabel)"
+            $invokeParams.GenerateWorkbookOverride = $false
+            $invokeParams.GenerateTechnicalHtmlOverride = $false
+            $invokeParams.GenerateBestPracticesHtmlOverride = $false
+            $invokeParams.GenerateQuestionnaireOverride = $false
+            $invokeParams.GenerateJsonOverride = $true
+            $invokeParams.GeneratePdfOverride = $false
+            $invokeParams.DataCollectionOnly = $true
+            if ($PSBoundParameters.ContainsKey('StoreTenantStatsGlobal')) { $invokeParams.StoreTenantStatsGlobal = $StoreTenantStatsGlobal }
+            if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
+            if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
+            if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
+            if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
+            if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
+            if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
+            if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
+        }
+        'ExportOnly' {
+            if ([string]::IsNullOrWhiteSpace($AssessmentJsonPath)) {
+                throw 'AssessmentJsonPath is required when Mode is ExportOnly.'
+            }
+            $invokeParams.OutputProfileLabel = "Export-$($plan.ProfileLabel)"
+            $invokeParams.GenerateWorkbookOverride = [bool]$plan.GenerateWorkbook
+            $invokeParams.GenerateTechnicalHtmlOverride = [bool]$plan.GenerateTechnicalHtml
+            $invokeParams.GenerateBestPracticesHtmlOverride = [bool]$plan.GenerateBestPracticesHtml
+            $invokeParams.GenerateQuestionnaireOverride = [bool]$plan.GenerateQuestionnaire
+            $invokeParams.GenerateJsonOverride = [bool]$plan.GenerateJson
+            $invokeParams.GeneratePdfOverride = [bool]$plan.GeneratePdf
+            $invokeParams.ExportOnly = $true
+            $invokeParams.TenantStatsJsonPath = $AssessmentJsonPath
+            if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
+            if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
+            if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
+        }
+    }
+
+    Invoke-AssessmentScript -ScriptPath $scriptPath -Parameters $invokeParams
+}
+
 function Invoke-M365TenantAssessment {
     [CmdletBinding()]
     param(
@@ -221,25 +338,9 @@ function Invoke-M365TenantAssessment {
         [string]$ClientSecret
     )
 
-    $plan = Resolve-M365OutputProfileExecutionPlan -OutputProfile $OutputProfile
-
-    $scriptPath = Resolve-AssessmentScriptPath -Name 'Get-FullTenantReportDetails.ps1'
-    if ($plan.IsMergedSelection) {
-        Write-Host ("Running merged profile pass for: {0}" -f ($plan.SelectedOutputProfiles -join ', ')) -ForegroundColor Cyan
-        Write-Host ("Merged reporting mode: {0}" -f $plan.ReportingMode) -ForegroundColor DarkCyan
-    }
-
     $invokeParams = @{}
-    $invokeParams.ExportPath = Resolve-AssessmentExportPathInput -ExportPath $ExportPath
-    $invokeParams.OutputProfile = $plan.PrimaryProfile
-    $invokeParams.OutputProfileLabel = $plan.ProfileLabel
-    $invokeParams.ReportingModeOverride = $plan.ReportingMode
-    $invokeParams.GenerateWorkbookOverride = [bool]$plan.GenerateWorkbook
-    $invokeParams.GenerateTechnicalHtmlOverride = [bool]$plan.GenerateTechnicalHtml
-    $invokeParams.GenerateBestPracticesHtmlOverride = [bool]$plan.GenerateBestPracticesHtml
-    $invokeParams.GenerateQuestionnaireOverride = [bool]$plan.GenerateQuestionnaire
-    $invokeParams.GenerateJsonOverride = [bool]$plan.GenerateJson
-    $invokeParams.GeneratePdfOverride = [bool]$plan.GeneratePdf
+    if ($PSBoundParameters.ContainsKey('ExportPath')) { $invokeParams.ExportPath = $ExportPath }
+    if ($PSBoundParameters.ContainsKey('OutputProfile')) { $invokeParams.OutputProfile = $OutputProfile }
     if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
     if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
     if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
@@ -252,7 +353,7 @@ function Invoke-M365TenantAssessment {
     if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
     if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
 
-    Invoke-AssessmentScript -ScriptPath $scriptPath -Parameters $invokeParams
+    Invoke-M365TenantWorkflow -Mode Full @invokeParams
 }
 
 function Invoke-M365TenantDataCollection {
@@ -282,26 +383,9 @@ function Invoke-M365TenantDataCollection {
         [string]$ClientSecret
     )
 
-    $plan = Resolve-M365OutputProfileExecutionPlan -OutputProfile $OutputProfile
-    $scriptPath = Resolve-AssessmentScriptPath -Name 'Get-FullTenantReportDetails.ps1'
-
-    if ($plan.IsMergedSelection) {
-        Write-Host ("Running merged profile collection pass for: {0}" -f ($plan.SelectedOutputProfiles -join ', ')) -ForegroundColor Cyan
-        Write-Host ("Merged reporting mode: {0}" -f $plan.ReportingMode) -ForegroundColor DarkCyan
-    }
-
     $invokeParams = @{}
-    $invokeParams.ExportPath = Resolve-AssessmentExportPathInput -ExportPath $ExportPath
-    $invokeParams.OutputProfile = $plan.PrimaryProfile
-    $invokeParams.OutputProfileLabel = "Collection-$($plan.ProfileLabel)"
-    $invokeParams.ReportingModeOverride = $plan.ReportingMode
-    $invokeParams.GenerateWorkbookOverride = $false
-    $invokeParams.GenerateTechnicalHtmlOverride = $false
-    $invokeParams.GenerateBestPracticesHtmlOverride = $false
-    $invokeParams.GenerateQuestionnaireOverride = $false
-    $invokeParams.GenerateJsonOverride = $true
-    $invokeParams.GeneratePdfOverride = $false
-    $invokeParams.DataCollectionOnly = $true
+    if ($PSBoundParameters.ContainsKey('ExportPath')) { $invokeParams.ExportPath = $ExportPath }
+    if ($PSBoundParameters.ContainsKey('OutputProfile')) { $invokeParams.OutputProfile = $OutputProfile }
     if ($PSBoundParameters.ContainsKey('StoreTenantStatsGlobal')) { $invokeParams.StoreTenantStatsGlobal = $StoreTenantStatsGlobal }
     if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
     if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
@@ -311,7 +395,7 @@ function Invoke-M365TenantDataCollection {
     if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
     if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
 
-    Invoke-AssessmentScript -ScriptPath $scriptPath -Parameters $invokeParams
+    Invoke-M365TenantWorkflow -Mode CollectOnly @invokeParams
 }
 
 function Invoke-M365TenantAssessmentExport {
@@ -332,27 +416,14 @@ function Invoke-M365TenantAssessmentExport {
         [switch]$SkipJsonReport
     )
 
-    $plan = Resolve-M365OutputProfileExecutionPlan -OutputProfile $OutputProfile
-    $scriptPath = Resolve-AssessmentScriptPath -Name 'Get-FullTenantReportDetails.ps1'
-
-    $invokeParams = @{}
-    $invokeParams.ExportPath = Resolve-AssessmentExportPathInput -ExportPath $ExportPath
-    $invokeParams.OutputProfile = $plan.PrimaryProfile
-    $invokeParams.OutputProfileLabel = "Export-$($plan.ProfileLabel)"
-    $invokeParams.ReportingModeOverride = $plan.ReportingMode
-    $invokeParams.GenerateWorkbookOverride = [bool]$plan.GenerateWorkbook
-    $invokeParams.GenerateTechnicalHtmlOverride = [bool]$plan.GenerateTechnicalHtml
-    $invokeParams.GenerateBestPracticesHtmlOverride = [bool]$plan.GenerateBestPracticesHtml
-    $invokeParams.GenerateQuestionnaireOverride = [bool]$plan.GenerateQuestionnaire
-    $invokeParams.GenerateJsonOverride = [bool]$plan.GenerateJson
-    $invokeParams.GeneratePdfOverride = [bool]$plan.GeneratePdf
-    $invokeParams.ExportOnly = $true
-    $invokeParams.TenantStatsJsonPath = $AssessmentJsonPath
+    $invokeParams = @{ AssessmentJsonPath = $AssessmentJsonPath }
+    if ($PSBoundParameters.ContainsKey('ExportPath')) { $invokeParams.ExportPath = $ExportPath }
+    if ($PSBoundParameters.ContainsKey('OutputProfile')) { $invokeParams.OutputProfile = $OutputProfile }
     if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
     if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
     if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
 
-    Invoke-AssessmentScript -ScriptPath $scriptPath -Parameters $invokeParams
+    Invoke-M365TenantWorkflow -Mode ExportOnly @invokeParams
 }
 
 function Invoke-ADTenantAssessment {

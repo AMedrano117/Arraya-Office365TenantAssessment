@@ -127,7 +127,6 @@ For app-based operation beyond Graph:
 - Exchange Online connectivity is required for the full `M365` assessment path. If Exchange auth fails, the run stops.
 - SharePoint Online admin connectivity is helpful for fuller coverage, but some SharePoint collection can still proceed through Microsoft Graph.
 - Teams connectivity is non-blocking in app-based auth modes, but some Teams-specific enrichment may be reduced or skipped.
-- The `Graph` action primarily depends on Microsoft Graph reporting access, especially `Reports.Read.All`.
 
 ## Default Output Location
 
@@ -157,9 +156,12 @@ Running the script with no parameters opens a menu for the supported workflows:
 - `M365Collect`
 - `M365Export`
 - `AD`
-- `Graph`
 - `Improve`
 - `Compare`
+
+For a workflow-by-workflow breakdown, including how the actions relate to each other and where maintainers may want to reduce overlap, see [docs/architecture/workflow-overview.md](docs/architecture/workflow-overview.md).
+
+For operator guidance on reading `Improve` findings and understanding rule IDs, see [docs/runbooks/improvement-plan-rule-taxonomy.md](docs/runbooks/improvement-plan-rule-taxonomy.md).
 
 ## Common Commands
 
@@ -218,7 +220,6 @@ The following actions prompt you for additional inputs at runtime:
 - `M365Export`: asks for the saved JSON snapshot path.
 - `Improve`: asks for the tenant assessment JSON path and optional output folder.
 - `Compare`: asks for baseline and current JSON snapshot paths.
-- `Graph`: asks for the service name, period, and beta option.
 
 Generate artifacts from an existing JSON snapshot:
 
@@ -237,6 +238,43 @@ Build an improvement plan from an existing tenant JSON file:
 ```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Improve
 ```
+
+End-to-end example to collect a snapshot and then build an improvement plan from it:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365Collect `
+  -OutputProfile SolutionsEngineer `
+  -ExportPath 'C:\Assessment-Outputs'
+
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action Improve `
+  -UseGraphFallback
+```
+
+`Improve` is a separate workflow. A standard `M365` run does not automatically create an improvement plan, and the default `SolutionsEngineer` profile does not emit JSON unless you use `M365Collect` or choose a JSON-enabled profile such as `Geek` or `Machine`.
+
+For a fully non-interactive improvement-plan run, call the reporting wrapper directly:
+
+```powershell
+.\src\scripts\reporting\Invoke-M365TenantImprovementPlan.ps1 `
+  -AssessmentJsonPath 'C:\Assessment-Outputs\<tenant-snapshot>.json' `
+  -OutputFolder 'C:\Assessment-Outputs\Improve' `
+  -UseGraphFallback
+```
+
+The `Improve` workflow now produces both operator and customer-oriented outputs by default:
+
+- `*-ImprovementPlan.json`
+- `*-ImprovementPlan.csv`
+- `*-ImprovementPlan.md`
+- `*-CustomerRemediationReport.md`
+- `*-EngineerActionPack.md`
+- `*-RemediationSnippets.ps1`
+
+Use the taxonomy guide to understand whether a finding came from the derived assessment layer or from a built-in remediation rule:
+
+- [docs/runbooks/improvement-plan-rule-taxonomy.md](docs/runbooks/improvement-plan-rule-taxonomy.md)
 
 ## Output Profiles
 
@@ -287,6 +325,66 @@ Recommended review flow:
 2. Identify the highest-impact findings and blockers.
 3. Use the questionnaire markdown to fill any discovery gaps with the customer.
 4. Keep the JSON snapshot as your baseline for later comparison runs.
+
+When reviewing `Improve` outputs:
+
+1. Start with `*-CustomerRemediationReport.md` for stakeholder-facing messaging.
+2. Use `*-EngineerActionPack.md` for operator execution planning.
+3. Use `ImprovementPlan.json` or `ImprovementPlan.csv` for filtering, backlog import, or automation.
+4. Use `RelatedWorksheet` and `Source` to trace each finding back to its evidence and rule origin.
+
+## Running On Another Machine
+
+If you want to test the workflow on another workstation or jump box, use this checklist:
+
+1. Install PowerShell 7 or later.
+2. Clone or copy this repo locally.
+3. Install required modules:
+
+```powershell
+.\tools\install-microsoft-modules.ps1
+```
+
+4. If you want to run tests, install/update Pester in your user scope:
+
+```powershell
+Install-Module Pester -Scope CurrentUser -Force
+```
+
+5. If you use certificate auth, import the matching `.pfx` on that machine and verify the cert has a private key.
+6. Start with a low-risk validation:
+   - first run `Improve` against an existing known-good snapshot JSON
+   - then run `M365Collect`
+   - then run `Improve` against that fresh snapshot
+
+Recommended order for another-machine validation:
+
+```powershell
+.\src\scripts\reporting\Invoke-M365TenantImprovementPlan.ps1 `
+  -AssessmentJsonPath 'C:\KnownGood\assessment.json' `
+  -OutputFolder 'C:\KnownGood\Improve'
+```
+
+Then:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365Collect `
+  -AuthMode Certificate `
+  -TenantId '<tenant-guid>' `
+  -ClientId '<app-id>' `
+  -CertificateThumbprint '<cert-thumbprint>' `
+  -OutputProfile Machine `
+  -ExportPath 'C:\Assessment-Outputs'
+```
+
+Then:
+
+```powershell
+.\src\scripts\reporting\Invoke-M365TenantImprovementPlan.ps1 `
+  -AssessmentJsonPath 'C:\Assessment-Outputs\<tenant-snapshot>.json' `
+  -OutputFolder 'C:\Assessment-Outputs\Improve'
+```
 
 ## Troubleshooting
 

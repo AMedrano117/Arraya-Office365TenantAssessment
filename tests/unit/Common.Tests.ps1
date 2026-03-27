@@ -17,12 +17,15 @@ Describe 'Arraya.M365.Common' {
             'Get-ArrayaAssessmentOutputProfilePolicy'
             'Get-ArrayaAssessmentOutputRoot'
             'Get-ArrayaObjectValue'
+            'Get-ArrayaTenantSnapshotMetricSet'
             'Import-ArrayaOffice365CustomLocal'
+            'Import-ArrayaTenantSnapshotContext'
             'Import-ArrayaTenantSnapshot'
             'Invoke-ArrayaCollectionStepSafe'
             'Invoke-QuietCommand'
             'New-ArrayaAssessmentContext'
             'New-ArrayaTenantSnapshot'
+            'Resolve-ArrayaSnapshotOutputContext'
             'Test-ArrayaTenantSnapshot'
             'Update-ArrayaTenantSnapshot'
             'Write-ArrayaAssessmentArtifactManifest'
@@ -94,5 +97,76 @@ Describe 'Arraya.M365.Common' {
         Split-Path -Path $errorSummary.LogPath -Parent | Should -Be $expectedDirectory
         Split-Path -Path $errorSummary.CsvPath -Parent | Should -Be $expectedDirectory
         Test-Path (Join-Path $expectedDirectory 'Tenant Discovery Report-SolutionsEngineer Error Reporting') | Should -BeFalse
+    }
+
+    It 'calculates shared snapshot metrics for improvement and comparison workflows' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        $metrics = Get-ArrayaTenantSnapshotMetricSet `
+            -SecureScoreRows @([pscustomobject]@{
+                CreatedDateTime = '2024-01-01T00:00:00Z'
+                CurrentScore    = 35
+                MaxScore        = 100
+            }) `
+            -ConditionalAccessRows @(
+                [pscustomobject]@{ State = 'enabled' },
+                [pscustomobject]@{ State = 'disabled' }
+            ) `
+            -AdminRows @(
+                [pscustomobject]@{ Role = 'Global Administrator' },
+                [pscustomobject]@{ Role = 'Exchange Administrator' }
+            ) `
+            -DomainRows @(
+                [pscustomobject]@{ IsVerified = $true },
+                [pscustomobject]@{ IsVerified = $false }
+            ) `
+            -LicenseRows @(
+                [pscustomobject]@{
+                    SkuPartNumber = 'ENTERPRISEPACK'
+                    ConsumedUnits = 98
+                    ActiveUnits   = 100
+                }
+            ) `
+            -DeviceRows @(
+                [pscustomobject]@{ ApproximateLastSignInDateTime = (Get-Date).AddDays(-60).ToString('o') },
+                [pscustomobject]@{ ApproximateLastSignInDateTime = (Get-Date).AddDays(-5).ToString('o') }
+            ) `
+            -StaleDeviceDays 30
+
+        $metrics.SecureScorePercent | Should -Be 35
+        $metrics.ConditionalAccessPolicyCount | Should -Be 2
+        $metrics.EnabledConditionalAccessCount | Should -Be 1
+        $metrics.GlobalAdminCount | Should -Be 1
+        $metrics.UnverifiedDomainCount | Should -Be 1
+        $metrics.MaxLicenseUtilizationPercent | Should -Be 98
+        $metrics.HighUtilizationSkus | Should -Be @('ENTERPRISEPACK (98%)')
+        $metrics.DeviceCount | Should -Be 2
+        $metrics.StaleDeviceCount | Should -Be 1
+        $metrics.StaleDevicePercent | Should -Be 50
+    }
+
+    It 'imports snapshot context and resolves default snapshot output paths' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        $snapshot = New-ArrayaTenantSnapshot -Data @{
+            Tenant = @{
+                Domains = @(
+                    [pscustomobject]@{
+                        Id         = 'contoso.com'
+                        IsVerified = $true
+                    }
+                )
+            }
+        }
+        $snapshotPath = Join-Path $TestDrive 'tenant-snapshot.json'
+        Export-ArrayaTenantSnapshot -Snapshot $snapshot -Path $snapshotPath
+
+        $context = Import-ArrayaTenantSnapshotContext -Path $snapshotPath -Purpose Export
+        $outputContext = Resolve-ArrayaSnapshotOutputContext -PrimaryInputPath $snapshotPath
+
+        $context.Path | Should -Be (Resolve-Path $snapshotPath).Path
+        $context.GeneratedAt | Should -Not -BeNullOrEmpty
+        $outputContext.OutputFolder | Should -Be (Resolve-Path $TestDrive).Path
+        $outputContext.OutputPrefix | Should -Be 'tenant-snapshot'
     }
 }

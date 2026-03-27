@@ -11,7 +11,6 @@ Run one script and choose from the menu:
 ```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action AD
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Graph
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Improve
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Compare
 ```
@@ -19,7 +18,6 @@ Run one script and choose from the menu:
 ## Script entry points
 - `src/scripts/assessments/tenant-wide/Invoke-M365FullTenantAssessment.ps1`
 - `src/scripts/assessments/identity/Invoke-ActiveDirectoryTenantAssessment.ps1`
-- `src/scripts/assessments/tenant-wide/Invoke-M365GraphActivityReport.ps1`
 - `src/scripts/reporting/Invoke-M365TenantImprovementPlan.ps1`
 - `src/scripts/reporting/Invoke-M365TenantAssessmentComparison.ps1`
 
@@ -32,3 +30,22 @@ Run one script and choose from the menu:
 ## Legacy compatibility
 Migrated legacy scripts are stored in `src/scripts/migrated/legacy`.
 The legacy `Import-Office365CustomLocal.ps1` now delegates to the shared Common module loader.
+
+## Operator references
+- [../../RUN.md](../../RUN.md)
+- [improvement-plan-rule-taxonomy.md](improvement-plan-rule-taxonomy.md)
+
+## Improve workflow notes
+- `Improve` is a separate post-processing workflow that consumes an assessment JSON snapshot.
+- The improvement plan combines derived assessment findings with built-in remediation heuristics.
+- Rule IDs such as `ID-007`, `CA-012`, `DEV-006`, and `EX-007` are internal repo rule identifiers, not Microsoft-native control IDs.
+- Use the taxonomy guide when you need to explain where a finding came from or how to trace it back to the supporting worksheet.
+
+## Another machine validation
+When validating on another machine, start with the safest path first:
+
+1. Run `Improve` against an existing known-good snapshot.
+2. Run `M365Collect`.
+3. Run `Improve` against the newly collected snapshot.
+
+This separates environment/setup issues from tenant-authentication and collector issues.

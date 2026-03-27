@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [ValidateSet('M365', 'M365Collect', 'M365Export', 'AD', 'Graph', 'Improve', 'Compare')]
+    [ValidateSet('M365', 'M365Collect', 'M365Export', 'AD', 'Improve', 'Compare')]
     [string]$Action,
     [Parameter(Mandatory = $false)]
     [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
@@ -88,20 +88,18 @@ if ([string]::IsNullOrWhiteSpace($Action)) {
     Write-Host '2. Microsoft 365 Data Collection Only (JSON snapshot)'
     Write-Host '3. Microsoft 365 Export from JSON Snapshot'
     Write-Host '4. Active Directory Assessment'
-    Write-Host '5. Microsoft Graph Activity Report'
-    Write-Host '6. Build Improvement Plan from Tenant JSON'
-    Write-Host '7. Compare Two Tenant JSON Snapshots'
+    Write-Host '5. Build Improvement Plan from Tenant JSON'
+    Write-Host '6. Compare Two Tenant JSON Snapshots'
     Write-Host ''
 
-    $choice = Read-Host 'Select an option (1-7)'
+    $choice = Read-Host 'Select an option (1-6)'
     switch ($choice) {
         '1' { $Action = 'M365' }
         '2' { $Action = 'M365Collect' }
         '3' { $Action = 'M365Export' }
         '4' { $Action = 'AD' }
-        '5' { $Action = 'Graph' }
-        '6' { $Action = 'Improve' }
-        '7' { $Action = 'Compare' }
+        '5' { $Action = 'Improve' }
+        '6' { $Action = 'Compare' }
         default { throw "Invalid selection: $choice" }
     }
 }
@@ -221,16 +219,6 @@ switch ($Action) {
     }
     'AD' {
         Invoke-ADTenantAssessment
-    }
-    'Graph' {
-        $serviceName = Read-Host 'ServiceName (example: Office365ActiveUser, SharePointSites, TeamsUser)'
-        $period = Read-Host 'Period (D7, D30, D90, D180) - default D90'
-        if ([string]::IsNullOrWhiteSpace($period)) { $period = 'D90' }
-        $useBetaInput = Read-Host 'Use beta endpoint? (Y/N, default N)'
-        $useBeta = $useBetaInput -match '^(y|yes)$'
-
-        $graphData = Invoke-GraphActivityAssessment -ServiceName $serviceName -PeriodDuration $period -UseBeta:$useBeta
-        $graphData | Format-Table -AutoSize
     }
     'Improve' {
         $jsonPath = Read-Host 'Path to tenant assessment JSON'
