@@ -306,6 +306,21 @@ function New-CustomerSummary {
     return "$Finding Current state: $valueText. Next step: $Recommendation"
 }
 
+function Test-GenericActionText {
+    [CmdletBinding()]
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $true }
+
+    $normalizedText = $Text.Trim().ToLowerInvariant()
+    return $normalizedText -in @(
+        'review this recommendation and assign an implementation owner.',
+        'review this finding and assign an implementation owner.',
+        'n/a',
+        'na'
+    )
+}
+
 function New-EngineerNotes {
     [CmdletBinding()]
     param(
@@ -328,6 +343,165 @@ function New-EngineerNotes {
     return ($notes -join '; ')
 }
 
+function Get-DefaultWhyFlagged {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Finding,
+        [AllowNull()]$CurrentValue
+    )
+
+    $valueText = Convert-ToArrayaDisplayText -Value $CurrentValue
+    if ($valueText -ne 'N/A') {
+        return "Flagged because the assessment observed: $valueText"
+    }
+
+    return $Finding
+}
+
+function Get-DefaultExampleAction {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$RuleId,
+        [AllowNull()][string]$Area,
+        [AllowNull()][string]$Category,
+        [AllowNull()][string]$Finding
+    )
+
+    $lookup = ('{0} {1} {2} {3}' -f [string]$RuleId, [string]$Area, [string]$Category, [string]$Finding).ToLowerInvariant()
+    if ($lookup -match 'enterprise app|service principal|application permission') {
+        return 'Example: review the top flagged enterprise apps, confirm the business owner, and remove broad delegated or application permissions that are no longer required.'
+    }
+    if ($lookup -match 'onedrive|ownership|stewardship') {
+        return 'Example: confirm who now owns the content, document the delegated steward, and decide whether the site should be retained, transferred, or removed.'
+    }
+    if ($lookup -match 'team|group owner|ownerless') {
+        return 'Example: assign an active owner to the Team or group, confirm the service purpose, and archive the workspace if it is no longer needed.'
+    }
+    if ($lookup -match 'license|sku|capacity') {
+        return 'Example: identify the affected SKU, reclaim unused assignments, and verify whether additional licensing needs to be purchased.'
+    }
+    if ($lookup -match 'device|endpoint|intune|compliance') {
+        return 'Example: export the affected devices, assign remediation ownership to endpoint operations, and validate whether they should be enrolled, upgraded, or retired.'
+    }
+    if ($lookup -match 'guest|break-glass|global administrator|privileged|conditional access|mfa') {
+        return 'Example: review the impacted identities or policies, confirm owner approval, and update the tenant baseline with documented exceptions only.'
+    }
+    if ($lookup -match 'exchange|mailbox|forward|connector|smtp|public folder') {
+        return 'Example: validate the business use case, remove unauthorized configuration, and document any approved exceptions that must remain.'
+    }
+
+    return 'Example: review the supporting worksheet, confirm the current state with the service owner, and update the configuration or governance record to close the finding.'
+}
+
+function Get-FindingPresentationOverrides {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$RuleId,
+        [Parameter(Mandatory = $true)][string]$Area,
+        [Parameter(Mandatory = $true)][string]$Category,
+        [Parameter(Mandatory = $true)][string]$Finding,
+        [Parameter(Mandatory = $true)][string]$Recommendation,
+        [Parameter(Mandatory = $true)][string]$CurrentValue,
+        [Parameter(Mandatory = $true)][string]$TargetValue
+    )
+
+    $override = @{}
+    $lookup = ('{0} {1} {2} {3}' -f $RuleId, $Area, $Category, $Finding).ToLowerInvariant()
+
+    switch -Regex ($RuleId) {
+        '^COL-001$' {
+            $override['WhyFlagged'] = 'The collaboration governance data shows ownerless assets, unmanaged objects, or unresolved stewardship gaps that leave content without clear accountability.'
+            $override['Recommendation'] = 'Review each flagged collaboration asset, assign an accountable business owner or steward, and remove unmanaged spaces that no longer have a valid purpose. Confirm that ownership is documented in the operating model before closing the finding.'
+            $override['ExampleAction'] = 'Example: export the ownerless sites, Teams, and groups, assign a named owner for active workloads, and retire spaces that no longer have a sponsor.'
+            $override['TargetValue'] = 'Each in-scope collaboration asset has a documented owner or steward and unmanaged spaces are dispositioned'
+        }
+        '^COL-002$' {
+            $override['Finding'] = 'OneDrive delegated ownership review is required.'
+            $override['WhyFlagged'] = 'The assessment found OneDrive sites where the original owner and the current steward do not appear to align, which often happens after an employee departure or delegated takeover.'
+            $override['Recommendation'] = 'Review each flagged OneDrive to confirm who now owns the business content, whether delegated stewardship is intentional, and whether lifecycle handling is documented. Update the steward, custodian, or retention decision before closing the finding.'
+            $override['ExampleAction'] = 'Example: confirm the previous owner has left or changed roles, validate the delegated custodian, and record whether the OneDrive should be retained, transferred, or removed.'
+            $override['TargetValue'] = 'Each flagged OneDrive has a documented custodian, delegated steward, and lifecycle decision'
+        }
+        '^TM-001$' {
+            $override['WhyFlagged'] = 'Teams without owners cannot be governed effectively and are more likely to drift without accountability for membership, sharing, or lifecycle decisions.'
+            $override['Recommendation'] = 'Assign at least one active owner to every flagged Team, confirm the business purpose, and archive Teams that no longer need to remain active. Validate that the linked Microsoft 365 group ownership is aligned before closing the finding.'
+            $override['ExampleAction'] = 'Example: export the ownerless Teams list, identify the business sponsor for each Team, and assign a named owner before allowing the Team to remain in use.'
+            $override['TargetValue'] = 'Every in-scope Team has at least one active owner'
+        }
+        '^ID-005$' {
+            $override['WhyFlagged'] = 'Guest sign-in activity shows external accounts that have not been active for more than 90 days and may no longer be required.'
+            $override['Recommendation'] = 'Review inactive guests with the business sponsor, confirm whether each guest still needs access, and remove or disable accounts that no longer support an approved collaboration scenario. Document any exceptions that must remain.'
+            $override['ExampleAction'] = 'Example: export the inactive guest list, confirm ownership with the sponsoring team, and remove guests whose project or vendor relationship has ended.'
+            $override['TargetValue'] = 'Inactive guest accounts are reviewed, dispositioned, and only approved exceptions remain'
+        }
+        '^ID-007$' {
+            $override['WhyFlagged'] = 'The enterprise app inventory shows one or more service principals with broad delegated or application permissions that matched the high-privilege pattern set used by the assessment.'
+            $override['Recommendation'] = 'Review each flagged enterprise application, confirm the business owner, validate whether the granted delegated or application permissions are still required, and reduce or remove broad consent where possible. Tighten the app-governance process so future high-privilege apps require documented approval.'
+            $override['ExampleAction'] = 'Example: open the EnterpriseApplications worksheet, review `HighPrivilegePermissions` for the top flagged apps, and remove app-only permissions that are no longer justified by the workload.'
+            $override['TargetValue'] = 'Each flagged enterprise app has an approved owner, documented business purpose, and validated permission scope'
+        }
+        '^DEV-002$' {
+            $override['WhyFlagged'] = 'The device inventory includes devices marked non-compliant, which means they are failing the current endpoint compliance baseline or are operating under undocumented exceptions.'
+            $override['Recommendation'] = 'Review each non-compliant device with endpoint operations, validate whether it should be remediated, excluded, or removed from access, and resolve undocumented exceptions. Re-check compliance after remediation before closing the finding.'
+        }
+        '^DEV-003$' {
+            $override['WhyFlagged'] = 'The device inventory includes devices without a management signal, which indicates they may be accessing resources outside the expected endpoint-management model.'
+            $override['Recommendation'] = 'Review unmanaged devices, confirm whether they are in scope for enrollment, and prevent unmanaged access where policy requires managed endpoints. Align enrollment expectations and exception handling with the access baseline.'
+        }
+        '^DEV-005$' {
+            $override['WhyFlagged'] = 'The device-management summary shows a meaningful percentage of devices without a management signal, which weakens policy enforcement and endpoint visibility.'
+            $override['Recommendation'] = 'Confirm the intended managed-device scope, review the unmanaged-device population with endpoint operations, and close enrollment gaps for devices that should access protected resources. Document any approved unmanaged exceptions.'
+        }
+        '^ADMIN-001$' {
+            $override['WhyFlagged'] = 'The tenant has more standing Global Administrator accounts than the recommended operating threshold, increasing privileged access exposure.'
+            $override['Recommendation'] = 'Review every standing Global Administrator assignment, move day-to-day administration to lower-privilege roles where possible, and retain only the minimum approved permanent admins. Document break-glass coverage separately from routine admin access.'
+        }
+        '^LIC-001$' {
+            $override['WhyFlagged'] = 'One or more paid SKUs are at or near capacity, which can block onboarding and often indicates reclaimable or mismatched assignments.'
+            $override['Recommendation'] = 'Review the constrained SKUs, reclaim unused or stale assignments, and confirm whether additional licensing must be purchased for planned demand. Close the gap between purchased capacity and assigned usage before considering the finding resolved.'
+            $override['TargetValue'] = 'Affected paid SKUs are reconciled to purchased capacity with approved headroom'
+        }
+    }
+
+    if ($lookup -match 'missing owner|owners and require ownership assignment|ownerless') {
+        $override['WhyFlagged'] = 'The assessment found collaboration assets without a clear accountable owner, which creates gaps in stewardship, lifecycle handling, and access governance.'
+        $override['Recommendation'] = 'Assign an active accountable owner or documented steward to each flagged asset, confirm the business purpose, and retire spaces that no longer have a sponsor. Record the ownership decision in the operating model before closing the finding.'
+        $override['ExampleAction'] = 'Example: export the ownerless workspace list, contact the sponsoring team, and either assign a named owner or retire the workspace if no owner can be identified.'
+        $override['TargetValue'] = 'Each flagged collaboration asset has an active owner or documented steward'
+    }
+    elseif ($lookup -match 'over capacity') {
+        $override['WhyFlagged'] = 'The licensing output shows at least one SKU assigned beyond purchased capacity, which creates an immediate licensing governance issue.'
+        $override['Recommendation'] = 'Review the affected SKU assignments immediately, reclaim licenses from inactive or ineligible accounts, and purchase additional capacity if the assignments are valid and still required.'
+        $override['ExampleAction'] = 'Example: identify the named over-capacity SKU, export the users assigned to it, and remove assignments from inactive or pilot users first.'
+        $override['TargetValue'] = 'Affected SKU assignments are brought back within purchased capacity'
+    }
+    elseif ($lookup -match 'global administrator') {
+        $override['WhyFlagged'] = 'The tenant has more standing Global Administrator assignments than the recommended operating threshold, increasing privileged access exposure.'
+        $override['Recommendation'] = 'Review each standing Global Administrator assignment, remove routine admin users from the role, and retain only the minimum approved permanent admins plus documented emergency access accounts. Validate whether lower-privilege roles or eligible access can replace standing assignments.'
+        $override['ExampleAction'] = 'Example: export the Global Administrator list, confirm a business justification for each account, and move routine administrators to lower-privilege roles first.'
+        $override['TargetValue'] = 'Standing Global Administrator assignments reduced to the approved operating threshold'
+    }
+    elseif ($lookup -match 'not verified|unverified domain') {
+        $override['WhyFlagged'] = 'The domain inventory shows one or more domains that are still not verified, which can indicate stale configuration, incomplete onboarding, or unsupported migration prerequisites.'
+        $override['Recommendation'] = 'Review every unverified domain, confirm whether it is still required, complete DNS verification for domains that remain in scope, and remove stale entries that no longer serve a business purpose.'
+        $override['ExampleAction'] = 'Example: open the Domains worksheet, verify whether the domain is still used for mail or identity, and either complete verification or retire the entry.'
+        $override['TargetValue'] = 'All required domains are verified and stale domains are removed'
+    }
+    elseif ($lookup -match 'device compliance') {
+        $override['WhyFlagged'] = 'The device posture output shows compliance results below the expected baseline, leaving managed access policies less effective.'
+        $override['Recommendation'] = 'Review why the compliance baseline is being missed, remediate the highest-volume failure conditions, and tighten exception handling for devices that should not remain non-compliant.'
+        $override['ExampleAction'] = 'Example: export the non-compliant device list, group by failure reason, and assign the remediation backlog to endpoint operations.'
+        $override['TargetValue'] = 'Device compliance meets the approved endpoint baseline'
+    }
+    elseif ($lookup -match 'appear unowned|ownerless team|without owners') {
+        $override['WhyFlagged'] = 'The collaboration data shows workspaces without an accountable owner, which creates gaps in access control, lifecycle handling, and business accountability.'
+        $override['Recommendation'] = 'Assign an accountable owner to each flagged workspace, confirm the business purpose, and retire any workspace that no longer has a sponsor.'
+        $override['TargetValue'] = 'Each flagged workspace has an active owner or has been retired'
+    }
+
+    return $override
+}
+
 function New-Finding {
     [CmdletBinding()]
     param(
@@ -346,7 +520,9 @@ function New-Finding {
         [Parameter(Mandatory = $false)][string]$CustomerSummary,
         [Parameter(Mandatory = $false)][string]$EngineerNotes,
         [Parameter(Mandatory = $false)][string]$RelatedWorksheet,
-        [Parameter(Mandatory = $false)][string]$RelatedSection
+        [Parameter(Mandatory = $false)][string]$RelatedSection,
+        [Parameter(Mandatory = $false)][string]$WhyFlagged,
+        [Parameter(Mandatory = $false)][string]$ExampleAction
     )
 
     if ([string]::IsNullOrWhiteSpace($Source)) { $Source = 'Heuristic' }
@@ -358,13 +534,39 @@ function New-Finding {
     if ([string]::IsNullOrWhiteSpace($Severity)) { $Severity = 'Medium' }
     $normalizedSeverity = Get-NormalizedSeverity -Value $Severity -Priority $Priority
     $priorityBand = Get-PriorityBand -Severity $normalizedSeverity -Priority $Priority
-    if ([string]::IsNullOrWhiteSpace($OwnerTeam)) { $OwnerTeam = Get-OwnerTeam -Area $Area -Category $Category }
-    if ([string]::IsNullOrWhiteSpace($RoadmapPhase)) { $RoadmapPhase = Get-RoadmapPhase -PriorityBand $priorityBand }
-    if ([string]::IsNullOrWhiteSpace($CustomerSummary)) { $CustomerSummary = New-CustomerSummary -Finding $Finding -Recommendation $Recommendation -Value $CurrentValue }
-    if ([string]::IsNullOrWhiteSpace($EngineerNotes)) { $EngineerNotes = New-EngineerNotes -Source $Source -RelatedWorksheet $RelatedWorksheet -RelatedSection $RelatedSection }
-
     $valueText = Convert-ToArrayaDisplayText -Value $CurrentValue
     $targetText = Convert-ToArrayaDisplayText -Value $TargetValue
+    $presentationOverrides = Get-FindingPresentationOverrides -RuleId $RuleId -Area $Area -Category $Category -Finding $Finding -Recommendation $Recommendation -CurrentValue $valueText -TargetValue $targetText
+
+    if ($presentationOverrides.ContainsKey('Finding')) { $Finding = [string]$presentationOverrides['Finding'] }
+    if ($presentationOverrides.ContainsKey('Recommendation')) { $Recommendation = [string]$presentationOverrides['Recommendation'] }
+    if ($presentationOverrides.ContainsKey('TargetValue') -and ([string]::IsNullOrWhiteSpace($targetText) -or $targetText -eq 'N/A' -or $targetText -eq 'Reduce open findings in this workstream' -or $RuleId -eq 'COL-002')) {
+        $targetText = Convert-ToArrayaDisplayText -Value $presentationOverrides['TargetValue']
+    }
+
+    if ([string]::IsNullOrWhiteSpace($OwnerTeam)) { $OwnerTeam = Get-OwnerTeam -Area $Area -Category $Category }
+    if ([string]::IsNullOrWhiteSpace($RoadmapPhase)) { $RoadmapPhase = Get-RoadmapPhase -PriorityBand $priorityBand }
+
+    if ([string]::IsNullOrWhiteSpace($WhyFlagged)) {
+        if ($presentationOverrides.ContainsKey('WhyFlagged')) {
+            $WhyFlagged = [string]$presentationOverrides['WhyFlagged']
+        }
+        else {
+            $WhyFlagged = Get-DefaultWhyFlagged -Finding $Finding -CurrentValue $valueText
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ExampleAction)) {
+        if ($presentationOverrides.ContainsKey('ExampleAction')) {
+            $ExampleAction = [string]$presentationOverrides['ExampleAction']
+        }
+        else {
+            $ExampleAction = Get-DefaultExampleAction -RuleId $RuleId -Area $Area -Category $Category -Finding $Finding
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($CustomerSummary)) { $CustomerSummary = New-CustomerSummary -Finding $Finding -Recommendation $Recommendation -Value $valueText }
+    if ([string]::IsNullOrWhiteSpace($EngineerNotes)) { $EngineerNotes = New-EngineerNotes -Source $Source -RelatedWorksheet $RelatedWorksheet -RelatedSection $RelatedSection }
 
     return [PSCustomObject]@{
         RuleId           = $RuleId
@@ -383,6 +585,8 @@ function New-Finding {
         RoadmapPhase     = $RoadmapPhase
         CustomerSummary  = $CustomerSummary
         EngineerNotes    = $EngineerNotes
+        WhyFlagged       = $WhyFlagged
+        ExampleAction    = $ExampleAction
         RelatedWorksheet = $(if ([string]::IsNullOrWhiteSpace($RelatedWorksheet)) { 'N/A' } else { $RelatedWorksheet })
         RelatedSection   = $(if ([string]::IsNullOrWhiteSpace($RelatedSection)) { 'N/A' } else { $RelatedSection })
     }
@@ -713,10 +917,68 @@ function Get-TopFindings {
     return @($Findings | Select-Object -First $Count)
 }
 
+function Resolve-WorkstreamTopSignals {
+    [CmdletBinding()]
+    param([AllowNull()]$Row)
+
+    $directValue = Get-ArrayaObjectValue -Object $Row -Names @('TopSignals', 'TopSignalSummary', 'TopFindings')
+    $directText = Convert-ToArrayaDisplayText -Value $directValue
+    if ($directText -ne 'N/A') {
+        return $directText
+    }
+
+    $message = [string](Resolve-FindingMessage -Row $Row)
+    if ($message -match 'Top signals:\s*(.+)$') {
+        return $matches[1].Trim().TrimEnd('.')
+    }
+
+    return 'Not provided'
+}
+
+function New-WorkstreamSummaryFromRow {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$Row)
+
+    $area = [string](Get-ArrayaObjectValue -Object $Row -Names @('Area', 'Category', 'AssessmentArea'))
+    if ([string]::IsNullOrWhiteSpace($area)) { $area = 'Best Practices' }
+
+    $severity = Get-NormalizedSeverity -Value (Get-ArrayaObjectValue -Object $Row -Names @('Severity', 'Status')) -Priority (Get-ArrayaObjectValue -Object $Row -Names @('Priority'))
+    $openFindings = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $Row -Names @('TotalFindings'))
+    $criticalCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $Row -Names @('CriticalFindings'))
+    $warningCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $Row -Names @('WarningFindings'))
+    $infoCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $Row -Names @('InfoFindings'))
+
+    return [PSCustomObject]@{
+        Workstream    = Get-OwnerTeam -Area $area -Category 'Area Summary'
+        Area          = $area
+        Severity      = $severity
+        OpenFindings  = $(if ($null -eq $openFindings) { 0 } else { $openFindings })
+        CriticalCount = $(if ($null -eq $criticalCount) { 0 } else { $criticalCount })
+        WarningCount  = $(if ($null -eq $warningCount) { 0 } else { $warningCount })
+        InfoCount     = $(if ($null -eq $infoCount) { 0 } else { $infoCount })
+        TopSignals    = Resolve-WorkstreamTopSignals -Row $Row
+    }
+}
+
+function Get-SortedWorkstreamSummaries {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][object[]]$Summaries)
+
+    return @(
+        $Summaries |
+            Where-Object { $_ } |
+            Sort-Object `
+                @{ Expression = { Get-SeverityWeight -Severity $_.Severity }; Descending = $true }, `
+                @{ Expression = { [int]$_.OpenFindings }; Descending = $true }, `
+                Workstream, Area
+    )
+}
+
 function New-CustomerRemediationReport {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][object[]]$Findings,
+        [Parameter(Mandatory = $false)][object[]]$WorkstreamSummaries = @(),
         [Parameter(Mandatory = $true)][string]$TenantName,
         [Parameter(Mandatory = $true)][string]$AssessmentJsonPath,
         [Parameter(Mandatory = $true)][datetime]$GeneratedAt
@@ -743,6 +1005,14 @@ function New-CustomerRemediationReport {
         $lines.Add("- $($group.Name): $($group.Count) finding(s)") | Out-Null
     }
     $lines.Add('') | Out-Null
+    if ($WorkstreamSummaries.Count -gt 0) {
+        $lines.Add('## Workstream Summary') | Out-Null
+        $lines.Add('') | Out-Null
+        foreach ($summary in $WorkstreamSummaries) {
+            $lines.Add("- $($summary.Workstream) / $($summary.Area): $($summary.OpenFindings) open finding(s) with top signals $($summary.TopSignals).") | Out-Null
+        }
+        $lines.Add('') | Out-Null
+    }
     if ($ownerGroups.Count -gt 0) {
         $lines.Add("Primary workstreams: $((@($ownerGroups | Select-Object -First 4 | ForEach-Object { '{0} ({1})' -f $_.Name, $_.Count }) -join '; '))") | Out-Null
         $lines.Add('') | Out-Null
@@ -755,7 +1025,9 @@ function New-CustomerRemediationReport {
         $lines.Add("- Severity: $($finding.Severity)") | Out-Null
         $lines.Add("- Priority: $($finding.PriorityBand)") | Out-Null
         $lines.Add("- Workstream: $($finding.OwnerTeam)") | Out-Null
-        $lines.Add("- Summary: $($finding.CustomerSummary)") | Out-Null
+        $lines.Add("- Why flagged: $($finding.WhyFlagged)") | Out-Null
+        $lines.Add("- Recommended action: $($finding.Recommendation)") | Out-Null
+        $lines.Add("- Success criteria: $($finding.TargetValue)") | Out-Null
         $lines.Add('') | Out-Null
     }
 
@@ -778,17 +1050,17 @@ function New-CustomerRemediationReport {
         $lines.Add("### $($ownerGroup.Name)") | Out-Null
         $lines.Add('') | Out-Null
         foreach ($finding in @($ownerGroup.Group | Select-Object -First 6)) {
-            $lines.Add("- $($finding.Area): $($finding.CustomerSummary)") | Out-Null
+            $lines.Add("- $($finding.Area): $($finding.Recommendation)") | Out-Null
         }
         $lines.Add('') | Out-Null
     }
 
     $lines.Add('## Supporting Findings Appendix') | Out-Null
     $lines.Add('') | Out-Null
-    $lines.Add('| Severity | Workstream | Area | Finding | Target State |') | Out-Null
-    $lines.Add('|---|---|---|---|---|') | Out-Null
+    $lines.Add('| Severity | Workstream | Area | Finding | Recommended Action | Success Criteria |') | Out-Null
+    $lines.Add('|---|---|---|---|---|---|') | Out-Null
     foreach ($finding in $Findings) {
-        $lines.Add("| $($finding.Severity) | $($finding.OwnerTeam) | $($finding.Area) | $(Convert-ToArrayaMarkdownText $finding.Finding) | $(Convert-ToArrayaMarkdownText $finding.TargetValue) |") | Out-Null
+        $lines.Add("| $($finding.Severity) | $($finding.OwnerTeam) | $($finding.Area) | $(Convert-ToArrayaMarkdownText $finding.Finding) | $(Convert-ToArrayaMarkdownText $finding.Recommendation) | $(Convert-ToArrayaMarkdownText $finding.TargetValue) |") | Out-Null
     }
 
     return ($lines -join [Environment]::NewLine)
@@ -798,6 +1070,7 @@ function New-EngineerActionPack {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][object[]]$Findings,
+        [Parameter(Mandatory = $false)][object[]]$WorkstreamSummaries = @(),
         [Parameter(Mandatory = $true)][string]$TenantName,
         [Parameter(Mandatory = $true)][string]$AssessmentJsonPath,
         [Parameter(Mandatory = $true)][datetime]$GeneratedAt,
@@ -820,6 +1093,16 @@ function New-EngineerActionPack {
     $lines.Add("- Planned: $((@($Findings | Where-Object { $_.RoadmapPhase -eq 'Planned' })).Count)") | Out-Null
     $lines.Add("- Monitor: $((@($Findings | Where-Object { $_.RoadmapPhase -eq 'Monitor' })).Count)") | Out-Null
     $lines.Add('') | Out-Null
+    if ($WorkstreamSummaries.Count -gt 0) {
+        $lines.Add('## Workstream Summary') | Out-Null
+        $lines.Add('') | Out-Null
+        $lines.Add('| Severity | Workstream | Area | Open Findings | Top Signals |') | Out-Null
+        $lines.Add('|---|---|---|---|---|') | Out-Null
+        foreach ($summary in $WorkstreamSummaries) {
+            $lines.Add("| $($summary.Severity) | $($summary.Workstream) | $($summary.Area) | $($summary.OpenFindings) | $(Convert-ToArrayaMarkdownText $summary.TopSignals) |") | Out-Null
+        }
+        $lines.Add('') | Out-Null
+    }
     $lines.Add('## Dependencies And Prerequisites') | Out-Null
     $lines.Add('') | Out-Null
     $lines.Add('- Validate tenant admin roles, Graph scopes, Exchange connectivity, and any pilot exclusions before enforcement changes.') | Out-Null
@@ -828,10 +1111,10 @@ function New-EngineerActionPack {
     $lines.Add('') | Out-Null
     $lines.Add('## Normalized Findings') | Out-Null
     $lines.Add('') | Out-Null
-    $lines.Add('| Severity | Phase | Workstream | Rule | Source | Area | Finding | Current | Target | Worksheet |') | Out-Null
-    $lines.Add('|---|---|---|---|---|---|---|---|---|---|') | Out-Null
+    $lines.Add('| Severity | Phase | Workstream | Rule | Finding | Why Flagged | Recommended Action | Example | Evidence | Success Criteria | Worksheet |') | Out-Null
+    $lines.Add('|---|---|---|---|---|---|---|---|---|---|---|') | Out-Null
     foreach ($finding in $Findings) {
-        $lines.Add("| $($finding.Severity) | $($finding.RoadmapPhase) | $($finding.OwnerTeam) | $($finding.RuleId) | $($finding.Source) | $($finding.Area) | $(Convert-ToArrayaMarkdownText $finding.Finding) | $(Convert-ToArrayaMarkdownText $finding.CurrentValue) | $(Convert-ToArrayaMarkdownText $finding.TargetValue) | $(Convert-ToArrayaMarkdownText $finding.RelatedWorksheet) |") | Out-Null
+        $lines.Add("| $($finding.Severity) | $($finding.RoadmapPhase) | $($finding.OwnerTeam) | $($finding.RuleId) | $(Convert-ToArrayaMarkdownText $finding.Finding) | $(Convert-ToArrayaMarkdownText $finding.WhyFlagged) | $(Convert-ToArrayaMarkdownText $finding.Recommendation) | $(Convert-ToArrayaMarkdownText $finding.ExampleAction) | $(Convert-ToArrayaMarkdownText $finding.CurrentValue) | $(Convert-ToArrayaMarkdownText $finding.TargetValue) | $(Convert-ToArrayaMarkdownText $finding.RelatedWorksheet) |") | Out-Null
     }
     $lines.Add('') | Out-Null
     $lines.Add('## Validation Steps') | Out-Null
@@ -867,6 +1150,7 @@ $OutputPrefix = $outputContext.OutputPrefix
 
 $generatedAt = Get-Date
 $findingStore = @{}
+$workstreamSummaries = New-Object System.Collections.Generic.List[object]
 $derivedFindings = @()
 $script:ArrayaImproveHeuristicFindings = New-Object System.Collections.Generic.List[object]
 
@@ -883,28 +1167,10 @@ foreach ($derivedKey in @('BestPracticeFindings', 'Findings')) {
 
 if ($snapshotDerived.ContainsKey('BestPractices')) {
     foreach ($row in (Convert-ArrayaObjectToArray $snapshotDerived['BestPractices'])) {
-        $status = Get-ArrayaObjectValue -Object $row -Names @('Status')
-        $primaryFinding = Resolve-FindingMessage -Row $row
-        if ([string]::IsNullOrWhiteSpace($primaryFinding)) { continue }
-
-        $summaryFinding = New-Finding `
-            -RuleId ("AREA-{0}" -f ([Math]::Abs($primaryFinding.GetHashCode()))) `
-            -Source 'Summary/BestPractices' `
-            -Area ([string](Get-ArrayaObjectValue -Object $row -Names @('Area', 'Category'))) `
-            -Category 'Area Summary' `
-            -Severity (Get-NormalizedSeverity -Value $status) `
-            -Finding $primaryFinding `
-            -Recommendation (Resolve-FindingRecommendation -Row $row) `
-            -CurrentValue ("Total findings={0}; Critical={1}; Warning={2}; Info={3}" -f `
-                (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $row -Names @('TotalFindings'))), `
-                (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $row -Names @('CriticalFindings'))), `
-                (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $row -Names @('WarningFindings'))), `
-                (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $row -Names @('InfoFindings')))) `
-            -TargetValue 'Reduce open findings in this workstream' `
-            -RelatedWorksheet ([string](Get-ArrayaObjectValue -Object $row -Names @('RelatedWorksheet'))) `
-            -RelatedSection 'Best Practices Summary'
-
-        Add-ImprovementFinding -Store $findingStore -Finding $summaryFinding | Out-Null
+        $summaryRecord = New-WorkstreamSummaryFromRow -Row $row
+        if ($summaryRecord) {
+            $workstreamSummaries.Add($summaryRecord) | Out-Null
+        }
     }
 }
 
@@ -1185,7 +1451,7 @@ if ($staleSharePointSites.Count -gt 0 -or $staleOneDrives.Count -gt 0) {
 }
 
 $storageHotSpots = @(
-    @($sharePointRows + $oneDriveRows) |
+    @(@($sharePointRows) + @($oneDriveRows)) |
         Where-Object {
             $storageGb = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('StorageUsedGB', 'TotalItemSizeGB', 'StorageGB'))
             $null -ne $storageGb -and $storageGb -gt 1024
@@ -1302,7 +1568,26 @@ if ($null -ne $stalePrivilegedSummary -and $stalePrivilegedSummary -gt 0) {
 $enterpriseAppSummaryRecord = if ($enterpriseApplicationSummary) { Get-ArrayaObjectValue -Object $enterpriseApplicationSummary -Names @('Summary') } else { $null }
 $highPrivilegeApps = @($enterpriseApplications | Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('HighPrivilegePermissionCount'))) -gt 0 })
 if ($highPrivilegeApps.Count -gt 0) {
-    Add-HeuristicFinding -Store $findingStore -RuleId 'ID-007' -Area 'Identity Governance' -Category 'Identity Governance' -Severity 'High' -Finding 'Enterprise applications with broad or high-privilege permissions were detected.' -Recommendation 'Review high-privilege enterprise apps, validate business need, and tighten app consent governance for broad delegated or application permissions.' -CurrentValue "$($highPrivilegeApps.Count) high-privilege enterprise application(s)" -TargetValue 'High-privilege enterprise apps reviewed and governed' -Source 'Summary/EnterpriseApplications' -RelatedWorksheet 'EnterpriseApplications' -RelatedSection 'Enterprise Apps'
+    $highPrivilegePermissionExamples = @(
+        $highPrivilegeApps |
+            ForEach-Object { Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $_ -Names @('HighPrivilegePermissions')) } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique -First 5
+    )
+    $appsWithApplicationPermissions = @(
+        $highPrivilegeApps |
+            Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('ApplicationPermissionCount'))) -gt 0 }
+    ).Count
+    $appsWithDelegatedGrants = @(
+        $highPrivilegeApps |
+            Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('DelegatedPermissionGrantCount'))) -gt 0 }
+    ).Count
+    $highPrivilegeCurrentValue = "{0} high-privilege enterprise application(s); {1} with application permissions; {2} with delegated grants" -f $highPrivilegeApps.Count, $appsWithApplicationPermissions, $appsWithDelegatedGrants
+    if ($highPrivilegePermissionExamples.Count -gt 0) {
+        $highPrivilegeCurrentValue = "{0}; matched permissions: {1}" -f $highPrivilegeCurrentValue, ($highPrivilegePermissionExamples -join ', ')
+    }
+
+    Add-HeuristicFinding -Store $findingStore -RuleId 'ID-007' -Area 'Identity Governance' -Category 'Identity Governance' -Severity 'High' -Finding 'Enterprise applications with broad or high-privilege permissions were detected.' -Recommendation 'Review high-privilege enterprise apps, validate business need, and tighten app consent governance for broad delegated or application permissions.' -CurrentValue $highPrivilegeCurrentValue -TargetValue 'High-privilege enterprise apps reviewed and governed' -Source 'Summary/EnterpriseApplications' -RelatedWorksheet 'EnterpriseApplications' -RelatedSection 'Enterprise Apps'
 }
 
 $securityDefaultsRecord = if ($securityDefaultsPolicy) { Get-ArrayaObjectValue -Object $securityDefaultsPolicy -Names @('Configuration', 'Summary') } else { $null }
@@ -1443,6 +1728,7 @@ foreach ($finding in $sortedFindings) {
     if ([string]::IsNullOrWhiteSpace([string]$finding.PriorityBand)) { $finding.PriorityBand = 'Monitor' }
     if ([string]::IsNullOrWhiteSpace([string]$finding.RoadmapPhase)) { $finding.RoadmapPhase = 'Monitor' }
 }
+$sortedWorkstreamSummaries = Get-SortedWorkstreamSummaries -Summaries $workstreamSummaries.ToArray()
 $tenantName = Get-TenantDisplayName -TenantInfoSummary $(if ($tenantInfoSummary) { Get-ArrayaObjectValue -Object $tenantInfoSummary -Names @('Summary') } else { $null }) -LegacyData $tenantData -OutputPrefix $OutputPrefix
 
 $jsonOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-ImprovementPlan.json"
@@ -1465,7 +1751,8 @@ $payload = [PSCustomObject]@{
         ImprovementPlanMarkdown   = $mdOutPath
         RemediationSnippets       = $snippetOutPath
     }
-    Findings    = $sortedFindings
+    WorkstreamSummaries = $sortedWorkstreamSummaries
+    Findings           = $sortedFindings
 }
 
 $payload | ConvertTo-Json -Depth 10 | Set-Content -Path $jsonOutPath -Encoding UTF8
@@ -1484,22 +1771,35 @@ foreach ($group in $severityCounts) {
     $summaryLines += "- $($group.Name): $($group.Count)"
 }
 
+if ($sortedWorkstreamSummaries.Count -gt 0) {
+    $summaryLines += @(
+        '',
+        '## Workstream Summary',
+        '',
+        '| Severity | Workstream | Area | Open Findings | Critical | Warning | Info | Top Signals |',
+        '|---|---|---|---|---|---|---|---|'
+    )
+    foreach ($summary in $sortedWorkstreamSummaries) {
+        $summaryLines += "| $($summary.Severity) | $($summary.Workstream) | $($summary.Area) | $($summary.OpenFindings) | $($summary.CriticalCount) | $($summary.WarningCount) | $($summary.InfoCount) | $(Convert-ToArrayaMarkdownText $summary.TopSignals) |"
+    }
+}
+
 $summaryLines += @(
     '',
     '## Findings',
     '',
-    '| Severity | Priority | Workstream | Rule | Area | Finding | Current | Target |',
+    '| Severity | Priority | Workstream | Rule | Finding | Why Flagged | Recommended Action | Success Criteria |',
     '|---|---|---|---|---|---|---|---|'
 )
 foreach ($finding in $sortedFindings) {
-    $summaryLines += "| $($finding.Severity) | $($finding.PriorityBand) | $($finding.OwnerTeam) | $($finding.RuleId) | $($finding.Area) | $(Convert-ToArrayaMarkdownText $finding.Finding) | $(Convert-ToArrayaMarkdownText $finding.CurrentValue) | $(Convert-ToArrayaMarkdownText $finding.TargetValue) |"
+    $summaryLines += "| $($finding.Severity) | $($finding.PriorityBand) | $($finding.OwnerTeam) | $($finding.RuleId) | $(Convert-ToArrayaMarkdownText $finding.Finding) | $(Convert-ToArrayaMarkdownText $finding.WhyFlagged) | $(Convert-ToArrayaMarkdownText $finding.Recommendation) | $(Convert-ToArrayaMarkdownText $finding.TargetValue) |"
 }
 Set-Content -Path $mdOutPath -Value ($summaryLines -join [Environment]::NewLine) -Encoding UTF8
 
-$customerReportMarkdown = New-CustomerRemediationReport -Findings $sortedFindings -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt
+$customerReportMarkdown = New-CustomerRemediationReport -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt
 Set-Content -Path $customerMdOutPath -Value $customerReportMarkdown -Encoding UTF8
 
-$engineerActionPackMarkdown = New-EngineerActionPack -Findings $sortedFindings -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt -JsonOutPath $jsonOutPath -CsvOutPath $csvOutPath -SnippetOutPath $snippetOutPath
+$engineerActionPackMarkdown = New-EngineerActionPack -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt -JsonOutPath $jsonOutPath -CsvOutPath $csvOutPath -SnippetOutPath $snippetOutPath
 Set-Content -Path $engineerMdOutPath -Value $engineerActionPackMarkdown -Encoding UTF8
 
 $snippetLibrary = @{
