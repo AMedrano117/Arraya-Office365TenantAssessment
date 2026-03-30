@@ -89,12 +89,20 @@ Describe 'Improve workflow' {
                             PoliciesWithExclusions        = 7
                         }
                     }
-                    EnterpriseApplications = @(
-                        [pscustomobject]@{
+                    SecurityDefaultsPolicy = @{
+                        Summary = [pscustomobject]@{
+                            IsEnabled = $false
+                        }
+                    }
+                    EnterpriseApplications = @{
+                        '001-HighPrivApp' = [pscustomobject]@{
                             DisplayName                  = 'High Priv App'
                             HighPrivilegePermissionCount = 2
+                            HighPrivilegePermissions     = 'Application.ReadWrite.All,Directory.ReadWrite.All'
+                            ApplicationPermissionCount   = 1
+                            DelegatedPermissionGrantCount = 1
                         }
-                    )
+                    }
                     EnterpriseApplicationSummary = @{
                         Summary = [pscustomobject]@{
                             TotalEnterpriseApplications   = 1
@@ -223,6 +231,19 @@ Describe 'Improve workflow' {
                         RelatedSection    = 'Identity & Admins'
                     }
                 }
+                BestPractices = @{
+                    '001-Collaboration Summary' = [pscustomobject]@{
+                        Area             = 'Ownership & Stewardship'
+                        Severity         = 'Critical'
+                        Status           = 'Critical'
+                        Message          = '1 critical, 2 warning, 0 informational finding(s). Top signals: OneDrive Ownership Mismatch: 1; Owner Health: 1; Unowned Objects: 1.'
+                        TotalFindings    = 3
+                        CriticalFindings = 1
+                        WarningFindings  = 2
+                        InfoFindings     = 0
+                        RelatedWorksheet = 'BestPractices'
+                    }
+                }
                 AuthenticationConfigSummary = @{
                     Summary = [pscustomobject]@{
                         PasswordlessMethods         = @()
@@ -268,10 +289,15 @@ Describe 'Improve workflow' {
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'RoadmapPhase'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'CustomerSummary'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'EngineerNotes'
+        ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'WhyFlagged'
+        ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'ExampleAction'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'RelatedWorksheet'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'RelatedSection'
+        $payload.PSObject.Properties.Name | Should -Contain 'WorkstreamSummaries'
+        @($payload.WorkstreamSummaries).Count | Should -BeGreaterThan 0
 
         @($payload.Findings | Where-Object { $_.RuleId -eq 'SEC-001' }).Count | Should -Be 0
+        @($payload.Findings | Where-Object { $_.RuleId -like 'AREA-*' }).Count | Should -Be 0
         @($payload.Findings | Where-Object { $_.Source -eq 'Derived/BestPracticeFindings' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-007' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-005' }).Count | Should -BeGreaterThan 0
@@ -283,14 +309,31 @@ Describe 'Improve workflow' {
         @($payload.Findings | Where-Object { $_.RuleId -eq 'DEV-006' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'COL-005' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'COL-006' }).Count | Should -BeGreaterThan 0
+        @($payload.Findings | Where-Object { $_.TargetValue -eq 'Reduce open findings in this workstream' }).Count | Should -Be 0
+
+        $id007 = @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-007' }) | Select-Object -First 1
+        $id007.WhyFlagged | Should -Match 'permission'
+        $id007.ExampleAction | Should -Match 'HighPrivilegePermissions|enterprise apps'
+
+        $col002 = @($payload.Findings | Where-Object { $_.RuleId -eq 'COL-002' }) | Select-Object -First 1
+        $col002.Finding | Should -Be 'OneDrive delegated ownership review is required.'
 
         $customerReport = Get-Content -Raw $result.CustomerRemediationReportPath
         $customerReport | Should -Match '## Executive Summary'
         $customerReport | Should -Match '## Phased Roadmap'
+        $customerReport | Should -Match '## Workstream Summary'
+        $customerReport | Should -Not -Match 'AREA-'
 
         $engineerPack = Get-Content -Raw $result.EngineerActionPackPath
         $engineerPack | Should -Match '## Normalized Findings'
         $engineerPack | Should -Match '## Command References'
+        $engineerPack | Should -Match 'Why Flagged'
+        $engineerPack | Should -Match 'Example'
+
+        $planMarkdown = Get-Content -Raw $result.MarkdownPath
+        $planMarkdown | Should -Match '## Workstream Summary'
+        $planMarkdown | Should -Match 'Recommended Action'
+        $planMarkdown | Should -Not -Match 'Reduce open findings in this workstream'
 
         $snippetContent = Get-Content -Raw $result.RemediationPs1Path
         $snippetContent | Should -Match '\$gaRole = Get-MgDirectoryRole'
