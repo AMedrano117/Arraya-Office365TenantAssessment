@@ -41,6 +41,9 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode Full'
         $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode CollectOnly'
         $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode ExportOnly'
+        $runnerSource | Should -Match 'IncludeLegacyAssessmentArtifacts'
+        $runnerSource | Should -Match 'Invoke-M365ImproveForAssessmentRun'
+        $runnerSource | Should -Match 'Customer Remediation HTML'
     }
 
     It 'surfaces AuthMode on tenant assessment entrypoints' {

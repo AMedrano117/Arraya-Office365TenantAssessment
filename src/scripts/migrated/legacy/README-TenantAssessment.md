@@ -43,23 +43,27 @@ Examples:
 ```
 
 `M365` now includes the `Improve` step by default. Use `-SkipImprove` only when you explicitly want the older assessment-only behavior.
+If you run `Improve` separately, use `-LiveRefresh` when you want snapshot-plus-live-refresh behavior; it is a friendlier alias for `-UseGraphFallback`.
 
 ## Current Output Set
-A Microsoft 365 assessment run now produces:
+A default Microsoft 365 assessment run now produces:
 
-- `*.xlsx`: the main assessment workbook
-- `*-BestPracticesAnalysis.html`: the assessment-only HTML focused on best practices, detailed findings, migration readiness, and Secure Score actions
-- `*.html`: the browser-friendly full tenant assessment report
-- `*-TenantToTenantQuestionnaire.md`: the tenant-to-tenant migration questionnaire populated from discovered data
-- `*.json`: the reusable assessment snapshot when enabled
-- `*.pdf`: the fixed-layout PDF rendered from the full HTML report when enabled and Chrome or Edge is available
+- `*-CustomerRemediationReport.html`
+- `*-EngineerActionPack.md`
+- `*-ImprovementPlan.json`
+- `*-RemediationSnippets.ps1`
+- `*.manifest.json`
+- `Debugging\...`
 
-The workbook is the primary assessment deliverable. The most important worksheets for assessment review are:
+The reusable assessment snapshot JSON is still preserved because `Improve`, `M365Export`, and replay/comparison workflows depend on it.
 
-- `BestPractices`
-- `BestPracticeFindings`
-- `MigrationReadiness`
-- `SecureScoreActions`
+If you explicitly pass `-IncludeLegacyAssessmentArtifacts`, the older assessment artifact family is also generated:
+
+- `*.xlsx`
+- `*-BestPracticesAnalysis.html`
+- `*.html`
+- `*-TenantToTenantQuestionnaire.md`
+- `*.pdf`
 
 ## Current Script Locations
 Runner commands are in:
@@ -89,21 +93,23 @@ The questionnaire template is:
 ## Output Profiles
 The assessment script supports six need-based output profiles:
 
-- `Presales`: scope `Minimum`; outputs technical HTML + questionnaire
-- `SolutionsEngineer`: scope `Combined`; outputs workbook + technical HTML
-- `ExecutiveLevel`: scope `Minimum`; outputs best practices analysis HTML
-- `TenantToTenantMigration`: scope `Combined`; outputs workbook + technical HTML + questionnaire
-- `Geek`: scope `Geek`; outputs workbook + technical HTML + best practices HTML + questionnaire + JSON
-- `Machine`: scope `Geek`; outputs JSON only
+- `Presales`: scope `Minimum`
+- `SolutionsEngineer`: scope `Combined`
+- `ExecutiveLevel`: scope `Minimum`
+- `TenantToTenantMigration`: scope `Combined`
+- `Geek`: scope `Geek`
+- `Machine`: scope `Geek`; JSON-focused automation profile
 
 `SolutionsEngineer` is the default profile.
 
 ## HTML And PDF
-The assessment script now attempts to generate:
+The remediation workflow now generates `*-CustomerRemediationReport.html` by default.
 
-- `*-BestPracticesAnalysis.html` independently of the full HTML output
-- `*.html` when the selected profile enables technical HTML output and `-SkipHtmlReport` is not provided
-- `*.pdf` from the full HTML only when explicitly enabled in profile policy (disabled by default in current model)
+The legacy assessment HTML/PDF family is generated only when `-IncludeLegacyAssessmentArtifacts` is used:
+
+- `*-BestPracticesAnalysis.html`
+- `*.html`
+- `*.pdf`
 
 PDF rendering prefers Google Chrome and falls back to Microsoft Edge when available.
 

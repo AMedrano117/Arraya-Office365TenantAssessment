@@ -12,9 +12,14 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$ExportPath,
     [Parameter(Mandatory = $false)]
+    [Alias('LiveRefresh')]
     [switch]$UseGraphFallback,
     [Parameter(Mandatory = $false)]
-    [string]$ImproveOutputFolder
+    [string]$ImproveOutputFolder,
+    [Parameter(Mandatory = $false)]
+    [switch]$IncludeLegacyArtifacts,
+    [Parameter(Mandatory = $false)]
+    [switch]$IncludeLegacyAssessmentArtifacts
 )
 
 $resolveRepoRootHelperPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\shared\Resolve-ArrayaRepoRoot.ps1'))

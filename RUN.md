@@ -246,7 +246,7 @@ Run a full assessment and automatically chain `Improve` from the artifacts that 
   -Action M365
 ```
 
-`M365` now includes the `Improve` step by default. If the selected output profile does not normally emit JSON, the launcher automatically adds the `Machine` profile for that run so a reusable snapshot is preserved. If you pass `-SkipJsonReport`, the launcher ignores it while `Improve` is part of the run.
+`M365` now includes the `Improve` step by default and uses a consolidated remediation-first output model. The workflow preserves the JSON snapshot needed for replay and post-processing, so `-SkipJsonReport` is ignored unless you explicitly opt back into the legacy assessment artifact family with `-IncludeLegacyAssessmentArtifacts`.
 
 If you need the older assessment-only behavior, use:
 
@@ -266,7 +266,7 @@ End-to-end example to collect a snapshot and then build an improvement plan from
 
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
   -Action Improve `
-  -UseGraphFallback
+  -LiveRefresh
 ```
 
 `Improve` is still available as a separate workflow for post-processing an existing snapshot, but the standard `M365` run now includes it automatically. `M365Collect` remains the advanced snapshot-only workflow, and `-RunImprove` is still available there when you want to chain post-processing from a collection run.
@@ -277,15 +277,18 @@ For a fully non-interactive improvement-plan run, call the reporting wrapper dir
 .\src\scripts\reporting\Invoke-M365TenantImprovementPlan.ps1 `
   -AssessmentJsonPath 'C:\Assessment-Outputs\<tenant-snapshot>.json' `
   -OutputFolder 'C:\Assessment-Outputs\Improve' `
-  -UseGraphFallback
+  -LiveRefresh
 ```
 
-Add `-IncludeLegacyArtifacts` only if you still want the older `*-ImprovementPlan.csv` and `*-ImprovementPlan.md` outputs in addition to the simplified default set.
+Use `-LiveRefresh` when you want a "snapshot plus live refresh" run. It is a friendlier alias for the existing `-UseGraphFallback` switch and tells `Improve` to use the saved snapshot first, then fill supported gaps from Microsoft Graph when needed.
+
+Add `-IncludeLegacyArtifacts` only if you still want the older `*-ImprovementPlan.csv`, `*-ImprovementPlan.md`, and `*-CustomerRemediationReport.md` outputs in addition to the default set.
+Add `-IncludeLegacyAssessmentArtifacts` when you also want the older workbook / assessment HTML / best-practices HTML / questionnaire / PDF family.
 
 The `Improve` workflow now produces this simplified default output set:
 
 - `*-ImprovementPlan.json`
-- `*-CustomerRemediationReport.md`
+- `*-CustomerRemediationReport.html`
 - `*-EngineerActionPack.md`
 - `*-RemediationSnippets.ps1`
 
@@ -297,13 +300,13 @@ Use the taxonomy guide to understand whether a finding came from the derived ass
 
 ## Output Profiles
 
-Choose the output profile based on the audience and artifact set you need:
+Choose the output profile based on the audience and collection/reporting depth you need:
 
-- `Presales`: minimum-scope collection with technical HTML and questionnaire output.
-- `SolutionsEngineer`: default profile with workbook and technical HTML.
-- `ExecutiveLevel`: minimum-scope collection with best-practices analysis HTML.
-- `TenantToTenantMigration`: workbook, technical HTML, and questionnaire.
-- `Geek`: expanded output set including workbook, HTML, questionnaire, and JSON.
+- `Presales`: minimum-scope collection.
+- `SolutionsEngineer`: default combined collection/reporting scope.
+- `ExecutiveLevel`: minimum-scope collection.
+- `TenantToTenantMigration`: combined collection/reporting scope.
+- `Geek`: expanded collection/reporting scope.
 - `Machine`: JSON-focused output for downstream processing.
 
 You can pass more than one profile in a comma-separated list:
@@ -316,15 +319,23 @@ You can pass more than one profile in a comma-separated list:
 
 ## What Gets Generated
 
-Depending on the chosen action and output profile, the assessment can create:
+Default `M365` now creates:
 
-- `*.xlsx`: the main assessment workbook.
-- `*.html`: the full technical tenant report.
-- `*-BestPracticesAnalysis.html`: the assessment-focused summary HTML.
-- `*-TenantToTenantQuestionnaire.md`: the migration questionnaire populated from tenant data.
-- `*.json`: the reusable assessment snapshot.
-- `*.pdf`: a PDF rendered from the full HTML report when a supported browser is available.
-- `*.manifest.json`: an index of generated artifacts.
+- `*-CustomerRemediationReport.html`
+- `*-EngineerActionPack.md`
+- `*-ImprovementPlan.json`
+- `*-RemediationSnippets.ps1`
+- `*.manifest.json`
+
+The run still preserves the reusable assessment snapshot JSON internally because `Improve`, `M365Export`, and comparison/replay depend on it.
+
+If you opt into `-IncludeLegacyAssessmentArtifacts`, the assessment can also create:
+
+- `*.xlsx`
+- `*.html`
+- `*-BestPracticesAnalysis.html`
+- `*-TenantToTenantQuestionnaire.md`
+- `*.pdf`
 
 Operational logs and exported error details are written to a `Debugging` subfolder alongside the main outputs.
 
@@ -332,22 +343,21 @@ Operational logs and exported error details are written to a `Debugging` subfold
 
 Start with the artifact that best matches your audience:
 
-- `Workbook (.xlsx)`: primary technical deliverable. Begin with `BestPractices`, `BestPracticeFindings`, `MigrationReadiness`, and `SecureScoreActions`.
-- `BestPracticesAnalysis.html`: best for leadership or quick review of posture and recommended actions.
-- `Full HTML report`: best for browser-based technical walkthroughs.
-- `TenantToTenantQuestionnaire.md`: best for migration discovery follow-up and stakeholder interviews.
-- `JSON snapshot`: best for export reuse, comparisons, and automation.
+- `CustomerRemediationReport.html`: primary customer-facing deliverable.
+- `EngineerActionPack.md`: primary operator-facing deliverable.
+- `ImprovementPlan.json`: best for export reuse, filtering, comparisons, and automation.
+- `RemediationSnippets.ps1`: quick operator helper commands.
 
 Recommended review flow:
 
-1. Open the workbook or best-practices HTML first.
-2. Identify the highest-impact findings and blockers.
-3. Use the questionnaire markdown to fill any discovery gaps with the customer.
-4. Keep the JSON snapshot as your baseline for later comparison runs.
+1. Open `CustomerRemediationReport.html` first.
+2. Review `EngineerActionPack.md` for implementation planning.
+3. Keep `ImprovementPlan.json` as your baseline for later comparison or downstream processing.
+4. Use legacy workbook / assessment HTML outputs only when you explicitly generated them for a deeper technical review.
 
 When reviewing `Improve` outputs:
 
-1. Start with `*-CustomerRemediationReport.md` for stakeholder-facing messaging.
+1. Start with `*-CustomerRemediationReport.html` for stakeholder-facing messaging.
 2. Use `*-EngineerActionPack.md` for operator execution planning.
 3. Use `ImprovementPlan.json` for filtering, automation, or downstream transformations.
 4. Use `RelatedWorksheet` and `Source` to trace each finding back to its evidence and rule origin.
