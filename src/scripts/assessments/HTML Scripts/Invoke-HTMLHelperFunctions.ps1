@@ -3771,9 +3771,9 @@ function Get-HtmlStyle {
     return @'
 <style>
     :root {
-        --primary-color: #0078d4;
+        --primary-color: #0f4c5c;
         --success-color: #107c10;
-        --warning-color: #f7630c;
+        --warning-color: #c77d2b;
         --danger-color: #d13438;
         --info-color: #00bcf2;
         --bg-light: #faf9f8;
@@ -3808,12 +3808,21 @@ function Get-HtmlStyle {
     
     /* Header */
     .report-header {
-        background: linear-gradient(135deg, #0078d4 0%, #004e8c 100%);
+        background: linear-gradient(145deg, #12343b 0%, #1e5160 55%, #c77d2b 140%);
         color: white;
         padding: 30px;
         border-radius: 8px;
         margin-bottom: 30px;
         box-shadow: var(--shadow);
+    }
+
+    .report-brand {
+        font-size: 0.78em;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        font-weight: 700;
+        opacity: 0.88;
+        margin-bottom: 10px;
     }
     
     .report-header h1 {
@@ -7245,7 +7254,7 @@ function New-TenantHtmlReport {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>$tenantName - Tenant Discovery Report</title>
+    <title>$tenantName - Tenant Snapshot | Arraya Solutions</title>
     
     <!-- Load Chart.js FIRST -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -7257,8 +7266,9 @@ function New-TenantHtmlReport {
     <div class="container">
         <!-- Header -->
         <div class="report-header">
+            <div class="report-brand">Prepared by Arraya Solutions</div>
             <h1>$tenantName</h1>
-            <p style="font-size:1.1em;">Tenant Discovery Report</p>
+            <p style="font-size:1.1em;">Tenant Snapshot</p>
             <div class="report-meta">
                 <div class="report-meta-item">📅 Generated: $reportDate</div>
                 <div class="report-meta-item">🆔 Tenant ID: $tenantIdText</div>
@@ -7266,6 +7276,7 @@ function New-TenantHtmlReport {
                 <div class="report-meta-item">📛 Initial Domain: $initialDomainText</div>
                 <div class="report-meta-item">🌍 Country: $countryText</div>
                 <div class="report-meta-item">✅ Data Freshness: Current session</div>
+                <div class="report-meta-item">🏢 Prepared by: Arraya Solutions</div>
             </div>
         </div>
         
@@ -7869,7 +7880,7 @@ function New-TenantAssessmentHtmlReport {
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>$tenantName - Best Practices Analysis</title>
+    <title>$tenantName - Best Practices Snapshot | Arraya Solutions</title>
     <style>
         :root {
             --bg: #f3f0e8;
@@ -7949,15 +7960,16 @@ function New-TenantAssessmentHtmlReport {
         <div class="hero">
             <div class="hero-top">
                 <div>
-                    <div class="eyebrow">Microsoft 365 Best Practices Analysis</div>
+                    <div class="eyebrow">Prepared by Arraya Solutions</div>
                     <h1>$tenantName</h1>
-                    <p class="hero-subtitle">Short-form assessment for leadership review. Use the workbook for raw inventory and full worksheet detail.</p>
+                    <p class="hero-subtitle">Microsoft 365 Best Practices Snapshot for leadership review. Use the workbook for raw inventory and full worksheet detail.</p>
                 </div>
                 <div class="hero-meta">
                     <div>Generated: $reportDate</div>
                     <div>Tenant ID: $(if ($tenantId) { Encode-AssessmentHtml $tenantId } else { 'Unavailable' })</div>
                     <div>Default Domain: $(if (-not [string]::IsNullOrWhiteSpace($tenantDefaultDomain)) { Encode-AssessmentHtml $tenantDefaultDomain } else { 'Unavailable' })</div>
-                    <div>Artifact: Best Practices Analysis</div>
+                    <div>Artifact: Best Practices Snapshot</div>
+                    <div>Prepared by: Arraya Solutions</div>
                 </div>
             </div>
             <div class="headline">$executiveHeadline</div>
