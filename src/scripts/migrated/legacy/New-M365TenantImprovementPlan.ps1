@@ -480,50 +480,6 @@ function Get-EvidenceLocation {
     return ($parts -join '; ')
 }
 
-function Get-ActionPath {
-    [CmdletBinding()]
-    param(
-        [AllowNull()][string]$Area,
-        [AllowNull()][string]$Category,
-        [AllowNull()][string]$RelatedWorksheet,
-        [AllowNull()][string]$RelatedSection,
-        [AllowNull()][string]$RuleId
-    )
-
-    $worksheetText = if ([string]::IsNullOrWhiteSpace($RelatedWorksheet) -or $RelatedWorksheet -eq 'N/A') {
-        'the supporting snapshot data'
-    }
-    else {
-        "worksheet '$RelatedWorksheet'"
-    }
-
-    $sectionText = if ([string]::IsNullOrWhiteSpace($RelatedSection) -or $RelatedSection -eq 'N/A') {
-        ''
-    }
-    else {
-        " and section '$RelatedSection'"
-    }
-
-    $lookup = ('{0} {1} {2}' -f [string]$RuleId, [string]$Area, [string]$Category).ToLowerInvariant()
-    if ($lookup -match 'conditional access|mfa|identity|admin|guest|passwordless|enterprise app|service principal') {
-        return "Open $worksheetText$sectionText, review the affected identity or policy objects, and work the finding from the identity governance backlog."
-    }
-    if ($lookup -match 'exchange|mailbox|forward|connector|smtp|public folder|domain') {
-        return "Open $worksheetText$sectionText, review the affected messaging objects, and validate disposition with the messaging owner before changing production mail flow."
-    }
-    if ($lookup -match 'sharepoint|onedrive|teams|group|ownership|collaboration|stewardship') {
-        return "Open $worksheetText$sectionText, review the affected collaboration assets, and assign owner/steward or lifecycle action from the collaboration governance backlog."
-    }
-    if ($lookup -match 'device|endpoint|intune|compliance') {
-        return "Open $worksheetText$sectionText, review the affected devices, and hand off remediation to endpoint operations with a clear disposition per device."
-    }
-    if ($lookup -match 'license|sku') {
-        return "Open $worksheetText$sectionText, review the affected SKUs or assignments, and reconcile them in the licensing governance backlog."
-    }
-
-    return "Open $worksheetText$sectionText and work the underlying objects directly from the referenced evidence set."
-}
-
 function Get-ExchangeForwardingPolicyEvidence {
     [CmdletBinding()]
     param(
@@ -696,7 +652,7 @@ function New-Finding {
         [Parameter(Mandatory = $false)][string]$WhyFlagged,
         [Parameter(Mandatory = $false)][string]$ExampleAction,
         [Parameter(Mandatory = $false)][string]$EvidenceLocation,
-        [Parameter(Mandatory = $false)][string]$ActionPath
+        [Parameter(Mandatory = $false)][string]$TechnicalRemediation
     )
 
     if ([string]::IsNullOrWhiteSpace($Source)) { $Source = 'Heuristic' }
@@ -745,7 +701,7 @@ function New-Finding {
     if ([string]::IsNullOrWhiteSpace($CustomerSummary)) { $CustomerSummary = New-CustomerSummary -Finding $Finding -Recommendation $Recommendation -Value $valueText }
     if ([string]::IsNullOrWhiteSpace($EngineerNotes)) { $EngineerNotes = New-EngineerNotes -Source $Source -RelatedWorksheet $RelatedWorksheet -RelatedSection $RelatedSection }
     if ([string]::IsNullOrWhiteSpace($EvidenceLocation)) { $EvidenceLocation = Get-EvidenceLocation -RelatedWorksheet $RelatedWorksheet -RelatedSection $RelatedSection -Source $Source }
-    if ([string]::IsNullOrWhiteSpace($ActionPath)) { $ActionPath = Get-ActionPath -Area $Area -Category $Category -RelatedWorksheet $RelatedWorksheet -RelatedSection $RelatedSection -RuleId $RuleId }
+    if ([string]::IsNullOrWhiteSpace($TechnicalRemediation)) { $TechnicalRemediation = $Recommendation }
 
     return [PSCustomObject]@{
         RuleId           = $RuleId
@@ -767,7 +723,7 @@ function New-Finding {
         WhyFlagged       = $WhyFlagged
         ExampleAction    = $ExampleAction
         EvidenceLocation = $EvidenceLocation
-        ActionPath       = $ActionPath
+        TechnicalRemediation = $TechnicalRemediation
         RelatedWorksheet = $(if ([string]::IsNullOrWhiteSpace($RelatedWorksheet)) { 'N/A' } else { $RelatedWorksheet })
         RelatedSection   = $(if ([string]::IsNullOrWhiteSpace($RelatedSection)) { 'N/A' } else { $RelatedSection })
     }
@@ -1612,10 +1568,10 @@ function New-EngineerActionPack {
     $lines.Add('') | Out-Null
     $lines.Add('## Normalized Findings') | Out-Null
     $lines.Add('') | Out-Null
-    $lines.Add('| Severity | Phase | Workstream | Rule | Finding | Why Flagged | Recommended Action | Evidence | Evidence Location | Action Path | Success Criteria |') | Out-Null
-    $lines.Add('|---|---|---|---|---|---|---|---|---|---|---|') | Out-Null
+    $lines.Add('| Severity | Phase | Workstream | Rule | Finding | Why Flagged | Technical Remediation | Evidence | Evidence Location | Success Criteria |') | Out-Null
+    $lines.Add('|---|---|---|---|---|---|---|---|---|---|') | Out-Null
     foreach ($finding in $Findings) {
-        $lines.Add("| $($finding.Severity) | $($finding.RoadmapPhase) | $($finding.OwnerTeam) | $($finding.RuleId) | $(Convert-ToArrayaMarkdownText $finding.Finding) | $(Convert-ToArrayaMarkdownText $finding.WhyFlagged) | $(Convert-ToArrayaMarkdownText $finding.Recommendation) | $(Convert-ToArrayaMarkdownText $finding.CurrentValue) | $(Convert-ToArrayaMarkdownText $finding.EvidenceLocation) | $(Convert-ToArrayaMarkdownText $finding.ActionPath) | $(Convert-ToArrayaMarkdownText $finding.TargetValue) |") | Out-Null
+        $lines.Add("| $($finding.Severity) | $($finding.RoadmapPhase) | $($finding.OwnerTeam) | $($finding.RuleId) | $(Convert-ToArrayaMarkdownText $finding.Finding) | $(Convert-ToArrayaMarkdownText $finding.WhyFlagged) | $(Convert-ToArrayaMarkdownText $finding.TechnicalRemediation) | $(Convert-ToArrayaMarkdownText $finding.CurrentValue) | $(Convert-ToArrayaMarkdownText $finding.EvidenceLocation) | $(Convert-ToArrayaMarkdownText $finding.TargetValue) |") | Out-Null
     }
     $lines.Add('') | Out-Null
     $lines.Add('## Validation Steps') | Out-Null

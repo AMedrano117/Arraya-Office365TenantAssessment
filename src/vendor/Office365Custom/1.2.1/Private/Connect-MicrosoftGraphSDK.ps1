@@ -57,9 +57,9 @@
         }
         try {
             # Check for existing Microsoft Graph connection
-            $mgContext = Get-MgContext -ErrorAction Stop
+            $mgContext = Get-MgContext -ProgressAction SilentlyContinue -ErrorAction Stop
             if ($mgContext) {
-                $MGraphCompanyCheck = Get-MgOrganization -ErrorAction Stop
+                $MGraphCompanyCheck = Get-MgOrganization -ProgressAction SilentlyContinue -ErrorAction Stop
                 Write-Verbose "Already Using Microsoft Graph PowerShell SDK - '$($mgContext.AuthType)' Authentication"
                 if (Confirm-Tenant $MGraphCompanyCheck.DisplayName) {
                     return
@@ -134,8 +134,8 @@
         }
     
         # Output connection details
-        $MGraphCompanyCheck = Get-MgOrganization -ErrorAction Stop
+        $MGraphCompanyCheck = Get-MgOrganization -ProgressAction SilentlyContinue -ErrorAction Stop
         Update-TitleBar $MGraphCompanyCheck.DisplayName
-        $mgContext = Get-MgContext -ErrorAction SilentlyContinue
+        $mgContext = Get-MgContext -ProgressAction SilentlyContinue -ErrorAction SilentlyContinue
         Write-Host "Connected: '$($MGraphCompanyCheck.DisplayName)' tenant - Using '$($mgContext.AuthType)' Authentication" -ForegroundColor Green
     }

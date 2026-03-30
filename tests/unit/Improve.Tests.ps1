@@ -329,7 +329,7 @@ Describe 'Improve workflow' {
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'WhyFlagged'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'ExampleAction'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'EvidenceLocation'
-        ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'ActionPath'
+        ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'TechnicalRemediation'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'RelatedWorksheet'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'RelatedSection'
         $payload.PSObject.Properties.Name | Should -Contain 'WorkstreamSummaries'
@@ -357,7 +357,7 @@ Describe 'Improve workflow' {
         $id007 = @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-007' }) | Select-Object -First 1
         $id007.WhyFlagged | Should -Match 'permission'
         $id007.EvidenceLocation | Should -Match 'EnterpriseApplications'
-        $id007.ActionPath | Should -Match 'identity governance backlog|EnterpriseApplications|identity'
+        $id007.TechnicalRemediation | Should -Match 'business owner|permissions|broad consent'
 
         $col002 = @($payload.Findings | Where-Object { $_.RuleId -eq 'COL-002' }) | Select-Object -First 1
         $col002.Finding | Should -Be 'OneDrive delegated ownership review is required.'
@@ -389,7 +389,8 @@ Describe 'Improve workflow' {
         $engineerPack | Should -Match '## Command References'
         $engineerPack | Should -Match 'Why Flagged'
         $engineerPack | Should -Match 'Evidence Location'
-        $engineerPack | Should -Match 'Action Path'
+        $engineerPack | Should -Match 'Technical Remediation'
+        $engineerPack | Should -Not -Match 'Action Path'
         $engineerPack | Should -Not -Match '\| Example \|'
         $engineerPack | Should -Not -Match 'CSV output:'
         $engineerPack | Should -Match 'Support folder:'

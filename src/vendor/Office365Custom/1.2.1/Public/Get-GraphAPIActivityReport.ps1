@@ -86,7 +86,7 @@ function Get-GraphAPIActivityReport {
         Write-Verbose "Saving report to temporary file: $tempFile"
         if ($canUseSdk) {
             try {
-                Invoke-MgGraphRequest -Method GET -Uri $ActivityReport -ErrorAction Stop -OutputFilePath $tempFile | Out-Null
+                Invoke-MgGraphRequest -Method GET -Uri $ActivityReport -ProgressAction SilentlyContinue -ErrorAction Stop -OutputFilePath $tempFile | Out-Null
             }
             catch {
                 if (-not $headers) {
