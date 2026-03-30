@@ -15,6 +15,8 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$UseGraphFallback,
     [Parameter(Mandatory = $false)]
+    [switch]$IncludeLegacyArtifacts,
+    [Parameter(Mandatory = $false)]
     [switch]$PassThru
 )
 
@@ -37,6 +39,7 @@ if ($PSBoundParameters.ContainsKey('OutputPrefix')) { $invokeParams.OutputPrefix
 if ($PSBoundParameters.ContainsKey('StaleDeviceDays')) { $invokeParams.StaleDeviceDays = $StaleDeviceDays }
 if ($PSBoundParameters.ContainsKey('MaxGlobalAdmins')) { $invokeParams.MaxGlobalAdmins = $MaxGlobalAdmins }
 if ($PSBoundParameters.ContainsKey('UseGraphFallback')) { $invokeParams.UseGraphFallback = $UseGraphFallback }
+if ($PSBoundParameters.ContainsKey('IncludeLegacyArtifacts')) { $invokeParams.IncludeLegacyArtifacts = $IncludeLegacyArtifacts }
 if ($PSBoundParameters.ContainsKey('PassThru')) { $invokeParams.PassThru = $PassThru }
 
 & {

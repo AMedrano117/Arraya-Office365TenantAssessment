@@ -7268,6 +7268,7 @@ function Update-ExchangeGovernanceTables {
     if (-not $TenantStatsHash.ContainsKey('InboxRulesExternalForwarding')) { $TenantStatsHash['InboxRulesExternalForwarding'] = @{} }
     if (-not $TenantStatsHash.ContainsKey('InboxRuleForwardingSummary')) { $TenantStatsHash['InboxRuleForwardingSummary'] = @{} }
     if (-not $TenantStatsHash.ContainsKey('SharedMailboxGovernanceSummary')) { $TenantStatsHash['SharedMailboxGovernanceSummary'] = @{} }
+    if (-not $TenantStatsHash.ContainsKey('ForwardingPolicySummary')) { $TenantStatsHash['ForwardingPolicySummary'] = @{} }
 
     $allMailboxRows = if ($TenantStatsHash.ContainsKey('AllMailboxes') -and $TenantStatsHash['AllMailboxes'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['AllMailboxes'].Values) } else { @() }
     $mailboxFullRows = if ($TenantStatsHash.ContainsKey('MailboxFullDetails') -and $TenantStatsHash['MailboxFullDetails'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['MailboxFullDetails'].Values) } else { @() }
@@ -7292,6 +7293,118 @@ function Update-ExchangeGovernanceTables {
         SharedMailboxCount          = $sharedMailboxRows.Count
         OversizedSharedMailboxes    = $oversizedSharedMailboxes.Count
         SharedMailboxesWithoutOwnerSignal = $ownerSignalMissing.Count
+    }
+
+    $remoteDomainRows = if ($TenantStatsHash.ContainsKey('RemoteDomains') -and $TenantStatsHash['RemoteDomains'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['RemoteDomains'].Values) } else { @() }
+    $remoteDomainsWithForwardingEnabled = @(
+        $remoteDomainRows |
+            Where-Object {
+                $_ -and
+                $_.PSObject.Properties['AutoForwardEnabled'] -and
+                $_.AutoForwardEnabled -eq $true
+            }
+    )
+    $defaultRemoteDomain = @(
+        $remoteDomainRows |
+            Where-Object {
+                $identity = if ($_.PSObject.Properties['Identity']) { [string]$_.Identity } else { '' }
+                $domainName = if ($_.PSObject.Properties['DomainName']) { [string]$_.DomainName } else { '' }
+                $identity -match '^default$' -or $domainName -eq '*'
+            }
+    ) | Select-Object -First 1
+    $defaultRemoteDomainForwarding = if ($defaultRemoteDomain) {
+        if ($defaultRemoteDomain.PSObject.Properties['AutoForwardEnabled']) { [bool]$defaultRemoteDomain.AutoForwardEnabled } else { $null }
+    } else {
+        $null
+    }
+
+    $hostedOutboundPolicies = @()
+    $hostedOutboundRules = @()
+    $forwardingPolicyCollectionState = 'Unavailable'
+    try {
+        if (Get-Command -Name 'Get-HostedOutboundSpamFilterPolicy' -ErrorAction SilentlyContinue) {
+            $hostedOutboundPolicies = @(
+                Get-HostedOutboundSpamFilterPolicy -ErrorAction Stop |
+                    Select-Object Name, Identity, IsDefault, AutoForwardingMode
+            )
+            $forwardingPolicyCollectionState = 'Collected'
+        }
+    }
+    catch {
+        $forwardingPolicyCollectionState = 'PolicyLookupFailed'
+        Write-Log -Type DEBUG -Message "[Update-ExchangeGovernanceTables] Hosted outbound spam filter policy lookup failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+    }
+
+    try {
+        if (Get-Command -Name 'Get-HostedOutboundSpamFilterRule' -ErrorAction SilentlyContinue) {
+            $hostedOutboundRules = @(
+                Get-HostedOutboundSpamFilterRule -ErrorAction Stop |
+                    Select-Object Name, HostedOutboundSpamFilterPolicy, State, Priority
+            )
+            if ($forwardingPolicyCollectionState -eq 'Unavailable') {
+                $forwardingPolicyCollectionState = 'RulesOnly'
+            }
+        }
+    }
+    catch {
+        if ($forwardingPolicyCollectionState -eq 'Unavailable') {
+            $forwardingPolicyCollectionState = 'RuleLookupFailed'
+        }
+        Write-Log -Type DEBUG -Message "[Update-ExchangeGovernanceTables] Hosted outbound spam filter rule lookup failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+    }
+
+    $policiesExplicitlyAllowingAutoForwarding = @(
+        $hostedOutboundPolicies |
+            Where-Object {
+                $mode = if ($_.PSObject.Properties['AutoForwardingMode']) { [string]$_.AutoForwardingMode } else { '' }
+                $mode -match '^(On|Automatic)$'
+            }
+    )
+    $policiesRestrictingAutoForwarding = @(
+        $hostedOutboundPolicies |
+            Where-Object {
+                $mode = if ($_.PSObject.Properties['AutoForwardingMode']) { [string]$_.AutoForwardingMode } else { '' }
+                $mode -match '^(Off|InternalOnly)$'
+            }
+    )
+    $autoForwardModeSummary = @(
+        $hostedOutboundPolicies |
+            ForEach-Object {
+                $policyName = if ($_.PSObject.Properties['Name']) { [string]$_.Name } elseif ($_.PSObject.Properties['Identity']) { [string]$_.Identity } else { 'UnnamedPolicy' }
+                $mode = if ($_.PSObject.Properties['AutoForwardingMode']) { [string]$_.AutoForwardingMode } else { 'Unknown' }
+                "{0}={1}" -f $policyName, $mode
+            }
+    )
+    $rulePolicyAssignments = @(
+        $hostedOutboundRules |
+            ForEach-Object {
+                $policyName = if ($_.PSObject.Properties['HostedOutboundSpamFilterPolicy']) { [string]$_.HostedOutboundSpamFilterPolicy } else { '' }
+                if (-not [string]::IsNullOrWhiteSpace($policyName)) { $policyName }
+            } |
+            Sort-Object -Unique
+    )
+
+    $TenantStatsHash['ForwardingPolicySummary']['Summary'] = [pscustomobject]@{
+        PolicyCollectionState                    = $forwardingPolicyCollectionState
+        HostedOutboundPolicyCount                = $hostedOutboundPolicies.Count
+        HostedOutboundRuleCount                  = $hostedOutboundRules.Count
+        PoliciesExplicitlyAllowingAutoForwarding = $policiesExplicitlyAllowingAutoForwarding.Count
+        PoliciesRestrictingAutoForwarding        = $policiesRestrictingAutoForwarding.Count
+        PolicyAutoForwardingModes                = if ($autoForwardModeSummary.Count -gt 0) { $autoForwardModeSummary -join '; ' } else { $null }
+        PoliciesReferencedByRules                = if ($rulePolicyAssignments.Count -gt 0) { $rulePolicyAssignments -join '; ' } else { $null }
+        RemoteDomainCount                        = $remoteDomainRows.Count
+        RemoteDomainsAllowingAutoForwarding      = $remoteDomainsWithForwardingEnabled.Count
+        RemoteDomainsAllowingAutoForwardingList  = if ($remoteDomainsWithForwardingEnabled.Count -gt 0) {
+            @(
+                $remoteDomainsWithForwardingEnabled |
+                    ForEach-Object {
+                        if ($_.PSObject.Properties['Identity']) { [string]$_.Identity } elseif ($_.PSObject.Properties['DomainName']) { [string]$_.DomainName } else { '' }
+                    } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                    Sort-Object -Unique
+            ) -join '; '
+        } else { $null }
+        DefaultRemoteDomainAllowsAutoForwarding  = $defaultRemoteDomainForwarding
     }
 
     if ($DetailLevel -eq 'minimum') {

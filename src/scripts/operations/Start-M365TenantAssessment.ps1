@@ -30,6 +30,8 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$RunImprove,
     [Parameter(Mandatory = $false)]
+    [switch]$SkipImprove,
+    [Parameter(Mandatory = $false)]
     [string]$ImproveOutputFolder,
     [Parameter(Mandatory = $false)]
     [switch]$SkipPdfReport,
@@ -246,10 +248,28 @@ function Invoke-LauncherImproveFromLatestRun {
     Invoke-M365ImprovementPlan -AssessmentJsonPath $manifestPath -OutputFolder $resolvedOutputFolder -UseGraphFallback:$UseGraphFallback
 }
 
+function Test-LauncherShouldRunImprove {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Action,
+        [Parameter(Mandatory = $false)]
+        [switch]$RunImprove,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipImprove
+    )
+
+    switch ($Action) {
+        'M365' { return (-not $SkipImprove) }
+        'M365Collect' { return ($RunImprove -and -not $SkipImprove) }
+        default { return $false }
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($Action)) {
     Write-Host ''
     Write-Host 'Tenant Assessment Launcher' -ForegroundColor Cyan
-    Write-Host '1. Microsoft 365 Full Tenant Assessment'
+    Write-Host '1. Microsoft 365 Full Tenant Assessment + Improvement Plan'
     Write-Host '2. Microsoft 365 Data Collection Only (JSON snapshot)'
     Write-Host '3. Microsoft 365 Export from JSON Snapshot'
     Write-Host '4. Active Directory Assessment'
@@ -271,6 +291,7 @@ if ([string]::IsNullOrWhiteSpace($Action)) {
 
 switch ($Action) {
     'M365' {
+        $shouldRunImprove = Test-LauncherShouldRunImprove -Action $Action -RunImprove:$RunImprove -SkipImprove:$SkipImprove
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
         $exportPathInput = if (-not [string]::IsNullOrWhiteSpace($ExportPath)) {
             $ExportPath
@@ -293,20 +314,20 @@ switch ($Action) {
             $selectedOutputProfiles = @('SolutionsEngineer')
         }
 
-        if ($RunImprove -and -not (Test-LauncherOutputProfilesGenerateJson -OutputProfile $selectedOutputProfiles)) {
+        if ($shouldRunImprove -and -not (Test-LauncherOutputProfilesGenerateJson -OutputProfile $selectedOutputProfiles)) {
             $selectedOutputProfiles = Add-LauncherOutputProfile -OutputProfile $selectedOutputProfiles -ProfileToAdd 'Machine'
-            Write-Warning "RunImprove requested. Added output profile 'Machine' so the run preserves a reusable JSON snapshot."
+            Write-Warning "Improve is included in the full M365 workflow. Added output profile 'Machine' so the run preserves a reusable JSON snapshot."
         }
 
         $invokeParams = @{}
         $invokeParams.OutputProfile = $selectedOutputProfiles
         $invokeParams.ExportPath = if (-not [string]::IsNullOrWhiteSpace($exportPathInput)) { $exportPathInput } else { $defaultOutputRoot }
         if ($SkipPdfReport) { $invokeParams.SkipPdfReport = $true }
-        if ($SkipJsonReport -and -not $RunImprove) {
+        if ($SkipJsonReport -and -not $shouldRunImprove) {
             $invokeParams.SkipJsonReport = $true
         }
-        elseif ($SkipJsonReport -and $RunImprove) {
-            Write-Warning 'RunImprove requires a JSON snapshot. Ignoring -SkipJsonReport for this run.'
+        elseif ($SkipJsonReport -and $shouldRunImprove) {
+            Write-Warning 'The full M365 workflow now includes Improve by default and requires a JSON snapshot. Ignoring -SkipJsonReport for this run.'
         }
         if ($StoreTenantStatsGlobal) { $invokeParams.StoreTenantStatsGlobal = $true }
         if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
@@ -318,11 +339,12 @@ switch ($Action) {
         if (-not [string]::IsNullOrWhiteSpace($ClientSecret)) { $invokeParams.ClientSecret = $ClientSecret }
 
         Invoke-M365TenantAssessment @invokeParams
-        if ($RunImprove) {
+        if ($shouldRunImprove) {
             Invoke-LauncherImproveFromLatestRun -ExportPath $invokeParams.ExportPath -OutputFolder $ImproveOutputFolder -UseGraphFallback:$UseGraphFallback
         }
     }
     'M365Collect' {
+        $shouldRunImprove = Test-LauncherShouldRunImprove -Action $Action -RunImprove:$RunImprove -SkipImprove:$SkipImprove
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
         $exportPathInput = if (-not [string]::IsNullOrWhiteSpace($ExportPath)) {
             $ExportPath
@@ -345,7 +367,7 @@ switch ($Action) {
             $selectedOutputProfiles = @('SolutionsEngineer')
         }
 
-        if ($RunImprove -and -not (Test-LauncherOutputProfilesGenerateJson -OutputProfile $selectedOutputProfiles)) {
+        if ($shouldRunImprove -and -not (Test-LauncherOutputProfilesGenerateJson -OutputProfile $selectedOutputProfiles)) {
             $selectedOutputProfiles = Add-LauncherOutputProfile -OutputProfile $selectedOutputProfiles -ProfileToAdd 'Machine'
             Write-Warning "RunImprove requested. Added output profile 'Machine' so the run preserves a reusable JSON snapshot."
         }
@@ -363,7 +385,7 @@ switch ($Action) {
         if (-not [string]::IsNullOrWhiteSpace($ClientSecret)) { $invokeParams.ClientSecret = $ClientSecret }
 
         Invoke-M365TenantDataCollection @invokeParams
-        if ($RunImprove) {
+        if ($shouldRunImprove) {
             Invoke-LauncherImproveFromLatestRun -ExportPath $invokeParams.ExportPath -OutputFolder $ImproveOutputFolder -UseGraphFallback:$UseGraphFallback
         }
     }

@@ -20,7 +20,8 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
             'InactiveMailboxes', 'InactiveMailboxDetails', 'LitigationHoldMailboxes', 'NonUserMailboxes',
             'AllExchangeGroups', 'MailFlowRules', 'MailFlowConnectors', 'PublicFolderDetails', 'PublicFolderPerms',
             'RemoteDomains', 'EmailActivityTopSenders', 'EmailActivityTopReceivers', 'EmailActivitySummary',
-            'MailboxFullDetails', 'InboxRulesExternalForwarding', 'InboxRuleForwardingSummary', 'SharedMailboxGovernanceSummary'
+            'MailboxFullDetails', 'InboxRulesExternalForwarding', 'InboxRuleForwardingSummary', 'SharedMailboxGovernanceSummary',
+            'ForwardingPolicySummary'
         )
         Identity = @(
             'Users', 'UserFullDetails', 'Admins', 'EntraIDGroups', 'DeviceDetails', 'ConditionalAccessPolicies',

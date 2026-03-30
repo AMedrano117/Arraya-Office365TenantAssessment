@@ -243,11 +243,18 @@ Run a full assessment and automatically chain `Improve` from the artifacts that 
 
 ```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
-  -RunImprove
+  -Action M365
 ```
 
-If the selected output profile does not normally emit JSON, `-RunImprove` automatically adds the `Machine` profile for that run so a reusable snapshot is preserved. If you pass `-SkipJsonReport`, the launcher ignores it when `-RunImprove` is present.
+`M365` now includes the `Improve` step by default. If the selected output profile does not normally emit JSON, the launcher automatically adds the `Machine` profile for that run so a reusable snapshot is preserved. If you pass `-SkipJsonReport`, the launcher ignores it while `Improve` is part of the run.
+
+If you need the older assessment-only behavior, use:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365 `
+  -SkipImprove
+```
 
 End-to-end example to collect a snapshot and then build an improvement plan from it:
 
@@ -262,9 +269,7 @@ End-to-end example to collect a snapshot and then build an improvement plan from
   -UseGraphFallback
 ```
 
-`Improve` is a separate workflow. A standard `M365` run does not automatically create an improvement plan, and the default `SolutionsEngineer` profile does not emit JSON unless you use `M365Collect` or choose a JSON-enabled profile such as `Geek` or `Machine`.
-
-As a temporary operator shortcut, `-RunImprove` removes most of that manual coordination by preserving JSON automatically and invoking `Improve` against the latest manifest from the just-finished run.
+`Improve` is still available as a separate workflow for post-processing an existing snapshot, but the standard `M365` run now includes it automatically. `M365Collect` remains the advanced snapshot-only workflow, and `-RunImprove` is still available there when you want to chain post-processing from a collection run.
 
 For a fully non-interactive improvement-plan run, call the reporting wrapper directly:
 
@@ -275,14 +280,16 @@ For a fully non-interactive improvement-plan run, call the reporting wrapper dir
   -UseGraphFallback
 ```
 
-The `Improve` workflow now produces both operator and customer-oriented outputs by default:
+Add `-IncludeLegacyArtifacts` only if you still want the older `*-ImprovementPlan.csv` and `*-ImprovementPlan.md` outputs in addition to the simplified default set.
+
+The `Improve` workflow now produces this simplified default output set:
 
 - `*-ImprovementPlan.json`
-- `*-ImprovementPlan.csv`
-- `*-ImprovementPlan.md`
 - `*-CustomerRemediationReport.md`
 - `*-EngineerActionPack.md`
 - `*-RemediationSnippets.ps1`
+
+If you still need the older technical CSV and Markdown artifacts, generate them explicitly with `-IncludeLegacyArtifacts` when calling the reporting wrapper directly.
 
 Use the taxonomy guide to understand whether a finding came from the derived assessment layer or from a built-in remediation rule:
 
@@ -342,7 +349,7 @@ When reviewing `Improve` outputs:
 
 1. Start with `*-CustomerRemediationReport.md` for stakeholder-facing messaging.
 2. Use `*-EngineerActionPack.md` for operator execution planning.
-3. Use `ImprovementPlan.json` or `ImprovementPlan.csv` for filtering, backlog import, or automation.
+3. Use `ImprovementPlan.json` for filtering, automation, or downstream transformations.
 4. Use `RelatedWorksheet` and `Source` to trace each finding back to its evidence and rule origin.
 
 ## Running On Another Machine

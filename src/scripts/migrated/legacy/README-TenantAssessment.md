@@ -36,10 +36,13 @@ Examples:
 ## Direct actions (optional)
 ```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365 -SkipImprove
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action AD
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Improve
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Compare
 ```
+
+`M365` now includes the `Improve` step by default. Use `-SkipImprove` only when you explicitly want the older assessment-only behavior.
 
 ## Current Output Set
 A Microsoft 365 assessment run now produces:
