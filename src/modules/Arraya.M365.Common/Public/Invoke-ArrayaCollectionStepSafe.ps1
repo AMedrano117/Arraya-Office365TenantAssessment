@@ -17,6 +17,7 @@ function Invoke-ArrayaCollectionStepSafe {
     }
     catch {
         $warningMessage = "[$OperationName] $($_.Exception.Message). Continuing."
+        $suppressConsoleWarning = $warningMessage -match '(?i)conditional access|inbox rule'
         $writeLogCommand = Get-Command -Name 'Write-Log' -ErrorAction SilentlyContinue
         if ($writeLogCommand) {
             $logSplat = @{
@@ -31,11 +32,21 @@ function Invoke-ArrayaCollectionStepSafe {
                 & $writeLogCommand @logSplat
             }
             catch {
-                Write-Warning $warningMessage
+                if ($suppressConsoleWarning) {
+                    Write-Verbose $warningMessage
+                }
+                else {
+                    Write-Warning $warningMessage
+                }
             }
         }
         else {
-            Write-Warning $warningMessage
+            if ($suppressConsoleWarning) {
+                Write-Verbose $warningMessage
+            }
+            else {
+                Write-Warning $warningMessage
+            }
         }
 
         return $DefaultValue

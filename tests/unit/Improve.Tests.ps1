@@ -307,6 +307,7 @@ Describe 'Improve workflow' {
         $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
 
         Test-Path $result.JsonPath | Should -BeTrue
+        Split-Path -Path $result.JsonPath -Parent | Should -Be (Join-Path $TestDrive 'Support')
         $result.CsvPath | Should -BeNullOrEmpty
         $result.MarkdownPath | Should -BeNullOrEmpty
         Test-Path $result.CustomerRemediationReportPath | Should -BeTrue
@@ -314,6 +315,8 @@ Describe 'Improve workflow' {
         $result.CustomerRemediationReportMarkdownPath | Should -BeNullOrEmpty
         Test-Path $result.EngineerActionPackPath | Should -BeTrue
         Test-Path $result.RemediationPs1Path | Should -BeTrue
+        Split-Path -Path $result.RemediationPs1Path -Parent | Should -Be (Join-Path $TestDrive 'Support')
+        $result.SupportFolderPath | Should -Be (Join-Path $TestDrive 'Support')
 
         $payload = Get-Content -Raw $result.JsonPath | ConvertFrom-Json -Depth 20
         $payload.Findings.Count | Should -BeGreaterThan 0
@@ -325,6 +328,8 @@ Describe 'Improve workflow' {
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'EngineerNotes'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'WhyFlagged'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'ExampleAction'
+        ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'EvidenceLocation'
+        ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'ActionPath'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'RelatedWorksheet'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'RelatedSection'
         $payload.PSObject.Properties.Name | Should -Contain 'WorkstreamSummaries'
@@ -347,10 +352,12 @@ Describe 'Improve workflow' {
         @($payload.Findings | Where-Object { $_.RuleId -eq 'COL-006' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.TargetValue -eq 'Reduce open findings in this workstream' }).Count | Should -Be 0
         @($payload.Findings | Where-Object { $_.TargetValue -match 'unauthorized mailbox forwarding|unauthorized inbox-rule forwarding' }).Count | Should -Be 0
+        @($payload.Findings | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.ExampleAction) }).Count | Should -Be 0
 
         $id007 = @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-007' }) | Select-Object -First 1
         $id007.WhyFlagged | Should -Match 'permission'
-        $id007.ExampleAction | Should -Match 'HighPrivilegePermissions|enterprise apps'
+        $id007.EvidenceLocation | Should -Match 'EnterpriseApplications'
+        $id007.ActionPath | Should -Match 'identity governance backlog|EnterpriseApplications|identity'
 
         $col002 = @($payload.Findings | Where-Object { $_.RuleId -eq 'COL-002' }) | Select-Object -First 1
         $col002.Finding | Should -Be 'OneDrive delegated ownership review is required.'
@@ -373,11 +380,7 @@ Describe 'Improve workflow' {
         $customerReport | Should -Match '<h2>Phased Roadmap</h2>'
         $customerReport | Should -Match '<h2>Workstream Summary</h2>'
         $customerReport | Should -Not -Match 'AREA-'
-        $customerReport | Should -Match 'Current State'
-        $customerReport | Should -Match '1 mailbox\(es\) with forwarding configured'
-        $customerReport | Should -Match 'external-forwarding inbox rule\(s\)'
-        $customerReport | Should -Match 'hosted outbound policy/policies explicitly allow auto-forwarding'
-        $customerReport | Should -Match 'remote domain\(s\) have AutoForwardEnabled'
+        $customerReport | Should -Not -Match 'Supporting Findings Appendix'
         $customerReport | Should -Not -Match 'unauthorized mailbox forwarding'
         $customerReport | Should -Not -Match 'unauthorized inbox-rule forwarding'
 
@@ -385,8 +388,11 @@ Describe 'Improve workflow' {
         $engineerPack | Should -Match '## Normalized Findings'
         $engineerPack | Should -Match '## Command References'
         $engineerPack | Should -Match 'Why Flagged'
-        $engineerPack | Should -Match 'Example'
+        $engineerPack | Should -Match 'Evidence Location'
+        $engineerPack | Should -Match 'Action Path'
+        $engineerPack | Should -Not -Match '\| Example \|'
         $engineerPack | Should -Not -Match 'CSV output:'
+        $engineerPack | Should -Match 'Support folder:'
 
         $snippetContent = Get-Content -Raw $result.RemediationPs1Path
         $snippetContent | Should -Match '\$gaRole = Get-MgDirectoryRole'

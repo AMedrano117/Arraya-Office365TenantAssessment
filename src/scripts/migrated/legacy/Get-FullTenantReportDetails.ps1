@@ -782,12 +782,64 @@ function Write-ConsoleArtifactSummary {
     Write-Host ""
     Write-Host "Assessment complete in $DurationText" -ForegroundColor Green
 
+    $primaryArtifactLabels = @(
+        'Customer Remediation HTML',
+        'Engineer Action Pack'
+    )
+    $primaryArtifacts = @()
+    $supportFolders = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $debugFolders = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $fallbackArtifacts = New-Object System.Collections.Generic.List[object]
+
     foreach ($entry in $Artifacts.GetEnumerator()) {
-        if ([string]::IsNullOrWhiteSpace([string]$entry.Value)) {
+        $artifactPath = [string]$entry.Value
+        if ([string]::IsNullOrWhiteSpace($artifactPath)) {
             continue
         }
 
-        Write-Host ("  {0}: {1}" -f $entry.Key, $entry.Value) -ForegroundColor Gray
+        $parentDirectory = Split-Path -Path $artifactPath -Parent
+        $leafDirectory = Split-Path -Path $parentDirectory -Leaf
+        $artifactRecord = [PSCustomObject]@{
+            Label = [string]$entry.Key
+            Path  = $artifactPath
+        }
+
+        if ($primaryArtifactLabels -contains [string]$entry.Key) {
+            $primaryArtifacts += $artifactRecord
+            continue
+        }
+
+        if ([string]::Equals($leafDirectory, 'Support', [System.StringComparison]::OrdinalIgnoreCase)) {
+            [void]$supportFolders.Add($parentDirectory)
+            continue
+        }
+
+        if ([string]::Equals($leafDirectory, 'Debugging', [System.StringComparison]::OrdinalIgnoreCase)) {
+            [void]$debugFolders.Add($parentDirectory)
+            continue
+        }
+
+        $fallbackArtifacts.Add($artifactRecord) | Out-Null
+    }
+
+    if ($primaryArtifacts.Count -gt 0) {
+        foreach ($artifact in $primaryArtifacts) {
+            $foreground = if ($artifact.Label -eq 'Customer Remediation HTML') { 'Green' } else { 'Cyan' }
+            Write-Host ("  {0}: {1}" -f $artifact.Label, $artifact.Path) -ForegroundColor $foreground
+        }
+
+        foreach ($supportFolder in ($supportFolders | Sort-Object)) {
+            Write-Host ("  Support artifacts: {0}" -f $supportFolder) -ForegroundColor DarkGray
+        }
+
+        foreach ($debugFolder in ($debugFolders | Sort-Object)) {
+            Write-Host ("  Debugging logs : {0}" -f $debugFolder) -ForegroundColor DarkGray
+        }
+    }
+    else {
+        foreach ($artifact in $fallbackArtifacts.ToArray()) {
+            Write-Host ("  {0}: {1}" -f $artifact.Label, $artifact.Path) -ForegroundColor Gray
+        }
     }
 
     if ($CapturedErrorCount -gt 0) {
