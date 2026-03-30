@@ -687,7 +687,7 @@ function Export-ArrayaGraphReportCsv {
     try {
         if ($useSdk) {
             try {
-                Invoke-MgGraphRequest -Method GET -Uri $Uri -OutputFilePath $tempCsvPath -ErrorAction Stop | Out-Null
+                Invoke-MgGraphRequest -Method GET -Uri $Uri -OutputFilePath $tempCsvPath -ProgressAction SilentlyContinue -ErrorAction Stop | Out-Null
             }
             catch {
                 if ($resolvedHeaders.Count -eq 0) {
@@ -2867,7 +2867,7 @@ function Get-SharePointAndOneDriveSites {
             try {
                 $ProgressPreference = 'SilentlyContinue'
                 $graphSiteProperties = 'id,displayName,name,webUrl,lastModifiedDateTime,siteCollection,sharepointIds'
-                foreach ($site in (Get-MgSite -All -Property $graphSiteProperties -ErrorAction Stop)) {
+                foreach ($site in (Get-MgSite -All -Property $graphSiteProperties -ProgressAction SilentlyContinue -ErrorAction Stop)) {
                     $totalCount++
                     $isOneDrive = ($site.WebUrl -like "*-my.sharepoint.com*")
                     $reportSiteId = Get-GraphSiteReportId -CompositeSiteId $site.Id
@@ -2966,7 +2966,7 @@ function Get-SharePointAndOneDriveSites {
                 $savedProgressPreference = $ProgressPreference
                 try {
                     $ProgressPreference = 'SilentlyContinue'
-                    return Invoke-MgGraphRequest -Uri $Uri -Method GET -OutputType PSObject -ErrorAction Stop
+                    return Invoke-MgGraphRequest -Uri $Uri -Method GET -OutputType PSObject -ProgressAction SilentlyContinue -ErrorAction Stop
                 }
                 finally {
                     $ProgressPreference = $savedProgressPreference
@@ -3199,10 +3199,10 @@ function Get-TeamsDetails {
                     $channels = @()
                     if ($selectedSource -eq 'MGGraph-SDK') {
                         if (Get-Command -Name 'Get-MgTeamAllChannel' -ErrorAction SilentlyContinue) {
-                            $channels = @(Get-MgTeamAllChannel -TeamId $teamId -ErrorAction SilentlyContinue)
+                            $channels = @(Get-MgTeamAllChannel -TeamId $teamId -ProgressAction SilentlyContinue -ErrorAction SilentlyContinue)
                         }
                         else {
-                            $channels = @(Get-MgTeamChannel -TeamId $teamId -ErrorAction SilentlyContinue)
+                            $channels = @(Get-MgTeamChannel -TeamId $teamId -ProgressAction SilentlyContinue -ErrorAction SilentlyContinue)
                         }
                     }
                     elseif ($selectedSource -eq 'MGGraph-REST') {
@@ -3233,7 +3233,7 @@ function Get-TeamsDetails {
                     $memberObjects = @()
                     if ($selectedSource -eq 'MGGraph-SDK') {
                         if (Get-Command -Name 'Get-MgTeamMember' -ErrorAction SilentlyContinue) {
-                            $memberObjects = @(Get-MgTeamMember -TeamId $teamId -All -ErrorAction SilentlyContinue)
+                            $memberObjects = @(Get-MgTeamMember -TeamId $teamId -All -ProgressAction SilentlyContinue -ErrorAction SilentlyContinue)
                         }
                     }
                     elseif ($selectedSource -eq 'MGGraph-REST') {
@@ -3870,14 +3870,14 @@ function Get-AllLicenseSKUs {
     $script:tenantStatsHash["LicenseSKUs"] = @{}
     Write-Log -Type Info -Message "[Get-AllLicenseSKUs] Gathering all License SKUs from tenant" -ExportFileLocation $ExportDetails
     # Get License SKUs using MGGraph   
-    $skus = Get-MgSubscribedSku -ErrorAction Continue | ? {$_.AppliesTo}
+    $skus = Get-MgSubscribedSku -ProgressAction SilentlyContinue -ErrorAction Continue | ? {$_.AppliesTo}
     $script:SkuLookupById = @{}
     $script:ServicePlanLookupById = @{}
 
     # Get subscription metadata to identify trials
     $subscriptions = @()
     try {
-        $subscriptions = Get-MgDirectorySubscription -All -ErrorAction SilentlyContinue
+        $subscriptions = Get-MgDirectorySubscription -All -ProgressAction SilentlyContinue -ErrorAction SilentlyContinue
     } catch {}
     $subscriptionLookup = @{}
     foreach ($sub in $subscriptions) {
@@ -4320,7 +4320,7 @@ function Get-AllOffice365Admins {
 
     try {
         # Gather all Admin Roles
-        $adminRoles = Get-MgDirectoryRole | Select DisplayName, ID, Description | ? {$null -ne $_.DisplayName}
+        $adminRoles = Get-MgDirectoryRole -ProgressAction SilentlyContinue | Select DisplayName, ID, Description | ? {$null -ne $_.DisplayName}
         $totalCount = $adminRoles.count
         Write-Log -Type INFO -Message "[Get-AllOffice365Admins] Admin Roles Found: $($adminRoles.count)" -ExportFileLocation $ExportDetails
         foreach ($role in $adminRoles) {
@@ -4328,7 +4328,7 @@ function Get-AllOffice365Admins {
             Write-Log -Type DEBUG -Message "[Get-AllOffice365Admins] $($roleName): Gathering Admins in Role" -ExportFileLocation $ExportDetails
             Write-ProgressHelper -Total $totalCount -Id 1 -Activity "Gathering Admins in Roles" -Operation "Checking Role: $($roleName)" 
             $roleMemberList = Invoke-ArrayaCollectionStepSafe -OperationName "Get-AllOffice365Admins role membership for $roleName" -DefaultValue @() -ExportFileLocation $ExportDetails -ScriptBlock {
-                @(Get-MgDirectoryRoleMember -DirectoryRoleId $role.Id -ErrorAction Stop | Where-Object { $null -ne $_.Id })
+                @(Get-MgDirectoryRoleMember -DirectoryRoleId $role.Id -ProgressAction SilentlyContinue -ErrorAction Stop | Where-Object { $null -ne $_.Id })
             }
             if ($roleMemberList) {
                 $totalCount2 = $roleMemberList.count
@@ -4584,7 +4584,7 @@ function Get-AllOffice365Domains {
     Write-Log -Type INFO -Message "[Get-AllOffice365Domains] START: Gathering All Domains from tenant" -ExportFileLocation $ExportDetails
     try {
         # Get all the domains
-        $domains = Get-MgDomain | ? {$null -ne $_.ID}
+        $domains = Get-MgDomain -ProgressAction SilentlyContinue | ? {$null -ne $_.ID}
         #Gather Exchange Online Domain Details
         try {
             Write-Log -Type INFO -Message "[Get-AllOffice365Domains] Gathering Exchange Online Domain Details" -ExportFileLocation $ExportDetails
@@ -5191,7 +5191,7 @@ function Get-AllDevicesReport {
         $savedProgressPreference = $ProgressPreference
         try {
             $ProgressPreference = 'SilentlyContinue'
-            $devices = Get-MgDevice -All -ErrorAction Stop | ? {$null -ne $_.ID}
+            $devices = Get-MgDevice -All -ProgressAction SilentlyContinue -ErrorAction Stop | ? {$null -ne $_.ID}
         }
         finally {
             $ProgressPreference = $savedProgressPreference
@@ -5330,7 +5330,7 @@ function Get-ConditionalAccessPoliciesReport {
         $savedProgressPreference = $ProgressPreference
         try {
             $ProgressPreference = 'SilentlyContinue'
-            $conditionalAccessPolicies = Get-MgIdentityConditionalAccessPolicy -All -ErrorAction Stop
+            $conditionalAccessPolicies = Get-MgIdentityConditionalAccessPolicy -All -ProgressAction SilentlyContinue -ErrorAction Stop
         }
         finally {
             $ProgressPreference = $savedProgressPreference
@@ -5599,7 +5599,7 @@ function Get-SecuritySecureScoreReport {
                 $savedProgressPreference = $ProgressPreference
                 try {
                     $ProgressPreference = 'SilentlyContinue'
-                    $secureScoreResponse = Invoke-MgGraphRequest -Uri $secureScoreUri -Method GET -OutputType PSObject -ErrorAction Stop
+                    $secureScoreResponse = Invoke-MgGraphRequest -Uri $secureScoreUri -Method GET -OutputType PSObject -ProgressAction SilentlyContinue -ErrorAction Stop
                 }
                 finally {
                     $ProgressPreference = $savedProgressPreference
@@ -5828,7 +5828,7 @@ function Get-AuthenticationConfiguration {
                 Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] Checking Enterprise Applications for SSO" -ExportFileLocation $ExportDetails
 
                 $ssoAppDetails = New-Object System.Collections.Generic.List[object]
-                foreach ($app in (Get-MgServicePrincipal -All -Filter "tags/any(t:t eq 'WindowsAzureActiveDirectoryIntegratedApp')" -ErrorAction SilentlyContinue)) {
+                foreach ($app in (Get-MgServicePrincipal -All -Filter "tags/any(t:t eq 'WindowsAzureActiveDirectoryIntegratedApp')" -ProgressAction SilentlyContinue -ErrorAction SilentlyContinue)) {
                     if ($null -eq $app.PreferredSingleSignOnMode -or $app.PreferredSingleSignOnMode -eq "notSupported") {
                         continue
                     }
@@ -6385,7 +6385,7 @@ function Get-MfaRegistrationDetails {
         $regData = @()
         try {
             if (Get-Command Get-MgReportAuthenticationMethodUserRegistrationDetail -ErrorAction SilentlyContinue) {
-                $regData = Get-MgReportAuthenticationMethodUserRegistrationDetail -All -ErrorAction Stop
+                $regData = Get-MgReportAuthenticationMethodUserRegistrationDetail -All -ProgressAction SilentlyContinue -ErrorAction Stop
             }
         } catch {}
         
@@ -6478,23 +6478,23 @@ function Get-FederationAndCrossTenantConfiguration {
         $b2bPolicy = $null
 
         try {
-            $crossTenantPolicy = Get-MgPolicyCrossTenantAccessPolicy -ErrorAction Stop
+            $crossTenantPolicy = Get-MgPolicyCrossTenantAccessPolicy -ProgressAction SilentlyContinue -ErrorAction Stop
         } catch {
             Write-Log -Type WARNING -Message "[Get-FederationAndCrossTenantConfiguration] Unable to retrieve CrossTenantAccessPolicy: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
 
         try {
-            $crossTenantPartners = Get-MgPolicyCrossTenantAccessPolicyPartner -All -ErrorAction Stop
+            $crossTenantPartners = Get-MgPolicyCrossTenantAccessPolicyPartner -All -ProgressAction SilentlyContinue -ErrorAction Stop
         } catch {
             Write-Log -Type WARNING -Message "[Get-FederationAndCrossTenantConfiguration] Unable to retrieve CrossTenantAccessPolicy partners: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
 
         try {
-            $b2bPolicy = Get-MgPolicyB2BManagementPolicy -ErrorAction Stop
+            $b2bPolicy = Get-MgPolicyB2BManagementPolicy -ProgressAction SilentlyContinue -ErrorAction Stop
         } catch {
             if (Get-Command Invoke-MgGraphRequest -ErrorAction SilentlyContinue) {
                 try {
-                    $b2bPolicy = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/policies/b2bManagementPolicy' -ErrorAction Stop
+                    $b2bPolicy = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/policies/b2bManagementPolicy' -ProgressAction SilentlyContinue -ErrorAction Stop
                 } catch {
                     $b2bMessage = $_.Exception.Message
                     $b2bLogType = if ($b2bMessage -match 'BadRequest') { 'INFO' } else { 'WARNING' }
@@ -6557,7 +6557,7 @@ function Get-FederationAndCrossTenantConfiguration {
             $tenantLookupUri = "https://graph.microsoft.com/v1.0/tenantRelationships/findTenantInformationByTenantId(tenantId='$TenantId')"
             try {
                 if (Get-Command Find-MgTenantRelationshipTenantInformationByTenantId -ErrorAction SilentlyContinue) {
-                    $lookup = Find-MgTenantRelationshipTenantInformationByTenantId -TenantId $TenantId -ErrorAction Stop
+                    $lookup = Find-MgTenantRelationshipTenantInformationByTenantId -TenantId $TenantId -ProgressAction SilentlyContinue -ErrorAction Stop
                     if ($lookup.DisplayName) { return $lookup.DisplayName }
                 }
                 if (Get-Command Invoke-MgGraphRequest -ErrorAction SilentlyContinue) {

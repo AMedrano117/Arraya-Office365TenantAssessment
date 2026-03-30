@@ -10,8 +10,6 @@ function Write-ProgressHelper {
         [switch]$Completed
     )
 
-    if ($ProgressPreference -eq 'SilentlyContinue') { $ProgressPreference = 'Continue' }
-
     # Always ensure required progress dictionaries exist before any use
     if (-not $script:ProgressStartTimes) { $script:ProgressStartTimes = @{} }
     if (-not $script:ProgressIndices)    { $script:ProgressIndices    = @{} }

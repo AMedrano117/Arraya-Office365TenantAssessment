@@ -180,7 +180,7 @@ function Invoke-ArrayaGraphBatchRequest {
             )
             if ($canUseSdkBatch) {
                 $batchResponse = Invoke-QuietCommand -ScriptBlock {
-                    Invoke-MgGraphRequest -Method POST -Uri $batchEndpoint -Body $payload -OutputType PSObject -ErrorAction Stop
+                    Invoke-MgGraphRequest -Method POST -Uri $batchEndpoint -Body $payload -OutputType PSObject -ProgressAction SilentlyContinue -ErrorAction Stop
                 }
             }
             else {
