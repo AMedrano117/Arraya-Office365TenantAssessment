@@ -5,9 +5,12 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$OutputFolder,
     [Parameter(Mandatory = $false)]
+    [Alias('LiveRefresh')]
     [switch]$UseGraphFallback,
     [Parameter(Mandatory = $false)]
-    [switch]$IncludeLegacyArtifacts
+    [switch]$IncludeLegacyArtifacts,
+    [Parameter(Mandatory = $false)]
+    [switch]$PassThru
 )
 
 $resolveRepoRootHelperPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\shared\Resolve-ArrayaRepoRoot.ps1'))
@@ -24,4 +27,5 @@ $invokeParams = @{ AssessmentJsonPath = $AssessmentJsonPath }
 if ($PSBoundParameters.ContainsKey('OutputFolder')) { $invokeParams.OutputFolder = $OutputFolder }
 if ($PSBoundParameters.ContainsKey('UseGraphFallback')) { $invokeParams.UseGraphFallback = $UseGraphFallback }
 if ($PSBoundParameters.ContainsKey('IncludeLegacyArtifacts')) { $invokeParams.IncludeLegacyArtifacts = $IncludeLegacyArtifacts }
+if ($PSBoundParameters.ContainsKey('PassThru')) { $invokeParams.PassThru = $PassThru }
 Invoke-M365ImprovementPlan @invokeParams

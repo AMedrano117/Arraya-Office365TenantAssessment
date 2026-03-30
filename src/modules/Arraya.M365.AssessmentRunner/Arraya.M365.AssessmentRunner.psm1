@@ -91,6 +91,191 @@ function Resolve-AssessmentExportPathInput {
     return $ExportPath
 }
 
+function Resolve-AssessmentLatestManifestPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ExportPath
+    )
+
+    $candidateManifestPaths = New-Object System.Collections.Generic.List[string]
+    $fullExportPath = [System.IO.Path]::GetFullPath($ExportPath)
+
+    if (Test-Path -Path $fullExportPath -PathType Leaf) {
+        if ($fullExportPath -match '\.manifest\.json$') {
+            $candidateManifestPaths.Add($fullExportPath)
+        }
+        elseif ($fullExportPath -match '\.xlsx$') {
+            $candidateManifestPaths.Add(($fullExportPath -replace '\.xlsx$', '.manifest.json'))
+        }
+        else {
+            $candidateManifestPaths.Add("$fullExportPath.manifest.json")
+        }
+    }
+    else {
+        if ([System.IO.Path]::HasExtension($fullExportPath)) {
+            if ($fullExportPath -match '\.xlsx$') {
+                $candidateManifestPaths.Add(($fullExportPath -replace '\.xlsx$', '.manifest.json'))
+            }
+            elseif ($fullExportPath -match '\.manifest\.json$') {
+                $candidateManifestPaths.Add($fullExportPath)
+            }
+            else {
+                $candidateManifestPaths.Add("$fullExportPath.manifest.json")
+            }
+        }
+    }
+
+    foreach ($candidatePath in $candidateManifestPaths) {
+        if (Test-Path -Path $candidatePath -PathType Leaf) {
+            return (Resolve-Path -Path $candidatePath).Path
+        }
+    }
+
+    $searchRoot = if (Test-Path -Path $fullExportPath -PathType Container) {
+        $fullExportPath
+    }
+    else {
+        $parent = Split-Path -Path $fullExportPath -Parent
+        if (-not [string]::IsNullOrWhiteSpace($parent) -and (Test-Path -Path $parent -PathType Container)) {
+            $parent
+        }
+        else {
+            $null
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($searchRoot)) {
+        $latestManifest = Get-ChildItem -Path $searchRoot -Recurse -Filter '*.manifest.json' -File -ErrorAction SilentlyContinue |
+            Sort-Object -Property LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+        if ($latestManifest) {
+            return $latestManifest.FullName
+        }
+    }
+
+    return $null
+}
+
+function Update-AssessmentArtifactManifestWithImproveOutputs {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ManifestPath,
+        [Parameter(Mandatory = $true)]
+        [pscustomobject]$ImproveResult,
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeLegacyArtifacts
+    )
+
+    if (-not (Test-Path -Path $ManifestPath -PathType Leaf)) {
+        return
+    }
+
+    $manifest = Get-Content -Path $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 10
+    if (-not $manifest) {
+        return
+    }
+
+    $artifactMap = [ordered]@{
+        'Customer Remediation HTML' = $ImproveResult.CustomerRemediationReportPath
+        'Engineer Action Pack'      = $ImproveResult.EngineerActionPackPath
+        'Improvement Plan JSON'     = $ImproveResult.JsonPath
+        'Remediation Snippets'      = $ImproveResult.RemediationPs1Path
+    }
+    if ($IncludeLegacyArtifacts) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$ImproveResult.CustomerRemediationReportMarkdownPath)) {
+            $artifactMap['Customer Remediation Markdown'] = $ImproveResult.CustomerRemediationReportMarkdownPath
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$ImproveResult.CsvPath)) {
+            $artifactMap['Improvement Plan CSV'] = $ImproveResult.CsvPath
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$ImproveResult.MarkdownPath)) {
+            $artifactMap['Improvement Plan Markdown'] = $ImproveResult.MarkdownPath
+        }
+    }
+
+    $artifactRows = New-Object System.Collections.Generic.List[object]
+    if ($manifest.Artifacts) {
+        foreach ($artifact in @($manifest.Artifacts)) {
+            if (-not $artifact) { continue }
+            if ($artifactMap.Contains([string]$artifact.Type)) { continue }
+            $artifactRows.Add([ordered]@{
+                Type      = [string]$artifact.Type
+                Path      = [string]$artifact.Path
+                Exists    = [bool]$artifact.Exists
+                SizeBytes = $artifact.SizeBytes
+            }) | Out-Null
+        }
+    }
+
+    foreach ($entry in $artifactMap.GetEnumerator()) {
+        if ([string]::IsNullOrWhiteSpace([string]$entry.Value)) {
+            continue
+        }
+
+        $artifactPath = [string]$entry.Value
+        $exists = Test-Path -Path $artifactPath
+        $sizeBytes = $null
+        if ($exists) {
+            try {
+                $sizeBytes = (Get-Item -Path $artifactPath -ErrorAction Stop).Length
+            }
+            catch {}
+        }
+
+        $artifactRows.Add([ordered]@{
+            Type      = [string]$entry.Key
+            Path      = $artifactPath
+            Exists    = [bool]$exists
+            SizeBytes = $sizeBytes
+        }) | Out-Null
+    }
+
+    $manifest.Artifacts = @($artifactRows.ToArray())
+    $json = $manifest | ConvertTo-Json -Depth 10
+    [System.IO.File]::WriteAllText($ManifestPath, $json, [System.Text.UTF8Encoding]::new($false))
+}
+
+function Invoke-M365ImproveForAssessmentRun {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ExportPath,
+        [Parameter(Mandatory = $false)]
+        [string]$OutputFolder,
+        [Parameter(Mandatory = $false)]
+        [Alias('LiveRefresh')]
+        [switch]$UseGraphFallback,
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeLegacyArtifacts
+    )
+
+    $manifestPath = Resolve-AssessmentLatestManifestPath -ExportPath $ExportPath
+    if ([string]::IsNullOrWhiteSpace($manifestPath)) {
+        throw "Could not find a manifest for the completed assessment run under: $ExportPath"
+    }
+
+    $resolvedOutputFolder = $OutputFolder
+    if ([string]::IsNullOrWhiteSpace($resolvedOutputFolder)) {
+        $manifestDirectory = Split-Path -Path $manifestPath -Parent
+        $resolvedOutputFolder = Join-Path -Path $manifestDirectory -ChildPath 'Improve'
+    }
+
+    $improveResult = Invoke-M365ImprovementPlan `
+        -AssessmentJsonPath $manifestPath `
+        -OutputFolder $resolvedOutputFolder `
+        -UseGraphFallback:$UseGraphFallback `
+        -IncludeLegacyArtifacts:$IncludeLegacyArtifacts `
+        -PassThru
+
+    if ($improveResult) {
+        Update-AssessmentArtifactManifestWithImproveOutputs -ManifestPath $manifestPath -ImproveResult $improveResult -IncludeLegacyArtifacts:$IncludeLegacyArtifacts
+    }
+
+    return $improveResult
+}
+
 function Resolve-M365OutputProfileExecutionPlan {
     [CmdletBinding()]
     param(
@@ -208,6 +393,8 @@ function Invoke-M365TenantWorkflow {
         [Parameter(Mandatory = $false)]
         [switch]$SkipJsonReport,
         [Parameter(Mandatory = $false)]
+        [switch]$IncludeLegacyAssessmentArtifacts,
+        [Parameter(Mandatory = $false)]
         [switch]$StoreTenantStatsGlobal,
         [Parameter(Mandatory = $false)]
         [string]$TenantStatsVariableName = 'ArrayaTenantStats',
@@ -247,12 +434,15 @@ function Invoke-M365TenantWorkflow {
     switch ($Mode) {
         'Full' {
             $invokeParams.OutputProfileLabel = $plan.ProfileLabel
-            $invokeParams.GenerateWorkbookOverride = [bool]$plan.GenerateWorkbook
-            $invokeParams.GenerateTechnicalHtmlOverride = [bool]$plan.GenerateTechnicalHtml
-            $invokeParams.GenerateBestPracticesHtmlOverride = [bool]$plan.GenerateBestPracticesHtml
-            $invokeParams.GenerateQuestionnaireOverride = [bool]$plan.GenerateQuestionnaire
+            $invokeParams.GenerateWorkbookOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateWorkbook } else { $false }
+            $invokeParams.GenerateTechnicalHtmlOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateTechnicalHtml } else { $false }
+            $invokeParams.GenerateBestPracticesHtmlOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateBestPracticesHtml } else { $false }
+            $invokeParams.GenerateQuestionnaireOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateQuestionnaire } else { $false }
             $invokeParams.GenerateJsonOverride = [bool]$plan.GenerateJson
-            $invokeParams.GeneratePdfOverride = [bool]$plan.GeneratePdf
+            if (-not $invokeParams.GenerateJsonOverride) {
+                $invokeParams.GenerateJsonOverride = $true
+            }
+            $invokeParams.GeneratePdfOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GeneratePdf } else { $false }
             if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
             if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
             if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
@@ -288,12 +478,15 @@ function Invoke-M365TenantWorkflow {
                 throw 'AssessmentJsonPath is required when Mode is ExportOnly.'
             }
             $invokeParams.OutputProfileLabel = "Export-$($plan.ProfileLabel)"
-            $invokeParams.GenerateWorkbookOverride = [bool]$plan.GenerateWorkbook
-            $invokeParams.GenerateTechnicalHtmlOverride = [bool]$plan.GenerateTechnicalHtml
-            $invokeParams.GenerateBestPracticesHtmlOverride = [bool]$plan.GenerateBestPracticesHtml
-            $invokeParams.GenerateQuestionnaireOverride = [bool]$plan.GenerateQuestionnaire
+            $invokeParams.GenerateWorkbookOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateWorkbook } else { $false }
+            $invokeParams.GenerateTechnicalHtmlOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateTechnicalHtml } else { $false }
+            $invokeParams.GenerateBestPracticesHtmlOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateBestPracticesHtml } else { $false }
+            $invokeParams.GenerateQuestionnaireOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateQuestionnaire } else { $false }
             $invokeParams.GenerateJsonOverride = [bool]$plan.GenerateJson
-            $invokeParams.GeneratePdfOverride = [bool]$plan.GeneratePdf
+            if (-not $invokeParams.GenerateJsonOverride) {
+                $invokeParams.GenerateJsonOverride = $true
+            }
+            $invokeParams.GeneratePdfOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GeneratePdf } else { $false }
             $invokeParams.ExportOnly = $true
             $invokeParams.TenantStatsJsonPath = $AssessmentJsonPath
             if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
@@ -319,6 +512,17 @@ function Invoke-M365TenantAssessment {
         [switch]$SkipPdfReport,
         [Parameter(Mandatory = $false)]
         [switch]$SkipJsonReport,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipImprove,
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeLegacyArtifacts,
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeLegacyAssessmentArtifacts,
+        [Parameter(Mandatory = $false)]
+        [string]$ImproveOutputFolder,
+        [Parameter(Mandatory = $false)]
+        [Alias('LiveRefresh')]
+        [switch]$UseGraphFallback,
         [Parameter(Mandatory = $false)]
         [switch]$StoreTenantStatsGlobal,
         [Parameter(Mandatory = $false)]
@@ -353,7 +557,13 @@ function Invoke-M365TenantAssessment {
     if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
     if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
 
+    if ($PSBoundParameters.ContainsKey('IncludeLegacyAssessmentArtifacts')) { $invokeParams.IncludeLegacyAssessmentArtifacts = $IncludeLegacyAssessmentArtifacts }
     Invoke-M365TenantWorkflow -Mode Full @invokeParams
+
+    if (-not $SkipImprove) {
+        $resolvedExportPath = Resolve-AssessmentExportPathInput -ExportPath $ExportPath
+        Invoke-M365ImproveForAssessmentRun -ExportPath $resolvedExportPath -OutputFolder $ImproveOutputFolder -UseGraphFallback:$UseGraphFallback -IncludeLegacyArtifacts:$IncludeLegacyArtifacts | Out-Null
+    }
 }
 
 function Invoke-M365TenantDataCollection {
@@ -364,6 +574,15 @@ function Invoke-M365TenantDataCollection {
         [Parameter(Mandatory = $false)]
         [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
         [string[]]$OutputProfile = @('SolutionsEngineer'),
+        [Parameter(Mandatory = $false)]
+        [switch]$RunImprove,
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeLegacyArtifacts,
+        [Parameter(Mandatory = $false)]
+        [string]$ImproveOutputFolder,
+        [Parameter(Mandatory = $false)]
+        [Alias('LiveRefresh')]
+        [switch]$UseGraphFallback,
         [Parameter(Mandatory = $false)]
         [switch]$StoreTenantStatsGlobal,
         [Parameter(Mandatory = $false)]
@@ -396,6 +615,11 @@ function Invoke-M365TenantDataCollection {
     if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
 
     Invoke-M365TenantWorkflow -Mode CollectOnly @invokeParams
+
+    if ($RunImprove) {
+        $resolvedExportPath = Resolve-AssessmentExportPathInput -ExportPath $ExportPath
+        Invoke-M365ImproveForAssessmentRun -ExportPath $resolvedExportPath -OutputFolder $ImproveOutputFolder -UseGraphFallback:$UseGraphFallback -IncludeLegacyArtifacts:$IncludeLegacyArtifacts | Out-Null
+    }
 }
 
 function Invoke-M365TenantAssessmentExport {
@@ -413,7 +637,18 @@ function Invoke-M365TenantAssessmentExport {
         [Parameter(Mandatory = $false)]
         [switch]$SkipPdfReport,
         [Parameter(Mandatory = $false)]
-        [switch]$SkipJsonReport
+        [switch]$SkipJsonReport,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipImprove,
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeLegacyArtifacts,
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeLegacyAssessmentArtifacts,
+        [Parameter(Mandatory = $false)]
+        [string]$ImproveOutputFolder,
+        [Parameter(Mandatory = $false)]
+        [Alias('LiveRefresh')]
+        [switch]$UseGraphFallback
     )
 
     $invokeParams = @{ AssessmentJsonPath = $AssessmentJsonPath }
@@ -422,8 +657,13 @@ function Invoke-M365TenantAssessmentExport {
     if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
     if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
     if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
-
+    if ($PSBoundParameters.ContainsKey('IncludeLegacyAssessmentArtifacts')) { $invokeParams.IncludeLegacyAssessmentArtifacts = $IncludeLegacyAssessmentArtifacts }
     Invoke-M365TenantWorkflow -Mode ExportOnly @invokeParams
+
+    if (-not $SkipImprove) {
+        $resolvedExportPath = Resolve-AssessmentExportPathInput -ExportPath $ExportPath
+        Invoke-M365ImproveForAssessmentRun -ExportPath $resolvedExportPath -OutputFolder $ImproveOutputFolder -UseGraphFallback:$UseGraphFallback -IncludeLegacyArtifacts:$IncludeLegacyArtifacts | Out-Null
+    }
 }
 
 function Invoke-ADTenantAssessment {
@@ -481,9 +721,12 @@ function Invoke-M365ImprovementPlan {
         [Parameter(Mandatory = $false)]
         [string]$OutputFolder,
         [Parameter(Mandatory = $false)]
+        [Alias('LiveRefresh')]
         [switch]$UseGraphFallback,
         [Parameter(Mandatory = $false)]
-        [switch]$IncludeLegacyArtifacts
+        [switch]$IncludeLegacyArtifacts,
+        [Parameter(Mandatory = $false)]
+        [switch]$PassThru
     )
 
     $scriptPath = Resolve-AssessmentScriptPath -Name 'New-M365TenantImprovementPlan.ps1'
@@ -491,6 +734,7 @@ function Invoke-M365ImprovementPlan {
     if ($PSBoundParameters.ContainsKey('OutputFolder')) { $invokeParams.OutputFolder = $OutputFolder }
     if ($PSBoundParameters.ContainsKey('UseGraphFallback')) { $invokeParams.UseGraphFallback = $UseGraphFallback }
     if ($PSBoundParameters.ContainsKey('IncludeLegacyArtifacts')) { $invokeParams.IncludeLegacyArtifacts = $IncludeLegacyArtifacts }
+    if ($PSBoundParameters.ContainsKey('PassThru')) { $invokeParams.PassThru = $PassThru }
 
     Invoke-AssessmentScript -ScriptPath $scriptPath -Parameters $invokeParams
 }

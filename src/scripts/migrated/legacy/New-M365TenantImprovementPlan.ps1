@@ -13,6 +13,7 @@ param(
     [ValidateRange(1, 50)]
     [int]$MaxGlobalAdmins = 5,
     [Parameter(Mandatory = $false)]
+    [Alias('LiveRefresh')]
     [switch]$UseGraphFallback,
     [Parameter(Mandatory = $false)]
     [switch]$IncludeLegacyArtifacts,
@@ -34,7 +35,7 @@ function Import-ArrayaCommonModuleForPlanningScripts {
     $commonModuleManifestPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\modules\Arraya.M365.Common\Arraya.M365.Common.psd1'))
     if (-not (Test-Path -Path $commonModuleManifestPath)) {
         if ($GraphFallbackRequired) {
-            Write-Warning "Graph fallback requested but common module manifest was not found: $commonModuleManifestPath"
+            Write-Warning "Snapshot plus live refresh was requested, but the common module manifest was not found: $commonModuleManifestPath"
         }
         return $false
     }
@@ -83,7 +84,7 @@ function Get-ArrayaGraphResource {
         [Parameter(Mandatory = $false)]
         [int]$PageSize = 999,
         [Parameter(Mandatory = $false)]
-        [string]$Activity = 'Graph fallback dataset fetch'
+        [string]$Activity = 'Live refresh dataset fetch'
     )
 
     $resolvedUri = if ($Uri -match '^https?://') { $Uri } else { "https://graph.microsoft.com$Uri" }
@@ -100,7 +101,7 @@ function Get-ImprovementPlanDataset {
         [Parameter(Mandatory = $false)]
         [string]$GraphUri,
         [Parameter(Mandatory = $false)]
-        [string]$Activity = 'Graph fallback dataset fetch',
+        [string]$Activity = 'Live refresh dataset fetch',
         [Parameter(Mandatory = $false)]
         [switch]$UseGraphFallback
     )
@@ -113,7 +114,7 @@ function Get-ImprovementPlanDataset {
     $graphHelper = Get-Command -Name 'Get-ArrayaGraphResource' -ErrorAction SilentlyContinue
     if (-not $graphHelper) {
         if (-not $script:graphFallbackUnavailableMessageShown) {
-            Write-Warning 'Graph fallback requested but Get-ArrayaGraphResource is unavailable in the current session.'
+            Write-Warning 'Snapshot plus live refresh was requested, but live Graph access is unavailable in the current session.'
             $script:graphFallbackUnavailableMessageShown = $true
         }
         return @()
@@ -124,7 +125,7 @@ function Get-ImprovementPlanDataset {
         return Convert-ArrayaObjectToArray $graphResult
     }
     catch {
-        Write-Warning "Graph fallback failed for '$Activity': $($_.Exception.Message)"
+        Write-Warning "Snapshot plus live refresh failed for '$Activity': $($_.Exception.Message)"
         return @()
     }
 }
@@ -201,6 +202,30 @@ function Convert-ToArrayaMarkdownText {
     $text = Convert-ToArrayaDisplayText -Value $Value
     if ([string]::IsNullOrWhiteSpace($text)) { return 'N/A' }
     return (($text -replace '\|', '\|') -replace "(`r`n|`n|`r)", '<br/>')
+}
+
+function Convert-ToArrayaHtmlEncodedText {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$Value,
+        [Parameter(Mandatory = $false)]
+        [string]$Default = 'N/A'
+    )
+
+    $text = Convert-ToArrayaDisplayText -Value $Value -Default $Default
+    return [System.Net.WebUtility]::HtmlEncode($text)
+}
+
+function Convert-ToArrayaHtmlFragment {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$Value,
+        [Parameter(Mandatory = $false)]
+        [string]$Default = 'N/A'
+    )
+
+    $encoded = Convert-ToArrayaHtmlEncodedText -Value $Value -Default $Default
+    return ($encoded -replace "(`r`n|`n|`r)", '<br/>')
 }
 
 function Get-NormalizedSeverity {
@@ -738,7 +763,7 @@ function Test-DerivedCoverage {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string[]]$Tags,
-        [Parameter(Mandatory = $true)][object[]]$DerivedFindings
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$DerivedFindings
     )
 
     if ($DerivedFindings.Count -eq 0 -or $Tags.Count -eq 0) { return $false }
@@ -1019,7 +1044,7 @@ function New-WorkstreamSummaryFromRow {
 
 function Get-SortedWorkstreamSummaries {
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][object[]]$Summaries)
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Summaries)
 
     return @(
         $Summaries |
@@ -1121,6 +1146,377 @@ function New-CustomerRemediationReport {
     }
 
     return ($lines -join [Environment]::NewLine)
+}
+
+function New-CustomerRemediationReportHtml {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Findings,
+        [Parameter(Mandatory = $false)][object[]]$WorkstreamSummaries = @(),
+        [Parameter(Mandatory = $true)][string]$TenantName,
+        [Parameter(Mandatory = $true)][string]$AssessmentJsonPath,
+        [Parameter(Mandatory = $true)][datetime]$GeneratedAt
+    )
+
+    $severityCounts = $Findings | Group-Object Severity | Sort-Object Name
+    $ownerGroups = $Findings | Group-Object OwnerTeam | Sort-Object Count -Descending
+    $topFindings = Get-TopFindings -Findings @($Findings | Where-Object { $_.Severity -in @('Critical', 'High') }) -Count 6
+    if ($topFindings.Count -eq 0) { $topFindings = Get-TopFindings -Findings $Findings -Count 6 }
+
+    $severitySummaryHtml = if ($severityCounts.Count -gt 0) {
+        (($severityCounts | ForEach-Object {
+            "<li><strong>{0}</strong>: {1} finding(s)</li>" -f (Convert-ToArrayaHtmlEncodedText $_.Name), $_.Count
+        }) -join [Environment]::NewLine)
+    } else {
+        '<li><strong>Info</strong>: 0 finding(s)</li>'
+    }
+
+    $workstreamSummaryHtml = if ($WorkstreamSummaries.Count -gt 0) {
+        (($WorkstreamSummaries | ForEach-Object {
+            @"
+<tr>
+  <td>{0}</td>
+  <td>{1}</td>
+  <td>{2}</td>
+  <td>{3}</td>
+  <td>{4}</td>
+  <td>{5}</td>
+  <td>{6}</td>
+  <td>{7}</td>
+</tr>
+"@ -f `
+                (Convert-ToArrayaHtmlEncodedText $_.Severity),
+                (Convert-ToArrayaHtmlEncodedText $_.Workstream),
+                (Convert-ToArrayaHtmlEncodedText $_.Area),
+                $_.OpenFindings,
+                $_.CriticalCount,
+                $_.WarningCount,
+                $_.InfoCount,
+                (Convert-ToArrayaHtmlFragment $_.TopSignals)
+        }) -join [Environment]::NewLine)
+    } else {
+        '<tr><td colspan="8">No workstream summary rows were generated.</td></tr>'
+    }
+
+    $topPriorityHtml = if ($topFindings.Count -gt 0) {
+        (($topFindings | ForEach-Object {
+            @"
+<article class="risk-card">
+  <div class="risk-meta">
+    <span class="badge severity-{0}">{1}</span>
+    <span class="badge phase">{2}</span>
+    <span class="muted">{3}</span>
+  </div>
+  <h3>{4} - {5}</h3>
+  <p><strong>Why flagged:</strong> {6}</p>
+  <p><strong>Recommended action:</strong> {7}</p>
+  <p><strong>Success criteria:</strong> {8}</p>
+</article>
+"@ -f `
+                ([string]$_.Severity).ToLowerInvariant(),
+                (Convert-ToArrayaHtmlEncodedText $_.Severity),
+                (Convert-ToArrayaHtmlEncodedText $_.PriorityBand),
+                (Convert-ToArrayaHtmlEncodedText $_.OwnerTeam),
+                (Convert-ToArrayaHtmlEncodedText $_.RuleId),
+                (Convert-ToArrayaHtmlEncodedText $_.Area),
+                (Convert-ToArrayaHtmlFragment $_.WhyFlagged),
+                (Convert-ToArrayaHtmlFragment $_.Recommendation),
+                (Convert-ToArrayaHtmlFragment $_.TargetValue)
+        }) -join [Environment]::NewLine)
+    } else {
+        '<p>No high-priority findings were generated.</p>'
+    }
+
+    $phaseSectionsHtml = @()
+    foreach ($phaseName in @('Immediate', 'Near Term', 'Planned', 'Monitor')) {
+        $phaseRows = @($Findings | Where-Object { $_.RoadmapPhase -eq $phaseName })
+        if ($phaseRows.Count -eq 0) { continue }
+
+        $phaseItems = (($phaseRows | ForEach-Object {
+            "<li><strong>{0}</strong> <span class=""muted"">[{1}]</span><br/>{2}</li>" -f `
+                (Convert-ToArrayaHtmlEncodedText $_.Finding),
+                (Convert-ToArrayaHtmlEncodedText $_.OwnerTeam),
+                (Convert-ToArrayaHtmlFragment $_.Recommendation)
+        }) -join [Environment]::NewLine)
+
+        $phaseSectionsHtml += @"
+<section class="phase-block">
+  <h3>$([System.Net.WebUtility]::HtmlEncode($phaseName))</h3>
+  <ul>
+$phaseItems
+  </ul>
+</section>
+"@
+    }
+    if ($phaseSectionsHtml.Count -eq 0) {
+        $phaseSectionsHtml = @('<p>No phased remediation items were generated.</p>')
+    }
+
+    $workstreamThemeHtml = if ($ownerGroups.Count -gt 0) {
+        (($ownerGroups | ForEach-Object {
+            $rows = @($_.Group | Select-Object -First 6)
+            $items = (($rows | ForEach-Object {
+                "<li><strong>{0}</strong>: {1}</li>" -f `
+                    (Convert-ToArrayaHtmlEncodedText $_.Area),
+                    (Convert-ToArrayaHtmlFragment $_.Recommendation)
+            }) -join [Environment]::NewLine)
+            @"
+<section class="theme-block">
+  <h3>{0}</h3>
+  <ul>
+{1}
+  </ul>
+</section>
+"@ -f (Convert-ToArrayaHtmlEncodedText $_.Name), $items
+        }) -join [Environment]::NewLine)
+    } else {
+        '<p>No workstream themes were generated.</p>'
+    }
+
+    $appendixRowsHtml = if ($Findings.Count -gt 0) {
+        (($Findings | ForEach-Object {
+            @"
+<tr>
+  <td>{0}</td>
+  <td>{1}</td>
+  <td>{2}</td>
+  <td>{3}</td>
+  <td>{4}</td>
+  <td>{5}</td>
+  <td>{6}</td>
+</tr>
+"@ -f `
+                (Convert-ToArrayaHtmlEncodedText $_.Severity),
+                (Convert-ToArrayaHtmlEncodedText $_.OwnerTeam),
+                (Convert-ToArrayaHtmlEncodedText $_.Area),
+                (Convert-ToArrayaHtmlFragment $_.Finding),
+                (Convert-ToArrayaHtmlFragment $_.CurrentValue),
+                (Convert-ToArrayaHtmlFragment $_.Recommendation),
+                (Convert-ToArrayaHtmlFragment $_.TargetValue)
+        }) -join [Environment]::NewLine)
+    } else {
+        '<tr><td colspan="7">No actionable findings were generated.</td></tr>'
+    }
+
+    $primaryWorkstreamsText = if ($ownerGroups.Count -gt 0) {
+        ((@($ownerGroups | Select-Object -First 4 | ForEach-Object { '{0} ({1})' -f $_.Name, $_.Count }) -join '; '))
+    } else {
+        'No dominant workstreams identified'
+    }
+
+    return @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>$([System.Net.WebUtility]::HtmlEncode($TenantName)) Microsoft 365 Remediation Report</title>
+  <style>
+    :root {
+      --bg: #f4f1ea;
+      --surface: #fffdf8;
+      --ink: #1f2933;
+      --muted: #52606d;
+      --line: #d9d2c3;
+      --accent: #0f4c5c;
+      --accent-soft: #e4eef1;
+      --critical: #a61b29;
+      --high: #b45309;
+      --medium: #0f766e;
+      --low: #2563eb;
+      --info: #475569;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Aptos", Tahoma, sans-serif;
+      color: var(--ink);
+      background: linear-gradient(180deg, #efe7d8 0%, var(--bg) 22%, #f7f4ed 100%);
+      line-height: 1.55;
+    }
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 32px 20px 56px;
+    }
+    header, section {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 24px;
+      margin-bottom: 20px;
+      box-shadow: 0 12px 30px rgba(31, 41, 51, 0.06);
+    }
+    h1, h2, h3 { margin-top: 0; color: #173042; }
+    h1 { font-size: 2rem; margin-bottom: 0.3rem; }
+    h2 { font-size: 1.25rem; margin-bottom: 0.9rem; }
+    .lede { color: var(--muted); max-width: 72ch; }
+    .meta { color: var(--muted); font-size: 0.95rem; margin-top: 12px; }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-top: 18px;
+    }
+    .summary-card {
+      background: #fbf8f1;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+    }
+    .summary-card ul { margin: 0; padding-left: 18px; }
+    .risk-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+    }
+    .risk-card, .phase-block, .theme-block {
+      background: #fbf8f1;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+    }
+    .risk-meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+    .severity-critical { background: rgba(166, 27, 41, 0.12); color: var(--critical); }
+    .severity-high { background: rgba(180, 83, 9, 0.12); color: var(--high); }
+    .severity-medium { background: rgba(15, 118, 110, 0.12); color: var(--medium); }
+    .severity-low { background: rgba(37, 99, 235, 0.12); color: var(--low); }
+    .severity-info { background: rgba(71, 85, 105, 0.12); color: var(--info); }
+    .phase { background: var(--accent-soft); color: var(--accent); }
+    .muted { color: var(--muted); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.95rem;
+    }
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--line);
+      padding: 10px 8px;
+    }
+    th {
+      background: #f3ede2;
+      color: #173042;
+      position: sticky;
+      top: 0;
+    }
+    .table-wrap { overflow-x: auto; }
+    ul { margin-top: 0.4rem; margin-bottom: 0; }
+    @media print {
+      body { background: #ffffff; }
+      header, section, .risk-card, .phase-block, .theme-block, .summary-card {
+        box-shadow: none;
+        break-inside: avoid;
+      }
+      th { position: static; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>$([System.Net.WebUtility]::HtmlEncode($TenantName)) Microsoft 365 Remediation Report</h1>
+      <p class="lede">This report turns the tenant assessment into a remediation-first customer deliverable. It focuses on business-impacting risks, governance gaps, and the workstreams needed to improve tenant posture.</p>
+      <div class="meta">
+        <div><strong>Generated:</strong> $([System.Net.WebUtility]::HtmlEncode($GeneratedAt.ToString('yyyy-MM-dd HH:mm:ss')))</div>
+        <div><strong>Assessment Snapshot:</strong> $([System.Net.WebUtility]::HtmlEncode($AssessmentJsonPath))</div>
+      </div>
+    </header>
+
+    <section>
+      <h2>Executive Summary</h2>
+      <div class="summary-grid">
+        <div class="summary-card">
+          <h3>Severity Mix</h3>
+          <ul>
+$severitySummaryHtml
+          </ul>
+        </div>
+        <div class="summary-card">
+          <h3>Primary Workstreams</h3>
+          <p>$([System.Net.WebUtility]::HtmlEncode($primaryWorkstreamsText))</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Workstream Summary</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Severity</th>
+              <th>Workstream</th>
+              <th>Area</th>
+              <th>Open Findings</th>
+              <th>Critical</th>
+              <th>Warning</th>
+              <th>Info</th>
+              <th>Top Signals</th>
+            </tr>
+          </thead>
+          <tbody>
+$workstreamSummaryHtml
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Top Priority Risks</h2>
+      <div class="risk-grid">
+$topPriorityHtml
+      </div>
+    </section>
+
+    <section>
+      <h2>Phased Roadmap</h2>
+      $($phaseSectionsHtml -join [Environment]::NewLine)
+    </section>
+
+    <section>
+      <h2>Remediation Themes By Workstream</h2>
+      $workstreamThemeHtml
+    </section>
+
+    <section>
+      <h2>Supporting Findings Appendix</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Severity</th>
+              <th>Workstream</th>
+              <th>Area</th>
+              <th>Finding</th>
+              <th>Current State</th>
+              <th>Recommended Action</th>
+              <th>Success Criteria</th>
+            </tr>
+          </thead>
+          <tbody>
+$appendixRowsHtml
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
+"@
 }
 
 function New-EngineerActionPack {
@@ -1805,19 +2201,21 @@ $tenantName = Get-TenantDisplayName -TenantInfoSummary $(if ($tenantInfoSummary)
 $jsonOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-ImprovementPlan.json"
 $csvOutPath = if ($IncludeLegacyArtifacts) { Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-ImprovementPlan.csv" } else { $null }
 $mdOutPath = if ($IncludeLegacyArtifacts) { Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-ImprovementPlan.md" } else { $null }
-$customerMdOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-CustomerRemediationReport.md"
+$customerHtmlOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-CustomerRemediationReport.html"
+$customerMdOutPath = if ($IncludeLegacyArtifacts) { Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-CustomerRemediationReport.md" } else { $null }
 $engineerMdOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-EngineerActionPack.md"
 $snippetOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-RemediationSnippets.ps1"
 
 $deliverables = [ordered]@{
     ImprovementPlanJson       = $jsonOutPath
-    CustomerRemediationReport = $customerMdOutPath
+    CustomerRemediationReport = $customerHtmlOutPath
     EngineerActionPack        = $engineerMdOutPath
     RemediationSnippets       = $snippetOutPath
 }
 if ($IncludeLegacyArtifacts) {
     $deliverables['ImprovementPlanCsv'] = $csvOutPath
     $deliverables['ImprovementPlanMarkdown'] = $mdOutPath
+    $deliverables['CustomerRemediationReportMarkdown'] = $customerMdOutPath
 }
 
 $payload = [PSCustomObject]@{
@@ -1875,8 +2273,13 @@ if ($IncludeLegacyArtifacts) {
     Set-Content -Path $mdOutPath -Value ($summaryLines -join [Environment]::NewLine) -Encoding UTF8
 }
 
-$customerReportMarkdown = New-CustomerRemediationReport -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt
-Set-Content -Path $customerMdOutPath -Value $customerReportMarkdown -Encoding UTF8
+$customerReportHtml = New-CustomerRemediationReportHtml -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt
+Set-Content -Path $customerHtmlOutPath -Value $customerReportHtml -Encoding UTF8
+
+if ($IncludeLegacyArtifacts) {
+    $customerReportMarkdown = New-CustomerRemediationReport -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt
+    Set-Content -Path $customerMdOutPath -Value $customerReportMarkdown -Encoding UTF8
+}
 
 $engineerActionPackMarkdown = New-EngineerActionPack -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt -JsonOutPath $jsonOutPath -CsvOutPath $csvOutPath -SnippetOutPath $snippetOutPath
 Set-Content -Path $engineerMdOutPath -Value $engineerActionPackMarkdown -Encoding UTF8
@@ -2011,19 +2414,21 @@ $outputSummary = [PSCustomObject]@{
     JsonPath                      = $jsonOutPath
     CsvPath                       = $csvOutPath
     MarkdownPath                  = $mdOutPath
-    CustomerRemediationReportPath = $customerMdOutPath
+    CustomerRemediationReportPath = $customerHtmlOutPath
+    CustomerRemediationReportMarkdownPath = $customerMdOutPath
     EngineerActionPackPath        = $engineerMdOutPath
     RemediationPs1Path            = $snippetOutPath
 }
 
 Write-Host 'Improvement plan generated.'
 Write-Host "  JSON: $jsonOutPath"
-Write-Host "  CUST: $customerMdOutPath"
+Write-Host "  CUST: $customerHtmlOutPath"
 Write-Host "  ENG : $engineerMdOutPath"
 Write-Host "  PS1 : $snippetOutPath"
 if ($IncludeLegacyArtifacts) {
     Write-Host "  CSV : $csvOutPath"
     Write-Host "  MD  : $mdOutPath"
+    Write-Host "  CMD : $customerMdOutPath"
 }
 
 if ($PassThru) {

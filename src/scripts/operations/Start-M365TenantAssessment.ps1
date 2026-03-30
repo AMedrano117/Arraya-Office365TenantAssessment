@@ -26,6 +26,7 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$ExportPath,
     [Parameter(Mandatory = $false)]
+    [Alias('LiveRefresh')]
     [switch]$UseGraphFallback,
     [Parameter(Mandatory = $false)]
     [switch]$RunImprove,
@@ -33,6 +34,10 @@ param(
     [switch]$SkipImprove,
     [Parameter(Mandatory = $false)]
     [string]$ImproveOutputFolder,
+    [Parameter(Mandatory = $false)]
+    [switch]$IncludeLegacyArtifacts,
+    [Parameter(Mandatory = $false)]
+    [switch]$IncludeLegacyAssessmentArtifacts,
     [Parameter(Mandatory = $false)]
     [switch]$SkipPdfReport,
     [Parameter(Mandatory = $false)]
@@ -271,7 +276,7 @@ if ([string]::IsNullOrWhiteSpace($Action)) {
     Write-Host 'Tenant Assessment Launcher' -ForegroundColor Cyan
     Write-Host '1. Microsoft 365 Full Tenant Assessment + Improvement Plan'
     Write-Host '2. Microsoft 365 Data Collection Only (JSON snapshot)'
-    Write-Host '3. Microsoft 365 Export from JSON Snapshot'
+    Write-Host '3. Microsoft 365 Export from JSON Snapshot + Improvement Plan'
     Write-Host '4. Active Directory Assessment'
     Write-Host '5. Build Improvement Plan from Tenant JSON'
     Write-Host '6. Compare Two Tenant JSON Snapshots'
@@ -291,7 +296,6 @@ if ([string]::IsNullOrWhiteSpace($Action)) {
 
 switch ($Action) {
     'M365' {
-        $shouldRunImprove = Test-LauncherShouldRunImprove -Action $Action -RunImprove:$RunImprove -SkipImprove:$SkipImprove
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
         $exportPathInput = if (-not [string]::IsNullOrWhiteSpace($ExportPath)) {
             $ExportPath
@@ -314,21 +318,21 @@ switch ($Action) {
             $selectedOutputProfiles = @('SolutionsEngineer')
         }
 
-        if ($shouldRunImprove -and -not (Test-LauncherOutputProfilesGenerateJson -OutputProfile $selectedOutputProfiles)) {
-            $selectedOutputProfiles = Add-LauncherOutputProfile -OutputProfile $selectedOutputProfiles -ProfileToAdd 'Machine'
-            Write-Warning "Improve is included in the full M365 workflow. Added output profile 'Machine' so the run preserves a reusable JSON snapshot."
-        }
-
         $invokeParams = @{}
         $invokeParams.OutputProfile = $selectedOutputProfiles
         $invokeParams.ExportPath = if (-not [string]::IsNullOrWhiteSpace($exportPathInput)) { $exportPathInput } else { $defaultOutputRoot }
         if ($SkipPdfReport) { $invokeParams.SkipPdfReport = $true }
-        if ($SkipJsonReport -and -not $shouldRunImprove) {
+        if ($SkipJsonReport -and $IncludeLegacyAssessmentArtifacts) {
             $invokeParams.SkipJsonReport = $true
         }
-        elseif ($SkipJsonReport -and $shouldRunImprove) {
-            Write-Warning 'The full M365 workflow now includes Improve by default and requires a JSON snapshot. Ignoring -SkipJsonReport for this run.'
+        elseif ($SkipJsonReport) {
+            Write-Warning 'The consolidated M365 workflow preserves a JSON snapshot for Improve and export replay. Ignoring -SkipJsonReport unless -IncludeLegacyAssessmentArtifacts is used.'
         }
+        if ($SkipImprove) { $invokeParams.SkipImprove = $true }
+        if ($IncludeLegacyArtifacts) { $invokeParams.IncludeLegacyArtifacts = $true }
+        if ($IncludeLegacyAssessmentArtifacts) { $invokeParams.IncludeLegacyAssessmentArtifacts = $true }
+        if (-not [string]::IsNullOrWhiteSpace($ImproveOutputFolder)) { $invokeParams.ImproveOutputFolder = $ImproveOutputFolder }
+        if ($UseGraphFallback) { $invokeParams.UseGraphFallback = $true }
         if ($StoreTenantStatsGlobal) { $invokeParams.StoreTenantStatsGlobal = $true }
         if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
         if ($SkipAuth) { $invokeParams.SkipAuth = $true }
@@ -339,12 +343,8 @@ switch ($Action) {
         if (-not [string]::IsNullOrWhiteSpace($ClientSecret)) { $invokeParams.ClientSecret = $ClientSecret }
 
         Invoke-M365TenantAssessment @invokeParams
-        if ($shouldRunImprove) {
-            Invoke-LauncherImproveFromLatestRun -ExportPath $invokeParams.ExportPath -OutputFolder $ImproveOutputFolder -UseGraphFallback:$UseGraphFallback
-        }
     }
     'M365Collect' {
-        $shouldRunImprove = Test-LauncherShouldRunImprove -Action $Action -RunImprove:$RunImprove -SkipImprove:$SkipImprove
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
         $exportPathInput = if (-not [string]::IsNullOrWhiteSpace($ExportPath)) {
             $ExportPath
@@ -367,14 +367,13 @@ switch ($Action) {
             $selectedOutputProfiles = @('SolutionsEngineer')
         }
 
-        if ($shouldRunImprove -and -not (Test-LauncherOutputProfilesGenerateJson -OutputProfile $selectedOutputProfiles)) {
-            $selectedOutputProfiles = Add-LauncherOutputProfile -OutputProfile $selectedOutputProfiles -ProfileToAdd 'Machine'
-            Write-Warning "RunImprove requested. Added output profile 'Machine' so the run preserves a reusable JSON snapshot."
-        }
-
         $invokeParams = @{}
         $invokeParams.OutputProfile = $selectedOutputProfiles
         $invokeParams.ExportPath = if (-not [string]::IsNullOrWhiteSpace($exportPathInput)) { $exportPathInput } else { $defaultOutputRoot }
+        if ($RunImprove) { $invokeParams.RunImprove = $true }
+        if ($IncludeLegacyArtifacts) { $invokeParams.IncludeLegacyArtifacts = $true }
+        if (-not [string]::IsNullOrWhiteSpace($ImproveOutputFolder)) { $invokeParams.ImproveOutputFolder = $ImproveOutputFolder }
+        if ($UseGraphFallback) { $invokeParams.UseGraphFallback = $true }
         if ($StoreTenantStatsGlobal) { $invokeParams.StoreTenantStatsGlobal = $true }
         if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
         if ($SkipAuth) { $invokeParams.SkipAuth = $true }
@@ -385,9 +384,6 @@ switch ($Action) {
         if (-not [string]::IsNullOrWhiteSpace($ClientSecret)) { $invokeParams.ClientSecret = $ClientSecret }
 
         Invoke-M365TenantDataCollection @invokeParams
-        if ($shouldRunImprove) {
-            Invoke-LauncherImproveFromLatestRun -ExportPath $invokeParams.ExportPath -OutputFolder $ImproveOutputFolder -UseGraphFallback:$UseGraphFallback
-        }
     }
     'M365Export' {
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
@@ -421,7 +417,17 @@ switch ($Action) {
         $invokeParams.OutputProfile = $selectedOutputProfiles
         $invokeParams.ExportPath = if (-not [string]::IsNullOrWhiteSpace($exportPathInput)) { $exportPathInput } else { $defaultOutputRoot }
         if ($SkipPdfReport) { $invokeParams.SkipPdfReport = $true }
-        if ($SkipJsonReport) { $invokeParams.SkipJsonReport = $true }
+        if ($SkipJsonReport -and $IncludeLegacyAssessmentArtifacts) {
+            $invokeParams.SkipJsonReport = $true
+        }
+        elseif ($SkipJsonReport) {
+            Write-Warning 'The consolidated export workflow preserves a JSON snapshot for Improve and replay. Ignoring -SkipJsonReport unless -IncludeLegacyAssessmentArtifacts is used.'
+        }
+        if ($SkipImprove) { $invokeParams.SkipImprove = $true }
+        if ($IncludeLegacyArtifacts) { $invokeParams.IncludeLegacyArtifacts = $true }
+        if ($IncludeLegacyAssessmentArtifacts) { $invokeParams.IncludeLegacyAssessmentArtifacts = $true }
+        if (-not [string]::IsNullOrWhiteSpace($ImproveOutputFolder)) { $invokeParams.ImproveOutputFolder = $ImproveOutputFolder }
+        if ($UseGraphFallback) { $invokeParams.UseGraphFallback = $true }
 
         Invoke-M365TenantAssessmentExport @invokeParams
     }
@@ -435,6 +441,7 @@ switch ($Action) {
         $invokeParams = @{ AssessmentJsonPath = $jsonPath }
         if (-not [string]::IsNullOrWhiteSpace($outputFolder)) { $invokeParams.OutputFolder = $outputFolder }
         if ($UseGraphFallback) { $invokeParams.UseGraphFallback = $true }
+        if ($IncludeLegacyArtifacts) { $invokeParams.IncludeLegacyArtifacts = $true }
 
         Invoke-M365ImprovementPlan @invokeParams
     }

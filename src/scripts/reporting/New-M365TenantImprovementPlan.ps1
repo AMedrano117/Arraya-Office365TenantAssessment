@@ -13,6 +13,7 @@ param(
     [ValidateRange(1, 50)]
     [int]$MaxGlobalAdmins = 5,
     [Parameter(Mandatory = $false)]
+    [Alias('LiveRefresh')]
     [switch]$UseGraphFallback,
     [Parameter(Mandatory = $false)]
     [switch]$IncludeLegacyArtifacts,

@@ -8,6 +8,21 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$SkipHtmlReport,
     [Parameter(Mandatory = $false)]
+    [switch]$SkipPdfReport,
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipJsonReport,
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipImprove,
+    [Parameter(Mandatory = $false)]
+    [switch]$IncludeLegacyArtifacts,
+    [Parameter(Mandatory = $false)]
+    [switch]$IncludeLegacyAssessmentArtifacts,
+    [Parameter(Mandatory = $false)]
+    [string]$ImproveOutputFolder,
+    [Parameter(Mandatory = $false)]
+    [Alias('LiveRefresh')]
+    [switch]$UseGraphFallback,
+    [Parameter(Mandatory = $false)]
     [switch]$StoreTenantStatsGlobal,
     [Parameter(Mandatory = $false)]
     [string]$TenantStatsVariableName = 'ArrayaTenantStats',
@@ -42,6 +57,13 @@ $invokeParams = @{}
 if ($PSBoundParameters.ContainsKey('ExportPath')) { $invokeParams.ExportPath = $ExportPath }
 if ($PSBoundParameters.ContainsKey('OutputProfile')) { $invokeParams.OutputProfile = $OutputProfile }
 if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
+if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
+if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
+if ($PSBoundParameters.ContainsKey('SkipImprove')) { $invokeParams.SkipImprove = $SkipImprove }
+if ($PSBoundParameters.ContainsKey('IncludeLegacyArtifacts')) { $invokeParams.IncludeLegacyArtifacts = $IncludeLegacyArtifacts }
+if ($PSBoundParameters.ContainsKey('IncludeLegacyAssessmentArtifacts')) { $invokeParams.IncludeLegacyAssessmentArtifacts = $IncludeLegacyAssessmentArtifacts }
+if ($PSBoundParameters.ContainsKey('ImproveOutputFolder')) { $invokeParams.ImproveOutputFolder = $ImproveOutputFolder }
+if ($PSBoundParameters.ContainsKey('UseGraphFallback')) { $invokeParams.UseGraphFallback = $UseGraphFallback }
 if ($PSBoundParameters.ContainsKey('StoreTenantStatsGlobal')) { $invokeParams.StoreTenantStatsGlobal = $StoreTenantStatsGlobal }
 if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
 if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }

@@ -310,6 +310,8 @@ Describe 'Improve workflow' {
         $result.CsvPath | Should -BeNullOrEmpty
         $result.MarkdownPath | Should -BeNullOrEmpty
         Test-Path $result.CustomerRemediationReportPath | Should -BeTrue
+        $result.CustomerRemediationReportPath | Should -Match '\.html$'
+        $result.CustomerRemediationReportMarkdownPath | Should -BeNullOrEmpty
         Test-Path $result.EngineerActionPackPath | Should -BeTrue
         Test-Path $result.RemediationPs1Path | Should -BeTrue
 
@@ -366,9 +368,10 @@ Describe 'Improve workflow' {
         $ex006.TargetValue | Should -Be 'All external inbox-rule forwarding paths reviewed and either approved or removed, with tenant forwarding policy aligned to the approved baseline'
 
         $customerReport = Get-Content -Raw $result.CustomerRemediationReportPath
-        $customerReport | Should -Match '## Executive Summary'
-        $customerReport | Should -Match '## Phased Roadmap'
-        $customerReport | Should -Match '## Workstream Summary'
+        $customerReport | Should -Match '<!DOCTYPE html>'
+        $customerReport | Should -Match '<h2>Executive Summary</h2>'
+        $customerReport | Should -Match '<h2>Phased Roadmap</h2>'
+        $customerReport | Should -Match '<h2>Workstream Summary</h2>'
         $customerReport | Should -Not -Match 'AREA-'
         $customerReport | Should -Match 'Current State'
         $customerReport | Should -Match '1 mailbox\(es\) with forwarding configured'

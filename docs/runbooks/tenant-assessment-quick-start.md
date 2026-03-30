@@ -41,8 +41,11 @@ The legacy `Import-Office365CustomLocal.ps1` now delegates to the shared Common 
 - Use `-SkipImprove` only when you explicitly want the older assessment-only behavior.
 - `Improve` is still available as a separate post-processing workflow that consumes an assessment JSON snapshot.
 - The launcher still supports `-RunImprove` on `M365Collect` when you want to chain post-processing from a snapshot-only run.
-- When the chosen profile would not normally emit JSON, the launcher appends `Machine` for runs that include `Improve` so the snapshot is preserved.
+- The default `M365` flow now centers on `CustomerRemediationReport.html`, `EngineerActionPack.md`, `ImprovementPlan.json`, and `RemediationSnippets.ps1`.
+- Use `-IncludeLegacyAssessmentArtifacts` only when you explicitly want the older workbook / assessment HTML / questionnaire family.
+- Use `-IncludeLegacyArtifacts` only when you explicitly want the older `Improve` CSV/Markdown outputs.
 - `Improve` can now take either the snapshot JSON path or the `*.manifest.json` path from the same run.
+- Use `-LiveRefresh` when you want snapshot-plus-live-refresh behavior during `Improve`; it is a friendlier alias for `-UseGraphFallback`.
 - The improvement plan combines derived assessment findings with built-in remediation heuristics.
 - Rule IDs such as `ID-007`, `CA-012`, `DEV-006`, and `EX-007` are internal repo rule identifiers, not Microsoft-native control IDs.
 - Use the taxonomy guide when you need to explain where a finding came from or how to trace it back to the supporting worksheet.

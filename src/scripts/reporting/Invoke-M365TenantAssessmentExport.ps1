@@ -12,7 +12,18 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$SkipPdfReport,
     [Parameter(Mandatory = $false)]
-    [switch]$SkipJsonReport
+    [switch]$SkipJsonReport,
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipImprove,
+    [Parameter(Mandatory = $false)]
+    [switch]$IncludeLegacyArtifacts,
+    [Parameter(Mandatory = $false)]
+    [switch]$IncludeLegacyAssessmentArtifacts,
+    [Parameter(Mandatory = $false)]
+    [string]$ImproveOutputFolder,
+    [Parameter(Mandatory = $false)]
+    [Alias('LiveRefresh')]
+    [switch]$UseGraphFallback
 )
 
 $resolveRepoRootHelperPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\shared\Resolve-ArrayaRepoRoot.ps1'))
@@ -33,5 +44,10 @@ if ($PSBoundParameters.ContainsKey('OutputProfile')) { $invokeParams.OutputProfi
 if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
 if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
 if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
+if ($PSBoundParameters.ContainsKey('SkipImprove')) { $invokeParams.SkipImprove = $SkipImprove }
+if ($PSBoundParameters.ContainsKey('IncludeLegacyArtifacts')) { $invokeParams.IncludeLegacyArtifacts = $IncludeLegacyArtifacts }
+if ($PSBoundParameters.ContainsKey('IncludeLegacyAssessmentArtifacts')) { $invokeParams.IncludeLegacyAssessmentArtifacts = $IncludeLegacyAssessmentArtifacts }
+if ($PSBoundParameters.ContainsKey('ImproveOutputFolder')) { $invokeParams.ImproveOutputFolder = $ImproveOutputFolder }
+if ($PSBoundParameters.ContainsKey('UseGraphFallback')) { $invokeParams.UseGraphFallback = $UseGraphFallback }
 
 Invoke-M365TenantAssessmentExport @invokeParams

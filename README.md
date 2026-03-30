@@ -94,51 +94,46 @@ Examples:
 ```
 
 ## Assessment Outputs
-For a Microsoft 365 tenant assessment run, the primary deliverables are:
+For a default `-Action M365` run, the primary deliverables are now:
 
-- `*.xlsx`: the main assessment workbook. This is the primary human-readable assessment artifact.
-- `*-BestPracticesAnalysis.html`: the assessment-only HTML focused on `BestPractices`, `BestPracticeFindings`, `MigrationReadiness`, and top `SecureScoreActions`.
-- `*.html`: the full styled tenant report for browser-based review.
-- `*-TenantToTenantQuestionnaire.md`: the migration questionnaire filled from discovered tenant data.
-- `*.json`: the machine-readable snapshot used for reuse, comparison, and downstream reporting when enabled.
-- `*.pdf`: the fixed-layout PDF generated from the full HTML report through headless Chrome/Edge when enabled and available.
+- `*-CustomerRemediationReport.html`: the primary customer-facing deliverable generated from `Improve`
+- `*-EngineerActionPack.md`: the primary engineer-facing remediation deliverable
+- `*-ImprovementPlan.json`: the machine-readable remediation payload
+- `*-RemediationSnippets.ps1`: operator helper commands
+- `*.manifest.json`: artifact index for the run
+- `Debugging\...`: logs and troubleshooting bundles
 
-Operational logs and exported error/debug bundles are written into a `Debugging` subfolder inside each assessment output folder so primary deliverables stay easier to scan.
+The workflow still preserves a JSON assessment snapshot so `Improve`, `M365Export`, and later comparison/report replay can work reliably.
 
-When you run `-Action M365`, the workflow now also generates the remediation deliverables from `Improve` by default:
+Legacy assessment artifacts are still available, but they are now compatibility outputs rather than default deliverables:
 
-- `*-ImprovementPlan.json`
-- `*-CustomerRemediationReport.md`
-- `*-EngineerActionPack.md`
-- `*-RemediationSnippets.ps1`
+- `*.xlsx`
+- `*.html`
+- `*-BestPracticesAnalysis.html`
+- `*-TenantToTenantQuestionnaire.md`
+- `*.pdf`
 
-The workbook is the file that contains the assessment summary and findings. The most assessment-oriented worksheets are:
-
-- `BestPractices`
-- `BestPracticeFindings`
-- `MigrationReadiness`
-- `SecureScoreActions`
-
-The questionnaire Markdown is intended as a migration intake companion, not a replacement for the workbook.
+Use `-IncludeLegacyAssessmentArtifacts` when you explicitly want that older artifact family in the same run. Use `-IncludeLegacyArtifacts` when you also want the older `Improve` CSV/Markdown outputs.
 
 For operator guidance on how to interpret `Improve` findings and rule IDs, see [Improvement Plan Rule Taxonomy](docs/runbooks/improvement-plan-rule-taxonomy.md).
 
 ## Output Profiles
 The assessment run supports six need-based output profiles:
 
-- `Presales`: scope `Minimum`; outputs technical HTML + questionnaire
-- `SolutionsEngineer`: scope `Combined`; outputs workbook + technical HTML
-- `ExecutiveLevel`: scope `Minimum`; outputs best practices analysis HTML
-- `TenantToTenantMigration`: scope `Combined`; outputs workbook + technical HTML + questionnaire
-- `Geek`: scope `Geek`; outputs workbook + technical HTML + best practices HTML + questionnaire + JSON
-- `Machine`: scope `Geek`; outputs JSON only
+- `Presales`: scope `Minimum`
+- `SolutionsEngineer`: scope `Combined`
+- `ExecutiveLevel`: scope `Minimum`
+- `TenantToTenantMigration`: scope `Combined`
+- `Geek`: scope `Geek`
+- `Machine`: scope `Geek`; intended for JSON-focused automation paths
 
 `SolutionsEngineer` is the default profile.
 You can run multiple profiles in one command by passing a comma-separated list (for example `SolutionsEngineer,ExecutiveLevel`).
-When multiple profiles are supplied, the assessment runs once using the highest required reporting scope and produces the union of requested artifacts.
-Because `M365` now includes `Improve` by default, the launcher automatically appends `Machine` when the selected profile list would not normally emit JSON so the run preserves a reusable snapshot for the remediation step.
+When multiple profiles are supplied, the assessment runs once using the highest required reporting scope.
+In the default `M365` flow, profiles now influence collection/reporting depth more than artifact sprawl. The consolidated remediation outputs stay the default regardless of profile, and the legacy workbook/HTML/questionnaire family is only added when you pass `-IncludeLegacyAssessmentArtifacts`.
 
 `-RunImprove` remains available for `M365Collect` when you want to collect a snapshot and immediately post-process it, but it is no longer required for the main `M365` workflow.
+When you run `Improve` separately, use `-LiveRefresh` if you want snapshot-plus-live-refresh behavior; it is a friendlier alias for `-UseGraphFallback`.
 
 Reporting scope is not prompted interactively. Scope is automatically derived from the selected output profile.
 
@@ -149,12 +144,12 @@ Reporting scope is not prompted interactively. Scope is automatically derived fr
 - Run logs now include collector duration and memory summaries (`[CollectorMetrics]`) plus inventory row counts (`[CollectorInventory]`) for hotspot review.
 
 ## HTML And PDF
-- The best practices analysis HTML is generated independently of the full HTML report.
-- The full HTML report is generated only when the selected output profile enables technical HTML output.
-- PDF is disabled by default for all profiles in this model and remains skippable with `-SkipPdfReport`.
+- `CustomerRemediationReport.html` is now the primary customer-facing HTML deliverable and is generated from the `Improve` model.
+- The best practices analysis HTML and full technical HTML are compatibility artifacts generated only when `-IncludeLegacyAssessmentArtifacts` is used.
+- PDF is also a compatibility artifact in this model and remains skippable with `-SkipPdfReport`.
 - PDF rendering uses a locally installed Chromium-based browser, preferring Google Chrome and falling back to Microsoft Edge.
 
-If a supported browser is unavailable, the workbook, questionnaire, and HTML outputs still complete.
+If a supported browser is unavailable, the remediation HTML and markdown outputs still complete.
 
 ## Primary Entry Scripts
 - `src/scripts/operations/Start-M365TenantAssessment.ps1`
