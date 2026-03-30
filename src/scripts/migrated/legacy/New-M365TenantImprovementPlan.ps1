@@ -15,6 +15,8 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$UseGraphFallback,
     [Parameter(Mandatory = $false)]
+    [switch]$IncludeLegacyArtifacts,
+    [Parameter(Mandatory = $false)]
     [switch]$PassThru
 )
 
@@ -387,10 +389,61 @@ function Get-DefaultExampleAction {
         return 'Example: review the impacted identities or policies, confirm owner approval, and update the tenant baseline with documented exceptions only.'
     }
     if ($lookup -match 'exchange|mailbox|forward|connector|smtp|public folder') {
-        return 'Example: validate the business use case, remove unauthorized configuration, and document any approved exceptions that must remain.'
+        return 'Example: validate the business use case, remove unapproved or unsupported configuration, and document any approved exceptions that must remain.'
     }
 
     return 'Example: review the supporting worksheet, confirm the current state with the service owner, and update the configuration or governance record to close the finding.'
+}
+
+function Get-ExchangeForwardingPolicyEvidence {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$ForwardingPolicySummary,
+        [Parameter(Mandatory = $false)][object[]]$RemoteDomains = @()
+    )
+
+    $summary = if ($ForwardingPolicySummary) { Get-ArrayaObjectValue -Object $ForwardingPolicySummary -Names @('Summary') } else { $null }
+
+    $collectionState = if ($summary) { Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $summary -Names @('PolicyCollectionState')) -Default '' } else { '' }
+    $allowingPolicies = if ($summary) { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $summary -Names @('PoliciesExplicitlyAllowingAutoForwarding')) } else { $null }
+    $restrictingPolicies = if ($summary) { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $summary -Names @('PoliciesRestrictingAutoForwarding')) } else { $null }
+    $remoteDomainsAllow = if ($summary) { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $summary -Names @('RemoteDomainsAllowingAutoForwarding')) } else { $null }
+    $defaultRemoteDomainAllows = if ($summary) { Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $summary -Names @('DefaultRemoteDomainAllowsAutoForwarding')) } else { $null }
+    $modes = if ($summary) { Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $summary -Names @('PolicyAutoForwardingModes')) -Default '' } else { '' }
+
+    if ($RemoteDomains.Count -gt 0 -and $null -eq $remoteDomainsAllow) {
+        $remoteDomainsAllow = @(
+            $RemoteDomains |
+                Where-Object {
+                    $_ -and
+                    (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AutoForwardEnabled'))) -eq $true
+                }
+        ).Count
+    }
+    if ($RemoteDomains.Count -gt 0 -and $null -eq $defaultRemoteDomainAllows) {
+        $defaultRemoteDomainRecord = @(
+            $RemoteDomains |
+                Where-Object {
+                    $identity = [string](Get-ArrayaObjectValue -Object $_ -Names @('Identity'))
+                    $domainName = [string](Get-ArrayaObjectValue -Object $_ -Names @('DomainName'))
+                    $identity -match '^default$' -or $domainName -eq '*'
+                }
+        ) | Select-Object -First 1
+        if ($defaultRemoteDomainRecord) {
+            $defaultRemoteDomainAllows = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $defaultRemoteDomainRecord -Names @('AutoForwardEnabled'))
+        }
+    }
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($collectionState)) { $parts.Add("Hosted outbound policy lookup=$collectionState") | Out-Null }
+    if ($null -ne $allowingPolicies) { $parts.Add("$allowingPolicies hosted outbound policy/policies explicitly allow auto-forwarding") | Out-Null }
+    if ($null -ne $restrictingPolicies) { $parts.Add("$restrictingPolicies hosted outbound policy/policies restrict auto-forwarding") | Out-Null }
+    if ($null -ne $remoteDomainsAllow) { $parts.Add("$remoteDomainsAllow remote domain(s) have AutoForwardEnabled") | Out-Null }
+    if ($null -ne $defaultRemoteDomainAllows) { $parts.Add("Default remote domain AutoForwardEnabled=$(if ($defaultRemoteDomainAllows) { 'True' } else { 'False' })") | Out-Null }
+    if (-not [string]::IsNullOrWhiteSpace($modes)) { $parts.Add("Observed policy modes: $modes") | Out-Null }
+
+    if ($parts.Count -eq 0) { return $null }
+    return ($parts -join '; ')
 }
 
 function Get-FindingPresentationOverrides {
@@ -793,6 +846,8 @@ function Add-HeuristicFinding {
         [Parameter(Mandatory = $false)][string]$Source = 'Heuristic',
         [Parameter(Mandatory = $false)][string]$RelatedWorksheet = 'N/A',
         [Parameter(Mandatory = $false)][string]$RelatedSection = 'N/A',
+        [Parameter(Mandatory = $false)][string]$WhyFlagged,
+        [Parameter(Mandatory = $false)][string]$ExampleAction,
         [Parameter(Mandatory = $false)][string[]]$AdditionalKeys = @()
     )
 
@@ -808,7 +863,9 @@ function Add-HeuristicFinding {
             -CurrentValue $CurrentValue `
             -TargetValue $TargetValue `
             -RelatedWorksheet $RelatedWorksheet `
-            -RelatedSection $RelatedSection
+            -RelatedSection $RelatedSection `
+            -WhyFlagged $WhyFlagged `
+            -ExampleAction $ExampleAction
     ) | Where-Object { $_ -and $_.PSObject -and ($_.PSObject.Properties.Name -contains 'RuleId') } | Select-Object -Last 1
 
     if ($null -eq $findingRecord) {
@@ -1057,10 +1114,10 @@ function New-CustomerRemediationReport {
 
     $lines.Add('## Supporting Findings Appendix') | Out-Null
     $lines.Add('') | Out-Null
-    $lines.Add('| Severity | Workstream | Area | Finding | Recommended Action | Success Criteria |') | Out-Null
-    $lines.Add('|---|---|---|---|---|---|') | Out-Null
+    $lines.Add('| Severity | Workstream | Area | Finding | Current State | Recommended Action | Success Criteria |') | Out-Null
+    $lines.Add('|---|---|---|---|---|---|---|') | Out-Null
     foreach ($finding in $Findings) {
-        $lines.Add("| $($finding.Severity) | $($finding.OwnerTeam) | $($finding.Area) | $(Convert-ToArrayaMarkdownText $finding.Finding) | $(Convert-ToArrayaMarkdownText $finding.Recommendation) | $(Convert-ToArrayaMarkdownText $finding.TargetValue) |") | Out-Null
+        $lines.Add("| $($finding.Severity) | $($finding.OwnerTeam) | $($finding.Area) | $(Convert-ToArrayaMarkdownText $finding.Finding) | $(Convert-ToArrayaMarkdownText $finding.CurrentValue) | $(Convert-ToArrayaMarkdownText $finding.Recommendation) | $(Convert-ToArrayaMarkdownText $finding.TargetValue) |") | Out-Null
     }
 
     return ($lines -join [Environment]::NewLine)
@@ -1075,7 +1132,7 @@ function New-EngineerActionPack {
         [Parameter(Mandatory = $true)][string]$AssessmentJsonPath,
         [Parameter(Mandatory = $true)][datetime]$GeneratedAt,
         [Parameter(Mandatory = $true)][string]$JsonOutPath,
-        [Parameter(Mandatory = $true)][string]$CsvOutPath,
+        [Parameter(Mandatory = $false)][string]$CsvOutPath,
         [Parameter(Mandatory = $true)][string]$SnippetOutPath
     )
 
@@ -1126,7 +1183,9 @@ function New-EngineerActionPack {
     $lines.Add('## Command References') | Out-Null
     $lines.Add('') | Out-Null
     $lines.Add(('- JSON output: `{0}`' -f $JsonOutPath)) | Out-Null
-    $lines.Add(('- CSV output: `{0}`' -f $CsvOutPath)) | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($CsvOutPath)) {
+        $lines.Add(('- CSV output: `{0}`' -f $CsvOutPath)) | Out-Null
+    }
     $lines.Add(('- Remediation snippets: `{0}`' -f $SnippetOutPath)) | Out-Null
     $lines.Add('') | Out-Null
     $lines.Add('## Engineer Notes') | Out-Null
@@ -1203,6 +1262,7 @@ $deviceRows = Get-ImprovementPlanDataset -DataRoot $tenantData -Names @('DeviceD
 $userRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('Users', 'UserFullDetails'))
 $mailboxRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('AllMailboxes', 'MailboxFullDetails'))
 $connectorRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('MailFlowConnectors'))
+$remoteDomainRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('RemoteDomains'))
 $publicFolderRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('PublicFolderDetails'))
 $sharePointRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('SharePoint'))
 $oneDriveRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('OneDrive'))
@@ -1225,6 +1285,7 @@ $guestSignInSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('GuestS
 $privilegedAccessSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('PrivilegedAccessSummary')
 $inboxRulesExternalForwarding = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('InboxRulesExternalForwarding'))
 $inboxRuleForwardingSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('InboxRuleForwardingSummary')
+$forwardingPolicySummary = Get-ArrayaObjectValue -Object $tenantData -Names @('ForwardingPolicySummary')
 $sharedMailboxGovernanceSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('SharedMailboxGovernanceSummary')
 $sharePointSharingSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('SharePointSharingSummary')
 $collaborationActivitySummary = Get-ArrayaObjectValue -Object $tenantData -Names @('CollaborationActivitySummary')
@@ -1380,7 +1441,12 @@ $forwardingMailboxes = @(
         }
 )
 if ($forwardingMailboxes.Count -gt 0) {
-    Add-HeuristicFinding -Store $findingStore -RuleId 'EX-001' -Area 'Exchange Hygiene' -Category 'Exchange Hygiene' -Severity 'High' -Finding 'Mailbox forwarding is enabled for one or more mailboxes.' -Recommendation 'Review forwarding use cases, validate external destinations, and remove unauthorized forwarding configurations.' -CurrentValue "$($forwardingMailboxes.Count) mailbox(es) with forwarding configured" -TargetValue '0 unauthorized mailbox forwarding configurations' -Source 'Hybrid/Exchange' -RelatedWorksheet 'AllMailboxes' -RelatedSection 'Mailbox Forwarding'
+    $forwardingPolicyEvidence = Get-ExchangeForwardingPolicyEvidence -ForwardingPolicySummary $forwardingPolicySummary -RemoteDomains $remoteDomainRows
+    $ex001CurrentValue = "$($forwardingMailboxes.Count) mailbox(es) with forwarding configured"
+    if (-not [string]::IsNullOrWhiteSpace($forwardingPolicyEvidence)) {
+        $ex001CurrentValue = "$ex001CurrentValue; $forwardingPolicyEvidence"
+    }
+    Add-HeuristicFinding -Store $findingStore -RuleId 'EX-001' -Area 'Exchange Hygiene' -Category 'Exchange Hygiene' -Severity 'High' -Finding 'Mailbox forwarding is enabled for one or more mailboxes.' -Recommendation 'Review forwarding use cases, validate external destinations, and compare the mailbox list against the tenant outbound auto-forwarding posture and remote-domain settings. Remove or formally approve forwarding configurations that are still required, and document that this reflects tenant-level policy context rather than a per-mailbox authorization verdict.' -CurrentValue $ex001CurrentValue -TargetValue 'All mailbox forwarding configurations reviewed and either approved or removed, with tenant forwarding policy aligned to the approved baseline' -Source 'Hybrid/Exchange' -RelatedWorksheet 'AllMailboxes' -RelatedSection 'Mailbox Forwarding' -WhyFlagged 'Mailbox forwarding was detected on one or more objects, and the assessment also reviewed tenant-level outbound auto-forwarding posture and remote-domain forwarding settings to show whether external forwarding appears broadly permitted.' -ExampleAction 'Example: export the forwarding mailbox list, review the current outbound spam filter auto-forwarding modes and remote domains with AutoForwardEnabled, then disable or document any forwarding path that is no longer required.'
 }
 
 $riskyConnectors = @(
@@ -1623,7 +1689,12 @@ if ($securityDefaultsEnabled -eq $false -and $caSummaryRecord) {
 $externalInboxSummary = if ($inboxRuleForwardingSummary) { Get-ArrayaObjectValue -Object $inboxRuleForwardingSummary -Names @('Summary') } else { $null }
 $externalForwardRuleCount = if ($inboxRulesExternalForwarding.Count -gt 0) { $inboxRulesExternalForwarding.Count } else { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $externalInboxSummary -Names @('ExternalForwardingRuleCount')) }
 if ($null -ne $externalForwardRuleCount -and $externalForwardRuleCount -gt 0) {
-    Add-HeuristicFinding -Store $findingStore -RuleId 'EX-006' -Area 'Exchange Hygiene' -Category 'Exchange Hygiene' -Severity 'High' -Finding 'Inbox rules with external forwarding targets were detected.' -Recommendation 'Review inbox-rule forwarding behavior, confirm business justification, and remove unauthorized external forwarding paths.' -CurrentValue "$externalForwardRuleCount external-forwarding inbox rule(s)" -TargetValue '0 unauthorized inbox-rule forwarding paths' -Source 'Summary/InboxRules' -RelatedWorksheet 'InboxRulesExternalForwarding' -RelatedSection 'Inbox Rules'
+    $forwardingPolicyEvidence = Get-ExchangeForwardingPolicyEvidence -ForwardingPolicySummary $forwardingPolicySummary -RemoteDomains $remoteDomainRows
+    $ex006CurrentValue = "$externalForwardRuleCount external-forwarding inbox rule(s)"
+    if (-not [string]::IsNullOrWhiteSpace($forwardingPolicyEvidence)) {
+        $ex006CurrentValue = "$ex006CurrentValue; $forwardingPolicyEvidence"
+    }
+    Add-HeuristicFinding -Store $findingStore -RuleId 'EX-006' -Area 'Exchange Hygiene' -Category 'Exchange Hygiene' -Severity 'High' -Finding 'Inbox rules with external forwarding targets were detected.' -Recommendation 'Review inbox-rule forwarding behavior, confirm business justification, and compare the rule list against the tenant outbound auto-forwarding posture and remote-domain settings. Remove or formally approve external forwarding paths that must remain, and document that the policy context is tenant-level rather than a per-rule authorization verdict.' -CurrentValue $ex006CurrentValue -TargetValue 'All external inbox-rule forwarding paths reviewed and either approved or removed, with tenant forwarding policy aligned to the approved baseline' -Source 'Summary/InboxRules' -RelatedWorksheet 'InboxRulesExternalForwarding' -RelatedSection 'Inbox Rules' -WhyFlagged 'The assessment found inbox rules that forward to domains outside the tenant accepted-domain list, and it also inspected tenant-level outbound auto-forwarding posture and remote-domain settings to show whether external forwarding appears broadly permitted.' -ExampleAction 'Example: export the external inbox-rule list, review the target domains against approved forwarding use cases, and compare the result to hosted outbound spam filter auto-forwarding modes plus remote domains where AutoForwardEnabled is still true.'
 }
 
 $sharedMailboxSummaryRecord = if ($sharedMailboxGovernanceSummary) { Get-ArrayaObjectValue -Object $sharedMailboxGovernanceSummary -Names @('Summary') } else { $null }
@@ -1732,11 +1803,22 @@ $sortedWorkstreamSummaries = Get-SortedWorkstreamSummaries -Summaries $workstrea
 $tenantName = Get-TenantDisplayName -TenantInfoSummary $(if ($tenantInfoSummary) { Get-ArrayaObjectValue -Object $tenantInfoSummary -Names @('Summary') } else { $null }) -LegacyData $tenantData -OutputPrefix $OutputPrefix
 
 $jsonOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-ImprovementPlan.json"
-$csvOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-ImprovementPlan.csv"
-$mdOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-ImprovementPlan.md"
+$csvOutPath = if ($IncludeLegacyArtifacts) { Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-ImprovementPlan.csv" } else { $null }
+$mdOutPath = if ($IncludeLegacyArtifacts) { Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-ImprovementPlan.md" } else { $null }
 $customerMdOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-CustomerRemediationReport.md"
 $engineerMdOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-EngineerActionPack.md"
 $snippetOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-RemediationSnippets.ps1"
+
+$deliverables = [ordered]@{
+    ImprovementPlanJson       = $jsonOutPath
+    CustomerRemediationReport = $customerMdOutPath
+    EngineerActionPack        = $engineerMdOutPath
+    RemediationSnippets       = $snippetOutPath
+}
+if ($IncludeLegacyArtifacts) {
+    $deliverables['ImprovementPlanCsv'] = $csvOutPath
+    $deliverables['ImprovementPlanMarkdown'] = $mdOutPath
+}
 
 $payload = [PSCustomObject]@{
     GeneratedAt = $generatedAt.ToString('o')
@@ -1745,56 +1827,53 @@ $payload = [PSCustomObject]@{
         StaleDeviceDays = $StaleDeviceDays
         MaxGlobalAdmins = $MaxGlobalAdmins
     }
-    Deliverables = [PSCustomObject]@{
-        CustomerRemediationReport = $customerMdOutPath
-        EngineerActionPack        = $engineerMdOutPath
-        ImprovementPlanMarkdown   = $mdOutPath
-        RemediationSnippets       = $snippetOutPath
-    }
+    Deliverables = [PSCustomObject]$deliverables
     WorkstreamSummaries = $sortedWorkstreamSummaries
     Findings           = $sortedFindings
 }
 
 $payload | ConvertTo-Json -Depth 10 | Set-Content -Path $jsonOutPath -Encoding UTF8
-$sortedFindings | Export-Csv -Path $csvOutPath -NoTypeInformation -Encoding UTF8
+if ($IncludeLegacyArtifacts) {
+    $sortedFindings | Export-Csv -Path $csvOutPath -NoTypeInformation -Encoding UTF8
 
-$severityCounts = $sortedFindings | Group-Object Severity | Sort-Object Name
-$summaryLines = @(
-    '# Microsoft 365 Tenant Improvement Plan',
-    '',
-    "Generated: $($generatedAt.ToString('yyyy-MM-dd HH:mm:ss'))",
-    "Source: $AssessmentJsonPath",
-    '',
-    '## Severity Summary'
-)
-foreach ($group in $severityCounts) {
-    $summaryLines += "- $($group.Name): $($group.Count)"
-}
+    $severityCounts = $sortedFindings | Group-Object Severity | Sort-Object Name
+    $summaryLines = @(
+        '# Microsoft 365 Tenant Improvement Plan',
+        '',
+        "Generated: $($generatedAt.ToString('yyyy-MM-dd HH:mm:ss'))",
+        "Source: $AssessmentJsonPath",
+        '',
+        '## Severity Summary'
+    )
+    foreach ($group in $severityCounts) {
+        $summaryLines += "- $($group.Name): $($group.Count)"
+    }
 
-if ($sortedWorkstreamSummaries.Count -gt 0) {
+    if ($sortedWorkstreamSummaries.Count -gt 0) {
+        $summaryLines += @(
+            '',
+            '## Workstream Summary',
+            '',
+            '| Severity | Workstream | Area | Open Findings | Critical | Warning | Info | Top Signals |',
+            '|---|---|---|---|---|---|---|---|'
+        )
+        foreach ($summary in $sortedWorkstreamSummaries) {
+            $summaryLines += "| $($summary.Severity) | $($summary.Workstream) | $($summary.Area) | $($summary.OpenFindings) | $($summary.CriticalCount) | $($summary.WarningCount) | $($summary.InfoCount) | $(Convert-ToArrayaMarkdownText $summary.TopSignals) |"
+        }
+    }
+
     $summaryLines += @(
         '',
-        '## Workstream Summary',
+        '## Findings',
         '',
-        '| Severity | Workstream | Area | Open Findings | Critical | Warning | Info | Top Signals |',
+        '| Severity | Priority | Workstream | Rule | Finding | Why Flagged | Recommended Action | Success Criteria |',
         '|---|---|---|---|---|---|---|---|'
     )
-    foreach ($summary in $sortedWorkstreamSummaries) {
-        $summaryLines += "| $($summary.Severity) | $($summary.Workstream) | $($summary.Area) | $($summary.OpenFindings) | $($summary.CriticalCount) | $($summary.WarningCount) | $($summary.InfoCount) | $(Convert-ToArrayaMarkdownText $summary.TopSignals) |"
+    foreach ($finding in $sortedFindings) {
+        $summaryLines += "| $($finding.Severity) | $($finding.PriorityBand) | $($finding.OwnerTeam) | $($finding.RuleId) | $(Convert-ToArrayaMarkdownText $finding.Finding) | $(Convert-ToArrayaMarkdownText $finding.WhyFlagged) | $(Convert-ToArrayaMarkdownText $finding.Recommendation) | $(Convert-ToArrayaMarkdownText $finding.TargetValue) |"
     }
+    Set-Content -Path $mdOutPath -Value ($summaryLines -join [Environment]::NewLine) -Encoding UTF8
 }
-
-$summaryLines += @(
-    '',
-    '## Findings',
-    '',
-    '| Severity | Priority | Workstream | Rule | Finding | Why Flagged | Recommended Action | Success Criteria |',
-    '|---|---|---|---|---|---|---|---|'
-)
-foreach ($finding in $sortedFindings) {
-    $summaryLines += "| $($finding.Severity) | $($finding.PriorityBand) | $($finding.OwnerTeam) | $($finding.RuleId) | $(Convert-ToArrayaMarkdownText $finding.Finding) | $(Convert-ToArrayaMarkdownText $finding.WhyFlagged) | $(Convert-ToArrayaMarkdownText $finding.Recommendation) | $(Convert-ToArrayaMarkdownText $finding.TargetValue) |"
-}
-Set-Content -Path $mdOutPath -Value ($summaryLines -join [Environment]::NewLine) -Encoding UTF8
 
 $customerReportMarkdown = New-CustomerRemediationReport -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt
 Set-Content -Path $customerMdOutPath -Value $customerReportMarkdown -Encoding UTF8
@@ -1939,11 +2018,13 @@ $outputSummary = [PSCustomObject]@{
 
 Write-Host 'Improvement plan generated.'
 Write-Host "  JSON: $jsonOutPath"
-Write-Host "  CSV : $csvOutPath"
-Write-Host "  MD  : $mdOutPath"
 Write-Host "  CUST: $customerMdOutPath"
 Write-Host "  ENG : $engineerMdOutPath"
 Write-Host "  PS1 : $snippetOutPath"
+if ($IncludeLegacyArtifacts) {
+    Write-Host "  CSV : $csvOutPath"
+    Write-Host "  MD  : $mdOutPath"
+}
 
 if ($PassThru) {
     $outputSummary

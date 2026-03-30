@@ -33,7 +33,7 @@ Examples:
 
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
   -Action M365 `
-  -RunImprove
+  -SkipImprove
 
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
   -Action M365 `
@@ -71,7 +71,7 @@ The M365 workflow now supports explicit separation between data collection and a
 
 - `M365Collect`: runs discovery/collection only and writes a JSON snapshot.
 - `M365Export`: loads a previously collected JSON snapshot and generates artifacts without re-collecting tenant data.
-- `M365`: legacy combined path (collect + export in one run) remains available.
+- `M365`: the standard full assessment path. It now runs the assessment deliverables and the `Improve` post-processing step in one flow unless you pass `-SkipImprove`.
 - each run also writes a `*.manifest.json` artifact index next to the primary export filename.
 - JSON snapshots now use a versioned V2 contract with explicit sections: `Metadata`, `CollectionPlan`, `Data`, `Derived`, and `Diagnostics`.
 - Import is backward compatible with older V1 snapshots through an in-memory adapter.
@@ -105,6 +105,13 @@ For a Microsoft 365 tenant assessment run, the primary deliverables are:
 
 Operational logs and exported error/debug bundles are written into a `Debugging` subfolder inside each assessment output folder so primary deliverables stay easier to scan.
 
+When you run `-Action M365`, the workflow now also generates the remediation deliverables from `Improve` by default:
+
+- `*-ImprovementPlan.json`
+- `*-CustomerRemediationReport.md`
+- `*-EngineerActionPack.md`
+- `*-RemediationSnippets.ps1`
+
 The workbook is the file that contains the assessment summary and findings. The most assessment-oriented worksheets are:
 
 - `BestPractices`
@@ -129,7 +136,9 @@ The assessment run supports six need-based output profiles:
 `SolutionsEngineer` is the default profile.
 You can run multiple profiles in one command by passing a comma-separated list (for example `SolutionsEngineer,ExecutiveLevel`).
 When multiple profiles are supplied, the assessment runs once using the highest required reporting scope and produces the union of requested artifacts.
-If you use `-RunImprove` and the selected profile list would not normally emit JSON, the launcher temporarily appends `Machine` so the run preserves a reusable snapshot for the improvement-plan step.
+Because `M365` now includes `Improve` by default, the launcher automatically appends `Machine` when the selected profile list would not normally emit JSON so the run preserves a reusable snapshot for the remediation step.
+
+`-RunImprove` remains available for `M365Collect` when you want to collect a snapshot and immediately post-process it, but it is no longer required for the main `M365` workflow.
 
 Reporting scope is not prompted interactively. Scope is automatically derived from the selected output profile.
 

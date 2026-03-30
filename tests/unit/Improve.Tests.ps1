@@ -129,14 +129,15 @@ Describe 'Improve workflow' {
                     }
                 }
                 Exchange = @{
-                    AllMailboxes = @(
-                        [pscustomobject]@{
+                    AllMailboxes = @{
+                        '001-forwarded-mailbox' = [pscustomobject]@{
                             DisplayName             = 'Forwarded Mailbox'
                             DeliverToMailboxAndForward = $true
                             ForwardingSmtpAddress   = 'external@example.com'
                             RecipientTypeDetails    = 'UserMailbox'
+                            PrimarySmtpAddress      = 'forwarded@contoso.com'
                         }
-                    )
+                    }
                     MailFlowConnectors = @(
                         [pscustomobject]@{
                             Enabled                = $true
@@ -152,6 +153,37 @@ Describe 'Improve workflow' {
                         Summary = [pscustomobject]@{
                             OversizedSharedMailboxes         = 0
                             SharedMailboxesWithoutOwnerSignal = 12
+                        }
+                    }
+                    InboxRulesExternalForwarding = @{
+                        '001-forward-rule' = [pscustomobject]@{
+                            Mailbox            = 'forwarded@contoso.com'
+                            RuleName           = 'Forward Externally'
+                            Enabled            = $true
+                            ExternalTargets    = 'external@example.com'
+                            ForwardTargetCount = 1
+                        }
+                    }
+                    InboxRuleForwardingSummary = @{
+                        Summary = [pscustomobject]@{
+                            InspectedMailboxCount       = 1
+                            ExternalForwardingRuleCount = 1
+                            CollectionState             = 'Collected'
+                        }
+                    }
+                    ForwardingPolicySummary = @{
+                        Summary = [pscustomobject]@{
+                            PolicyCollectionState                    = 'Collected'
+                            HostedOutboundPolicyCount                = 2
+                            HostedOutboundRuleCount                  = 1
+                            PoliciesExplicitlyAllowingAutoForwarding = 1
+                            PoliciesRestrictingAutoForwarding        = 1
+                            PolicyAutoForwardingModes                = 'Default=Off; Pilot Allow External=On'
+                            PoliciesReferencedByRules                = 'Pilot Allow External'
+                            RemoteDomainCount                        = 2
+                            RemoteDomainsAllowingAutoForwarding      = 1
+                            RemoteDomainsAllowingAutoForwardingList  = 'partner.example'
+                            DefaultRemoteDomainAllowsAutoForwarding  = $false
                         }
                     }
                 }
@@ -275,8 +307,8 @@ Describe 'Improve workflow' {
         $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
 
         Test-Path $result.JsonPath | Should -BeTrue
-        Test-Path $result.CsvPath | Should -BeTrue
-        Test-Path $result.MarkdownPath | Should -BeTrue
+        $result.CsvPath | Should -BeNullOrEmpty
+        $result.MarkdownPath | Should -BeNullOrEmpty
         Test-Path $result.CustomerRemediationReportPath | Should -BeTrue
         Test-Path $result.EngineerActionPackPath | Should -BeTrue
         Test-Path $result.RemediationPs1Path | Should -BeTrue
@@ -304,12 +336,15 @@ Describe 'Improve workflow' {
         @($payload.Findings | Where-Object { $_.RuleId -eq 'CA-002' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'CA-010' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'CA-012' }).Count | Should -BeGreaterThan 0
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'EX-001' }).Count | Should -BeGreaterThan 0
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'EX-006' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'EX-007' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'DEV-005' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'DEV-006' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'COL-005' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'COL-006' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.TargetValue -eq 'Reduce open findings in this workstream' }).Count | Should -Be 0
+        @($payload.Findings | Where-Object { $_.TargetValue -match 'unauthorized mailbox forwarding|unauthorized inbox-rule forwarding' }).Count | Should -Be 0
 
         $id007 = @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-007' }) | Select-Object -First 1
         $id007.WhyFlagged | Should -Match 'permission'
@@ -318,22 +353,37 @@ Describe 'Improve workflow' {
         $col002 = @($payload.Findings | Where-Object { $_.RuleId -eq 'COL-002' }) | Select-Object -First 1
         $col002.Finding | Should -Be 'OneDrive delegated ownership review is required.'
 
+        $ex001 = @($payload.Findings | Where-Object { $_.RuleId -eq 'EX-001' }) | Select-Object -First 1
+        $ex001.CurrentValue | Should -Match '^1 mailbox\(es\) with forwarding configured'
+        $ex001.CurrentValue | Should -Match '1 hosted outbound policy/policies explicitly allow auto-forwarding'
+        $ex001.CurrentValue | Should -Match '1 remote domain\(s\) have AutoForwardEnabled'
+        $ex001.CurrentValue | Should -Match 'Default remote domain AutoForwardEnabled=False'
+        $ex001.TargetValue | Should -Be 'All mailbox forwarding configurations reviewed and either approved or removed, with tenant forwarding policy aligned to the approved baseline'
+
+        $ex006 = @($payload.Findings | Where-Object { $_.RuleId -eq 'EX-006' }) | Select-Object -First 1
+        $ex006.CurrentValue | Should -Match 'external-forwarding inbox rule\(s\)'
+        $ex006.CurrentValue | Should -Match 'Observed policy modes: Default=Off; Pilot Allow External=On'
+        $ex006.TargetValue | Should -Be 'All external inbox-rule forwarding paths reviewed and either approved or removed, with tenant forwarding policy aligned to the approved baseline'
+
         $customerReport = Get-Content -Raw $result.CustomerRemediationReportPath
         $customerReport | Should -Match '## Executive Summary'
         $customerReport | Should -Match '## Phased Roadmap'
         $customerReport | Should -Match '## Workstream Summary'
         $customerReport | Should -Not -Match 'AREA-'
+        $customerReport | Should -Match 'Current State'
+        $customerReport | Should -Match '1 mailbox\(es\) with forwarding configured'
+        $customerReport | Should -Match 'external-forwarding inbox rule\(s\)'
+        $customerReport | Should -Match 'hosted outbound policy/policies explicitly allow auto-forwarding'
+        $customerReport | Should -Match 'remote domain\(s\) have AutoForwardEnabled'
+        $customerReport | Should -Not -Match 'unauthorized mailbox forwarding'
+        $customerReport | Should -Not -Match 'unauthorized inbox-rule forwarding'
 
         $engineerPack = Get-Content -Raw $result.EngineerActionPackPath
         $engineerPack | Should -Match '## Normalized Findings'
         $engineerPack | Should -Match '## Command References'
         $engineerPack | Should -Match 'Why Flagged'
         $engineerPack | Should -Match 'Example'
-
-        $planMarkdown = Get-Content -Raw $result.MarkdownPath
-        $planMarkdown | Should -Match '## Workstream Summary'
-        $planMarkdown | Should -Match 'Recommended Action'
-        $planMarkdown | Should -Not -Match 'Reduce open findings in this workstream'
+        $engineerPack | Should -Not -Match 'CSV output:'
 
         $snippetContent = Get-Content -Raw $result.RemediationPs1Path
         $snippetContent | Should -Match '\$gaRole = Get-MgDirectoryRole'

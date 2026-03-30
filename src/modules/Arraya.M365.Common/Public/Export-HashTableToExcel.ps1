@@ -121,7 +121,7 @@ function Export-HashTableToExcel {
         "Users", "UserFullDetails", "DeviceDetails",
 
         # Mailboxes
-        "AllMailboxes", "PrimaryMailboxStats", "MailboxFullDetails", "SharedMailboxGovernanceSummary", "InboxRuleForwardingSummary", "InboxRulesExternalForwarding", "ArchiveMailboxes", "ArchiveMailboxStats", "LitigationHoldMailboxes", "InactiveMailboxes", "InactiveMailboxDetails", "EmailActivityTopSenders", "EmailActivityTopReceivers", "TeamsActivityTopUsers", "Office365GroupsActivityTopGroups", "EmployeeExperienceInsightsSummary", "CollaborationActivitySummary", "NonUserMailboxes", "AllRecipients",
+        "AllMailboxes", "PrimaryMailboxStats", "MailboxFullDetails", "SharedMailboxGovernanceSummary", "ForwardingPolicySummary", "InboxRuleForwardingSummary", "InboxRulesExternalForwarding", "ArchiveMailboxes", "ArchiveMailboxStats", "LitigationHoldMailboxes", "InactiveMailboxes", "InactiveMailboxDetails", "EmailActivityTopSenders", "EmailActivityTopReceivers", "TeamsActivityTopUsers", "Office365GroupsActivityTopGroups", "EmployeeExperienceInsightsSummary", "CollaborationActivitySummary", "NonUserMailboxes", "AllRecipients",
 
         # Groups
         "AllExchangeGroups", "UnifiedGroups", "AllTeams", "EntraIDGroups",

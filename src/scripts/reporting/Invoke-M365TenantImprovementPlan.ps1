@@ -5,7 +5,9 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$OutputFolder,
     [Parameter(Mandatory = $false)]
-    [switch]$UseGraphFallback
+    [switch]$UseGraphFallback,
+    [Parameter(Mandatory = $false)]
+    [switch]$IncludeLegacyArtifacts
 )
 
 $resolveRepoRootHelperPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\shared\Resolve-ArrayaRepoRoot.ps1'))
@@ -16,11 +18,10 @@ if (-not (Test-Path -Path $resolveRepoRootHelperPath)) {
 
 $repoRoot = Resolve-ArrayaRepoRoot -StartPath $PSScriptRoot
 $runnerManifestPath = Join-Path $repoRoot 'src\modules\Arraya.M365.AssessmentRunner\Arraya.M365.AssessmentRunner.psd1'
-if (-not (Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction SilentlyContinue)) {
-    Import-Module -Name $runnerManifestPath -ErrorAction Stop
-}
+Import-Module -Name $runnerManifestPath -Force -DisableNameChecking -ErrorAction Stop
 
 $invokeParams = @{ AssessmentJsonPath = $AssessmentJsonPath }
 if ($PSBoundParameters.ContainsKey('OutputFolder')) { $invokeParams.OutputFolder = $OutputFolder }
 if ($PSBoundParameters.ContainsKey('UseGraphFallback')) { $invokeParams.UseGraphFallback = $UseGraphFallback }
+if ($PSBoundParameters.ContainsKey('IncludeLegacyArtifacts')) { $invokeParams.IncludeLegacyArtifacts = $IncludeLegacyArtifacts }
 Invoke-M365ImprovementPlan @invokeParams

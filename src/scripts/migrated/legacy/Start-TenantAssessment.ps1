@@ -6,6 +6,8 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$RunImprove,
     [Parameter(Mandatory = $false)]
+    [switch]$SkipImprove,
+    [Parameter(Mandatory = $false)]
     [string[]]$OutputProfile,
     [Parameter(Mandatory = $false)]
     [string]$ExportPath,
