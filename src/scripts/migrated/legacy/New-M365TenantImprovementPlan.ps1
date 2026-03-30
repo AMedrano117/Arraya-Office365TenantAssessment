@@ -1336,7 +1336,7 @@ $phaseItems
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>$([System.Net.WebUtility]::HtmlEncode($TenantName)) Microsoft 365 Remediation Report</title>
+  <title>$([System.Net.WebUtility]::HtmlEncode($TenantName)) Customer Remediation Report | Arraya Solutions</title>
   <style>
     :root {
       --bg: #f4f1ea;
@@ -1391,6 +1391,13 @@ $phaseItems
       padding: 16px;
     }
     .summary-card ul { margin: 0; padding-left: 18px; }
+    .eyebrow {
+      color: var(--accent);
+      font: 700 11px/1.4 "Segoe UI", "Aptos", Tahoma, sans-serif;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
     .risk-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -1454,11 +1461,14 @@ $phaseItems
 <body>
   <main>
     <header>
+      <div class="eyebrow">Prepared by Arraya Solutions</div>
       <h1>$([System.Net.WebUtility]::HtmlEncode($TenantName)) Microsoft 365 Remediation Report</h1>
       <p class="lede">This report turns the tenant assessment into a remediation-first customer deliverable. It focuses on business-impacting risks, governance gaps, and the workstreams needed to improve tenant posture.</p>
       <div class="meta">
         <div><strong>Generated:</strong> $([System.Net.WebUtility]::HtmlEncode($GeneratedAt.ToString('yyyy-MM-dd HH:mm:ss')))</div>
         <div><strong>Assessment Snapshot:</strong> $([System.Net.WebUtility]::HtmlEncode($AssessmentJsonPath))</div>
+        <div><strong>Prepared by:</strong> Arraya Solutions</div>
+        <div><strong>Artifact:</strong> Customer Remediation Report</div>
       </div>
     </header>
 
@@ -1516,6 +1526,10 @@ $topPriorityHtml
     <section>
       <h2>Remediation Themes By Workstream</h2>
       $workstreamThemeHtml
+    </section>
+    <section>
+      <h2>Prepared By</h2>
+      <p>Arraya Solutions prepared this remediation summary from the collected Microsoft 365 assessment snapshot for customer review and execution planning.</p>
     </section>
   </main>
 </body>

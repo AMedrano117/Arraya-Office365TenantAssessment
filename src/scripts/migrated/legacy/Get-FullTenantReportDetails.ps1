@@ -7488,8 +7488,10 @@ function Update-ExchangeGovernanceTables {
     $ruleIndex = 0
     foreach ($mailbox in $mailboxesToInspect) {
         $mailboxAddress = [string]$mailbox.PrimarySmtpAddress
+        $previousWarningPreference = $WarningPreference
         try {
-            $inboxRules = @(Get-InboxRule -Mailbox $mailboxAddress -ErrorAction Stop)
+            $WarningPreference = 'SilentlyContinue'
+            $inboxRules = @(Get-InboxRule -Mailbox $mailboxAddress -WarningAction SilentlyContinue -ErrorAction Stop)
             foreach ($rule in $inboxRules) {
                 $forwardTargets = @()
                 foreach ($propertyName in @('ForwardTo', 'ForwardAsAttachmentTo', 'RedirectTo')) {
@@ -7528,6 +7530,9 @@ function Update-ExchangeGovernanceTables {
         }
         catch {
             Write-Log -Type DEBUG -Message "[Update-ExchangeGovernanceTables] Inbox rule lookup failed for ${mailboxAddress}: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        }
+        finally {
+            $WarningPreference = $previousWarningPreference
         }
     }
 
