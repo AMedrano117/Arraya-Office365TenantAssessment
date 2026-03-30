@@ -38,6 +38,30 @@ function Invoke-M365TenantAssessmentExportPipeline {
         return $PSScriptRoot
     }
 
+    function Get-SupportDirectory {
+        $baseDirectory = [System.IO.Path]::GetDirectoryName($ExportDetails)
+        if ([string]::IsNullOrWhiteSpace($baseDirectory)) {
+            $baseDirectory = (Get-Location).Path
+        }
+
+        $supportDirectory = Join-Path -Path $baseDirectory -ChildPath 'Support'
+        if (-not (Test-Path -Path $supportDirectory)) {
+            $null = New-Item -ItemType Directory -Path $supportDirectory -Force
+        }
+
+        return $supportDirectory
+    }
+
+    function Test-SuppressedConsoleWarningMessage {
+        param([string]$Message)
+
+        if ([string]::IsNullOrWhiteSpace($Message)) {
+            return $false
+        }
+
+        return $Message -match '(?i)conditional access|inbox rule'
+    }
+
     function Write-PipelineLog {
         param(
             [string]$Type = 'INFO',
@@ -51,7 +75,14 @@ function Invoke-M365TenantAssessmentExportPipeline {
 
         switch ($Type.ToUpperInvariant()) {
             'ERROR' { Write-Error $Message }
-            'WARNING' { Write-Warning $Message }
+            'WARNING' {
+                if (Test-SuppressedConsoleWarningMessage -Message $Message) {
+                    Write-Verbose $Message
+                }
+                else {
+                    Write-Warning $Message
+                }
+            }
             default { Write-Host $Message }
         }
     }
@@ -128,7 +159,7 @@ function Invoke-M365TenantAssessmentExportPipeline {
             if (-not (Get-Command -Name Export-TenantStatsJson -ErrorAction SilentlyContinue)) {
                 throw 'Export-TenantStatsJson function is unavailable in the current session.'
             }
-            $jsonExportPath = $ExportDetails -replace '\.xlsx$', '.json'
+            $jsonExportPath = Join-Path -Path (Get-SupportDirectory) -ChildPath ([System.IO.Path]::GetFileNameWithoutExtension($ExportDetails) + '.json')
             # Preserve the full collection snapshot for re-export scenarios.
             Export-TenantStatsJson -TenantStatsHash $TenantStatsHash -Path $jsonExportPath
             $generatedArtifacts['JSON'] = $jsonExportPath
@@ -196,23 +227,23 @@ function Invoke-M365TenantAssessmentExportPipeline {
                 . $bestPracticesHelperPath
             }
             if (Get-Command -Name New-TenantAssessmentHtmlReport -ErrorAction SilentlyContinue) {
-                $assessmentHtmlPath = $ExportDetails -replace '\.xlsx$', '-BestPracticesAnalysis.html'
+                $assessmentHtmlPath = $ExportDetails -replace '\.xlsx$', '-BestPracticesSnapshot.html'
                 $assessmentHtmlResult = New-TenantAssessmentHtmlReport -TenantStatsHash $TenantStatsHash -OutputPath $assessmentHtmlPath
                 if ($assessmentHtmlResult.Success) {
                     $generatedArtifacts['Best Practices HTML'] = $assessmentHtmlResult.OutputPath
-                    Write-PipelineLog -Type INFO -Message "Best Practices Analysis HTML report generated: $($assessmentHtmlResult.OutputPath)"
-                    Try-OpenHtmlArtifact -Path $assessmentHtmlResult.OutputPath -Label 'Best Practices Analysis HTML'
+                    Write-PipelineLog -Type INFO -Message "Best Practices Snapshot HTML report generated: $($assessmentHtmlResult.OutputPath)"
+                    Try-OpenHtmlArtifact -Path $assessmentHtmlResult.OutputPath -Label 'Best Practices Snapshot HTML'
                 }
                 else {
-                    Write-PipelineLog -Type WARNING -Message "Best Practices Analysis HTML report generation failed: $($assessmentHtmlResult.Error)"
+                    Write-PipelineLog -Type WARNING -Message "Best Practices Snapshot HTML report generation failed: $($assessmentHtmlResult.Error)"
                 }
             }
             else {
-                Write-PipelineLog -Type WARNING -Message 'Skipping Best Practices Analysis HTML generation because New-TenantAssessmentHtmlReport is unavailable.'
+                Write-PipelineLog -Type WARNING -Message 'Skipping Best Practices Snapshot HTML generation because New-TenantAssessmentHtmlReport is unavailable.'
             }
         }
         catch {
-            Write-PipelineLog -Type WARNING -Message "Error generating Best Practices Analysis HTML report: $($_.Exception.Message)"
+            Write-PipelineLog -Type WARNING -Message "Error generating Best Practices Snapshot HTML report: $($_.Exception.Message)"
         }
     }
 
@@ -241,7 +272,7 @@ function Invoke-M365TenantAssessmentExportPipeline {
                     DeviceStaleMonths       = 6
                     DeviceCompliancePercent = 80
                 }
-                $htmlExportPath = $ExportDetails -replace '\.xlsx$', '.html'
+                $htmlExportPath = $ExportDetails -replace '\.xlsx$', '-TenantSnapshot.html'
                 $htmlResult = New-TenantHtmlReport -TenantStatsHash $TenantStatsHash -Thresholds $reportThresholds -OutputPath $htmlExportPath
                 if ($htmlResult.Success) {
                     $generatedArtifacts['Full HTML'] = $htmlResult.OutputPath

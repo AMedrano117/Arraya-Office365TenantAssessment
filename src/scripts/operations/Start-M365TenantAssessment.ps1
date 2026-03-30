@@ -227,6 +227,21 @@ function Resolve-LauncherLatestManifestPath {
     return $null
 }
 
+function Resolve-LauncherRunRootFromManifestPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ManifestPath
+    )
+
+    $manifestDirectory = Split-Path -Path $ManifestPath -Parent
+    if ([string]::Equals((Split-Path -Path $manifestDirectory -Leaf), 'Support', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return (Split-Path -Path $manifestDirectory -Parent)
+    }
+
+    return $manifestDirectory
+}
+
 function Invoke-LauncherImproveFromLatestRun {
     [CmdletBinding()]
     param(
@@ -245,8 +260,7 @@ function Invoke-LauncherImproveFromLatestRun {
 
     $resolvedOutputFolder = $OutputFolder
     if ([string]::IsNullOrWhiteSpace($resolvedOutputFolder)) {
-        $manifestDirectory = Split-Path -Path $manifestPath -Parent
-        $resolvedOutputFolder = Join-Path -Path $manifestDirectory -ChildPath 'Improve'
+        $resolvedOutputFolder = Resolve-LauncherRunRootFromManifestPath -ManifestPath $manifestPath
     }
 
     Write-Host ("Launching Improve from manifest: {0}" -f $manifestPath) -ForegroundColor Cyan

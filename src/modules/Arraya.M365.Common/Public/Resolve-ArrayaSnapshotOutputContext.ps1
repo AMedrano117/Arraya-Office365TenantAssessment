@@ -17,7 +17,14 @@ function Resolve-ArrayaSnapshotOutputContext {
     }
 
     if ([string]::IsNullOrWhiteSpace($OutputFolder)) {
-        $OutputFolder = Split-Path -Path $resolvedPrimaryInputPath -Parent
+        $defaultOutputFolder = Split-Path -Path $resolvedPrimaryInputPath -Parent
+        if ([string]::Equals((Split-Path -Path $defaultOutputFolder -Leaf), 'Support', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $parentFolder = Split-Path -Path $defaultOutputFolder -Parent
+            if (-not [string]::IsNullOrWhiteSpace($parentFolder)) {
+                $defaultOutputFolder = $parentFolder
+            }
+        }
+        $OutputFolder = $defaultOutputFolder
     }
     if (-not (Test-Path -Path $OutputFolder)) {
         $null = New-Item -ItemType Directory -Path $OutputFolder -Force

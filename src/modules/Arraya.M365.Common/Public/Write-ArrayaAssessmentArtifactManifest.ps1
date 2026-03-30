@@ -16,10 +16,17 @@ function Write-ArrayaAssessmentArtifactManifest {
     )
 
     $resolvedBasePath = [System.IO.Path]::GetFullPath($BaseExportPath)
-    $manifestPath = $resolvedBasePath -replace '\.xlsx$', '.manifest.json'
-    if ($manifestPath -eq $resolvedBasePath) {
-        $manifestPath = "$resolvedBasePath.manifest.json"
+    $baseDirectory = Split-Path -Path $resolvedBasePath -Parent
+    if ([string]::IsNullOrWhiteSpace($baseDirectory)) {
+        $baseDirectory = (Get-Location).Path
     }
+    $supportDirectory = Join-Path -Path $baseDirectory -ChildPath 'Support'
+    if (-not (Test-Path -Path $supportDirectory)) {
+        $null = New-Item -ItemType Directory -Path $supportDirectory -Force
+    }
+
+    $manifestFileName = [System.IO.Path]::GetFileNameWithoutExtension($resolvedBasePath) + '.manifest.json'
+    $manifestPath = Join-Path -Path $supportDirectory -ChildPath $manifestFileName
 
     $artifactRecords = @()
     foreach ($entry in $Artifacts.GetEnumerator()) {
@@ -61,4 +68,3 @@ function Write-ArrayaAssessmentArtifactManifest {
     [System.IO.File]::WriteAllText($manifestPath, $json, [System.Text.UTF8Encoding]::new($false))
     return $manifestPath
 }
-

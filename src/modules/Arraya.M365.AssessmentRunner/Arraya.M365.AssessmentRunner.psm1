@@ -157,6 +157,21 @@ function Resolve-AssessmentLatestManifestPath {
     return $null
 }
 
+function Resolve-AssessmentRunRootFromManifestPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ManifestPath
+    )
+
+    $manifestDirectory = Split-Path -Path $ManifestPath -Parent
+    if ([string]::Equals((Split-Path -Path $manifestDirectory -Leaf), 'Support', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return (Split-Path -Path $manifestDirectory -Parent)
+    }
+
+    return $manifestDirectory
+}
+
 function Update-AssessmentArtifactManifestWithImproveOutputs {
     [CmdletBinding()]
     param(
@@ -258,8 +273,8 @@ function Invoke-M365ImproveForAssessmentRun {
 
     $resolvedOutputFolder = $OutputFolder
     if ([string]::IsNullOrWhiteSpace($resolvedOutputFolder)) {
-        $manifestDirectory = Split-Path -Path $manifestPath -Parent
-        $resolvedOutputFolder = Join-Path -Path $manifestDirectory -ChildPath 'Improve'
+        $runRoot = Resolve-AssessmentRunRootFromManifestPath -ManifestPath $manifestPath
+        $resolvedOutputFolder = $runRoot
     }
 
     $improveResult = Invoke-M365ImprovementPlan `

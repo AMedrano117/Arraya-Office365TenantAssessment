@@ -128,150 +128,151 @@ function Get-GraphData {
     process {
         $CurrentUri = $QueryUri
         $MorePages = $true
+        try {
+            do {
+                $pageCount++
+                $Results = $null
+                $RetryCount = 0
+                $Success = $false
 
-        do {
-            $pageCount++
-            $Results = $null
-            $RetryCount = 0
-            $Success = $false
-
-            # Retry loop for handling throttling and transient errors
-            while (-not $Success -and $RetryCount -lt $MaxRetries) {
-                try {
-                    # Primary method: Use Microsoft Graph PowerShell SDK
-                    if (-not $UseRestMethod) {
-                        Write-Verbose "Page $pageCount : Invoke-MgGraphRequest => $CurrentUri"
-                        $Results = Invoke-MgGraphRequest -Uri $CurrentUri -Method GET -OutputType PSObject -ErrorAction Stop
-                        $Success = $true
-                    } else {
-                        # Fallback: Use REST method
-                        Write-Verbose "Page $pageCount : Invoke-RestMethod => $CurrentUri"
-                        if (-not $Headers) {
-                            throw "No authentication headers available for Invoke-RestMethod. Please ensure you're connected to Microsoft Graph."
-                        }
-                        $Results = Invoke-RestMethod -Uri $CurrentUri -Headers $Headers -Method GET -ContentType "application/json" -UseBasicParsing -ErrorAction Stop
-                        $Success = $true
-                    }
-                }
-                catch {
-                    $statusCode = $null
-                    $retryAfter = 5
-
-                    # Extract status code if available
-                    if ($_.Exception.Response) {
-                        $statusCode = $_.Exception.Response.StatusCode.value__
-                        # Check for Retry-After header
-                        if ($_.Exception.Response.Headers -and $_.Exception.Response.Headers['Retry-After']) {
-                            $retryAfter = [int]$_.Exception.Response.Headers['Retry-After']
+                # Retry loop for handling throttling and transient errors
+                while (-not $Success -and $RetryCount -lt $MaxRetries) {
+                    try {
+                        # Primary method: Use Microsoft Graph PowerShell SDK
+                        if (-not $UseRestMethod) {
+                            Write-Verbose "Page $pageCount : Invoke-MgGraphRequest => $CurrentUri"
+                            $Results = Invoke-MgGraphRequest -Uri $CurrentUri -Method GET -OutputType PSObject -ProgressAction SilentlyContinue -ErrorAction Stop
+                            $Success = $true
+                        } else {
+                            # Fallback: Use REST method
+                            Write-Verbose "Page $pageCount : Invoke-RestMethod => $CurrentUri"
+                            if (-not $Headers) {
+                                throw "No authentication headers available for Invoke-RestMethod. Please ensure you're connected to Microsoft Graph."
+                            }
+                            $Results = Invoke-RestMethod -Uri $CurrentUri -Headers $Headers -Method GET -ContentType "application/json" -UseBasicParsing -ErrorAction Stop
+                            $Success = $true
                         }
                     }
+                    catch {
+                        $statusCode = $null
+                        $retryAfter = 5
 
-                    # Handle specific error codes
-                    switch ($statusCode) {
-                        429 {
-                            # Throttling - exponential backoff
-                            $waitTime = [math]::Min(($retryAfter * [math]::Pow(2, $RetryCount)), 300) # Max 5 minutes
-                            Write-Warning "Throttled (429). Waiting $waitTime seconds before retry $($RetryCount + 1)/$MaxRetries..."
-                            Start-Sleep -Seconds $waitTime
-                            $RetryCount++
+                        # Extract status code if available
+                        if ($_.Exception.Response) {
+                            $statusCode = $_.Exception.Response.StatusCode.value__
+                            # Check for Retry-After header
+                            if ($_.Exception.Response.Headers -and $_.Exception.Response.Headers['Retry-After']) {
+                                $retryAfter = [int]$_.Exception.Response.Headers['Retry-After']
+                            }
                         }
-                        401 {
-                            # Unauthorized - token might be expired
-                            Write-Warning "Authentication failed (401). Please reconnect to Microsoft Graph."
-                            throw $_
-                        }
-                        403 {
-                            # Forbidden - insufficient permissions
-                            Write-Warning "Access denied (403). Insufficient permissions for: $CurrentUri"
-                            throw $_
-                        }
-                        404 {
-                            # Not found - return empty
-                            Write-Warning "Resource not found (404): $CurrentUri"
-                            return @()
-                        }
-                        503 {
-                            # Service unavailable - retry with backoff
-                            $waitTime = [math]::Min((5 * [math]::Pow(2, $RetryCount)), 60)
-                            Write-Warning "Service unavailable (503). Waiting $waitTime seconds before retry $($RetryCount + 1)/$MaxRetries..."
-                            Start-Sleep -Seconds $waitTime
-                            $RetryCount++
-                        }
-                        default {
-                            # For SDK failure, try REST fallback once
-                            if (-not $UseRestMethod -and $Headers) {
-                                Write-Warning "Invoke-MgGraphRequest failed: $($_.Exception.Message). Falling back to Invoke-RestMethod..."
-                                $UseRestMethod = $true
+
+                        # Handle specific error codes
+                        switch ($statusCode) {
+                            429 {
+                                # Throttling - exponential backoff
+                                $waitTime = [math]::Min(($retryAfter * [math]::Pow(2, $RetryCount)), 300) # Max 5 minutes
+                                Write-Warning "Throttled (429). Waiting $waitTime seconds before retry $($RetryCount + 1)/$MaxRetries..."
+                                Start-Sleep -Seconds $waitTime
                                 $RetryCount++
-                            } else {
-                                Write-Error "Graph API request failed: $($_.Exception.Message)"
+                            }
+                            401 {
+                                # Unauthorized - token might be expired
+                                Write-Warning "Authentication failed (401). Please reconnect to Microsoft Graph."
                                 throw $_
+                            }
+                            403 {
+                                # Forbidden - insufficient permissions
+                                Write-Warning "Access denied (403). Insufficient permissions for: $CurrentUri"
+                                throw $_
+                            }
+                            404 {
+                                # Not found - return empty
+                                Write-Warning "Resource not found (404): $CurrentUri"
+                                return @()
+                            }
+                            503 {
+                                # Service unavailable - retry with backoff
+                                $waitTime = [math]::Min((5 * [math]::Pow(2, $RetryCount)), 60)
+                                Write-Warning "Service unavailable (503). Waiting $waitTime seconds before retry $($RetryCount + 1)/$MaxRetries..."
+                                Start-Sleep -Seconds $waitTime
+                                $RetryCount++
+                            }
+                            default {
+                                # For SDK failure, try REST fallback once
+                                if (-not $UseRestMethod -and $Headers) {
+                                    Write-Warning "Invoke-MgGraphRequest failed: $($_.Exception.Message). Falling back to Invoke-RestMethod..."
+                                    $UseRestMethod = $true
+                                    $RetryCount++
+                                } else {
+                                    Write-Error "Graph API request failed: $($_.Exception.Message)"
+                                    throw $_
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            # Check if max retries exceeded
-            if (-not $Success) {
-                Write-Error "Failed to retrieve data after $MaxRetries attempts from: $CurrentUri"
-                break
-            }
-
-            # Process results
-            if ($Results.value) {
-                # Standard Graph response with value property
-                foreach ($item in $Results.value) {
-                    $QueryResults.Add([PSObject]$item)
+                # Check if max retries exceeded
+                if (-not $Success) {
+                    Write-Error "Failed to retrieve data after $MaxRetries attempts from: $CurrentUri"
+                    break
                 }
-                $totalRecordsRetrieved += $Results.value.Count
-            } elseif ($Results -is [System.Collections.IEnumerable] -and -not $Results.PSObject.Properties['value']) {
-                # Collection without value property (some reports)
-                foreach ($item in $Results) {
-                    $QueryResults.Add([PSObject]$item)
+
+                # Process results
+                if ($Results.value) {
+                    # Standard Graph response with value property
+                    foreach ($item in $Results.value) {
+                        $QueryResults.Add([PSObject]$item)
+                    }
+                    $totalRecordsRetrieved += $Results.value.Count
+                } elseif ($Results -is [System.Collections.IEnumerable] -and -not $Results.PSObject.Properties['value']) {
+                    # Collection without value property (some reports)
+                    foreach ($item in $Results) {
+                        $QueryResults.Add([PSObject]$item)
+                    }
+                    $totalRecordsRetrieved += $Results.Count
+                } elseif ($Results) {
+                    # Single object response
+                    $QueryResults.Add([PSObject]$Results)
+                    $totalRecordsRetrieved++
                 }
-                $totalRecordsRetrieved += $Results.Count
-            } elseif ($Results) {
-                # Single object response
-                $QueryResults.Add([PSObject]$Results)
-                $totalRecordsRetrieved++
-            }
 
-            # Update progress
-            $progressParams = @{
-                Total     = [math]::Max($totalRecordsRetrieved, 1)  # Prevent divide by zero
-                Activity  = $Activity
-                Operation = "$Operation (Page $pageCount, $totalRecordsRetrieved records)"
-                Id        = $Id
-            }
-            if ($PSBoundParameters.ContainsKey('ParentId')) {
-                $progressParams.ParentId = $ParentId
-            }
-            Write-ProgressHelper @progressParams
+                # Update progress
+                $progressParams = @{
+                    Total     = [math]::Max($totalRecordsRetrieved, 1)  # Prevent divide by zero
+                    Activity  = $Activity
+                    Operation = "$Operation (Page $pageCount, $totalRecordsRetrieved records)"
+                    Id        = $Id
+                }
+                if ($PSBoundParameters.ContainsKey('ParentId')) {
+                    $progressParams.ParentId = $ParentId
+                }
+                Write-ProgressHelper @progressParams
 
-            # Check for next page
-            $NextLink = $null
-            if ($Results.'@odata.nextLink') {
-                $NextLink = $Results.'@odata.nextLink'
-            } elseif ($Results.PSObject.Properties['nextLink']) {
-                $NextLink = $Results.nextLink
-            }
+                # Check for next page
+                $NextLink = $null
+                if ($Results.'@odata.nextLink') {
+                    $NextLink = $Results.'@odata.nextLink'
+                } elseif ($Results.PSObject.Properties['nextLink']) {
+                    $NextLink = $Results.nextLink
+                }
 
-            if ($NextLink) {
-                $CurrentUri = $NextLink
-                Write-Verbose "Next page available: $NextLink"
-            } else {
-                $MorePages = $false
-                Write-Verbose "No more pages. Total records retrieved: $totalRecordsRetrieved"
-            }
+                if ($NextLink) {
+                    $CurrentUri = $NextLink
+                    Write-Verbose "Next page available: $NextLink"
+                } else {
+                    $MorePages = $false
+                    Write-Verbose "No more pages. Total records retrieved: $totalRecordsRetrieved"
+                }
 
-        } while ($MorePages)
+            } while ($MorePages)
+        }
+        finally {
+            Write-ProgressHelper -Total 1 -Activity $Activity -Id $Id -Completed
+        }
     }
 
     end {
-        # Complete the progress bar
-        Write-ProgressHelper -Total 1 -Activity $Activity -Id $Id -Completed
-
         # Return results
         Write-Verbose "Returning $($QueryResults.Count) total results"
         if ($QueryResults.Count -eq 0) {
