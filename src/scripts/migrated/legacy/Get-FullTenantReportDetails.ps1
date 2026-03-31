@@ -2283,7 +2283,7 @@ function Get-AllUnifiedGroups {
             Write-Host "  Querying unified groups from Exchange Online..." -ForegroundColor DarkGray
             Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Status "Starting query"
             switch ($detailLevel) {
-                {$_ -in "minimum", "combined", "all"} { 
+                {$_ -in "minimum", "operator", "combined", "automation", "all"} { 
                     $DesiredProperties = @(
                         "PrimarySmtpAddress", "DisplayName", "AccessType", "RecipientTypeDetails",
                         "ExternalDirectoryObjectId",
@@ -5324,7 +5324,7 @@ function Get-AllDevicesReport {
 
         # Filter for Desired Attributes
         switch ($detailLevel) {
-            {$_ -in "minimum", "combined", "all"} { 
+            {$_ -in "minimum", "operator", "combined", "automation", "all"} { 
                 $devices = $devices | Select $DesiredProperties
             }
             geek {$devices = $devices}
@@ -5457,7 +5457,7 @@ function Get-ConditionalAccessPoliciesReport {
         }
 
         switch ($detailLevel) {
-            { $_ -in "minimum", "combined", "all" } {
+            { $_ -in "minimum", "operator", "combined", "automation", "all" } {
                 $DesiredProperties = @(
                     "Id", "DisplayName", "CreatedDateTime", "ModifiedDateTime", "Description", "State",
                     "Conditions", "GrantControls", "SessionControls"
@@ -5887,7 +5887,7 @@ function Get-SecuritySecureScoreReport {
 function Get-AuthenticationConfiguration {
     param (
         [Parameter(Mandatory=$True,HelpMessage='Provide the level of detail')]
-        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel
     )
     

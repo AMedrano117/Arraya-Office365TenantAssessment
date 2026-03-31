@@ -3,7 +3,7 @@ function Get-AllExchangeMailboxDetails {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory=$True,HelpMessage='Provide the level of detail')]
-        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel,
         [Parameter(Mandatory = $false)]
         $Context
@@ -188,7 +188,7 @@ function Get-AllExchangeMailboxDetails {
                     Get-EXOMailbox -Filter "RecipientTypeDetails -ne 'DiscoveryMailbox'" -Properties $Properties -IncludeInactiveMailbox -ResultSize Unlimited -ErrorAction SilentlyContinue | Select-Object $DesiredProperties
                 }
             }
-            "combined" {
+            { $_ -in @("operator", "combined", "automation") } {
                 # Combined mode optimization: request a slimmer property set to reduce EXO payload and local projection overhead.
                 $Properties = @(
                     "ExternalDirectoryObjectId", "DisplayName", "Office", "UserPrincipalName", "RecipientTypeDetails", "PrimarySmtpAddress"
@@ -665,7 +665,7 @@ function Get-AllExchangeMailboxDetails {
                     $unifiedGroupsForStats = if ($unifiedGroupsInventoryCache) { @($unifiedGroupsInventoryCache) } else { @() }
                     if ($unifiedGroupsForStats.Count -eq 0) {
                         switch ($detailLevel) {
-                            {$_ -in "minimum", "combined", "all"} {
+                            {$_ -in "minimum", "operator", "combined", "automation", "all"} {
                                 $desiredUnifiedGroupProperties = @(
                                     "PrimarySmtpAddress", "DisplayName", "AccessType", "RecipientTypeDetails",
                                     "ExternalDirectoryObjectId",
@@ -748,7 +748,7 @@ function Get-AllExchangeMailboxDetails {
                 }
                 if ($unifiedGroupsForStats.Count -eq 0) {
                     switch ($detailLevel) {
-                        {$_ -in "minimum", "combined", "all"} {
+                        {$_ -in "minimum", "operator", "combined", "automation", "all"} {
                             $desiredUnifiedGroupProperties = @(
                                 "PrimarySmtpAddress", "DisplayName", "AccessType", "RecipientTypeDetails",
                                 "ExternalDirectoryObjectId",

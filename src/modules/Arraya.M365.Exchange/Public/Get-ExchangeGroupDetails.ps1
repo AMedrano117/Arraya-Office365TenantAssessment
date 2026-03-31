@@ -3,7 +3,7 @@ function Get-ExchangeGroupDetails {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory=$True,HelpMessage='Provide the level of detail')]
-        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel,
         [Parameter(Mandatory = $false)]
         $Context

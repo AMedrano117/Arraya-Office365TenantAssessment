@@ -2,7 +2,7 @@ function Get-EntraIDGroups {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true, HelpMessage = 'Provide the level of detail')]
-        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel,
         [Parameter(Mandatory = $false, HelpMessage = 'Provide the Graph Authentication Type')]
         [ValidateSet('SDK', 'REST')]

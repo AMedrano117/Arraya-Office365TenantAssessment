@@ -3,7 +3,7 @@ function Get-AllPublicFolderDetails {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory=$True,HelpMessage='Provide the level of detail')]
-        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel,
         [Parameter(Mandatory=$false, HelpMessage='Specify Exchange Environment')]
         [ValidateSet('On-Premises', 'Office365')]
@@ -25,7 +25,7 @@ function Get-AllPublicFolderDetails {
     try {
         #Get Public Folder Data, Statistics, and Permissions
         switch ($detailLevel) {
-            {$_ -in "minimum", "combined", "all"} { 
+            {$_ -in "minimum", "operator", "combined", "automation", "all"} { 
                 $DesiredProperties = @(
                     "Identity", "Name", "MailEnabled"
                     "MailRecipientGuid", "ParentPath", "ContentMailboxName"

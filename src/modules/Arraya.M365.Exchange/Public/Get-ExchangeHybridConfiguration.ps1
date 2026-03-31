@@ -2,7 +2,7 @@ function Get-ExchangeHybridConfiguration {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel,
         [Parameter(Mandatory = $false)]
         $Context
@@ -122,7 +122,7 @@ function Get-ExchangeHybridConfiguration {
             MailFlowOnPremConnectorCount = $onPremFlowConnectors.Count
         }
 
-        if ($detailLevel -in @('combined', 'all', 'geek')) {
+        if ($detailLevel -in @('operator', 'combined', 'automation', 'all', 'geek')) {
             $details | Add-Member NoteProperty OrganizationRelationships ($signals.OrganizationRelationships -join ', ')
             $details | Add-Member NoteProperty InboundOnPremConnectors ($signals.InboundConnectorsOnPrem -join ', ')
             $details | Add-Member NoteProperty OutboundOnPremConnectors ($signals.OutboundConnectorsOnPrem -join ', ')

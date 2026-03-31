@@ -3,7 +3,7 @@ function Get-MailFlowRulesandConnectors {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true, HelpMessage = 'Provide the level of detail')]
-        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel,
         [Parameter(Mandatory = $false)]
         $Context
@@ -54,7 +54,7 @@ function Get-MailFlowRulesandConnectors {
     try {
         Write-Log -Type INFO -Message 'Gathering all Mail Flow Rules' -ExportFileLocation $exportDetails
         switch ($detailLevel) {
-            { $_ -in 'minimum', 'combined', 'all' } {
+            { $_ -in 'minimum', 'operator', 'combined', 'automation', 'all' } {
                 $desiredProperties = @('Name', 'State', 'Mode', 'Priority', 'Description')
                 try { $mailFlowRules = Get-TransportRule -IncludeTestModeConnectors -ErrorAction Continue | Select-Object $desiredProperties }
                 catch { $mailFlowRules = Get-TransportRule -ErrorAction Continue | Select-Object $desiredProperties }
@@ -87,7 +87,7 @@ function Get-MailFlowRulesandConnectors {
         $mailFlowOutboundConnectors = Get-OutboundConnector -IncludeTestModeConnectors $true -ErrorAction Stop
         Write-Log -Type INFO -Message "[Get-MailFlowRulesandConnectors] Found $(($mailFlowOutboundConnectors | Measure-Object).Count) Outbound Mail Connectors" -ExportFileLocation $exportDetails
 
-        if ($detailLevel -in @('minimum', 'combined', 'all')) {
+        if ($detailLevel -in @('minimum', 'operator', 'combined', 'automation', 'all')) {
             $desiredProperties = @(
                 'Id', 'ConnectorDirection', 'Comment', 'Enabled', 'TestMode', 'ConnectorType',
                 'UseMXRecord', 'IsTransportRuleScoped', 'RecipientDomains',
