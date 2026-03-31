@@ -7,6 +7,8 @@ For operator-focused setup and execution guidance, use [RUN.md](RUN.md).
 ## Operator References
 - [RUN.md](RUN.md)
 - [Tenant Assessment Quick Start](docs/runbooks/tenant-assessment-quick-start.md)
+- [App Registration Setup](docs/runbooks/app-registration-setup.md)
+- [Certificate Auth Setup](docs/runbooks/certificate-auth-setup.md)
 - [Improvement Plan Rule Taxonomy](docs/runbooks/improvement-plan-rule-taxonomy.md)
 
 ## User Quick Start
@@ -94,43 +96,56 @@ Examples:
 ```
 
 ## Assessment Outputs
-For a default `-Action M365` run, the primary deliverables are now:
+For a default `-Action M365` run, the top-level operator deliverables are now:
 
 - `*-CustomerRemediationReport.html`: the primary customer-facing deliverable generated from `Improve`
 - `*-EngineerActionPack.md`: the primary engineer-facing remediation deliverable
-- `*-ImprovementPlan.json`: the machine-readable remediation payload
-- `*-RemediationSnippets.ps1`: operator helper commands
-- `*.manifest.json`: artifact index for the run
-- `Debugging\...`: logs and troubleshooting bundles
+
+Support and machine-readable artifacts are written under `Support\...`:
+
+- `Support\*-ImprovementPlan.json`: the machine-readable remediation payload
+- `Support\*.manifest.json`: artifact index for the run
+- `Support\*-RemediationSnippets.ps1`: support helper commands
+
+Logs and troubleshooting output are written under `Debugging\...`.
 
 The workflow still preserves a JSON assessment snapshot so `Improve`, `M365Export`, and later comparison/report replay can work reliably.
 
 Legacy assessment artifacts are still available, but they are now compatibility outputs rather than default deliverables:
 
-- `*.xlsx`
-- `*.html`
-- `*-BestPracticesAnalysis.html`
+- `*-TenantSnapshot.html`
+- `*-BestPracticesSnapshot.html`
 - `*-TenantToTenantQuestionnaire.md`
 - `*.pdf`
 
-Use `-IncludeLegacyAssessmentArtifacts` when you explicitly want that older artifact family in the same run. Use `-IncludeLegacyArtifacts` when you also want the older `Improve` CSV/Markdown outputs.
+Workbook output is still a default deliverable for `SolutionsEngineer` and `TenantToTenantMigration`. Use `-IncludeLegacyAssessmentArtifacts` when you explicitly want the older HTML / questionnaire / PDF artifact family in the same run. Use `-IncludeLegacyArtifacts` when you also want the older `Improve` CSV/Markdown outputs.
 
 For operator guidance on how to interpret `Improve` findings and rule IDs, see [Improvement Plan Rule Taxonomy](docs/runbooks/improvement-plan-rule-taxonomy.md).
 
 ## Output Profiles
-The assessment run supports six need-based output profiles:
+The assessment run supports six operator-facing output profiles:
 
 - `Presales`: scope `Minimum`
-- `SolutionsEngineer`: scope `Combined`
 - `ExecutiveLevel`: scope `Minimum`
-- `TenantToTenantMigration`: scope `Combined`
+- `SolutionsEngineer`: scope `Operator`
+- `Machine`: scope `Automation`; intended for JSON-focused automation and replay paths
 - `Geek`: scope `Geek`
-- `Machine`: scope `Geek`; intended for JSON-focused automation paths
+- `TenantToTenantMigration`: scope `All`
 
 `SolutionsEngineer` is the default profile.
 You can run multiple profiles in one command by passing a comma-separated list (for example `SolutionsEngineer,ExecutiveLevel`).
 When multiple profiles are supplied, the assessment runs once using the highest required reporting scope.
 In the default `M365` flow, profiles now influence collection/reporting depth more than artifact sprawl. The consolidated remediation outputs stay the default regardless of profile, and the legacy workbook/HTML/questionnaire family is only added when you pass `-IncludeLegacyAssessmentArtifacts`.
+
+Detail levels are intended to be read this way:
+
+- `Minimum`: fastest leadership and presales story with lighter enrichment
+- `Operator`: standard consultant/operator assessment depth without the heavy combined user/mailbox projection
+- `Automation`: structured snapshot depth for `Improve`, export replay, and automation workflows
+- `Geek`: deep engineer troubleshooting depth
+- `All`: deepest migration-oriented collection for readiness, cutover analysis, and the full combined user/mailbox projection
+
+`Combined` remains accepted as a compatibility alias for `Operator` when older wrappers or scripts still pass the legacy name.
 
 `-RunImprove` remains available for `M365Collect` when you want to collect a snapshot and immediately post-process it, but it is no longer required for the main `M365` workflow.
 When you run `Improve` separately, use `-LiveRefresh` if you want snapshot-plus-live-refresh behavior; it is a friendlier alias for `-UseGraphFallback`.

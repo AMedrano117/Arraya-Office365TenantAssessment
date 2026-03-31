@@ -126,7 +126,7 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$OutputProfileLabel,
     [Parameter(Mandatory = $false)]
-    [ValidateSet('Minimum', 'Combined', 'Geek')]
+    [ValidateSet('Minimum', 'Operator', 'Combined', 'Automation', 'Geek', 'All')]
     [string]$ReportingModeOverride,
     [Parameter(Mandatory = $false)]
     [bool]$GenerateWorkbookOverride,
@@ -340,6 +340,29 @@ function Test-CollectorCommandAvailable {
     return $false
 }
 
+function Normalize-ArrayaReportingMode {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$Mode,
+        [Parameter(Mandatory = $false)][switch]$Lowercase
+    )
+
+    $normalized = switch -Regex (([string]$Mode).Trim().ToLowerInvariant()) {
+        '^combined$' { 'operator' }
+        '^operator$' { 'operator' }
+        '^automation$' { 'automation' }
+        '^geek$' { 'geek' }
+        '^all$' { 'all' }
+        default { 'minimum' }
+    }
+
+    if ($Lowercase) {
+        return $normalized
+    }
+
+    return ((Get-Culture).TextInfo.ToTitleCase($normalized))
+}
+
 Import-AssessmentCollectorModules -LegacyScriptRoot $PSScriptRoot
 $requiredCollectorCommands = @(
     'Get-AllRecipientDetails',
@@ -371,7 +394,8 @@ $resolvedReportingMode = if ($PSBoundParameters.ContainsKey('ReportingModeOverri
 else {
     [string]$profilePolicy.ReportingMode
 }
-$reportingMode = $resolvedReportingMode.ToLowerInvariant()
+$resolvedReportingMode = Normalize-ArrayaReportingMode -Mode $resolvedReportingMode
+$reportingMode = Normalize-ArrayaReportingMode -Mode $resolvedReportingMode -Lowercase
 
 $effectiveGenerateWorkbook = if ($PSBoundParameters.ContainsKey('GenerateWorkbookOverride')) {
     [bool]$GenerateWorkbookOverride
@@ -557,18 +581,19 @@ function Get-ArrayaCollectionDepthPolicy {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)]
-        [ValidateSet('Minimum', 'Combined', 'All', 'Geek')]
+        [ValidateSet('Minimum', 'Operator', 'Combined', 'Automation', 'All', 'Geek')]
         [string]$ReportingMode = 'Minimum'
     )
 
-    $mode = $ReportingMode.ToLowerInvariant()
+    $mode = Normalize-ArrayaReportingMode -Mode $ReportingMode -Lowercase
     $isMinimum = $mode -eq 'minimum'
-    $isCombined = $mode -eq 'combined'
+    $isOperator = $mode -eq 'operator'
+    $isAutomation = $mode -eq 'automation'
     $isAll = $mode -eq 'all'
     $isGeek = $mode -eq 'geek'
 
     return [PSCustomObject]@{
-        ReportingMode                   = $ReportingMode
+        ReportingMode                   = (Normalize-ArrayaReportingMode -Mode $mode)
         CollectEntraGroupDeepDetails    = (-not $isMinimum)
         CollectEntraGroupMemberCounts   = (-not $isMinimum)
         CollectEntraGroupOwnerCounts    = (-not $isMinimum)
@@ -579,9 +604,11 @@ function Get-ArrayaCollectionDepthPolicy {
         CollectFullMailboxNormalization = $true
         CollectUnifiedGroupMailboxStats = (-not $isMinimum)
         CollectFullSharePointDetail     = ($isAll -or $isGeek)
-        CollectExtendedGraphEnrichment  = ($isAll -or $isGeek)
+        CollectExtendedGraphEnrichment  = ($isAutomation -or $isAll -or $isGeek)
         IsMinimum                       = $isMinimum
-        IsCombined                      = $isCombined
+        IsOperator                      = $isOperator
+        IsCombined                      = $isOperator
+        IsAutomation                    = $isAutomation
         IsAll                           = $isAll
         IsGeek                          = $isGeek
     }
@@ -1200,6 +1227,22 @@ function Clear-TransientGraphProgress {
     }
 }
 
+function New-AssessmentStepResult {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Completed', 'Skipped', 'Partial', 'Failed')]
+        [string]$Status,
+        [Parameter(Mandatory = $false)]
+        [string]$Message
+    )
+
+    return [pscustomobject]@{
+        AssessmentStatus = $Status
+        Message          = $Message
+    }
+}
+
 function Invoke-AssessmentProgressStep {
     [CmdletBinding()]
     param(
@@ -1219,20 +1262,42 @@ function Invoke-AssessmentProgressStep {
     $percent = [math]::Round(($current / $total) * 100, 2)
     $memoryBefore = Get-CurrentProcessMemorySnapshot
     $stepStart = Get-Date
+    $stepStatus = 'Completed'
+    $stepMessage = $null
 
     if (Test-ShowAssessmentProgress) {
         Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Status "[$current/$total] $Name" -PercentComplete $percent
     }
+    Write-Host ("Gathering {0} ..." -f $Name) -ForegroundColor Cyan
     try {
         Sync-CollectorModuleRuntimeContext
-        $null = & $ScriptBlock
+        $stepResult = & $ScriptBlock
+        if ($stepResult -and $stepResult.PSObject -and $stepResult.PSObject.Properties['AssessmentStatus']) {
+            $stepStatus = [string]$stepResult.AssessmentStatus
+            if ($stepResult.PSObject.Properties['Message']) {
+                $stepMessage = [string]$stepResult.Message
+            }
+        }
         Sync-CollectorModuleRuntimeContextBack
-        Write-Host ("  Overall progress: {0}/{1} ({2}%) - {3}" -f $current, $total, $percent, $Name) -ForegroundColor Cyan
+    }
+    catch {
+        $stepStatus = 'Failed'
+        $stepMessage = $_.Exception.Message
+        throw
     }
     finally {
         Sync-CollectorModuleRuntimeContextBack
         $memoryAfter = Get-CurrentProcessMemorySnapshot
         $elapsed = (Get-Date) - $stepStart
+        $statusColor = switch ($stepStatus) {
+            'Completed' { 'Green' }
+            'Skipped' { 'Yellow' }
+            'Partial' { 'DarkYellow' }
+            default { 'Red' }
+        }
+        $statusSuffix = if ([string]::IsNullOrWhiteSpace($stepMessage)) { '' } else { " - $stepMessage" }
+        Write-Host ("  {0} in {1}" -f $stepStatus, $elapsed.ToString('hh\:mm\:ss')) -ForegroundColor $statusColor
+        Write-Host ("  Overall progress: {0}/{1} ({2}%) - {3} [{4}]{5}" -f $current, $total, $percent, $Name, $stepStatus, $statusSuffix) -ForegroundColor Cyan
         $script:AssessmentStepMetrics.Add([PSCustomObject]@{
             StepName             = $Name
             StartedAt            = $stepStart
@@ -1272,8 +1337,8 @@ function Invoke-ProfileAwareAssessmentStep {
     $profileLabelForSkip = if ([string]::IsNullOrWhiteSpace($script:EffectiveOutputProfileLabel)) { $OutputProfile } else { $script:EffectiveOutputProfileLabel }
     $skipMessage = "Skipped by output profile '$profileLabelForSkip': $SkipReason"
     Invoke-AssessmentProgressStep -Name $Name -ScriptBlock {
-        Write-Host ("{0} ...Skipped" -f $Name) -ForegroundColor DarkYellow
         Write-Log -Type INFO -Message ("[{0}] {1}" -f $Name, $skipMessage) -ExportFileLocation $ExportDetails
+        New-AssessmentStepResult -Status Skipped -Message $SkipReason
     }
 }
 
@@ -1736,7 +1801,7 @@ function Get-EmailActivityInsights {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, HelpMessage = 'Provide the level of detail')]
-        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel
     )
 
@@ -2188,7 +2253,7 @@ function Get-EmailActivityInsights {
 function Get-AllUnifiedGroups {
     param (
         [Parameter(Mandatory=$True,HelpMessage='Provide the level of detail')]
-        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel     
     )
     #Get Office 365 Group / Group Mailbox data with SharePoint URL data
@@ -2428,7 +2493,7 @@ function Get-SharePointAndOneDriveSites {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $True, HelpMessage = 'Provide the level of detail')]
-        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel,
 
         [Parameter(Mandatory = $True, HelpMessage = 'Provide the service name')]
@@ -2909,7 +2974,7 @@ function Get-SharePointAndOneDriveSites {
         [CmdletBinding()]
         param (
             [Parameter(Mandatory = $True, HelpMessage = 'Provide the level of detail')]
-            [ValidateSet('minimum', 'combined', 'all', 'geek')]
+            [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
             [string]$detailLevel
         )
         $totalCount = 1
@@ -2917,7 +2982,8 @@ function Get-SharePointAndOneDriveSites {
             Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSitesFromSPO] START: Gathering all SharePoint Online Sites with OneDrives with $($detailLevel) details" -ExportFileLocation $ExportDetails
             Write-Progress -Id $spoSitesProgressId -Activity "Gather all SharePoint Online Sites with OneDrives" -Status (((Get-Date) - $global:initialStart).ToString('hh\:mm\:ss'))
             switch ($detailLevel) {
-                geek { $sites = Get-SPOSite -IncludePersonalSite $True -Limit All }
+                'geek' { $sites = Get-SPOSite -IncludePersonalSite $True -Limit All }
+                'all' { $sites = Get-SPOSite -IncludePersonalSite $True -Limit All }
                 Default {  
                     $DesiredProperties = @("Template", "IsHubSite", "Title", "LastContentModifiedDate", "Status", "ArchiveStatus", "StorageUsageCurrent", "LockState", "Url", "Owner", "StorageQuota", "GroupId", "IsTeamsConnected", "IsTeamsChannelConnected", "SharingCapability", "DefaultLinkPermission", "DefaultSharingLinkType")
                     $sites = Get-SPOSite -IncludePersonalSite $True -Limit All | Select-Object -Property $DesiredProperties
@@ -3072,7 +3138,7 @@ function Get-TeamsDetails {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, HelpMessage = 'Provide the level of detail')]
-        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel,
         [Parameter(Mandatory = $false, HelpMessage = 'Provide the service name')]
         [ValidateSet('MGGraph', 'Teams')]
@@ -3335,7 +3401,6 @@ function Get-TeamsVoiceDetails {
     }
     $script:tenantStatsHash["TeamsVoice"] = @{}
 
-    Write-Host "Gathering Teams Voice details ..." -ForegroundColor Cyan -NoNewline
     Write-Log -Type INFO -Message "[Get-TeamsVoiceDetails] START: Gathering Teams Voice details" -ExportFileLocation $ExportDetails
 
     $teamsConnected = $false
@@ -3396,10 +3461,9 @@ function Get-TeamsVoiceDetails {
         $script:tenantStatsHash["TeamsVoice"]["VoiceUsers"] = $voiceUsers
 
         $elapsed = ((Get-Date) - $start).ToString('hh\:mm\:ss')
-        Write-Host " Skipped in $elapsed" -ForegroundColor Yellow
-        Write-Log -Type INFO -Message "[Get-TeamsVoiceDetails] Skipped because Teams PowerShell is not connected in the current session. Inferred $($voiceLicensedUsers.Count) voice-licensed users from Graph user licensing." -ExportFileLocation $ExportDetails
+        Write-Log -Type INFO -Message "[Get-TeamsVoiceDetails] Partial collection because Teams PowerShell is not connected in the current session. Inferred $($voiceLicensedUsers.Count) voice-licensed users from Graph user licensing." -ExportFileLocation $ExportDetails
         Write-Log -Type INFO -Message "[Get-TeamsVoiceDetails] COMPLETED in $elapsed" -ExportFileLocation $ExportDetails
-        return
+        return (New-AssessmentStepResult -Status Partial -Message 'Graph license inference only')
     }
 
     try {
@@ -3458,8 +3522,8 @@ function Get-TeamsVoiceDetails {
     $script:tenantStatsHash["TeamsVoice"]["VoiceUsers"] = $voiceUsers
 
     $elapsed = ((Get-Date) - $start).ToString('hh\:mm\:ss')
-    Write-Host " Completed in $elapsed" -ForegroundColor Green
     Write-Log -Type INFO -Message "[Get-TeamsVoiceDetails] COMPLETED in $elapsed" -ExportFileLocation $ExportDetails
+    return (New-AssessmentStepResult -Status Completed -Message 'Teams PowerShell data collected')
 }
 
 # ----------------------------------
@@ -3967,7 +4031,7 @@ function Get-AllUserDetails {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory=$True,HelpMessage='Provide the level of detail')]
-        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel
     )
     $start = Get-Date
@@ -3984,7 +4048,7 @@ function Get-AllUserDetails {
     )
     $minimumModeMessage = 'NotCollected (minimum mode)'
     $progressStatusInterval = 25
-    $isGeekDetail = ($detailLevel -eq 'geek')
+    $isGeekDetail = ($detailLevel -in @('geek', 'all'))
     $logPerUserDebug = $isGeekDetail
     $BasicMGDetails = $false
     $userCollectionState = [ordered]@{
@@ -4210,7 +4274,7 @@ function Get-AllUserDetails {
             return
         }
 
-        if ($detailLevel -eq 'geek') {
+        if ($detailLevel -in @('geek', 'all')) {
             Invoke-QuietCommand -ScriptBlock { Get-MgUser -All -ErrorAction Stop } |
                 Where-Object { $null -ne $_.ID } |
                 ForEach-Object { Process-TenantUserRecord -UserRecord $_ }
@@ -4873,6 +4937,51 @@ function Report-UserAndMailboxStats {
         return $sizeGb
     }
 
+    function New-IndexedLookupTable {
+        param(
+            [AllowNull()]$Source,
+            [Parameter(Mandatory = $true)]
+            [string[]]$PropertyNames
+        )
+
+        $index = @{}
+        if ($null -eq $Source) {
+            return $index
+        }
+
+        $records = @()
+        if ($Source -is [System.Collections.IDictionary]) {
+            $records = @($Source.Values)
+        }
+        elseif ($Source -is [System.Collections.IEnumerable] -and -not ($Source -is [string])) {
+            $records = @($Source)
+        }
+        else {
+            $records = @($Source)
+        }
+
+        foreach ($record in $records) {
+            if ($null -eq $record -or -not $record.PSObject) { continue }
+            foreach ($propertyName in $PropertyNames) {
+                if (-not $record.PSObject.Properties[$propertyName]) { continue }
+                $rawValue = [string]$record.PSObject.Properties[$propertyName].Value
+                if ([string]::IsNullOrWhiteSpace($rawValue)) { continue }
+
+                $trimmedValue = $rawValue.Trim()
+                if (-not $index.ContainsKey($trimmedValue)) {
+                    $index[$trimmedValue] = $record
+                }
+
+                $lowerValue = $trimmedValue.ToLowerInvariant()
+                if (-not $index.ContainsKey($lowerValue)) {
+                    $index[$lowerValue] = $record
+                }
+            }
+        }
+
+        return $index
+    }
+
     function Populate-Details {
         param (
             [Parameter(Mandatory = $true)]
@@ -4906,6 +5015,15 @@ function Report-UserAndMailboxStats {
                 if ($mailboxDetails) {
                     Write-Verbose "Mailbox Details Found (UPN): $($entity.UserPrincipalName)"
                 }
+            }
+            if (-not $mailboxDetails -and $lookupContext.AllMailboxesByPrimarySmtpAddress) {
+                $primarySmtpLookup = if ($entity.PSObject.Properties['PrimarySmtpAddress']) { [string]$entity.PrimarySmtpAddress } elseif ($entity.PSObject.Properties['PrimarySMTPAddress']) { [string]$entity.PrimarySMTPAddress } else { $null }
+                if (-not [string]::IsNullOrWhiteSpace($primarySmtpLookup)) {
+                    $mailboxDetails = Get-DictionaryValue -Dictionary $lookupContext.AllMailboxesByPrimarySmtpAddress -Key $primarySmtpLookup
+                }
+            }
+            if (-not $mailboxDetails -and $lookupContext.AllMailboxesByExternalDirectoryObjectId -and $entity.PSObject.Properties['ExternalDirectoryObjectId'] -and $entity.ExternalDirectoryObjectId) {
+                $mailboxDetails = Get-DictionaryValue -Dictionary $lookupContext.AllMailboxesByExternalDirectoryObjectId -Key $entity.ExternalDirectoryObjectId
             }
 
             if (-not $mailboxDetails) {
@@ -4979,10 +5097,12 @@ function Report-UserAndMailboxStats {
         UnifiedGroups                  = Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'UnifiedGroups'
         AllMailboxesByIdentity         = Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'AllMailboxes-MailIdentity'
         AllMailboxesByUserPrincipalName = Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'AllMailboxes-UserPrincipalName'
+        AllMailboxesByPrimarySmtpAddress = New-IndexedLookupTable -Source (Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'AllMailboxes') -PropertyNames @('PrimarySmtpAddress', 'PrimarySMTPAddress')
+        AllMailboxesByExternalDirectoryObjectId = New-IndexedLookupTable -Source (Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'AllMailboxes') -PropertyNames @('ExternalDirectoryObjectId')
         PrimaryMailboxStats            = Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'PrimaryMailboxStats'
         ArchiveMailboxStats            = Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'ArchiveMailboxStats'
-        SharePoint                     = Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'SharePoint'
-        OneDrive                       = Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'OneDrive'
+        SharePoint                     = New-IndexedLookupTable -Source (Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'SharePoint') -PropertyNames @('Url', 'URL', 'SiteUrl', 'WebUrl')
+        OneDrive                       = New-IndexedLookupTable -Source (Get-LookupTable -TenantStatsStore $tenantStatsStore -Key 'OneDrive') -PropertyNames @('UserPrincipalName', 'Owner', 'Url', 'URL', 'WebUrl', 'SiteUrl')
     }
 
     $statsSizeCache = @{}
@@ -5170,7 +5290,7 @@ function Report-UserAndMailboxStats {
 function Get-AllDevicesReport {
     param (
         [Parameter(Mandatory=$True,HelpMessage='Provide the level of detail')]
-        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel
     )
 
@@ -5294,7 +5414,7 @@ function Get-AllDevicesReport {
 function Get-ConditionalAccessPoliciesReport {
     param (
         [Parameter(Mandatory = $True, HelpMessage = 'Provide the level of detail')]
-        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel
     )
 
@@ -5535,7 +5655,7 @@ function Get-ConditionalAccessPoliciesReport {
 function Get-SecuritySecureScoreReport {
     param (
         [Parameter(Mandatory=$True,HelpMessage='Provide the level of detail')]
-        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel,
         [Parameter(Mandatory=$false,HelpMessage='Should It Only Pull the Most Recent?')]
         [Switch]$MostRecent 
@@ -7184,6 +7304,7 @@ $script:ProfileCollectionPlan = [ordered]@{
     BuildAssessmentReportTables      = ($effectiveGenerateBestPracticesHtml -or $effectiveGenerateWorkbook -or $effectiveGenerateQuestionnaire -or $effectiveGenerateJson)
     BuildConfigurationSummaryTables  = [bool]$effectiveGenerateJson
     BuildLicenseClassificationMetadata = ($effectiveGenerateWorkbook -or $effectiveGenerateTechnicalHtml -or $effectiveGenerateBestPracticesHtml -or $effectiveGenerateQuestionnaire -or $effectiveGenerateJson)
+    BuildCombinedUserMailboxProjection = ($reportingMode -eq 'all')
 }
 
 if (-not $isMergedOutputProfileSelection) {
@@ -7302,7 +7423,7 @@ if (
 }
 
 Write-Log -Type INFO -Message ("Collection depth policy: Mode={0}; EntraDeep={1}; GroupCounts={2}; GroupLicenses={3}; SSOAppDetails={4}; ExtendedGraphEnrichment={5}; SecureScoreMappings={6}" -f $script:CollectionDepthPolicy.ReportingMode, $script:CollectionDepthPolicy.CollectEntraGroupDeepDetails, $script:CollectionDepthPolicy.CollectEntraGroupMemberCounts, $script:CollectionDepthPolicy.CollectEntraGroupLicenseChecks, $script:CollectionDepthPolicy.CollectSsoApplicationDetails, $script:CollectionDepthPolicy.CollectExtendedGraphEnrichment, $script:CollectionDepthPolicy.CollectSecureScoreMappings) -ExportFileLocation $ExportDetails
-Write-Log -Type INFO -Message ("Profile collection plan ({0}): ExchangeRecipients={1}; EmailActivity={2}; ExchangeGroups={3}; MailFlow={4}; PublicFolders={5}; SpamFiltering={6}; SMTPRelay={7}; TeamsDetails={8}; TeamsVoice={9}; UnifiedGroups={10}; OwnershipTables={11}; AssessmentTables={12}; ConfigSummaryTables={13}; LicenseMetadata={14}" -f $effectiveOutputProfileLabel, $script:ProfileCollectionPlan.CollectExchangeRecipients, $script:ProfileCollectionPlan.CollectEmailActivityDetails, $script:ProfileCollectionPlan.CollectExchangeGroups, $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors, $script:ProfileCollectionPlan.CollectPublicFolders, $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering, $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration, $script:ProfileCollectionPlan.CollectTeamsDetails, $script:ProfileCollectionPlan.CollectTeamsVoiceDetails, $script:ProfileCollectionPlan.CollectUnifiedGroups, $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables, $script:ProfileCollectionPlan.BuildAssessmentReportTables, $script:ProfileCollectionPlan.BuildConfigurationSummaryTables, $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata) -ExportFileLocation $ExportDetails
+Write-Log -Type INFO -Message ("Profile collection plan ({0}): ExchangeRecipients={1}; EmailActivity={2}; ExchangeGroups={3}; MailFlow={4}; PublicFolders={5}; SpamFiltering={6}; SMTPRelay={7}; TeamsDetails={8}; TeamsVoice={9}; UnifiedGroups={10}; OwnershipTables={11}; AssessmentTables={12}; ConfigSummaryTables={13}; LicenseMetadata={14}; CombinedUserMailboxProjection={15}" -f $effectiveOutputProfileLabel, $script:ProfileCollectionPlan.CollectExchangeRecipients, $script:ProfileCollectionPlan.CollectEmailActivityDetails, $script:ProfileCollectionPlan.CollectExchangeGroups, $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors, $script:ProfileCollectionPlan.CollectPublicFolders, $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering, $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration, $script:ProfileCollectionPlan.CollectTeamsDetails, $script:ProfileCollectionPlan.CollectTeamsVoiceDetails, $script:ProfileCollectionPlan.CollectUnifiedGroups, $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables, $script:ProfileCollectionPlan.BuildAssessmentReportTables, $script:ProfileCollectionPlan.BuildConfigurationSummaryTables, $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata, $script:ProfileCollectionPlan.BuildCombinedUserMailboxProjection) -ExportFileLocation $ExportDetails
 
 #Global Start Time for Script
 $global:InitialStart = Get-Date
@@ -7759,7 +7880,7 @@ else {
     # Combine reporting data for all profiles so mailbox/detail stats are available across every output type.
     Write-Host
     Write-Host "Consolidating Discovery Report data for each user / object into one file" -ForegroundColor Black -BackgroundColor Green
-    Invoke-AssessmentProgressStep -Name 'Combined user/mailbox reporting' -ScriptBlock { Report-UserAndMailboxStats }
+    Invoke-ProfileAwareAssessmentStep -Name 'Combined user/mailbox reporting' -Enabled $script:ProfileCollectionPlan.BuildCombinedUserMailboxProjection -SkipReason 'Reserved for TenantToTenantMigration / All profile runs.' -ScriptBlock { Report-UserAndMailboxStats }
     Invoke-AssessmentProgressStep -Name 'Exchange governance Tier B summaries' -ScriptBlock { Update-ExchangeGovernanceTables -TenantStatsHash $script:tenantStatsHash -DetailLevel $reportingMode }
     Invoke-AssessmentProgressStep -Name 'Operational Tier B summaries' -ScriptBlock { Update-TierBOperationalSummaries -TenantStatsHash $script:tenantStatsHash }
 

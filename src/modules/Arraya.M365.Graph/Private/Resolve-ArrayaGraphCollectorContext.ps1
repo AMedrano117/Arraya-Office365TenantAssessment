@@ -2,24 +2,28 @@ function Get-ArrayaGraphCollectionDepthPolicy {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)]
-        [ValidateSet('Minimum', 'Combined', 'All', 'Geek')]
+        [ValidateSet('Minimum', 'Operator', 'Combined', 'Automation', 'All', 'Geek')]
         [string]$ReportingMode = 'Minimum'
     )
 
     $mode = $ReportingMode.ToLowerInvariant()
+    if ($mode -eq 'combined') { $mode = 'operator' }
     $isMinimum = $mode -eq 'minimum'
-    $isCombined = $mode -eq 'combined'
+    $isOperator = $mode -eq 'operator'
+    $isAutomation = $mode -eq 'automation'
     $isAll = $mode -eq 'all'
     $isGeek = $mode -eq 'geek'
 
     return [PSCustomObject]@{
-        ReportingMode                  = $ReportingMode
+        ReportingMode                  = (Get-Culture).TextInfo.ToTitleCase($mode)
         CollectEntraGroupDeepDetails   = (-not $isMinimum)
         CollectEntraGroupMemberCounts  = (-not $isMinimum)
         CollectEntraGroupOwnerCounts   = (-not $isMinimum)
         CollectEntraGroupLicenseChecks = (-not $isMinimum)
         IsMinimum                      = $isMinimum
-        IsCombined                     = $isCombined
+        IsOperator                     = $isOperator
+        IsCombined                     = $isOperator
+        IsAutomation                   = $isAutomation
         IsAll                          = $isAll
         IsGeek                         = $isGeek
     }
@@ -56,6 +60,9 @@ function Resolve-ArrayaGraphCollectorContext {
     }
     else {
         (Get-Culture).TextInfo.ToTitleCase($DetailLevel.ToLowerInvariant())
+    }
+    if ($resolvedMode -ieq 'Combined') {
+        $resolvedMode = 'Operator'
     }
     $Context.Policies['ReportingMode'] = $resolvedMode
 
