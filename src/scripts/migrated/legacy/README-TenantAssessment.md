@@ -50,18 +50,18 @@ A default Microsoft 365 assessment run now produces:
 
 - `*-CustomerRemediationReport.html`
 - `*-EngineerActionPack.md`
-- `*-ImprovementPlan.json`
-- `*-RemediationSnippets.ps1`
-- `*.manifest.json`
+- `*.xlsx` when the selected profile enables workbook output, including `SolutionsEngineer` and `TenantToTenantMigration`
+- `Support\*-ImprovementPlan.json`
+- `Support\*-RemediationSnippets.ps1`
+- `Support\*.manifest.json`
 - `Debugging\...`
 
 The reusable assessment snapshot JSON is still preserved because `Improve`, `M365Export`, and replay/comparison workflows depend on it.
 
 If you explicitly pass `-IncludeLegacyAssessmentArtifacts`, the older assessment artifact family is also generated:
 
-- `*.xlsx`
-- `*-BestPracticesAnalysis.html`
-- `*.html`
+- `*-BestPracticesSnapshot.html`
+- `*-TenantSnapshot.html`
 - `*-TenantToTenantQuestionnaire.md`
 - `*.pdf`
 
@@ -94,11 +94,14 @@ The questionnaire template is:
 The assessment script supports six need-based output profiles:
 
 - `Presales`: scope `Minimum`
-- `SolutionsEngineer`: scope `Combined`
 - `ExecutiveLevel`: scope `Minimum`
-- `TenantToTenantMigration`: scope `Combined`
+- `SolutionsEngineer`: scope `Operator`
+- `Machine`: scope `Automation`; JSON-focused automation profile
 - `Geek`: scope `Geek`
-- `Machine`: scope `Geek`; JSON-focused automation profile
+- `TenantToTenantMigration`: scope `All`
+
+`Operator` is the balanced assessment mode and does not include the heavy combined user/mailbox projection.
+`All` is the migration/deep mode and includes the full combined user/mailbox projection.
 
 `SolutionsEngineer` is the default profile.
 
@@ -107,8 +110,8 @@ The remediation workflow now generates `*-CustomerRemediationReport.html` by def
 
 The legacy assessment HTML/PDF family is generated only when `-IncludeLegacyAssessmentArtifacts` is used:
 
-- `*-BestPracticesAnalysis.html`
-- `*.html`
+- `*-BestPracticesSnapshot.html`
+- `*-TenantSnapshot.html`
 - `*.pdf`
 
 PDF rendering prefers Google Chrome and falls back to Microsoft Edge when available.

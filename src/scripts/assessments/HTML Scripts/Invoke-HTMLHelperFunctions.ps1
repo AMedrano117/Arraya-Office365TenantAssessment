@@ -3344,8 +3344,13 @@ function Update-AssessmentReportTables {
             [array]$AreaFindings,
             [string]$AssessmentType,
             [string]$RelatedWorksheet,
-            [string]$Notes
+            [string]$Notes,
+            [string]$EvidenceSummary
         )
+
+        if ((@($AreaFindings).Count -eq 0) -and [string]::IsNullOrWhiteSpace($EvidenceSummary)) {
+            return
+        }
 
         $criticalCount = @($AreaFindings | Where-Object { $_.Type -eq 'Risk' }).Count
         $warningCount = @($AreaFindings | Where-Object { $_.Type -eq 'Warning' }).Count
@@ -3390,10 +3395,13 @@ function Update-AssessmentReportTables {
             } else {
                 "$severitySummary."
             }
+        } elseif (-not [string]::IsNullOrWhiteSpace($EvidenceSummary)) {
+            "No remediation signals identified. Evidence: $EvidenceSummary."
         } else {
             'No automated findings detected for this assessment area.'
         }
-        $recommendedAction = if ($topFinding.Count -gt 0) { Get-ArrayaAssessmentRecommendationText -Finding $topFinding[0] } else { 'Use the detailed workload worksheets for validation and migration planning.' }
+        $recommendedAction = if ($topFinding.Count -gt 0) { Get-ArrayaAssessmentRecommendationText -Finding $topFinding[0] } elseif (-not [string]::IsNullOrWhiteSpace($EvidenceSummary)) { 'No immediate remediation action is required. Use the collected evidence as a validation baseline for this area.' } else { 'Use the detailed workload worksheets for validation and migration planning.' }
+        $topSignalsText = if ($topCategoryRollups.Count -gt 0) { [string]::Join('; ', $topCategoryRollups) } else { $EvidenceSummary }
 
         $summaryRows.Add([PSCustomObject]@{
             Area               = $Area
@@ -3404,6 +3412,8 @@ function Update-AssessmentReportTables {
             TotalFindings      = $AreaFindings.Count
             PrimaryFinding     = $primaryFindingText
             RecommendedAction  = $recommendedAction
+            TopSignals         = $topSignalsText
+            TopSignalSummary   = $topSignalsText
             RelatedWorksheet   = $RelatedWorksheet
             AssessmentType     = $AssessmentType
             Notes              = $Notes
@@ -3495,7 +3505,12 @@ function Update-AssessmentReportTables {
             -AuthConfig $context.AuthConfig `
             -ConditionalAccessPolicies $context.ConditionalAccess `
             -TotalUsers $context.Users.Count
-        Add-AreaSummary -Area 'Zero Trust Signals' -AreaFindings $employeeExperienceAnalysis.Findings -AssessmentType 'Assessment heuristic using security telemetry quality, Conditional Access posture, and authentication controls' -RelatedWorksheet 'EmployeeExpInsights' -Notes 'Uses Microsoft 365 activity telemetry visibility, Conditional Access signals, MFA/passwordless posture, and high-volume account patterns to guide zero-trust improvements.'
+        $zeroTrustEvidence = @()
+        if ($context.EmployeeExperienceInsightsSummary) { $zeroTrustEvidence += 'activity telemetry summary collected' }
+        if ($context.AdminReportSettings) { $zeroTrustEvidence += 'admin report settings collected' }
+        if ($context.AuthConfig) { $zeroTrustEvidence += 'authentication configuration collected' }
+        if ($context.ConditionalAccess.Count -gt 0) { $zeroTrustEvidence += "$($context.ConditionalAccess.Count) Conditional Access policy/policies collected" }
+        Add-AreaSummary -Area 'Zero Trust Signals' -AreaFindings $employeeExperienceAnalysis.Findings -AssessmentType 'Assessment heuristic using security telemetry quality, Conditional Access posture, and authentication controls' -RelatedWorksheet 'EmployeeExpInsights' -Notes 'Uses Microsoft 365 activity telemetry visibility, Conditional Access signals, MFA/passwordless posture, and high-volume account patterns to guide zero-trust improvements.' -EvidenceSummary ($zeroTrustEvidence -join '; ')
     }
 
     if ($context.InactiveMailboxes.Count -gt 0) {
@@ -3505,7 +3520,10 @@ function Update-AssessmentReportTables {
 
     if ($context.SharePoint.Count -gt 0 -or $context.OneDrive.Count -gt 0) {
         $spodAnalysis = Get-SharePointOneDriveAnalysis -SharePointSites $context.SharePoint -OneDriveSites $context.OneDrive
-        Add-AreaSummary -Area 'SharePoint & OneDrive' -AreaFindings $spodAnalysis.Findings -AssessmentType 'Assessment heuristic using collaboration site inventory' -RelatedWorksheet 'SharePoint / OneDrive' -Notes 'Flags oversized sites and owner-linked OneDrive inventory for migration planning.'
+        $spodEvidence = @()
+        if ($context.SharePoint.Count -gt 0) { $spodEvidence += "$($context.SharePoint.Count) SharePoint site(s) collected" }
+        if ($context.OneDrive.Count -gt 0) { $spodEvidence += "$($context.OneDrive.Count) OneDrive site(s) collected" }
+        Add-AreaSummary -Area 'SharePoint & OneDrive' -AreaFindings $spodAnalysis.Findings -AssessmentType 'Assessment heuristic using collaboration site inventory' -RelatedWorksheet 'SharePoint / OneDrive' -Notes 'Flags oversized sites and owner-linked OneDrive inventory for migration planning.' -EvidenceSummary ($spodEvidence -join '; ')
     }
 
     if (
@@ -3527,7 +3545,17 @@ function Update-AssessmentReportTables {
 
     if ($context.AdConnect) {
         $adAnalysis = Get-AdConnectAnalysis -AdConnect $context.AdConnect
-        Add-AreaSummary -Area 'AD Connect / Sync' -AreaFindings $adAnalysis.Findings -AssessmentType 'Assessment heuristic using directory synchronization signals' -RelatedWorksheet 'AdConnectConfiguration' -Notes 'Identifies synchronization dependencies and recent sync issues.'
+        $adSummary = if ($context.AdConnect -and $context.AdConnect.Summary) { $context.AdConnect.Summary } else { $null }
+        $adEvidence = @()
+        if ($null -ne $adSummary -and $adSummary.PSObject.Properties['OnPremisesSyncEnabled']) {
+            $adEvidence += ("directory sync status={0}" -f $(if ($adSummary.OnPremisesSyncEnabled -eq $true) { 'enabled' } elseif ($adSummary.OnPremisesSyncEnabled -eq $false) { 'disabled' } else { 'unknown' }))
+        }
+        if ($null -ne $adSummary -and $adSummary.PSObject.Properties['OnPremisesLastSyncDateTime'] -and $adSummary.OnPremisesLastSyncDateTime) {
+            $adEvidence += ("last sync={0}" -f $adSummary.OnPremisesLastSyncDateTime)
+        }
+        if ($context.AdConnect.SyncServices) { $adEvidence += "$(@($context.AdConnect.SyncServices).Count) sync service record(s) collected" }
+        if ($context.AdConnect.PSObject.Properties['ErrorCount']) { $adEvidence += ("recent sync errors={0}" -f [int]$context.AdConnect.ErrorCount) }
+        Add-AreaSummary -Area 'AD Connect / Sync' -AreaFindings $adAnalysis.Findings -AssessmentType 'Assessment heuristic using directory synchronization signals' -RelatedWorksheet 'AdConnectConfiguration' -Notes 'Identifies synchronization dependencies and recent sync issues.' -EvidenceSummary ($adEvidence -join '; ')
     }
 
     if ($context.ConditionalAccess.Count -gt 0 -or $context.AuthConfig) {

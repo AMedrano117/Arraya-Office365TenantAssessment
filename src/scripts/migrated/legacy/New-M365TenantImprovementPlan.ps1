@@ -480,6 +480,35 @@ function Get-EvidenceLocation {
     return ($parts -join '; ')
 }
 
+function Get-DefaultBusinessValue {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$OwnerTeam,
+        [AllowNull()][string]$Area,
+        [AllowNull()][string]$Category,
+        [AllowNull()][string]$Finding
+    )
+
+    $lookup = ('{0} {1} {2} {3}' -f [string]$OwnerTeam, [string]$Area, [string]$Category, [string]$Finding).ToLowerInvariant()
+    if ($lookup -match 'identity|admin|privileged|conditional access|mfa|security') {
+        return 'Reduces identity compromise risk, strengthens access control, and improves the tenant security baseline.'
+    }
+    if ($lookup -match 'licens|sku|capacity') {
+        return 'Improves cost control, avoids licensing blockers, and makes future growth easier to plan.'
+    }
+    if ($lookup -match 'device|endpoint|intune|compliance') {
+        return 'Improves policy enforcement, reduces unmanaged access risk, and strengthens endpoint visibility.'
+    }
+    if ($lookup -match 'exchange|mailbox|forward|connector|smtp|domain') {
+        return 'Reduces data-loss and mail-flow risk while improving operational control over messaging.'
+    }
+    if ($lookup -match 'sharepoint|onedrive|team|group|collaboration|owner|steward') {
+        return 'Improves ownership, governance, and lifecycle control for collaboration spaces and business content.'
+    }
+
+    return 'Improves governance clarity and reduces avoidable operational or security risk in the tenant.'
+}
+
 function Get-ExchangeForwardingPolicyEvidence {
     [CmdletBinding()]
     param(
@@ -652,7 +681,8 @@ function New-Finding {
         [Parameter(Mandatory = $false)][string]$WhyFlagged,
         [Parameter(Mandatory = $false)][string]$ExampleAction,
         [Parameter(Mandatory = $false)][string]$EvidenceLocation,
-        [Parameter(Mandatory = $false)][string]$TechnicalRemediation
+        [Parameter(Mandatory = $false)][string]$TechnicalRemediation,
+        [Parameter(Mandatory = $false)][string]$BusinessValue
     )
 
     if ([string]::IsNullOrWhiteSpace($Source)) { $Source = 'Heuristic' }
@@ -702,6 +732,7 @@ function New-Finding {
     if ([string]::IsNullOrWhiteSpace($EngineerNotes)) { $EngineerNotes = New-EngineerNotes -Source $Source -RelatedWorksheet $RelatedWorksheet -RelatedSection $RelatedSection }
     if ([string]::IsNullOrWhiteSpace($EvidenceLocation)) { $EvidenceLocation = Get-EvidenceLocation -RelatedWorksheet $RelatedWorksheet -RelatedSection $RelatedSection -Source $Source }
     if ([string]::IsNullOrWhiteSpace($TechnicalRemediation)) { $TechnicalRemediation = $Recommendation }
+    if ([string]::IsNullOrWhiteSpace($BusinessValue)) { $BusinessValue = Get-DefaultBusinessValue -OwnerTeam $OwnerTeam -Area $Area -Category $Category -Finding $Finding }
 
     return [PSCustomObject]@{
         RuleId           = $RuleId
@@ -724,6 +755,7 @@ function New-Finding {
         ExampleAction    = $ExampleAction
         EvidenceLocation = $EvidenceLocation
         TechnicalRemediation = $TechnicalRemediation
+        BusinessValue    = $BusinessValue
         RelatedWorksheet = $(if ([string]::IsNullOrWhiteSpace($RelatedWorksheet)) { 'N/A' } else { $RelatedWorksheet })
         RelatedSection   = $(if ([string]::IsNullOrWhiteSpace($RelatedSection)) { 'N/A' } else { $RelatedSection })
     }
@@ -1073,7 +1105,7 @@ function Resolve-WorkstreamTopSignals {
         return $matches[1].Trim().TrimEnd('.')
     }
 
-    return 'Not provided'
+    return $null
 }
 
 function New-WorkstreamSummaryFromRow {
@@ -1115,6 +1147,142 @@ function Get-SortedWorkstreamSummaries {
     )
 }
 
+function Get-DerivedWorkstreamTopSignals {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$Summary,
+        [Parameter(Mandatory = $true)][object[]]$Findings
+    )
+
+    $candidateRows = @(
+        $Findings |
+            Where-Object {
+                $_ -and (
+                    ([string]$_.OwnerTeam -eq [string]$Summary.Workstream) -or
+                    ([string]$_.Area -eq [string]$Summary.Area) -or
+                    ([string]$_.Category -eq [string]$Summary.Area)
+                )
+            }
+    )
+
+    if ($candidateRows.Count -eq 0) {
+        return $null
+    }
+
+    $signals = @(
+        $candidateRows |
+            ForEach-Object {
+                $label = if (-not [string]::IsNullOrWhiteSpace([string]$_.Area) -and [string]$_.Area -ne [string]$Summary.Area) {
+                    [string]$_.Area
+                }
+                elseif (-not [string]::IsNullOrWhiteSpace([string]$_.Category) -and [string]$_.Category -ne [string]$Summary.Area) {
+                    [string]$_.Category
+                }
+                else {
+                    [string]$_.RuleId
+                }
+
+                if (-not [string]::IsNullOrWhiteSpace($label)) { $label }
+            } |
+            Group-Object |
+            Sort-Object `
+                @{ Expression = { $_.Count }; Descending = $true }, `
+                @{ Expression = { $_.Name }; Descending = $false } |
+            Select-Object -First 3 |
+            ForEach-Object { '{0}: {1}' -f $_.Name, $_.Count }
+    )
+
+    if ($signals.Count -eq 0) {
+        return $null
+    }
+
+    return ($signals -join '; ')
+}
+
+function Resolve-VisibleWorkstreamSummaries {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Summaries,
+        [Parameter(Mandatory = $true)][object[]]$Findings
+    )
+
+    $visibleSummaries = New-Object System.Collections.Generic.List[object]
+    foreach ($summary in @($Summaries)) {
+        if (-not $summary) { continue }
+
+        $openFindings = [int](Convert-ArrayaToNumber $summary.OpenFindings)
+        $topSignals = Convert-ToArrayaDisplayText -Value $summary.TopSignals -Default ''
+        if ([string]::IsNullOrWhiteSpace($topSignals) -or $topSignals -eq 'N/A') {
+            $topSignals = Get-DerivedWorkstreamTopSignals -Summary $summary -Findings $Findings
+        }
+
+        if ($openFindings -le 0 -and [string]::IsNullOrWhiteSpace($topSignals)) {
+            continue
+        }
+
+        $visibleSummaries.Add([pscustomobject]@{
+            Workstream    = $summary.Workstream
+            Area          = $summary.Area
+            Severity      = $summary.Severity
+            OpenFindings  = $openFindings
+            CriticalCount = [int](Convert-ArrayaToNumber $summary.CriticalCount)
+            WarningCount  = [int](Convert-ArrayaToNumber $summary.WarningCount)
+            InfoCount     = [int](Convert-ArrayaToNumber $summary.InfoCount)
+            TopSignals    = $(if ([string]::IsNullOrWhiteSpace($topSignals)) { 'Review detailed findings in this workstream' } else { $topSignals })
+        }) | Out-Null
+    }
+
+    return @($visibleSummaries.ToArray())
+}
+
+function Get-CustomerWorkstreamThemes {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][object[]]$Findings)
+
+    $themes = New-Object System.Collections.Generic.List[object]
+    $groupedFindings = @(
+        $Findings |
+            Group-Object OwnerTeam |
+            Sort-Object `
+                @{ Expression = { $_.Count }; Descending = $true }, `
+                @{ Expression = { $_.Name }; Descending = $false }
+    )
+    foreach ($ownerGroup in $groupedFindings) {
+        $seenKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        $orderedRows = @(
+            $ownerGroup.Group |
+                Sort-Object `
+                    @{ Expression = { Get-SeverityWeight -Severity $_.Severity }; Descending = $true }, `
+                    @{ Expression = { switch ($_.PriorityBand) { 'Immediate' { 1 } 'Near Term' { 2 } 'Planned' { 3 } default { 4 } } } }, `
+                    Area, RuleId
+        )
+
+        foreach ($finding in $orderedRows) {
+            $dedupeKey = ('{0}|{1}|{2}' -f ([string]$finding.Area).Trim().ToLowerInvariant(), ([string]$finding.Recommendation).Trim().ToLowerInvariant(), ([string]$finding.WhyFlagged).Trim().ToLowerInvariant())
+            if (-not $seenKeys.Add($dedupeKey)) {
+                continue
+            }
+
+            $themes.Add([pscustomobject]@{
+                Workstream          = $ownerGroup.Name
+                Area                = $finding.Area
+                Severity            = $finding.Severity
+                PriorityBand        = $finding.PriorityBand
+                WhatNeedsAttention  = $finding.Finding
+                WhyItMatters        = $finding.WhyFlagged
+                RecommendedNextStep = $finding.Recommendation
+                BusinessValue       = $finding.BusinessValue
+            }) | Out-Null
+
+            if ((@($themes | Where-Object { $_.Workstream -eq $ownerGroup.Name })).Count -ge 3) {
+                break
+            }
+        }
+    }
+
+    return @($themes.ToArray())
+}
+
 function New-CustomerRemediationReport {
     [CmdletBinding()]
     param(
@@ -1127,6 +1295,7 @@ function New-CustomerRemediationReport {
 
     $severityCounts = $Findings | Group-Object Severity | Sort-Object Name
     $ownerGroups = $Findings | Group-Object OwnerTeam | Sort-Object Count -Descending
+    $themeRows = Get-CustomerWorkstreamThemes -Findings $Findings
     $topFindings = Get-TopFindings -Findings @($Findings | Where-Object { $_.Severity -in @('Critical', 'High') }) -Count 6
     if ($topFindings.Count -eq 0) { $topFindings = Get-TopFindings -Findings $Findings -Count 6 }
 
@@ -1188,10 +1357,12 @@ function New-CustomerRemediationReport {
     $lines.Add('## Remediation Themes By Workstream') | Out-Null
     $lines.Add('') | Out-Null
     foreach ($ownerGroup in $ownerGroups) {
+        $workstreamThemes = @($themeRows | Where-Object { $_.Workstream -eq $ownerGroup.Name })
+        if ($workstreamThemes.Count -eq 0) { continue }
         $lines.Add("### $($ownerGroup.Name)") | Out-Null
         $lines.Add('') | Out-Null
-        foreach ($finding in @($ownerGroup.Group | Select-Object -First 6)) {
-            $lines.Add("- $($finding.Area): $($finding.Recommendation)") | Out-Null
+        foreach ($theme in $workstreamThemes) {
+            $lines.Add("- $($theme.Area) - What needs attention: $($theme.WhatNeedsAttention) Why it matters: $($theme.WhyItMatters) Recommended next step: $($theme.RecommendedNextStep) Business value: $($theme.BusinessValue)") | Out-Null
         }
         $lines.Add('') | Out-Null
     }
@@ -1211,6 +1382,7 @@ function New-CustomerRemediationReportHtml {
 
     $severityCounts = $Findings | Group-Object Severity | Sort-Object Name
     $ownerGroups = $Findings | Group-Object OwnerTeam | Sort-Object Count -Descending
+    $themeRows = Get-CustomerWorkstreamThemes -Findings $Findings
     $topFindings = Get-TopFindings -Findings @($Findings | Where-Object { $_.Severity -in @('Critical', 'High') }) -Count 6
     if ($topFindings.Count -eq 0) { $topFindings = Get-TopFindings -Findings $Findings -Count 6 }
 
@@ -1305,21 +1477,34 @@ $phaseItems
 
     $workstreamThemeHtml = if ($ownerGroups.Count -gt 0) {
         (($ownerGroups | ForEach-Object {
-            $rows = @($_.Group | Select-Object -First 6)
+            $ownerGroup = $_
+            $rows = @($themeRows | Where-Object { $_.Workstream -eq $ownerGroup.Name })
+            if ($rows.Count -eq 0) { return $null }
             $items = (($rows | ForEach-Object {
-                "<li><strong>{0}</strong>: {1}</li>" -f `
+                @"
+<li class="theme-item">
+  <h4>{0}</h4>
+  <p><strong>What needs attention:</strong> {1}</p>
+  <p><strong>Why it matters:</strong> {2}</p>
+  <p><strong>Recommended next step:</strong> {3}</p>
+  <p><strong>Business value:</strong> {4}</p>
+</li>
+"@ -f `
                     (Convert-ToArrayaHtmlEncodedText $_.Area),
-                    (Convert-ToArrayaHtmlFragment $_.Recommendation)
+                    (Convert-ToArrayaHtmlFragment $_.WhatNeedsAttention),
+                    (Convert-ToArrayaHtmlFragment $_.WhyItMatters),
+                    (Convert-ToArrayaHtmlFragment $_.RecommendedNextStep),
+                    (Convert-ToArrayaHtmlFragment $_.BusinessValue)
             }) -join [Environment]::NewLine)
             @"
 <section class="theme-block">
   <h3>{0}</h3>
-  <ul>
+  <ul class="theme-list">
 {1}
   </ul>
 </section>
-"@ -f (Convert-ToArrayaHtmlEncodedText $_.Name), $items
-        }) -join [Environment]::NewLine)
+"@ -f (Convert-ToArrayaHtmlEncodedText $ownerGroup.Name), $items
+        } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join [Environment]::NewLine)
     } else {
         '<p>No workstream themes were generated.</p>'
     }
@@ -1339,12 +1524,13 @@ $phaseItems
   <title>$([System.Net.WebUtility]::HtmlEncode($TenantName)) Customer Remediation Report | Arraya Solutions</title>
   <style>
     :root {
-      --bg: #f4f1ea;
+      --bg: #f3f0e8;
       --surface: #fffdf8;
       --ink: #1f2933;
       --muted: #52606d;
       --line: #d9d2c3;
-      --accent: #0f4c5c;
+      --accent: #12343b;
+      --accent-strong: #1e5160;
       --accent-soft: #e4eef1;
       --critical: #a61b29;
       --high: #b45309;
@@ -1357,7 +1543,7 @@ $phaseItems
       margin: 0;
       font-family: "Segoe UI", "Aptos", Tahoma, sans-serif;
       color: var(--ink);
-      background: linear-gradient(180deg, #efe7d8 0%, var(--bg) 22%, #f7f4ed 100%);
+      background: linear-gradient(180deg, #e9e3d6 0%, var(--bg) 24%, #f7f4ed 100%);
       line-height: 1.55;
     }
     main {
@@ -1429,6 +1615,26 @@ $phaseItems
     .severity-info { background: rgba(71, 85, 105, 0.12); color: var(--info); }
     .phase { background: var(--accent-soft); color: var(--accent); }
     .muted { color: var(--muted); }
+    .theme-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 12px;
+    }
+    .theme-item {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+      background: #fffdf8;
+    }
+    .theme-item h4 {
+      margin: 0 0 10px;
+      color: var(--accent-strong);
+    }
+    .theme-item p {
+      margin: 6px 0 0;
+    }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -1603,12 +1809,6 @@ function New-EngineerActionPack {
     }
     $lines.Add(('- Remediation snippets: `{0}`' -f $SnippetOutPath)) | Out-Null
     $lines.Add('') | Out-Null
-    $lines.Add('## Engineer Notes') | Out-Null
-    $lines.Add('') | Out-Null
-    foreach ($finding in $Findings | Select-Object -First 20) {
-        $lines.Add("- $($finding.RuleId): $($finding.EngineerNotes)") | Out-Null
-    }
-
     return ($lines -join [Environment]::NewLine)
 }
 
@@ -2214,7 +2414,7 @@ foreach ($finding in $sortedFindings) {
     if ([string]::IsNullOrWhiteSpace([string]$finding.PriorityBand)) { $finding.PriorityBand = 'Monitor' }
     if ([string]::IsNullOrWhiteSpace([string]$finding.RoadmapPhase)) { $finding.RoadmapPhase = 'Monitor' }
 }
-$sortedWorkstreamSummaries = Get-SortedWorkstreamSummaries -Summaries $workstreamSummaries.ToArray()
+$sortedWorkstreamSummaries = Get-SortedWorkstreamSummaries -Summaries (Resolve-VisibleWorkstreamSummaries -Summaries $workstreamSummaries.ToArray() -Findings $sortedFindings)
 $tenantName = Get-TenantDisplayName -TenantInfoSummary $(if ($tenantInfoSummary) { Get-ArrayaObjectValue -Object $tenantInfoSummary -Names @('Summary') } else { $null }) -LegacyData $tenantData -OutputPrefix $OutputPrefix
 
 $supportFolder = Join-Path -Path $OutputFolder -ChildPath 'Support'

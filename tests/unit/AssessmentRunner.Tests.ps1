@@ -44,6 +44,7 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match 'IncludeLegacyAssessmentArtifacts'
         $runnerSource | Should -Match 'Invoke-M365ImproveForAssessmentRun'
         $runnerSource | Should -Match 'Customer Remediation HTML'
+        $runnerSource | Should -Match '\$invokeParams\.GenerateWorkbookOverride = \[bool\]\$plan\.GenerateWorkbook'
     }
 
     It 'surfaces AuthMode on tenant assessment entrypoints' {

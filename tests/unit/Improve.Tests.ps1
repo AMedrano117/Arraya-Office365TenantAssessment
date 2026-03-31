@@ -379,8 +379,10 @@ Describe 'Improve workflow' {
         $customerReport | Should -Match '<h2>Executive Summary</h2>'
         $customerReport | Should -Match '<h2>Phased Roadmap</h2>'
         $customerReport | Should -Match '<h2>Workstream Summary</h2>'
+        $customerReport | Should -Match 'Business value:'
         $customerReport | Should -Not -Match 'AREA-'
         $customerReport | Should -Not -Match 'Supporting Findings Appendix'
+        $customerReport | Should -Not -Match 'Not provided'
         $customerReport | Should -Not -Match 'unauthorized mailbox forwarding'
         $customerReport | Should -Not -Match 'unauthorized inbox-rule forwarding'
 
@@ -390,6 +392,7 @@ Describe 'Improve workflow' {
         $engineerPack | Should -Match 'Why Flagged'
         $engineerPack | Should -Match 'Evidence Location'
         $engineerPack | Should -Match 'Technical Remediation'
+        $engineerPack | Should -Not -Match '## Engineer Notes'
         $engineerPack | Should -Not -Match 'Action Path'
         $engineerPack | Should -Not -Match '\| Example \|'
         $engineerPack | Should -Not -Match 'CSV output:'

@@ -333,8 +333,11 @@ function Resolve-M365OutputProfileExecutionPlan {
 
     $reportingModeRank = @{
         'Minimum' = 1
+        'Operator' = 2
         'Combined' = 2
-        'Geek' = 3
+        'Automation' = 3
+        'Geek' = 4
+        'All' = 5
     }
     $resolvedReportingMode = 'Minimum'
     $resolvedReportingRank = 0
@@ -449,7 +452,7 @@ function Invoke-M365TenantWorkflow {
     switch ($Mode) {
         'Full' {
             $invokeParams.OutputProfileLabel = $plan.ProfileLabel
-            $invokeParams.GenerateWorkbookOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateWorkbook } else { $false }
+            $invokeParams.GenerateWorkbookOverride = [bool]$plan.GenerateWorkbook
             $invokeParams.GenerateTechnicalHtmlOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateTechnicalHtml } else { $false }
             $invokeParams.GenerateBestPracticesHtmlOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateBestPracticesHtml } else { $false }
             $invokeParams.GenerateQuestionnaireOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateQuestionnaire } else { $false }
@@ -493,7 +496,7 @@ function Invoke-M365TenantWorkflow {
                 throw 'AssessmentJsonPath is required when Mode is ExportOnly.'
             }
             $invokeParams.OutputProfileLabel = "Export-$($plan.ProfileLabel)"
-            $invokeParams.GenerateWorkbookOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateWorkbook } else { $false }
+            $invokeParams.GenerateWorkbookOverride = [bool]$plan.GenerateWorkbook
             $invokeParams.GenerateTechnicalHtmlOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateTechnicalHtml } else { $false }
             $invokeParams.GenerateBestPracticesHtmlOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateBestPracticesHtml } else { $false }
             $invokeParams.GenerateQuestionnaireOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateQuestionnaire } else { $false }

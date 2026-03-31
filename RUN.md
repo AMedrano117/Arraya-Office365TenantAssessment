@@ -44,7 +44,7 @@ If you already connected to Microsoft Graph and Exchange Online in the same Powe
 
 ## Required Access And API Permissions
 
-This repo does not yet maintain a separate, minimal permission manifest. The guidance below is derived from the current launcher and connector code paths used by the assessment.
+The current app registration and consent baseline is documented here from the active collector set used by this repo. Treat this as the operator source of truth for app-based auth.
 
 ### Recommended Operator Access
 
@@ -95,26 +95,41 @@ When you run the main assessment in `Interactive` mode, the connector requests t
 
 These scopes support the repo's current Graph-based collection for tenant, identity, reporting, security, collaboration, and SharePoint data.
 
-### App-Based Permission Expectations
+### App-Based Permission Baseline
 
-For `Certificate` or `ClientSecret` mode, the app registration should be granted the Microsoft Graph application permissions needed to cover the same read-focused collection areas where application permissions exist, especially:
+For `Certificate` or `ClientSecret` mode, the app registration should be granted these Microsoft Graph application permissions:
 
-- `Organization.Read.All`
-- `User.Read.All`
+- `Application.Read.All`
 - `AuditLog.Read.All`
+- `CrossTenantInformation.ReadBasic.All`
+- `DeviceManagementApps.Read.All`
+- `DeviceManagementConfiguration.Read.All`
+- `DeviceManagementManagedDevices.Read.All`
+- `DeviceManagementRBAC.Read.All`
+- `DeviceManagementScripts.Read.All`
+- `DeviceManagementServiceConfig.Read.All`
+- `DirectoryRecommendations.Read.All`
 - `Group.Read.All`
 - `GroupMember.Read.All`
-- `RoleManagement.Read.Directory`
-- `Domain.Read.All`
-- `Device.Read.All`
-- `Reports.Read.All`
+- `IdentityRiskEvent.Read.All`
+- `IdentityRiskyUser.Read.All`
+- `LicenseAssignment.Read.All`
+- `Organization.Read.All`
 - `Policy.Read.All`
+- `Reports.Read.All`
+- `ReportSettings.Read.All`
+- `RoleManagement.Read.All`
 - `SecurityEvents.Read.All`
-- `Application.Read.All`
+- `ServiceMessage.Read.All`
 - `Sites.Read.All`
-- `Files.Read.All`
 - `Team.ReadBasic.All`
-- `Channel.ReadBasic.All`
+- `User.Export.All`
+- `User.Read.All`
+- `UserAuthenticationMethod.Read.All`
+
+Delegated baseline:
+
+- `User.Read`
 
 For app-based operation beyond Graph:
 
@@ -283,14 +298,12 @@ For a fully non-interactive improvement-plan run, call the reporting wrapper dir
 Use `-LiveRefresh` when you want a "snapshot plus live refresh" run. It is a friendlier alias for the existing `-UseGraphFallback` switch and tells `Improve` to use the saved snapshot first, then fill supported gaps from Microsoft Graph when needed.
 
 Add `-IncludeLegacyArtifacts` only if you still want the older `*-ImprovementPlan.csv`, `*-ImprovementPlan.md`, and `*-CustomerRemediationReport.md` outputs in addition to the default set.
-Add `-IncludeLegacyAssessmentArtifacts` when you also want the older workbook / assessment HTML / best-practices HTML / questionnaire / PDF family.
+Add `-IncludeLegacyAssessmentArtifacts` when you also want the older assessment HTML / best-practices HTML / questionnaire / PDF family.
 
 The `Improve` workflow now produces this simplified default output set:
 
-- `*-ImprovementPlan.json`
-- `*-CustomerRemediationReport.html`
-- `*-EngineerActionPack.md`
-- `*-RemediationSnippets.ps1`
+- top level: `*-CustomerRemediationReport.html`, `*-EngineerActionPack.md`
+- support folder: `*-ImprovementPlan.json`, `*.manifest.json`, `*-RemediationSnippets.ps1`
 
 If you still need the older technical CSV and Markdown artifacts, generate them explicitly with `-IncludeLegacyArtifacts` when calling the reporting wrapper directly.
 
@@ -302,12 +315,15 @@ Use the taxonomy guide to understand whether a finding came from the derived ass
 
 Choose the output profile based on the audience and collection/reporting depth you need:
 
-- `Presales`: minimum-scope collection.
-- `SolutionsEngineer`: default combined collection/reporting scope.
-- `ExecutiveLevel`: minimum-scope collection.
-- `TenantToTenantMigration`: combined collection/reporting scope.
-- `Geek`: expanded collection/reporting scope.
-- `Machine`: JSON-focused output for downstream processing.
+- `Presales`: `Minimum` scope for fast presales posture reviews.
+- `ExecutiveLevel`: `Minimum` scope for leadership-ready summaries.
+- `SolutionsEngineer`: `Operator` scope for the balanced remediation-first assessment run.
+- `Machine`: `Automation` scope for JSON-first collection, replay, and downstream processing.
+- `Geek`: `Geek` scope for deep engineer troubleshooting.
+- `TenantToTenantMigration`: `All` scope for the deepest migration-oriented collection.
+
+`Operator` is the standard balanced assessment depth and does not run the full combined user/mailbox projection.
+`All` is the migration-oriented deep mode and includes the combined user/mailbox projection.
 
 You can pass more than one profile in a comma-separated list:
 
@@ -319,21 +335,24 @@ You can pass more than one profile in a comma-separated list:
 
 ## What Gets Generated
 
-Default `M365` now creates:
+Default `M365` now creates these top-level operator deliverables:
 
 - `*-CustomerRemediationReport.html`
 - `*-EngineerActionPack.md`
-- `*-ImprovementPlan.json`
-- `*-RemediationSnippets.ps1`
-- `*.manifest.json`
+- `*.xlsx` for profiles whose policy enables workbook output, including `SolutionsEngineer` and `TenantToTenantMigration`
+
+It also creates these support artifacts under `Support\...`:
+
+- `Support\*-ImprovementPlan.json`
+- `Support\*.manifest.json`
+- `Support\*-RemediationSnippets.ps1`
 
 The run still preserves the reusable assessment snapshot JSON internally because `Improve`, `M365Export`, and comparison/replay depend on it.
 
 If you opt into `-IncludeLegacyAssessmentArtifacts`, the assessment can also create:
 
-- `*.xlsx`
-- `*.html`
-- `*-BestPracticesAnalysis.html`
+- `*-TenantSnapshot.html`
+- `*-BestPracticesSnapshot.html`
 - `*-TenantToTenantQuestionnaire.md`
 - `*.pdf`
 
@@ -345,21 +364,21 @@ Start with the artifact that best matches your audience:
 
 - `CustomerRemediationReport.html`: primary customer-facing deliverable.
 - `EngineerActionPack.md`: primary operator-facing deliverable.
-- `ImprovementPlan.json`: best for export reuse, filtering, comparisons, and automation.
-- `RemediationSnippets.ps1`: quick operator helper commands.
+- `Support\ImprovementPlan.json`: best for export reuse, filtering, comparisons, and automation.
+- `Support\RemediationSnippets.ps1`: support helper commands.
 
 Recommended review flow:
 
 1. Open `CustomerRemediationReport.html` first.
 2. Review `EngineerActionPack.md` for implementation planning.
-3. Keep `ImprovementPlan.json` as your baseline for later comparison or downstream processing.
+3. Keep `Support\ImprovementPlan.json` as your baseline for later comparison or downstream processing.
 4. Use legacy workbook / assessment HTML outputs only when you explicitly generated them for a deeper technical review.
 
 When reviewing `Improve` outputs:
 
 1. Start with `*-CustomerRemediationReport.html` for stakeholder-facing messaging.
 2. Use `*-EngineerActionPack.md` for operator execution planning.
-3. Use `ImprovementPlan.json` for filtering, automation, or downstream transformations.
+3. Use `Support\ImprovementPlan.json` for filtering, automation, or downstream transformations.
 4. Use `RelatedWorksheet` and `Source` to trace each finding back to its evidence and rule origin.
 
 ## Running On Another Machine

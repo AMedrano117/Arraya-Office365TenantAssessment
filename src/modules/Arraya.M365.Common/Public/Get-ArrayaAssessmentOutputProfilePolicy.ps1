@@ -22,7 +22,7 @@ function Get-ArrayaAssessmentOutputProfilePolicy {
         'SolutionsEngineer' {
             return [PSCustomObject]@{
                 OutputProfile              = $OutputProfile
-                ReportingMode              = 'Combined'
+                ReportingMode              = 'Operator'
                 GenerateWorkbook           = $true
                 GenerateTechnicalHtml      = $true
                 GenerateBestPracticesHtml  = $false
@@ -46,7 +46,7 @@ function Get-ArrayaAssessmentOutputProfilePolicy {
         'TenantToTenantMigration' {
             return [PSCustomObject]@{
                 OutputProfile              = $OutputProfile
-                ReportingMode              = 'Combined'
+                ReportingMode              = 'All'
                 GenerateWorkbook           = $true
                 GenerateTechnicalHtml      = $true
                 GenerateBestPracticesHtml  = $false
@@ -70,7 +70,7 @@ function Get-ArrayaAssessmentOutputProfilePolicy {
         'Machine' {
             return [PSCustomObject]@{
                 OutputProfile              = $OutputProfile
-                ReportingMode              = 'Geek'
+                ReportingMode              = 'Automation'
                 GenerateWorkbook           = $false
                 GenerateTechnicalHtml      = $false
                 GenerateBestPracticesHtml  = $false

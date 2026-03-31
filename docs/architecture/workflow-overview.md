@@ -6,11 +6,11 @@ This document explains the supported launcher actions in `src/scripts/operations
 
 | Action | Primary purpose | Input source | Primary outputs | Uses output profiles? | Notes |
 |---|---|---|---|---|---|
-| `M365` | Full Microsoft 365 assessment run | Live tenant connections | Workbook, HTML, best-practices HTML, questionnaire, JSON, PDF, manifest depending on profile | Yes | Combined collect + export path |
+| `M365` | Full Microsoft 365 assessment run | Live tenant connections | Customer remediation HTML, engineer action pack, support artifacts, compatibility assessment artifacts when requested | Yes | Operator remediation-first collect + export path |
 | `M365Collect` | Collect tenant data only | Live tenant connections | JSON snapshot, manifest | Yes | Same core engine as `M365`, but collection-only |
-| `M365Export` | Rebuild artifacts from a saved snapshot | Existing tenant JSON snapshot | Workbook, HTML, best-practices HTML, questionnaire, JSON, PDF, manifest depending on profile | Yes | Same core engine as `M365`, but export-only |
+| `M365Export` | Rebuild artifacts from a saved snapshot | Existing tenant JSON snapshot | Customer remediation HTML, engineer action pack, support artifacts, compatibility assessment artifacts when requested | Yes | Same core engine as `M365`, but export-only |
 | `AD` | Active Directory assessment | Live on-prem AD | AD workbook/export set | No | Separate legacy workflow for AD objects and infra |
-| `Improve` | Build an improvement plan from one snapshot | Existing tenant JSON snapshot | Improvement JSON, CSV, Markdown, remediation snippets | No | Snapshot post-processing workflow |
+| `Improve` | Build an improvement plan from one snapshot | Existing tenant JSON snapshot | Customer remediation HTML, engineer action pack, support JSON, support snippets | No | Snapshot post-processing workflow |
 | `Compare` | Compare two snapshots over time | Two tenant JSON snapshots | Comparison JSON, CSV, Markdown | No | Snapshot post-processing workflow |
 
 ## Workflow Details
