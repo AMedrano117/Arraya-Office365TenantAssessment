@@ -2,7 +2,7 @@ function Get-AllRecipientDetails {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory=$True,HelpMessage='Provide the level of detail')]
-        [ValidateSet('minimum', 'combined', 'all', 'geek')]
+        [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel,
         [Parameter(Mandatory = $false)]
         $Context
@@ -20,7 +20,7 @@ function Get-AllRecipientDetails {
         Write-Progress -Id $recipientProgressId -Activity "Gathering All Exchange Online Recipients" -Status (((Get-Date) - $initialStart).ToString('hh\:mm\:ss'))
 
         switch ($detailLevel) {
-            {$_ -in "minimum", "combined", "all"} { 
+            {$_ -in "minimum", "operator", "combined", "automation", "all"} { 
                 $Properties = @(
                     "ExternalDirectoryObjectId", "DisplayName", "Identity", "RecipientTypeDetails", "PrimarySMTPAddress"
                     "EmailAddresses", "HiddenFromAddressListsEnabled", "AddressBookPolicy"

@@ -491,15 +491,16 @@ function Connect-Office365 {
                                 Write-Host "✗ SharePoint Online: SharePoint Online Certificate auth requires -ClientId." -ForegroundColor Red
                                 return
                             }
-                            Write-Host "Connecting to SharePoint Online (certificate)..." -ForegroundColor Cyan
-                            Write-Verbose "Running Connect-SPOService with -ClientId $ClientId -TenantId $TenantId -CertificateThumbprint $CertificateThumbprint"
-                            Connect-SPOService -Url $spoAdminUrl -ClientId $ClientId -TenantId $TenantId -CertificateThumbprint $CertificateThumbprint -ErrorAction Stop
-                            $result.SharePointOnline = $true
+                            Write-Host "SharePoint Online certificate auth is not supported by Connect-SPOService. Skipping SPO cmdlets and relying on Microsoft Graph site collection instead." -ForegroundColor Yellow
+                            Write-Verbose "Skipping Connect-SPOService certificate path for SharePoint Online. Graph will be used for SharePoint / OneDrive collection."
+                            $result.SharePointOnline = $false
+                            $result.SharePointAdmin = $spoAdminUrl
+                            break
                         }
                         'ClientSecret' {
                             Write-Warning "SharePoint Online does not support client secret authentication via Connect-SPOService. Will Rely on Microsoft Graph API instead."
-                            #Write-Host "✗ SharePoint Online: SharePoint Online does not support client secret authentication via Connect-SPOService. Will Rely on Microsoft Graph API instead." -ForegroundColor Red
                             $result.SharePointOnline = $false
+                            $result.SharePointAdmin = $spoAdminUrl
                             break
                         }
                         Default {
@@ -510,8 +511,10 @@ function Connect-Office365 {
                         }
                     }
 
-                    $result.SharePointAdmin = $spoAdminUrl
-                    Write-Host "✓ SharePoint Online connected" -ForegroundColor Green
+                    if ($result.SharePointOnline) {
+                        $result.SharePointAdmin = $spoAdminUrl
+                        Write-Host "✓ SharePoint Online connected" -ForegroundColor Green
+                    }
                 } catch {
                     Write-Host "✗ SharePoint Online: $($_.Exception.Message)" -ForegroundColor Red
                     $result.SharePointOnline = $false
