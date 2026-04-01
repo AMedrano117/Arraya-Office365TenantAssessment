@@ -3,6 +3,7 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $script:repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
         $script:manifestPath = Join-Path $script:repoRoot 'src\modules\Arraya.M365.AssessmentRunner\Arraya.M365.AssessmentRunner.psd1'
         $script:runnerPath = Join-Path $script:repoRoot 'src\modules\Arraya.M365.AssessmentRunner\Arraya.M365.AssessmentRunner.psm1'
+        Import-Module -Name $script:manifestPath -Force -DisableNameChecking
     }
 
     It 'has a manifest and top-level wrapper scripts' {
@@ -45,6 +46,13 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match 'Invoke-M365ImproveForAssessmentRun'
         $runnerSource | Should -Match 'Customer Remediation HTML'
         $runnerSource | Should -Match '\$invokeParams\.GenerateWorkbookOverride = \[bool\]\$plan\.GenerateWorkbook'
+    }
+
+    It 'normalizes improve outputs back into the assessment run when a broad export root is supplied' {
+        $runnerSource = Get-Content -Raw -Path $script:runnerPath
+        $runnerSource | Should -Match 'function Resolve-AssessmentImproveOutputFolder'
+        $runnerSource | Should -Match 'Resolve-AssessmentImproveOutputFolder -ManifestPath \$manifestPath -ExportPath \$ExportPath -OutputFolder \$OutputFolder'
+        $runnerSource | Should -Match '\[string\]::Equals\(\$resolvedOutputFolder, \$resolvedExportPath, \[System\.StringComparison\]::OrdinalIgnoreCase\)'
     }
 
     It 'surfaces AuthMode on tenant assessment entrypoints' {

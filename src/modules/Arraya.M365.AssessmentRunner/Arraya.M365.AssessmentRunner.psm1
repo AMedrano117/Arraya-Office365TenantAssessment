@@ -172,6 +172,44 @@ function Resolve-AssessmentRunRootFromManifestPath {
     return $manifestDirectory
 }
 
+function Resolve-AssessmentImproveOutputFolder {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ManifestPath,
+        [Parameter(Mandatory = $true)]
+        [string]$ExportPath,
+        [Parameter(Mandatory = $false)]
+        [string]$OutputFolder
+    )
+
+    $runRoot = Resolve-AssessmentRunRootFromManifestPath -ManifestPath $ManifestPath
+    $resolvedRunRoot = if (Test-Path -Path $runRoot) {
+        (Resolve-Path -Path $runRoot).Path
+    }
+    else {
+        [System.IO.Path]::GetFullPath($runRoot)
+    }
+
+    if ([string]::IsNullOrWhiteSpace($OutputFolder)) {
+        return $resolvedRunRoot
+    }
+
+    $resolvedOutputFolder = if (Test-Path -Path $OutputFolder) {
+        (Resolve-Path -Path $OutputFolder).Path
+    }
+    else {
+        [System.IO.Path]::GetFullPath($OutputFolder)
+    }
+
+    $resolvedExportPath = [System.IO.Path]::GetFullPath($ExportPath)
+    if ([string]::Equals($resolvedOutputFolder, $resolvedExportPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $resolvedRunRoot
+    }
+
+    return $resolvedOutputFolder
+}
+
 function Update-AssessmentArtifactManifestWithImproveOutputs {
     [CmdletBinding()]
     param(
@@ -271,11 +309,7 @@ function Invoke-M365ImproveForAssessmentRun {
         throw "Could not find a manifest for the completed assessment run under: $ExportPath"
     }
 
-    $resolvedOutputFolder = $OutputFolder
-    if ([string]::IsNullOrWhiteSpace($resolvedOutputFolder)) {
-        $runRoot = Resolve-AssessmentRunRootFromManifestPath -ManifestPath $manifestPath
-        $resolvedOutputFolder = $runRoot
-    }
+    $resolvedOutputFolder = Resolve-AssessmentImproveOutputFolder -ManifestPath $manifestPath -ExportPath $ExportPath -OutputFolder $OutputFolder
 
     $improveResult = Invoke-M365ImprovementPlan `
         -AssessmentJsonPath $manifestPath `
