@@ -266,7 +266,7 @@ function Connect-Office365 {
             "Domain.Read.All","Device.Read.All","Reports.Read.All",
             "ReportSettings.Read.All","Policy.Read.All","CrossTenantInformation.ReadBasic.All",
             "SecurityEvents.Read.All","Application.Read.All","Sites.Read.All","Files.Read.All",
-            "Team.ReadBasic.All","Channel.ReadBasic.All"
+            "Team.ReadBasic.All","Channel.ReadBasic.All","OnPremDirectorySynchronization.Read.All"
         )
         $AdditionalScopes = @(
             "Directory.Read.All",

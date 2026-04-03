@@ -35,7 +35,7 @@ function Import-ArrayaTenantSnapshotContext {
         }
 
         $jsonArtifact = $artifactRows |
-            Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('Type')) -eq 'JSON' } |
+            Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('Type')) -in @('Assessment Snapshot JSON', 'JSON') } |
             Select-Object -First 1
 
         if (-not $jsonArtifact) {

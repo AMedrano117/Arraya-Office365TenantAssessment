@@ -170,6 +170,38 @@ Describe 'Arraya.M365.Common' {
         $outputContext.OutputPrefix | Should -Be 'tenant-snapshot'
     }
 
+    It 'resolves assessment snapshot JSON from a manifest artifact declaration' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        $snapshot = New-ArrayaTenantSnapshot -Data @{
+            Tenant = @{
+                Domains = @(
+                    [pscustomobject]@{
+                        Id         = 'contoso.com'
+                        IsVerified = $true
+                    }
+                )
+            }
+        }
+
+        $supportFolder = Join-Path $TestDrive 'Support'
+        $null = New-Item -ItemType Directory -Path $supportFolder -Force
+        $snapshotPath = Join-Path $supportFolder 'tenant-AssessmentSnapshot.json'
+        Export-ArrayaTenantSnapshot -Snapshot $snapshot -Path $snapshotPath
+
+        $manifestPath = Join-Path $supportFolder 'tenant.manifest.json'
+        $manifestContent = [ordered]@{ Artifacts = @([ordered]@{
+            Type      = 'Assessment Snapshot JSON'
+            Path      = $snapshotPath
+            Exists    = $true
+            SizeBytes = (Get-Item -Path $snapshotPath).Length
+        }) } | ConvertTo-Json -Depth 5
+        Set-Content -Path $manifestPath -Value $manifestContent -Encoding UTF8
+
+        $context = Import-ArrayaTenantSnapshotContext -Path $manifestPath -Purpose ImprovementPlan
+        $context.Path | Should -Be (Resolve-Path $snapshotPath).Path
+    }
+
     It 'maps output profiles to the updated reporting modes' {
         Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
 
@@ -177,9 +209,171 @@ Describe 'Arraya.M365.Common' {
         (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile ExecutiveLevel).ReportingMode | Should -Be 'Minimum'
         (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile SolutionsEngineer).ReportingMode | Should -Be 'Operator'
         (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile SolutionsEngineer).GenerateWorkbook | Should -BeTrue
+        (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile SolutionsEngineer).GenerateJson | Should -BeTrue
         (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile Machine).ReportingMode | Should -Be 'Automation'
         (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile Geek).ReportingMode | Should -Be 'Geek'
         (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile TenantToTenantMigration).ReportingMode | Should -Be 'All'
         (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile TenantToTenantMigration).GenerateWorkbook | Should -BeTrue
+        (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile TenantToTenantMigration).GenerateJson | Should -BeTrue
+    }
+
+    It 'maps governance and password lifecycle signals into the snapshot domains' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        $legacyTenantStats = @{
+            AllMailboxes = @(
+                [pscustomobject]@{
+                    DisplayName                       = 'Relay Mailbox'
+                    UserPrincipalName                 = 'relay@contoso.com'
+                    PrimarySmtpAddress                = 'relay@contoso.com'
+                    SmtpClientAuthenticationDisabled  = $false
+                    RetentionPolicy                   = 'Finance Hold'
+                    LitigationHoldEnabled             = $true
+                    RetentionHoldEnabled              = $false
+                    DelayHoldApplied                  = $false
+                }
+            )
+            EmailActivityTopSenders = @(
+                [pscustomobject]@{
+                    UserPrincipalName = 'relay@contoso.com'
+                    SendCount         = 42
+                    LastActivityDate  = '2026-01-01'
+                }
+            )
+            DlpPolicies = @(
+                [pscustomobject]@{
+                    PolicyName = 'Credit Card DLP'
+                }
+            )
+            AdConnectConfiguration = @{
+                Summary = [pscustomobject]@{
+                    PasswordWritebackEnabled        = $true
+                    PassThroughAuthenticationEnabled = $false
+                    SelfServicePasswordResetEnabled = $true
+                    OnPremisesSyncEnabled           = $true
+                    OnPremisesLastSyncDateTime      = '2026-01-01T00:00:00Z'
+                }
+            }
+        }
+
+        $snapshot = Convert-ArrayaLegacyTenantStatsToSnapshot -TenantStatsHash $legacyTenantStats
+
+        $snapshot.Data.Governance.RetentionPolicies.Keys.Count | Should -Be 1
+        $snapshot.Data.Governance.DlpPolicies.Count | Should -Be 1
+        $snapshot.Data.Governance.PasswordLifecycleSummary.PasswordWritebackEnabled | Should -BeTrue
+        $snapshot.Data.Governance.PasswordLifecycleSummary.SelfServicePasswordResetEnabled | Should -BeTrue
+        $snapshot.Data.Security.SMTPRelayServiceAccounts.Keys.Count | Should -Be 1
+    }
+
+    It 'maps external sharing and guest access signals into the snapshot domains' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        $legacyTenantStats = @{
+            ExternalSharingSummary = @{
+                Summary = [pscustomobject]@{
+                    TenantSharingCapability      = 'ExternalUserAndGuestSharing'
+                    DefaultSharingLinkType       = 'AnonymousAccess'
+                    SharingDomainRestrictionMode = 'allowList'
+                    SiteOverrideCount            = 1
+                }
+            }
+            ExternalSharingSiteOverrides = @(
+                [pscustomobject]@{
+                    Title                  = 'Projects'
+                    Url                    = 'https://contoso.sharepoint.com/sites/projects'
+                    SharingCapability      = 'ExistingExternalUserSharingOnly'
+                    DefaultSharingLinkType = 'SpecificPeople'
+                    DefaultLinkPermission  = 'View'
+                    OverrideReason         = 'Sharing capability differs from tenant setting'
+                }
+            )
+            ExternalIdentityRestrictions = @{
+                Summary = [pscustomobject]@{
+                    AllowInvitesFrom        = 'adminsAndGuestInviters'
+                    CrossTenantPartnerCount = 2
+                    DefaultInboundMfaTrust  = $true
+                }
+            }
+            GuestAccessConfiguration = @{
+                Summary = [pscustomobject]@{
+                    GuestInvitationControl       = 'adminsAndGuestInviters'
+                    ConditionalAccessGuestCoverage = $true
+                }
+            }
+        }
+
+        $snapshot = Convert-ArrayaLegacyTenantStatsToSnapshot -TenantStatsHash $legacyTenantStats
+
+        $snapshot.Data.Tenant.ExternalSharingSummary.Summary.TenantSharingCapability | Should -Be 'ExternalUserAndGuestSharing'
+        $snapshot.Data.Tenant.ExternalSharingSiteOverrides.Count | Should -Be 1
+        $snapshot.Data.Identity.ExternalIdentityRestrictions.Summary.AllowInvitesFrom | Should -Be 'adminsAndGuestInviters'
+        $snapshot.Data.Identity.GuestAccessConfiguration.Summary.GuestInvitationControl | Should -Be 'adminsAndGuestInviters'
+    }
+
+    It 'exports the external exposure worksheets in stable order' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        if (-not (Get-Command -Name Get-ExcelSheetInfo -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because 'ImportExcel worksheet inspection is not available in this environment.'
+            return
+        }
+
+        function global:Write-Log { param() }
+        function global:Write-ProgressHelper { param() }
+
+        $exportPath = Join-Path $TestDrive 'external-exposure.xlsx'
+        $tenantStats = @{
+            GuestSignInSummary = @{
+                Summary = [pscustomobject]@{
+                    InactiveGuests90Days = 3
+                }
+            }
+            GuestAccessConfiguration = @{
+                Summary = [pscustomobject]@{
+                    GuestInvitationControl = 'adminsAndGuestInviters'
+                }
+            }
+            ExternalIdentityRestrictions = @{
+                Summary = [pscustomobject]@{
+                    CrossTenantPartnerCount = 2
+                }
+            }
+            SharePoint = @(
+                [pscustomobject]@{
+                    Title = 'Projects'
+                    Url   = 'https://contoso.sharepoint.com/sites/projects'
+                }
+            )
+            SharePointSharingSummary = @{
+                Summary = [pscustomobject]@{
+                    TenantSharingCapability = 'ExternalUserAndGuestSharing'
+                    DefaultSharingLinkType  = 'AnonymousAccess'
+                }
+            }
+            ExternalSharingSummary = @{
+                Summary = [pscustomobject]@{
+                    SharingDomainRestrictionMode = 'allowList'
+                }
+            }
+            ExternalSharingSiteOverrides = @(
+                [pscustomobject]@{
+                    Title          = 'Projects'
+                    Url            = 'https://contoso.sharepoint.com/sites/projects'
+                    OverrideReason = 'Sharing capability differs from tenant setting'
+                }
+            )
+        }
+
+        Export-HashTableToExcel -hashtable $tenantStats -ExportDetails $exportPath
+
+        $worksheetNames = @(Get-ExcelSheetInfo -Path $exportPath | Select-Object -ExpandProperty Name)
+        ($worksheetNames -contains 'GuestAccessConfiguration') | Should -BeTrue
+        ($worksheetNames -contains 'ExternalIdentityRestrictions') | Should -BeTrue
+        ($worksheetNames -contains 'ExternalSharingSummary') | Should -BeTrue
+        ($worksheetNames -contains 'ExternalSharingSiteOverrides') | Should -BeTrue
+        $worksheetNames.IndexOf('GuestSignInSummary') | Should -BeLessThan $worksheetNames.IndexOf('GuestAccessConfiguration')
+        $worksheetNames.IndexOf('GuestAccessConfiguration') | Should -BeLessThan $worksheetNames.IndexOf('ExternalIdentityRestrictions')
+        $worksheetNames.IndexOf('SharePointSharingSummary') | Should -BeLessThan $worksheetNames.IndexOf('ExternalSharingSummary')
+        $worksheetNames.IndexOf('ExternalSharingSummary') | Should -BeLessThan $worksheetNames.IndexOf('ExternalSharingSiteOverrides')
     }
 }

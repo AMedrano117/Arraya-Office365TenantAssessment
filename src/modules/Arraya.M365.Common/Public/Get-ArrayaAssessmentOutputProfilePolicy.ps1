@@ -27,7 +27,7 @@ function Get-ArrayaAssessmentOutputProfilePolicy {
                 GenerateTechnicalHtml      = $true
                 GenerateBestPracticesHtml  = $false
                 GenerateQuestionnaire      = $false
-                GenerateJson               = $false
+                GenerateJson               = $true
                 GeneratePdf                = $false
             }
         }
@@ -51,7 +51,7 @@ function Get-ArrayaAssessmentOutputProfilePolicy {
                 GenerateTechnicalHtml      = $true
                 GenerateBestPracticesHtml  = $false
                 GenerateQuestionnaire      = $true
-                GenerateJson               = $false
+                GenerateJson               = $true
                 GeneratePdf                = $false
             }
         }

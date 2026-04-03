@@ -159,10 +159,10 @@ function Invoke-M365TenantAssessmentExportPipeline {
             if (-not (Get-Command -Name Export-TenantStatsJson -ErrorAction SilentlyContinue)) {
                 throw 'Export-TenantStatsJson function is unavailable in the current session.'
             }
-            $jsonExportPath = Join-Path -Path (Get-SupportDirectory) -ChildPath ([System.IO.Path]::GetFileNameWithoutExtension($ExportDetails) + '.json')
+            $jsonExportPath = Join-Path -Path (Get-SupportDirectory) -ChildPath ([System.IO.Path]::GetFileNameWithoutExtension($ExportDetails) + '-AssessmentSnapshot.json')
             # Preserve the full collection snapshot for re-export scenarios.
             Export-TenantStatsJson -TenantStatsHash $TenantStatsHash -Path $jsonExportPath
-            $generatedArtifacts['JSON'] = $jsonExportPath
+            $generatedArtifacts['Assessment Snapshot JSON'] = $jsonExportPath
             Write-PipelineLog -Type INFO -Message "Exported Tenant Statistics JSON to $jsonExportPath"
         }
         catch {

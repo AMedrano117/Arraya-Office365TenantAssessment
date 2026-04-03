@@ -44,7 +44,10 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode ExportOnly'
         $runnerSource | Should -Match 'IncludeLegacyAssessmentArtifacts'
         $runnerSource | Should -Match 'Invoke-M365ImproveForAssessmentRun'
-        $runnerSource | Should -Match 'Customer Remediation HTML'
+        $runnerSource | Should -Match 'Customer Assessment Report'
+        $runnerSource | Should -Match 'Customer Assessment Report Markdown'
+        $runnerSource | Should -Not -Match 'Customer Remediation HTML'
+        $runnerSource | Should -Not -Match 'Customer Remediation Markdown'
         $runnerSource | Should -Match '\$invokeParams\.GenerateWorkbookOverride = \[bool\]\$plan\.GenerateWorkbook'
     }
 
@@ -59,5 +62,53 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource = Get-Content -Raw -Path $script:runnerPath
         $runnerSource | Should -Match '\[ValidateSet\(''Interactive'', ''Certificate'', ''ClientSecret''\)\]\s*\[string\]\$AuthMode'
         $runnerSource | Should -Match '\$invokeParams\.AuthMode = \$AuthMode'
+    }
+
+    It 'updates the assessment manifest with improve artifacts including the markdown companion' {
+        $manifestPath = Join-Path $TestDrive 'assessment.manifest.json'
+        [pscustomobject]@{
+            SchemaVersion = 2
+            GeneratedAt   = (Get-Date).ToString('o')
+            OutputProfile = 'SolutionsEngineer'
+            Artifacts     = @(
+                [pscustomobject]@{
+                    Type      = 'Workbook'
+                    Path      = 'C:\Temp\tenant.xlsx'
+                    Exists    = $true
+                    SizeBytes = 1234
+                },
+                [pscustomobject]@{
+                    Type      = 'Assessment Snapshot JSON'
+                    Path      = 'C:\Temp\tenant-AssessmentSnapshot.json'
+                    Exists    = $true
+                    SizeBytes = 5678
+                }
+            )
+        } | ConvertTo-Json -Depth 10 | Set-Content -Path $manifestPath -Encoding UTF8
+
+        $improveResult = [pscustomobject]@{
+            CustomerAssessmentReportPath         = 'C:\Temp\tenant-CustomerAssessmentReport.docx'
+            CustomerAssessmentReportMarkdownPath = 'C:\Temp\tenant-CustomerAssessmentReport.md'
+            EngineerActionPackPath               = 'C:\Temp\tenant-EngineerActionPack.md'
+            JsonPath                             = 'C:\Temp\tenant-ImprovementPlan.json'
+            RemediationPs1Path                   = 'C:\Temp\tenant-RemediationSnippets.ps1'
+            CsvPath                              = $null
+            MarkdownPath                         = $null
+        }
+
+        $module = Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction Stop | Select-Object -First 1
+        & $module {
+            param($Path, $Result)
+            Update-AssessmentArtifactManifestWithImproveOutputs -ManifestPath $Path -ImproveResult $Result
+        } $manifestPath $improveResult
+
+        $updatedManifest = Get-Content -Raw -Path $manifestPath | ConvertFrom-Json -Depth 10
+        @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Workbook' }).Count | Should -Be 1
+        @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Assessment Snapshot JSON' }).Count | Should -Be 1
+        @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Customer Assessment Report' }).Count | Should -Be 1
+        @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Customer Assessment Report Markdown' }).Count | Should -Be 1
+        @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Engineer Action Pack' }).Count | Should -Be 1
+        @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Improvement Plan JSON' }).Count | Should -Be 1
+        @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Remediation Snippets' }).Count | Should -Be 1
     }
 }

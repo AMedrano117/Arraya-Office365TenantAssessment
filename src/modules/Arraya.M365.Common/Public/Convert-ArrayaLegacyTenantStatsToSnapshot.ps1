@@ -13,6 +13,200 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
 
     $snapshot = New-ArrayaTenantSnapshot -Metadata $Metadata -CollectionPlan $CollectionPlan -Diagnostics $Diagnostics
 
+    $normalizedTenantStatsHash = @{}
+    foreach ($key in $TenantStatsHash.Keys) {
+        $normalizedTenantStatsHash[[string]$key] = $TenantStatsHash[$key]
+    }
+
+    $getObjectValue = {
+        param(
+            $Object,
+            [string[]]$Names
+        )
+
+        if ($null -eq $Object) {
+            return $null
+        }
+
+        foreach ($name in $Names) {
+            if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($name)) {
+                return $Object[$name]
+            }
+            if ($Object.PSObject -and $Object.PSObject.Properties[$name]) {
+                return $Object.$name
+            }
+        }
+
+        return $null
+    }
+
+    $toBoolean = {
+        param($Value)
+
+        if ($null -eq $Value) {
+            return $null
+        }
+
+        if ($Value -is [bool]) {
+            return $Value
+        }
+
+        try {
+            return [System.Convert]::ToBoolean($Value)
+        }
+        catch {
+            switch -Regex ([string]$Value) {
+                '^(true|yes|enabled|on|1)$' { return $true }
+                '^(false|no|disabled|off|0)$' { return $false }
+            }
+        }
+
+        return $null
+    }
+
+    $allMailboxRows = @()
+    if ($normalizedTenantStatsHash.ContainsKey('AllMailboxes') -and $normalizedTenantStatsHash['AllMailboxes']) {
+        $allMailboxSource = $normalizedTenantStatsHash['AllMailboxes']
+        if ($allMailboxSource -is [System.Collections.IDictionary]) {
+            $allMailboxRows = @($allMailboxSource.Values)
+        }
+        else {
+            $allMailboxRows = @($allMailboxSource)
+        }
+    }
+
+    if (-not $normalizedTenantStatsHash.ContainsKey('RetentionPolicies') -and $allMailboxRows.Count -gt 0) {
+        $retentionPolicies = [ordered]@{}
+        foreach ($mailbox in $allMailboxRows) {
+            $policyName = [string](& $getObjectValue $mailbox @('RetentionPolicy'))
+            $hasLitigationHold = (& $toBoolean (& $getObjectValue $mailbox @('LitigationHoldEnabled'))) -eq $true
+            $hasRetentionHold = (& $toBoolean (& $getObjectValue $mailbox @('RetentionHoldEnabled'))) -eq $true
+            $hasDelayHold = (& $toBoolean (& $getObjectValue $mailbox @('DelayHoldApplied'))) -eq $true
+
+            if ([string]::IsNullOrWhiteSpace($policyName) -and -not ($hasLitigationHold -or $hasRetentionHold -or $hasDelayHold)) {
+                continue
+            }
+
+            $policyKey = if ([string]::IsNullOrWhiteSpace($policyName)) { 'HoldSignalsWithoutNamedPolicy' } else { $policyName }
+            if (-not $retentionPolicies.Contains($policyKey)) {
+                $retentionPolicies[$policyKey] = [pscustomobject]@{
+                    PolicyName                 = $policyKey
+                    MailboxCount               = 0
+                    LitigationHoldMailboxCount = 0
+                    RetentionHoldMailboxCount  = 0
+                    DelayHoldMailboxCount      = 0
+                }
+            }
+
+            $summary = $retentionPolicies[$policyKey]
+            $summary.MailboxCount++
+            if ($hasLitigationHold) { $summary.LitigationHoldMailboxCount++ }
+            if ($hasRetentionHold) { $summary.RetentionHoldMailboxCount++ }
+            if ($hasDelayHold) { $summary.DelayHoldMailboxCount++ }
+        }
+
+        if ($retentionPolicies.Count -gt 0) {
+            $normalizedTenantStatsHash['RetentionPolicies'] = $retentionPolicies
+        }
+    }
+
+    if (-not $normalizedTenantStatsHash.ContainsKey('PasswordLifecycleSummary') -and $normalizedTenantStatsHash.ContainsKey('AdConnectConfiguration')) {
+        $adConnectConfig = $normalizedTenantStatsHash['AdConnectConfiguration']
+        $adConnectSummary = & $getObjectValue $adConnectConfig @('Summary')
+        if ($adConnectSummary) {
+            $passwordLifecycleSummary = [ordered]@{}
+            foreach ($field in @(
+                'PasswordWriteback',
+                'PasswordWritebackEnabled',
+                'PassThroughAuthentication',
+                'PassThroughAuthenticationEnabled',
+                'SelfServicePasswordReset',
+                'SelfServicePasswordResetEnabled',
+                'OnPremisesSyncEnabled',
+                'OnPremisesLastSyncDateTime'
+            )) {
+                $value = & $getObjectValue $adConnectSummary @($field)
+                if ($null -ne $value) {
+                    $passwordLifecycleSummary[$field] = $value
+                }
+            }
+
+            if ($passwordLifecycleSummary.Count -gt 0) {
+                $normalizedTenantStatsHash['PasswordLifecycleSummary'] = [pscustomobject]$passwordLifecycleSummary
+            }
+        }
+    }
+
+    if (-not $normalizedTenantStatsHash.ContainsKey('SMTPRelayServiceAccounts') -and $allMailboxRows.Count -gt 0) {
+        $smtpAuthMailboxes = @(
+            $allMailboxRows | Where-Object {
+                (& $toBoolean (& $getObjectValue $_ @('SmtpClientAuthenticationDisabled'))) -eq $false
+            }
+        )
+
+        if ($smtpAuthMailboxes.Count -gt 0) {
+            $emailActivityRows = @()
+            if ($normalizedTenantStatsHash.ContainsKey('EmailActivityTopSenders') -and $normalizedTenantStatsHash['EmailActivityTopSenders']) {
+                $emailActivitySource = $normalizedTenantStatsHash['EmailActivityTopSenders']
+                if ($emailActivitySource -is [System.Collections.IDictionary]) {
+                    $emailActivityRows = @($emailActivitySource.Values)
+                }
+                else {
+                    $emailActivityRows = @($emailActivitySource)
+                }
+            }
+
+            $senderLookup = @{}
+            foreach ($sender in $emailActivityRows) {
+                foreach ($candidate in @(
+                    [string](& $getObjectValue $sender @('UserPrincipalName')),
+                    [string](& $getObjectValue $sender @('PrimarySmtpAddress', 'Mail')),
+                    [string](& $getObjectValue $sender @('User'))
+                )) {
+                    if ([string]::IsNullOrWhiteSpace($candidate)) {
+                        continue
+                    }
+                    $senderLookup[$candidate.ToLowerInvariant()] = $sender
+                }
+            }
+
+            $smtpRelayServiceAccounts = [ordered]@{}
+            foreach ($mailbox in $smtpAuthMailboxes) {
+                $displayName = [string](& $getObjectValue $mailbox @('DisplayName'))
+                $userPrincipalName = [string](& $getObjectValue $mailbox @('UserPrincipalName'))
+                $primarySmtpAddress = [string](& $getObjectValue $mailbox @('PrimarySmtpAddress'))
+                $lookupKey = @($userPrincipalName, $primarySmtpAddress) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1
+                if ([string]::IsNullOrWhiteSpace($lookupKey)) {
+                    $lookupKey = if (-not [string]::IsNullOrWhiteSpace($displayName)) { $displayName } else { [guid]::NewGuid().ToString() }
+                }
+
+                $senderRow = $null
+                foreach ($candidate in @($userPrincipalName, $primarySmtpAddress, $lookupKey)) {
+                    if ([string]::IsNullOrWhiteSpace($candidate)) {
+                        continue
+                    }
+                    $normalizedCandidate = $candidate.ToLowerInvariant()
+                    if ($senderLookup.ContainsKey($normalizedCandidate)) {
+                        $senderRow = $senderLookup[$normalizedCandidate]
+                        break
+                    }
+                }
+
+                $smtpRelayServiceAccounts[$lookupKey] = [pscustomobject]@{
+                    DisplayName        = if ([string]::IsNullOrWhiteSpace($displayName)) { 'Not surfaced in current source' } else { $displayName }
+                    UserPrincipalName  = if ([string]::IsNullOrWhiteSpace($userPrincipalName)) { $null } else { $userPrincipalName }
+                    PrimarySmtpAddress = if ([string]::IsNullOrWhiteSpace($primarySmtpAddress)) { $null } else { $primarySmtpAddress }
+                    SendCount          = & $getObjectValue $senderRow @('SendCount', 'MessageCount')
+                    LastActivityDate   = & $getObjectValue $senderRow @('LastActivityDate', 'LastActivityDateTime')
+                }
+            }
+
+            if ($smtpRelayServiceAccounts.Count -gt 0) {
+                $normalizedTenantStatsHash['SMTPRelayServiceAccounts'] = $smtpRelayServiceAccounts
+            }
+        }
+    }
+
     $sectionMap = @{
         Exchange = @(
             'AllRecipients', 'AllMailboxes', 'AllMailboxes-MailIdentity', 'AllMailboxes-UserPrincipalName',
@@ -28,7 +222,8 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
             'AuthenticationConfig', 'AuthenticationConfigSummary', 'AuthenticationMethods',
             'AuthenticationSSOApplications', 'LicenseSKUs', 'MfaRegistrationDetails', 'MfaRegistrationSummary',
             'ConditionalAccessPolicySummary', 'EnterpriseApplications', 'EnterpriseApplicationSummary',
-            'SecurityDefaultsPolicy', 'GuestSignInSummary', 'PrivilegedAccessSummary', 'DeviceManagementSummary'
+            'SecurityDefaultsPolicy', 'GuestSignInSummary', 'PrivilegedAccessSummary', 'DeviceManagementSummary',
+            'ExternalIdentityRestrictions', 'GuestAccessConfiguration'
         )
         Collaboration = @(
             'UnifiedGroups', 'AllTeams', 'TeamsVoice', 'TeamsVoiceSummary',
@@ -38,11 +233,15 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
         )
         Security = @(
             'SecuritySecureScore', 'SecureScoreActions', 'SpamFilteringConfig', 'SpamFilteringSummary',
-            'SMTPRelayConfig', 'SMTPRelaySummary'
+            'SMTPRelayConfig', 'SMTPRelaySummary', 'SMTPRelayServiceAccounts'
+        )
+        Governance = @(
+            'RetentionPolicies', 'DlpPolicies', 'PasswordLifecycleSummary'
         )
         Tenant = @(
             'TenantInfo', 'TenantInfoSummary', 'Domains', 'HybridConfiguration',
-            'FederationConfiguration', 'FederationSummary', 'AdConnectConfiguration'
+            'FederationConfiguration', 'FederationSummary', 'AdConnectConfiguration',
+            'ExternalSharingSummary', 'ExternalSharingSiteOverrides'
         )
     }
 
@@ -72,9 +271,9 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
         }
     }
 
-    foreach ($key in $TenantStatsHash.Keys) {
+    foreach ($key in $normalizedTenantStatsHash.Keys) {
         $stringKey = [string]$key
-        $value = $TenantStatsHash[$key]
+        $value = $normalizedTenantStatsHash[$key]
 
         if ($derivedKeys.Contains($stringKey)) {
             $snapshot['Derived'][$stringKey] = $value

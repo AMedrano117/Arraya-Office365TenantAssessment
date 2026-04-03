@@ -41,11 +41,11 @@ The legacy `Import-Office365CustomLocal.ps1` now delegates to the shared Common 
 - Use `-SkipImprove` only when you explicitly want the older assessment-only behavior.
 - `Improve` is still available as a separate post-processing workflow that consumes an assessment JSON snapshot.
 - The launcher still supports `-RunImprove` on `M365Collect` when you want to chain post-processing from a snapshot-only run.
-- The default `M365` flow now centers on operator-facing top-level deliverables like `CustomerRemediationReport.html`, `EngineerActionPack.md`, and the workbook when the selected profile enables it.
-- `ImprovementPlan.json`, `*.manifest.json`, and `RemediationSnippets.ps1` are written under `Support`.
+- The default `M365` flow now centers on operator-facing top-level deliverables like `CustomerAssessmentReport.docx`, `EngineerActionPack.md`, and the workbook when the selected profile enables it.
+- `AssessmentSnapshot.json`, `ImprovementPlan.json`, `*.manifest.json`, and `RemediationSnippets.ps1` are written under `Support`.
 - `SolutionsEngineer` and `TenantToTenantMigration` include workbook output by default.
 - Use `-IncludeLegacyAssessmentArtifacts` only when you explicitly want the older assessment HTML / questionnaire / PDF family.
-- Use `-IncludeLegacyArtifacts` only when you explicitly want the older `Improve` CSV/Markdown outputs.
+- Use `-IncludeLegacyArtifacts` only when you explicitly want the older `Improve` CSV/Markdown planning artifacts.
 - `Improve` can now take either the snapshot JSON path or the `*.manifest.json` path from the same run.
 - Use `-LiveRefresh` when you want snapshot-plus-live-refresh behavior during `Improve`; it is a friendlier alias for `-UseGraphFallback`.
 - The improvement plan combines derived assessment findings with built-in remediation heuristics.
