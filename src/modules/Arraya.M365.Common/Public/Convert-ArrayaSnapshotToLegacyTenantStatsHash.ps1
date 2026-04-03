@@ -29,7 +29,7 @@ function Convert-ArrayaSnapshotToLegacyTenantStatsHash {
     }
 
     if ($Snapshot.Contains('Data') -and ($Snapshot['Data'] -is [System.Collections.IDictionary])) {
-        $knownDomains = @('Exchange', 'Identity', 'Collaboration', 'Security', 'Tenant', 'Other')
+        $knownDomains = @('Exchange', 'Identity', 'Collaboration', 'Security', 'Governance', 'Tenant', 'Other')
         foreach ($domain in $knownDomains) {
             if (-not $Snapshot['Data'].Contains($domain)) {
                 continue

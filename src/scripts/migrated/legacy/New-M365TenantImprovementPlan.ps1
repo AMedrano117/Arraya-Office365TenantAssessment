@@ -18,12 +18,20 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$IncludeLegacyArtifacts,
     [Parameter(Mandatory = $false)]
-    [switch]$PassThru
+    [switch]$PassThru,
+    [Parameter(Mandatory = $false)]
+    [switch]$Quiet
 )
 
 $ErrorActionPreference = 'Stop'
 $graphFallbackEnabled = $UseGraphFallback.IsPresent
 $graphFallbackUnavailableMessageShown = $false
+
+$customerAssessmentDocxHelperPath = Join-Path -Path $PSScriptRoot -ChildPath 'Private\CustomerAssessmentDocx.ps1'
+if (-not (Test-Path -Path $customerAssessmentDocxHelperPath -PathType Leaf)) {
+    throw "Customer assessment DOCX helper script was not found: $customerAssessmentDocxHelperPath"
+}
+. $customerAssessmentDocxHelperPath
 
 function Write-ImproveConsoleWarning {
     [CmdletBinding()]
@@ -1412,9 +1420,9 @@ function Get-CustomerExecutiveThemes {
         )
 
         $whatThisMeans = if ($areas.Count -gt 0) {
-            '{0} related finding(s) were grouped into this priority across {1}.' -f $orderedRows.Count, ($areas -join ', ')
+            'The assessment identified {0} related findings concentrated across {1}.' -f $orderedRows.Count, (Join-ArrayaReadableList -Items $areas)
         } else {
-            '{0} related finding(s) were grouped into this priority.' -f $orderedRows.Count
+            'The assessment identified {0} related findings in this priority grouping.' -f $orderedRows.Count
         }
 
         $themes.Add([pscustomobject]@{
@@ -1424,9 +1432,11 @@ function Get-CustomerExecutiveThemes {
             WorkstreamLabel     = $(if ($workstreams.Count -gt 0) { $workstreams -join ' / ' } else { [string]$leadFinding.OwnerTeam })
             FindingCount        = $orderedRows.Count
             WhatThisMeans       = $whatThisMeans
-            WhyItMatters        = Get-ArrayaLeadSentence -Text $leadFinding.WhyFlagged
+            StandoutReason      = Get-CustomerStandoutSentence -LeadFinding $leadFinding -FindingCount $orderedRows.Count -Areas $areas
+            ExampleText         = Get-CustomerFindingExampleText -Finding $leadFinding -MaxItems 2
+            WhyItMatters        = $(if ([string]::IsNullOrWhiteSpace([string](Convert-ToArrayaSentenceFragment -Text $leadFinding.WhyFlagged))) { 'This indicates that the observed control pattern is not isolated and is affecting a core part of the tenant.' } else { 'This indicates that ' + (Convert-ToArrayaSentenceFragment -Text $leadFinding.WhyFlagged) + '.' })
             RecommendedNextStep = Get-ArrayaLeadSentence -Text $leadFinding.Recommendation
-            CustomerValue       = Get-ArrayaLeadSentence -Text $leadFinding.BusinessValue
+            CustomerValue       = $(if ([string]::IsNullOrWhiteSpace([string](Convert-ToArrayaOutcomeSentence -Text $leadFinding.BusinessValue))) { 'Left unaddressed, this creates additional operational drag because the same risk pattern remains active in the tenant.' } else { (Convert-ToArrayaOutcomeSentence -Text $leadFinding.BusinessValue) + '.' })
         }) | Out-Null
     }
 
@@ -1479,11 +1489,14 @@ function Get-CustomerRoadmapActions {
                 ActionTitle         = $profile.ActionTitle
                 Theme               = $profile.Theme
                 Workstream          = [string]$leadFinding.OwnerTeam
+                HighestSeverity     = [string]$leadFinding.Severity
                 FindingCount        = $orderedRows.Count
-                WhatThisAddresses   = $(if ($areas.Count -gt 0) { '{0} related finding(s) across {1}' -f $orderedRows.Count, ($areas -join ', ') } else { '{0} related finding(s)' -f $orderedRows.Count })
-                WhyItMatters        = Get-ArrayaLeadSentence -Text $leadFinding.WhyFlagged
+                WhatThisAddresses   = $(if ($areas.Count -gt 0) { 'This work item addresses {0} related findings across {1}.' -f $orderedRows.Count, (Join-ArrayaReadableList -Items $areas) } else { 'This work item addresses {0} related findings in the same control area.' -f $orderedRows.Count })
+                StandoutReason      = Get-CustomerStandoutSentence -LeadFinding $leadFinding -FindingCount $orderedRows.Count -Areas $areas
+                ExampleText         = Get-CustomerFindingExampleText -Finding $leadFinding -MaxItems 2
+                WhyItMatters        = $(if ([string]::IsNullOrWhiteSpace([string](Convert-ToArrayaSentenceFragment -Text $leadFinding.WhyFlagged))) { 'This indicates that the tenant is carrying a repeat control pattern that will remain visible until this workstream is addressed.' } else { 'This matters because ' + (Convert-ToArrayaSentenceFragment -Text $leadFinding.WhyFlagged) + '.' })
                 RecommendedNextStep = Get-ArrayaLeadSentence -Text $leadFinding.Recommendation
-                BusinessValue       = Get-ArrayaLeadSentence -Text $leadFinding.BusinessValue
+                BusinessValue       = $(if ([string]::IsNullOrWhiteSpace([string](Convert-ToArrayaOutcomeSentence -Text $leadFinding.BusinessValue))) { 'If it remains open, the tenant will continue to carry the same exposure and operational friction reflected in the current findings.' } else { (Convert-ToArrayaOutcomeSentence -Text $leadFinding.BusinessValue) + '.' })
             }) | Out-Null
         }
     }
@@ -1495,24 +1508,924 @@ function Get-CustomerExecutiveSummaryNarrative {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][object[]]$Findings,
-        [Parameter(Mandatory = $true)][object[]]$ExecutiveThemes
+        [Parameter(Mandatory = $true)][object[]]$ExecutiveThemes,
+        [Parameter(Mandatory = $false)][object[]]$OwnerGroups = @()
     )
 
     $findingCount = @($Findings).Count
-    $workstreams = @(
-        $Findings |
-            Group-Object OwnerTeam |
-            Sort-Object Count -Descending |
-            Select-Object -First 3 |
-            ForEach-Object { $_.Name } |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    )
+    $topOwnerGroups = if (@($OwnerGroups).Count -gt 0) {
+        @($OwnerGroups | Select-Object -First 3)
+    }
+    else {
+        @(
+            $Findings |
+                Group-Object OwnerTeam |
+                Sort-Object Count -Descending |
+                Select-Object -First 3
+        )
+    }
     $themeNames = @($ExecutiveThemes | Select-Object -First 3 | ForEach-Object { $_.Theme })
 
-    $workstreamText = if ($workstreams.Count -gt 0) { $workstreams -join ', ' } else { 'the tenant' }
-    $themeText = if ($themeNames.Count -gt 0) { $themeNames -join '; ' } else { 'core Microsoft 365 governance priorities' }
+    $workstreamText = if ($topOwnerGroups.Count -gt 0) {
+        ($topOwnerGroups | ForEach-Object { '{0} ({1})' -f $_.Name, $_.Count }) -join ', '
+    }
+    else {
+        'the tenant overall'
+    }
+    $themeText = if ($themeNames.Count -gt 0) { $themeNames -join '; ' } else { 'the highest-risk Microsoft 365 control areas' }
 
-    return "The assessment identified $findingCount remediation finding(s), concentrated most heavily in $workstreamText. The most material executive priorities are $themeText. Addressing these areas will reduce operational risk, improve accountability, and align the tenant to a more supportable Microsoft 365 operating baseline."
+    return "The assessment identified $findingCount remediation findings in this tenant, with the heaviest concentration in $workstreamText. A consistent pattern observed was that identity exposure, messaging hygiene, and governance discipline are all under pressure at the same time, rather than in a single isolated area. This is notable because the top executive themes of $themeText show both control weakness and ownership strain in the current environment. Left unaddressed, this creates a broader operational issue: security risk, service administration, and tenant governance all depend on the same parts of the environment that are already carrying the most findings."
+}
+
+function Join-ArrayaReadableList {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Items = @()
+    )
+
+    $values = @(
+        $Items |
+            ForEach-Object { Convert-ToArrayaDisplayText -Value $_ -Default '' } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique
+    )
+
+    switch ($values.Count) {
+        0 { return '' }
+        1 { return $values[0] }
+        2 { return ($values -join ' and ') }
+        default {
+            return ('{0}, and {1}' -f (($values[0..($values.Count - 2)]) -join ', '), $values[-1])
+        }
+    }
+}
+
+function Get-CustomerCondensedListText {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$Text,
+        [Parameter(Mandatory = $false)][int]$MaxItems = 3
+    )
+
+    $normalized = Convert-ToArrayaDisplayText -Value $Text -Default ''
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return $null
+    }
+
+    $items = @(
+        $normalized -split '\s*;\s*' |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -First $MaxItems
+    )
+
+    if ($items.Count -eq 0) {
+        return $null
+    }
+
+    return (Join-ArrayaReadableList -Items $items)
+}
+
+function Get-CustomerListItemsFromText {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$Text,
+        [Parameter(Mandatory = $false)][int]$MaxItems = 3
+    )
+
+    $normalized = Convert-ToArrayaDisplayText -Value $Text -Default ''
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return @()
+    }
+
+    return @(
+        $normalized -split '\s*;\s*' |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -First $MaxItems
+    )
+}
+
+function Get-CustomerFindingExampleText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$Finding,
+        [Parameter(Mandatory = $false)][int]$MaxItems = 2
+    )
+
+    $currentValue = Convert-ToArrayaDisplayText -Value $Finding.CurrentValue -Default ''
+    if ([string]::IsNullOrWhiteSpace($currentValue) -or $currentValue -eq 'N/A') {
+        return $null
+    }
+
+    $items = @(
+        $currentValue -split '\s*;\s*' |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -First $MaxItems
+    )
+
+    if ($items.Count -eq 0) {
+        return $null
+    }
+
+    return (Join-ArrayaReadableList -Items $items)
+}
+
+function Convert-ToArrayaOutcomeSentence {
+    [CmdletBinding()]
+    param([AllowNull()][string]$Text)
+
+    $normalized = Get-ArrayaLeadSentence -Text $Text
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return $null
+    }
+
+    $trimmed = $normalized.Trim().TrimEnd('.', '!', '?')
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        return $null
+    }
+
+    if ($trimmed -match '^(Improves|Reduces|Strengthens|Avoids|Makes|Supports)\b\s*(.*)$') {
+        $verb = switch ($matches[1].ToLowerInvariant()) {
+            'improves' { 'improve' }
+            'reduces' { 'reduce' }
+            'strengthens' { 'strengthen' }
+            'avoids' { 'avoid' }
+            'makes' { 'make' }
+            'supports' { 'support' }
+            default { $matches[1].ToLowerInvariant() }
+        }
+        $remainder = $matches[2].Trim()
+        if ([string]::IsNullOrWhiteSpace($remainder)) {
+            return "Addressing this helps $verb the current condition"
+        }
+
+        return "Addressing this helps $verb $remainder"
+    }
+
+    return $trimmed
+}
+
+function Convert-ToArrayaSentenceFragment {
+    [CmdletBinding()]
+    param([AllowNull()][string]$Text)
+
+    $normalized = Get-ArrayaLeadSentence -Text $Text
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return $null
+    }
+
+    $trimmed = $normalized.Trim().TrimEnd('.')
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        return $null
+    }
+
+    $trimmed = $trimmed -replace '^(?i)(flagged because|because)\s+', ''
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        return $null
+    }
+
+    if ($trimmed -match '^(?i)the assessment observed:\s*(.+)$') {
+        $trimmed = 'the tenant currently shows ' + $matches[1].Trim()
+    }
+
+    return "$([char]::ToLowerInvariant($trimmed[0]))$($trimmed.Substring(1))"
+}
+
+function Get-CustomerStandoutSentence {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$LeadFinding,
+        [Parameter(Mandatory = $true)][int]$FindingCount,
+        [Parameter(Mandatory = $false)][string[]]$Areas = @()
+    )
+
+    $currentValue = Convert-ToArrayaDisplayText -Value $LeadFinding.CurrentValue -Default ''
+    $condensedCurrentValue = Get-CustomerCondensedListText -Text $currentValue -MaxItems 2
+    if (-not [string]::IsNullOrWhiteSpace($condensedCurrentValue)) {
+        $currentValue = $condensedCurrentValue
+    }
+    $areaText = Join-ArrayaReadableList -Items $Areas
+    if (-not [string]::IsNullOrWhiteSpace($currentValue)) {
+        if (-not [string]::IsNullOrWhiteSpace($areaText)) {
+            return "This pattern stood out during review because the current source shows $currentValue across $areaText, which is a visible concentration rather than a one-off exception."
+        }
+
+        return "This pattern stood out during review because the current source shows $currentValue, which is material in the context of these $FindingCount related findings."
+    }
+
+    $whyFlagged = Convert-ToArrayaSentenceFragment -Text $LeadFinding.WhyFlagged
+    if (-not [string]::IsNullOrWhiteSpace($whyFlagged)) {
+        return "This pattern stood out during review because $whyFlagged."
+    }
+
+    return "This pattern stood out during review because $FindingCount related findings are concentrated in the same part of the tenant."
+}
+
+function New-CustomerTechnicalObservationSection {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][string]$SectionNumber,
+        [Parameter(Mandatory = $true)][string]$SectionTitle,
+        [Parameter(Mandatory = $false)][object[]]$ConfigurationRows = @(),
+        [Parameter(Mandatory = $false)][string]$ObservedNarrative,
+        [Parameter(Mandatory = $false)][string]$PositiveNarrative,
+        [Parameter(Mandatory = $true)][string]$WhyItMatters,
+        [Parameter(Mandatory = $false)][string]$WhatWasReviewed,
+        [Parameter(Mandatory = $false)][string]$WhatWasObserved
+    )
+
+    if (@($ConfigurationRows).Count -eq 0 -and -not [string]::IsNullOrWhiteSpace($WhatWasReviewed)) {
+        $ConfigurationRows = @(
+            New-CustomerConfigurationRow -Signal 'Reviewed configuration scope' -State $WhatWasReviewed
+        )
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ObservedNarrative)) {
+        $ObservedNarrative = $WhatWasObserved
+    }
+
+    if ([string]::IsNullOrWhiteSpace($PositiveNarrative)) {
+        $PositiveNarrative = 'The current source still provides enough signal in this area to distinguish where controls are present and where follow-through is still needed.'
+    }
+
+    return [pscustomobject]@{
+        SectionNumber     = $SectionNumber
+        SectionTitle      = $SectionTitle
+        ConfigurationRows = @($ConfigurationRows)
+        ObservedNarrative = $ObservedNarrative
+        PositiveNarrative = $PositiveNarrative
+        WhyItMatters      = $WhyItMatters
+    }
+}
+
+function New-CustomerConfigurationRow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Signal,
+        [Parameter(Mandatory = $false)][AllowNull()]$State
+    )
+
+    $displayState = Convert-ToArrayaDisplayText -Value $State -Default 'Not surfaced in current source'
+    return [pscustomobject]@{
+        Signal = $Signal
+        State  = $displayState
+    }
+}
+
+function New-CustomerDocumentationReference {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Title,
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$WhyItIsRelevant
+    )
+
+    return [pscustomobject]@{
+        Title           = $Title
+        Url             = $Url
+        WhyItIsRelevant = $WhyItIsRelevant
+    }
+}
+
+function Get-CustomerTechnicalSectionTitleMap {
+    [CmdletBinding()]
+    param()
+
+    return @(
+        'Identity & Access (Entra ID)',
+        'Devices & Endpoint Management',
+        'Messaging (Exchange Online)',
+        'Collaboration (Teams, SharePoint, OneDrive)',
+        'Data Protection & Governance',
+        'Offboarding & Lifecycle Management'
+    )
+}
+
+function Get-CustomerDocumentationAppendixSections {
+    [CmdletBinding()]
+    param()
+
+    $sections = @()
+
+    $identityRefs = @()
+    $reference = New-CustomerDocumentationReference -Title 'Conditional Access overview' -Url 'https://learn.microsoft.com/en-us/entra/identity/conditional-access/overview' -WhyItIsRelevant 'Supports the access-control observations around policy coverage, exclusions, and enforcement maturity.'
+    $identityRefs += $reference
+    $reference = New-CustomerDocumentationReference -Title 'Plan a Microsoft Entra multifactor authentication deployment' -Url 'https://learn.microsoft.com/en-us/entra/identity/authentication/howto-mfa-getstarted' -WhyItIsRelevant 'Provides Microsoft guidance for improving MFA coverage and rollout maturity.'
+    $identityRefs += $reference
+    $reference = New-CustomerDocumentationReference -Title 'Privileged Identity Management overview' -Url 'https://learn.microsoft.com/en-us/entra/id-governance/privileged-identity-management/pim-configure' -WhyItIsRelevant 'Supports the recommendations related to privileged access hygiene, role control, and reducing standing access.'
+    $identityRefs += $reference
+    $section = [pscustomobject]@{
+        Title      = 'Identity & Access'
+        Intro      = 'The following Microsoft documentation supports the identity observations and recommended control changes discussed in this report.'
+        References = $identityRefs
+    }
+    $sections += $section
+
+    $deviceRefs = @()
+    $reference = New-CustomerDocumentationReference -Title 'Get started with device compliance policies in Microsoft Intune' -Url 'https://learn.microsoft.com/en-us/intune/intune-service/protect/device-compliance-get-started' -WhyItIsRelevant 'Supports the discussion around compliance baselines and how endpoint posture is evaluated.'
+    $deviceRefs += $reference
+    $reference = New-CustomerDocumentationReference -Title 'Add actions for noncompliance to device compliance policies' -Url 'https://learn.microsoft.com/en-us/intune/intune-service/protect/actions-for-noncompliance' -WhyItIsRelevant 'Relevant to the observed gaps between compliant and non-compliant devices and how exceptions are handled.'
+    $deviceRefs += $reference
+    $section = [pscustomobject]@{
+        Title      = 'Devices & Endpoint Management'
+        Intro      = 'These Microsoft references support the device-compliance and endpoint-management observations in the current-state review.'
+        References = $deviceRefs
+    }
+    $sections += $section
+
+    $messagingRefs = @()
+    $reference = New-CustomerDocumentationReference -Title 'Control automatic external email forwarding in Microsoft 365' -Url 'https://learn.microsoft.com/en-us/microsoft-365/security/office-365-security/outbound-spam-policies-external-email-forwarding' -WhyItIsRelevant 'Supports the observations around outbound forwarding policy, remote domains, and forwarding exposure.'
+    $messagingRefs += $reference
+    $reference = New-CustomerDocumentationReference -Title 'Set up SPF in Microsoft 365 to help prevent spoofing' -Url 'https://learn.microsoft.com/en-us/microsoft-365/security/office-365-security/set-up-spf-in-office-365-to-help-prevent-spoofing' -WhyItIsRelevant 'Relevant to the domain and anti-spoofing observations surfaced in the messaging and governance sections.'
+    $messagingRefs += $reference
+    $reference = New-CustomerDocumentationReference -Title 'Use DKIM to validate outbound email sent from your custom domain' -Url 'https://learn.microsoft.com/en-us/defender-office-365/email-authentication-dkim-configure' -WhyItIsRelevant 'Supports the recommendations tied to mail-authentication maturity and custom-domain protection.'
+    $messagingRefs += $reference
+    $section = [pscustomobject]@{
+        Title      = 'Messaging'
+        Intro      = 'These references support the messaging findings related to forwarding, mail hygiene, and domain-based protection controls.'
+        References = $messagingRefs
+    }
+    $sections += $section
+
+    $collaborationRefs = @()
+    $reference = New-CustomerDocumentationReference -Title 'Overview of external sharing in SharePoint and OneDrive' -Url 'https://learn.microsoft.com/en-us/sharepoint/external-sharing-overview' -WhyItIsRelevant 'Supports the observations around sharing defaults, external access posture, and collaboration exposure.'
+    $collaborationRefs += $reference
+    $reference = New-CustomerDocumentationReference -Title 'Set expiration for Microsoft 365 groups' -Url 'https://learn.microsoft.com/en-us/entra/identity/users/groups-lifecycle' -WhyItIsRelevant 'Relevant to ownership, inactivity, and lifecycle controls for Teams-connected groups and collaboration spaces.'
+    $collaborationRefs += $reference
+    $section = [pscustomobject]@{
+        Title      = 'Collaboration'
+        Intro      = 'The following guidance supports the collaboration observations related to sharing, ownership, and workspace lifecycle.'
+        References = $collaborationRefs
+    }
+    $sections += $section
+
+    $governanceRefs = @()
+    $reference = New-CustomerDocumentationReference -Title 'Learn about retention policies and retention labels' -Url 'https://learn.microsoft.com/en-us/purview/retention' -WhyItIsRelevant 'Supports the governance discussion around retention coverage and the absence or presence of lifecycle controls for retained content.'
+    $governanceRefs += $reference
+    $reference = New-CustomerDocumentationReference -Title 'Microsoft Secure Score' -Url 'https://learn.microsoft.com/en-us/defender-xdr/microsoft-secure-score' -WhyItIsRelevant 'Provides Microsoft baseline context for interpreting the current Secure Score posture captured in the assessment.'
+    $governanceRefs += $reference
+    $reference = New-CustomerDocumentationReference -Title 'Admin consent workflow' -Url 'https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/configure-admin-consent-workflow' -WhyItIsRelevant 'Supports the governance observations around application consent, approval workflow, and control maturity.'
+    $governanceRefs += $reference
+    $section = [pscustomobject]@{
+        Title      = 'Data Protection & Governance'
+        Intro      = 'These references provide Microsoft guidance for the governance, secure-score, and retention-oriented observations captured in the current-state review.'
+        References = $governanceRefs
+    }
+    $sections += $section
+
+    $lifecycleRefs = @()
+    $reference = New-CustomerDocumentationReference -Title 'Remove a former employee and secure data - Step 5: Give access to another employee to OneDrive and Outlook data' -Url 'https://learn.microsoft.com/en-us/microsoft-365/admin/add-users/remove-former-employee-step-5?view=o365-worldwide' -WhyItIsRelevant 'Supports the lifecycle recommendations for former-user content, mailbox ownership, and OneDrive handoff.'
+    $lifecycleRefs += $reference
+    $reference = New-CustomerDocumentationReference -Title 'Retention and deletion in OneDrive and SharePoint' -Url 'https://learn.microsoft.com/en-us/sharepoint/retention-and-deletion' -WhyItIsRelevant 'Relevant to stale content locations, retained data, and lifecycle handling for dormant collaboration sites.'
+    $lifecycleRefs += $reference
+    $reference = New-CustomerDocumentationReference -Title 'Convert a mailbox to a shared mailbox' -Url 'https://learn.microsoft.com/en-us/exchange/recipients-in-exchange-online/manage-user-mailboxes/convert-a-mailbox' -WhyItIsRelevant 'Supports mailbox lifecycle handling where access must be preserved but direct user ownership has ended.'
+    $lifecycleRefs += $reference
+    $section = [pscustomobject]@{
+        Title      = 'Offboarding & Lifecycle Management'
+        Intro      = 'These Microsoft references support the lifecycle observations around stale accounts, former-user content, and workload cleanup.'
+        References = $lifecycleRefs
+    }
+    $sections += $section
+
+    return @($sections)
+}
+
+function Get-CustomerTypeBreakdownText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Rows = @(),
+        [Parameter(Mandatory = $false)][string]$PropertyName = 'RecipientTypeDetails',
+        [Parameter(Mandatory = $false)][int]$Top = 4
+    )
+
+    $groupedItems = @()
+    $groupedItems += $Rows |
+        ForEach-Object { Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @($PropertyName)) -Default '' } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Group-Object
+    $items = @(
+        $groupedItems |
+            Sort-Object -Property Count, Name -Descending |
+            Select-Object -First $Top |
+            ForEach-Object { '{0}: {1}' -f $_.Name, $_.Count }
+    )
+
+    if ($items.Count -eq 0) {
+        return 'Not surfaced in current source'
+    }
+
+    return ($items -join '; ')
+}
+
+function Get-CustomerRecipientDomainBreakdownText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$DomainRows = @(),
+        [Parameter(Mandatory = $false)][int]$Top = 3
+    )
+
+    $domainRowsWithSortValue = @()
+    foreach ($row in @($DomainRows)) {
+        $totalRecipientsRaw = Get-ArrayaObjectValue -Object $row -Names 'TotalDomainRecipients'
+        $domainNameRaw = Get-ArrayaObjectValue -Object $row -Names 'Domain'
+        $totalRecipients = Convert-ArrayaToNumber $totalRecipientsRaw
+        $domainName = Convert-ToArrayaDisplayText -Value $domainNameRaw -Default 'Unknown domain'
+        $domainRowsWithSortValue += [pscustomobject]@{
+            DomainRow       = $row
+            TotalRecipients = $totalRecipients
+            DomainName      = $domainName
+        }
+    }
+    $items = @(
+        $domainRowsWithSortValue |
+            Sort-Object -Property TotalRecipients, DomainName -Descending |
+            Select-Object -First $Top |
+            ForEach-Object {
+                $domainName = $_.DomainName
+                $total = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_.DomainRow -Names 'TotalDomainRecipients')
+                $primary = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_.DomainRow -Names 'PrimarySMTPRecipients')
+                $aliasOnly = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_.DomainRow -Names 'AliasOnlyRecipients')
+                $totalDisplay = if ($null -eq $total) { 0 } else { $total }
+                $primaryDisplay = if ($null -eq $primary) { 0 } else { $primary }
+                $aliasDisplay = if ($null -eq $aliasOnly) { 0 } else { $aliasOnly }
+                '{0}: {1} total ({2} primary, {3} alias-only)' -f $domainName, $totalDisplay, $primaryDisplay, $aliasDisplay
+            }
+    )
+
+    if ($items.Count -eq 0) {
+        return 'Not surfaced in current source'
+    }
+
+    return ($items -join '; ')
+}
+
+function Get-CustomerTopLicensePressureText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$LicenseRows = @(),
+        [Parameter(Mandatory = $false)][int]$Top = 3
+    )
+
+    $licensePressureRows = @()
+    foreach ($license in @($LicenseRows)) {
+        $consumedRaw = Get-ArrayaObjectValue -Object $license -Names 'ConsumedUnits'
+        $purchasedRaw = Get-ArrayaObjectValue -Object $license -Names @('PurchasedUnits', 'TotalLicenses')
+        $skuNameRaw = Get-ArrayaObjectValue -Object $license -Names @('SkuFriendlyName', 'SkuPartNumber')
+        $consumed = Convert-ArrayaToNumber $consumedRaw
+        $purchased = Convert-ArrayaToNumber $purchasedRaw
+        if ($null -eq $consumed -or $null -eq $purchased -or $purchased -le 0) { continue }
+
+        $skuName = Convert-ToArrayaDisplayText -Value $skuNameRaw -Default 'Unknown SKU'
+        $percent = [math]::Round(($consumed / $purchased) * 100, 2)
+        $licensePressureRows += [pscustomobject]@{
+            Sku     = $skuName
+            Percent = $percent
+            State   = $("{0}: {1}/{2} ({3}%)" -f $skuName, $consumed, $purchased, $percent)
+        }
+    }
+
+    $items = @(
+        $licensePressureRows |
+            Sort-Object -Property Percent, Sku -Descending |
+            Select-Object -First $Top |
+            ForEach-Object { $_.State }
+    )
+
+    if ($items.Count -eq 0) {
+        return 'Not surfaced in current source'
+    }
+
+    return ($items -join '; ')
+}
+
+function Get-CustomerExampleText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Rows = @(),
+        [Parameter(Mandatory = $true)][scriptblock]$Project,
+        [Parameter(Mandatory = $false)][int]$Top = 2,
+        [Parameter(Mandatory = $false)][string]$Default = 'No specific examples were surfaced in the current source.'
+    )
+
+    $items = @(
+        foreach ($row in @($Rows | Select-Object -First $Top)) {
+            $value = & $Project $row
+            $text = Convert-ToArrayaDisplayText -Value $value -Default ''
+            if (-not [string]::IsNullOrWhiteSpace($text)) { $text }
+        }
+    )
+
+    if ($items.Count -eq 0) {
+        return $Default
+    }
+
+    return ($items -join '; ')
+}
+
+function Get-CustomerTechnicalObservations {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object]$Signals,
+        [Parameter(Mandatory = $true)][object[]]$Findings,
+        [Parameter(Mandatory = $false)][object[]]$WorkstreamSummaries = @()
+    )
+
+    $observations = New-Object System.Collections.Generic.List[object]
+
+    $adminRows = Convert-ArrayaObjectToArray $Signals.Admins
+    $caPolicies = Convert-ArrayaObjectToArray $Signals.ConditionalAccessPolicies
+    $caSummaryRecord = if ($Signals.ConditionalAccessSummary) { Get-ArrayaObjectValue -Object $Signals.ConditionalAccessSummary -Names @('Summary') } else { $null }
+    $authConfig = $Signals.AuthenticationConfig
+    $mfaSummary = $Signals.MfaRegistrationSummary
+    $enterpriseApps = Convert-ArrayaObjectToArray $Signals.EnterpriseApplications
+    $enterpriseAppSummaryRecord = if ($Signals.EnterpriseApplicationSummary) { Get-ArrayaObjectValue -Object $Signals.EnterpriseApplicationSummary -Names @('Summary') } else { $null }
+    $guestSummaryRecord = if ($Signals.GuestSignInSummary) { Get-ArrayaObjectValue -Object $Signals.GuestSignInSummary -Names @('Summary') } else { $null }
+    $externalIdentityRestrictionsRecord = if ($Signals.ExternalIdentityRestrictions) { Get-ArrayaObjectValue -Object $Signals.ExternalIdentityRestrictions -Names @('Summary') } else { $null }
+    $guestAccessConfigurationRecord = if ($Signals.GuestAccessConfiguration) { Get-ArrayaObjectValue -Object $Signals.GuestAccessConfiguration -Names @('Summary') } else { $null }
+    $privilegedSummaryRecord = if ($Signals.PrivilegedAccessSummary) { Get-ArrayaObjectValue -Object $Signals.PrivilegedAccessSummary -Names @('Summary') } else { $null }
+    $recipientRows = Convert-ArrayaObjectToArray $Signals.AllRecipients
+    $retentionPolicyRows = Convert-ArrayaObjectToArray $Signals.RetentionPolicies
+    $adminConsentWorkflowEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $authConfig -Names @('AdminConsentWorkflowEnabled'))
+
+    $reportOnlyPolicies = @($caPolicies | Where-Object { [string]$_.State -match 'report' }).Count
+    $inactiveGuests90Days = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $guestSummaryRecord -Names @('InactiveGuests90Days'))
+    $stalePrivileged90Days = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $privilegedSummaryRecord -Names @('StalePrivilegedAccounts90Days'))
+    $mfaPercent = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaSummary -Names @('RegistrationPercent'))
+    $highPrivilegeApps = @($enterpriseApps | Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('HighPrivilegePermissionCount'))) -gt 0 }).Count
+    $policiesWithExclusions = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $caSummaryRecord -Names @('PoliciesWithExclusions'))
+    $policiesUsingRiskSignals = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $caSummaryRecord -Names @('PoliciesUsingRiskSignals', 'RiskBasedPolicyCount'))
+    $guestInvitationControl = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $guestAccessConfigurationRecord -Names @('GuestInvitationControl')) -Default ''
+    $crossTenantPartnerCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $externalIdentityRestrictionsRecord -Names @('CrossTenantPartnerCount'))
+    $defaultInboundMfaTrust = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $externalIdentityRestrictionsRecord -Names @('DefaultInboundMfaTrust')) -Default ''
+    if ($null -eq $policiesUsingRiskSignals) {
+        $policiesUsingRiskSignals = @(
+            $caPolicies |
+                Where-Object {
+                    (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('UsesRiskSignals', 'HasRiskSignals'))) -eq $true
+                }
+        ).Count
+    }
+    $whatReviewed = 'Privileged administrator assignments, Conditional Access policy state, authentication configuration, MFA registration, enterprise application permissions, and guest and privileged sign-in signals were reviewed.'
+    $observedIdentity = @()
+    if ($adminRows.Count -gt 0) { $observedIdentity += "$($adminRows.Count) administrator record(s) were present in scope" }
+    if ($caPolicies.Count -gt 0) { $observedIdentity += "$($caPolicies.Count) Conditional Access policy/policies were in scope, including $reportOnlyPolicies in report-only mode" }
+    if ($null -ne $inactiveGuests90Days) { $observedIdentity += "$inactiveGuests90Days inactive guest account(s) over 90 days were identified" }
+    if ($null -ne $stalePrivileged90Days) { $observedIdentity += "$stalePrivileged90Days privileged account(s) showed stale sign-in activity over 90 days" }
+    if ($null -ne $mfaPercent) { $observedIdentity += "MFA registration was $mfaPercent%" }
+    if (-not [string]::IsNullOrWhiteSpace($guestInvitationControl)) { $observedIdentity += "guest invitation control was set to $guestInvitationControl" }
+    if ($null -ne $crossTenantPartnerCount) { $observedIdentity += "$crossTenantPartnerCount cross-tenant partner configuration(s) were present" }
+    if (-not [string]::IsNullOrWhiteSpace($defaultInboundMfaTrust)) { $observedIdentity += "default inbound MFA trust was set to $defaultInboundMfaTrust" }
+    if ($highPrivilegeApps -gt 0) { $observedIdentity += "$highPrivilegeApps enterprise application(s) carried high-privilege permissions" }
+    if ($null -ne $policiesWithExclusions) { $observedIdentity += "$policiesWithExclusions Conditional Access policy/policies included exclusions" }
+    if ($observedIdentity.Count -eq 0) { $observedIdentity += 'the current source did not show a large identity control concentration, but it did include enough identity signals to evaluate privileged access, policy coverage, and authentication posture' }
+    $whyIdentity = 'This matters in this tenant because identity findings are one of the largest concentrations in the report, which indicates that privileged access hygiene and policy enforcement are not keeping pace with the exposure shown in the current administrative and guest-access footprint.'
+    $observations.Add((New-CustomerTechnicalObservationSection -SectionTitle 'Identity & Access (Entra ID)' -WhatWasReviewed $whatReviewed -WhatWasObserved ((Join-ArrayaReadableList -Items $observedIdentity) + '.') -WhyItMatters $whyIdentity)) | Out-Null
+
+    $deviceRows = Convert-ArrayaObjectToArray $Signals.DeviceDetails
+    $deviceManagementSummaryRecord = if ($Signals.DeviceManagementSummary) { Get-ArrayaObjectValue -Object $Signals.DeviceManagementSummary -Names @('Summary') } else { $null }
+    $totalDevices = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $deviceManagementSummaryRecord -Names @('TotalDevices'))
+    $unmanagedDevices = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $deviceManagementSummaryRecord -Names @('UnmanagedDevices'))
+    $unsupportedOsDevices = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $deviceManagementSummaryRecord -Names @('UnsupportedOsDevices'))
+    $nonCompliantDevices = @($deviceRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsCompliant', 'Compliant'))) -eq $false }).Count
+    $staleDeviceCutoff = (Get-Date).AddDays(-180)
+    $staleDevices = @($deviceRows | Where-Object { $lastSeen = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('ApproximateLastSignInDateTime')); $lastSeen -and $lastSeen -lt $staleDeviceCutoff }).Count
+    $intuneManaged = @($deviceRows | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('MDMSolution', 'ManagementAgent', 'ManagedBy'))) -match 'intune' }).Count
+    $intuneCoverage = if ($deviceRows.Count -gt 0) { [math]::Round(($intuneManaged / $deviceRows.Count) * 100, 2) } else { $null }
+    $deviceObserved = @()
+    if ($null -ne $totalDevices) { $deviceObserved += "$totalDevices device(s) were represented in the management summary" }
+    if ($nonCompliantDevices -gt 0) { $deviceObserved += "$nonCompliantDevices device(s) were marked non-compliant" }
+    if ($null -ne $unmanagedDevices) { $deviceObserved += "$unmanagedDevices device(s) were shown as unmanaged" }
+    if ($staleDevices -gt 0) { $deviceObserved += "$staleDevices device(s) had not signed in within the 180-day stale threshold used in this review" }
+    if ($null -ne $unsupportedOsDevices) { $deviceObserved += "$unsupportedOsDevices device(s) were tagged with unsupported operating-system status" }
+    if ($null -ne $intuneCoverage) { $deviceObserved += "Intune management coverage was $intuneCoverage%" }
+    if ($deviceObserved.Count -eq 0) { $deviceObserved += 'device signals were present, but the current source did not show a large concentration in endpoint control gaps' }
+    $whyDevice = 'This matters in this tenant because access control strength depends on devices being both managed and compliant; where the observed device mix is fragmented, policy enforcement becomes less predictable and exception handling grows.'
+    $observations.Add((New-CustomerTechnicalObservationSection -SectionTitle 'Devices & Endpoint Management' -WhatWasReviewed 'Device inventory, compliance state, management-source indicators, stale-device activity, and the device management summary were reviewed.' -WhatWasObserved ((Join-ArrayaReadableList -Items $deviceObserved) + '.') -WhyItMatters $whyDevice)) | Out-Null
+
+    $mailboxRows = Convert-ArrayaObjectToArray $Signals.AllMailboxes
+    $inboxRulesExternalForwarding = Convert-ArrayaObjectToArray $Signals.InboxRulesExternalForwarding
+    $inboxRuleForwardingSummaryRecord = if ($Signals.InboxRuleForwardingSummary) { Get-ArrayaObjectValue -Object $Signals.InboxRuleForwardingSummary -Names @('Summary') } else { $null }
+    $forwardingPolicySummaryRecord = if ($Signals.ForwardingPolicySummary) { Get-ArrayaObjectValue -Object $Signals.ForwardingPolicySummary -Names @('Summary') } else { $null }
+    $connectorRows = Convert-ArrayaObjectToArray $Signals.MailFlowConnectors
+    $remoteDomainRows = Convert-ArrayaObjectToArray $Signals.RemoteDomains
+    $sharedMailboxGovernanceSummaryRecord = if ($Signals.SharedMailboxGovernanceSummary) { Get-ArrayaObjectValue -Object $Signals.SharedMailboxGovernanceSummary -Names @('Summary') } else { $null }
+    $publicFolderRows = Convert-ArrayaObjectToArray $Signals.PublicFolderDetails
+    $forwardedMailboxCount = @($mailboxRows | Where-Object {
+        $deliverAndForward = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DeliverToMailboxAndForward'))
+        $forwardSmtp = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ForwardingSmtpAddress')) -Default ''
+        $forwardAddress = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ForwardingAddress')) -Default ''
+        $deliverAndForward -or -not [string]::IsNullOrWhiteSpace($forwardSmtp) -or -not [string]::IsNullOrWhiteSpace($forwardAddress)
+    }).Count
+    $externalForwardRuleCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $inboxRuleForwardingSummaryRecord -Names @('ExternalForwardingRuleCount'))
+    if ($null -eq $externalForwardRuleCount) { $externalForwardRuleCount = $inboxRulesExternalForwarding.Count }
+    $policiesAllowingAutoForwarding = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $forwardingPolicySummaryRecord -Names @('PoliciesExplicitlyAllowingAutoForwarding'))
+    $remoteDomainsAllowingAutoForwarding = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $forwardingPolicySummaryRecord -Names @('RemoteDomainsAllowingAutoForwarding'))
+    $sharedMailboxesWithoutOwnerSignal = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $sharedMailboxGovernanceSummaryRecord -Names @('SharedMailboxesWithoutOwnerSignal'))
+    $messagingObserved = @()
+    if ($forwardedMailboxCount -gt 0) { $messagingObserved += "$forwardedMailboxCount mailbox(es) showed forwarding configuration" }
+    if ($null -ne $externalForwardRuleCount) { $messagingObserved += "$externalForwardRuleCount inbox rule(s) were identified with external forwarding targets" }
+    if ($connectorRows.Count -gt 0) { $messagingObserved += "$($connectorRows.Count) mail-flow connector(s) were present in scope" }
+    if ($null -ne $policiesAllowingAutoForwarding) { $messagingObserved += "$policiesAllowingAutoForwarding outbound policy/policies explicitly allowed auto-forwarding" }
+    if ($null -ne $remoteDomainsAllowingAutoForwarding) { $messagingObserved += "$remoteDomainsAllowingAutoForwarding remote domain(s) still allowed auto-forwarding" }
+    if ($null -ne $sharedMailboxesWithoutOwnerSignal) { $messagingObserved += "$sharedMailboxesWithoutOwnerSignal shared mailbox(es) lacked an ownership signal in the governance summary" }
+    if ($publicFolderRows.Count -gt 0) { $messagingObserved += "$($publicFolderRows.Count) public folder object(s) remained in the environment" }
+    if ($messagingObserved.Count -eq 0) { $messagingObserved += 'the messaging review did not show a large concentration of forwarding or transport exceptions, but mailbox, rule, and connector signals were still present for review' }
+    $whyMessaging = 'This matters in this tenant because the review is showing messaging risk at more than one layer: object-level forwarding, tenant-level forwarding policy, and retained legacy objects all affect how difficult it is to control mail flow and data movement.'
+    $observations.Add((New-CustomerTechnicalObservationSection -SectionTitle 'Messaging (Exchange Online)' -WhatWasReviewed 'Mailbox forwarding state, inbox-rule forwarding, outbound forwarding policy, mail-flow connectors, remote domains, shared mailbox governance, and public folder inventory were reviewed.' -WhatWasObserved ((Join-ArrayaReadableList -Items $messagingObserved) + '.') -WhyItMatters $whyMessaging)) | Out-Null
+
+    $sharePointRows = Convert-ArrayaObjectToArray $Signals.SharePoint
+    $oneDriveRows = Convert-ArrayaObjectToArray $Signals.OneDrive
+    $teamRows = Convert-ArrayaObjectToArray $Signals.AllTeams
+    $unifiedGroupRows = Convert-ArrayaObjectToArray $Signals.UnifiedGroups
+    $sharePointSharingSummaryRecord = if ($Signals.SharePointSharingSummary) { Get-ArrayaObjectValue -Object $Signals.SharePointSharingSummary -Names @('Summary') } else { $null }
+    $externalSharingSummaryRecord = if ($Signals.ExternalSharingSummary) { Get-ArrayaObjectValue -Object $Signals.ExternalSharingSummary -Names @('Summary') } else { $null }
+    $externalSharingSiteOverrideRows = Convert-ArrayaObjectToArray $Signals.ExternalSharingSiteOverrides
+    $collaborationActivitySummaryRecord = if ($Signals.CollaborationActivitySummary) { Get-ArrayaObjectValue -Object $Signals.CollaborationActivitySummary -Names @('Summary') } else { $null }
+    $oneDriveOwnerMismatches = Convert-ArrayaObjectToArray $Signals.OneDriveOwnerMismatches
+    $ownerlessTeams = @($teamRows | Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('OwnerCount'))) -eq 0 }).Count
+    $ownerlessGroups = @($unifiedGroupRows | Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('OwnerCount'))) -eq 0 }).Count
+    $guestHeavyTeams = @($teamRows | Where-Object {
+        $guestCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('GuestCount'))
+        $memberCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('MemberCount'))
+        $null -ne $guestCount -and $null -ne $memberCount -and $memberCount -gt 0 -and (($guestCount / $memberCount) -ge 0.4)
+    }).Count
+    $channelSprawlTeams = @($teamRows | Where-Object {
+        $privateCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('PrivateChannelCount'))
+        $sharedCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('SharedChannelCount'))
+        (($null -ne $privateCount -and $privateCount -ge 5) -or ($null -ne $sharedCount -and $sharedCount -ge 5))
+    }).Count
+    $staleSharePointSites = @($sharePointRows | Where-Object { $lastModified = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastContentModifiedDate')); $lastModified -and $lastModified -lt (Get-Date).AddDays(-180) }).Count
+    $staleOneDrives = @($oneDriveRows | Where-Object { $lastModified = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastContentModifiedDate')); $lastModified -and $lastModified -lt (Get-Date).AddDays(-180) }).Count
+    $tenantSharingCapability = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $sharePointSharingSummaryRecord -Names @('TenantSharingCapability')) -Default ''
+    $defaultSharingLinkType = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $sharePointSharingSummaryRecord -Names @('DefaultSharingLinkType')) -Default ''
+    $sharingDomainRestrictionMode = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('SharingDomainRestrictionMode')) -Default ''
+    $sitesWithExternalSharingEnabled = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('SitesWithExternalSharingEnabled'))
+    $siteOverrideCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('SiteOverrideCount'))
+    if ($null -eq $siteOverrideCount) { $siteOverrideCount = $externalSharingSiteOverrideRows.Count }
+    $dormantGroups = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $collaborationActivitySummaryRecord -Names @('DormantGroups'))
+    $collabObserved = @(
+        "$($sharePointRows.Count) SharePoint site(s) were reviewed",
+        "$($oneDriveRows.Count) OneDrive site(s) were reviewed",
+        "$($teamRows.Count) Team(s) were reviewed",
+        "$($unifiedGroupRows.Count) Microsoft 365 group(s) were reviewed"
+    )
+    if ($ownerlessTeams -gt 0) { $collabObserved += "$ownerlessTeams Team(s) did not have an owner" }
+    if ($ownerlessGroups -gt 0) { $collabObserved += "$ownerlessGroups Microsoft 365 group(s) did not have an owner" }
+    if ($oneDriveOwnerMismatches.Count -gt 0) { $collabObserved += "$($oneDriveOwnerMismatches.Count) OneDrive ownership mismatch(es) were identified" }
+    if ($staleSharePointSites -gt 0 -or $staleOneDrives -gt 0) { $collabObserved += "$staleSharePointSites stale SharePoint site(s) and $staleOneDrives stale OneDrive site(s) were detected" }
+    if ($guestHeavyTeams -gt 0) { $collabObserved += "$guestHeavyTeams Team(s) had a high guest-member ratio" }
+    if ($channelSprawlTeams -gt 0) { $collabObserved += "$channelSprawlTeams Team(s) showed elevated private or shared channel counts" }
+    if (-not [string]::IsNullOrWhiteSpace($tenantSharingCapability)) { $collabObserved += "tenant sharing was set to $tenantSharingCapability with a default link type of $defaultSharingLinkType" }
+    if (-not [string]::IsNullOrWhiteSpace($sharingDomainRestrictionMode)) { $collabObserved += "sharing domain restriction mode was $sharingDomainRestrictionMode" }
+    if ($null -ne $sitesWithExternalSharingEnabled) { $collabObserved += "$sitesWithExternalSharingEnabled reviewed site(s) supported external sharing" }
+    if ($siteOverrideCount -gt 0) { $collabObserved += "$siteOverrideCount site-level sharing override(s) were identified" }
+    if ($null -ne $dormantGroups) { $collabObserved += "$dormantGroups dormant Microsoft 365 group(s) appeared in the collaboration activity summary" }
+    $whyCollab = 'This matters in this tenant because collaboration risk is showing up as a mix of ownership gaps, stale content locations, and broad sharing posture. That combination makes lifecycle decisions harder and increases the chance that content remains accessible after accountability has faded.'
+    $observations.Add((New-CustomerTechnicalObservationSection -SectionTitle 'Collaboration (Teams, SharePoint, OneDrive)' -WhatWasReviewed 'Teams inventory, Microsoft 365 groups, SharePoint and OneDrive site inventories, sharing configuration, collaboration activity, and ownership-governance signals were reviewed.' -WhatWasObserved ((Join-ArrayaReadableList -Items $collabObserved) + '.') -WhyItMatters $whyCollab)) | Out-Null
+
+    $domainRows = Convert-ArrayaObjectToArray $Signals.Domains
+    $licenseRows = Convert-ArrayaObjectToArray $Signals.LicenseSKUs
+    $tenantInfoSummaryRecord = if ($Signals.TenantInfoSummary) { Get-ArrayaObjectValue -Object $Signals.TenantInfoSummary -Names @('Summary') } else { $null }
+    $secureScoreRows = Convert-ArrayaObjectToArray $Signals.SecuritySecureScore
+    $smtpRelaySummary = $Signals.SMTPRelaySummary
+    $authConfigSummaryRecord = if ($Signals.AuthenticationConfigSummary) { Get-ArrayaObjectValue -Object $Signals.AuthenticationConfigSummary -Names @('Summary') } else { $null }
+    $unverifiedDomains = @($domainRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsVerified'))) -eq $false }).Count
+    $secureScoreLatest = $secureScoreRows | Sort-Object { Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('CreatedDateTime', 'createdDateTime')) } -Descending | Select-Object -First 1
+    $secureScoreCurrent = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $secureScoreLatest -Names @('CurrentScore', 'currentScore'))
+    $secureScoreMax = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $secureScoreLatest -Names @('MaxScore', 'maxScore'))
+    $secureScorePercent = if ($null -ne $secureScoreCurrent -and $null -ne $secureScoreMax -and $secureScoreMax -gt 0) { [math]::Round(($secureScoreCurrent / $secureScoreMax) * 100, 2) } else { $null }
+    $dirSyncEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $tenantInfoSummaryRecord -Names @('DirSyncEnabled', 'DirectorySynchronizationEnabled'))
+    $smtpAuthUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $smtpRelaySummary -Names @('SMTPAuthUsers'))
+    $licenseStress = @()
+    foreach ($license in $licenseRows) {
+        $consumed = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $license -Names @('ConsumedUnits'))
+        $active = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $license -Names @('ActiveUnits', 'EnabledUnits'))
+        if ($null -ne $consumed -and $null -ne $active -and $active -gt 0) {
+            $pct = [math]::Round(($consumed / $active) * 100, 2)
+            if ($pct -ge 95) {
+                $licenseStress += ("{0} at {1}%" -f (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $license -Names @('SkuPartNumber')) -Default 'Unknown SKU'), $pct)
+            }
+        }
+    }
+    $governanceObserved = @()
+    if ($domainRows.Count -gt 0) { $governanceObserved += "$($domainRows.Count) domain(s) were reviewed, including $unverifiedDomains that were not verified" }
+    if ($null -ne $secureScoreCurrent -and $null -ne $secureScoreMax) { $governanceObserved += "Microsoft Secure Score was $secureScoreCurrent out of $secureScoreMax" }
+    if ($licenseStress.Count -gt 0) { $governanceObserved += ("license capacity pressure was visible on " + (Join-ArrayaReadableList -Items $licenseStress)) }
+    if ($null -ne $smtpAuthUsers) { $governanceObserved += "$smtpAuthUsers account(s) were shown with SMTP authentication usage" }
+    if ($null -ne $dirSyncEnabled) { $governanceObserved += ("directory synchronization was " + $(if ($dirSyncEnabled) { 'enabled' } else { 'disabled' })) }
+    if ($governanceObserved.Count -eq 0) { $governanceObserved += 'domains, licensing, secure score, and tenant-governance signals were reviewed, but the current source did not show a single dominant concentration in this section' }
+    $whyGovernance = 'This matters in this tenant because governance weakness is showing up in foundational controls such as domain hygiene, licensing headroom, and baseline security posture. When those controls drift together, the tenant becomes harder to administer cleanly and more likely to carry avoidable operational risk.'
+    $observations.Add((New-CustomerTechnicalObservationSection -SectionTitle 'Data Protection & Governance' -WhatWasReviewed 'Domain inventory, license capacity, secure score, tenant synchronization state, SMTP authentication signals, and governance-related summary data were reviewed.' -WhatWasObserved ((Join-ArrayaReadableList -Items $governanceObserved) + '.') -WhyItMatters $whyGovernance)) | Out-Null
+
+    $userRows = Convert-ArrayaObjectToArray $Signals.Users
+    $inactiveLicensedUsers = @(
+        $userRows |
+            Where-Object {
+                $assignedLicenses = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $_ -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
+                $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
+                $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime'))
+                $assignedLicenses.Count -gt 0 -and (($enabled -eq $false) -or ($lastSignIn -and $lastSignIn -lt (Get-Date).AddDays(-90)))
+            }
+    ).Count
+    $dormantTeams = @(
+        $teamRows | Where-Object {
+            $lastActivity = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastActivityDate'))
+            $lastActivity -and $lastActivity -lt (Get-Date).AddDays(-90)
+        }
+    ).Count
+    $sharedMailboxesWithoutOwnerSignalLifecycle = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $sharedMailboxGovernanceSummaryRecord -Names @('SharedMailboxesWithoutOwnerSignal'))
+    $offboardingObserved = @()
+    if ($oneDriveOwnerMismatches.Count -gt 0) { $offboardingObserved += "$($oneDriveOwnerMismatches.Count) OneDrive ownership mismatch(es) suggested content remained after ownership changed" }
+    if ($staleSharePointSites -gt 0 -or $staleOneDrives -gt 0) { $offboardingObserved += "$staleSharePointSites stale SharePoint site(s) and $staleOneDrives stale OneDrive site(s) remained in scope" }
+    if ($null -ne $inactiveGuests90Days) { $offboardingObserved += "$inactiveGuests90Days guest account(s) were inactive for more than 90 days" }
+    if ($null -ne $stalePrivileged90Days) { $offboardingObserved += "$stalePrivileged90Days privileged account(s) showed stale sign-in activity over 90 days" }
+    if ($inactiveLicensedUsers -gt 0) { $offboardingObserved += "$inactiveLicensedUsers inactive or disabled user(s) still held paid licenses" }
+    if ($dormantTeams -gt 0) { $offboardingObserved += "$dormantTeams Team(s) showed older activity dates consistent with dormancy" }
+    if ($null -ne $dormantGroups) { $offboardingObserved += "$dormantGroups dormant Microsoft 365 group(s) appeared in the activity summary" }
+    if ($null -ne $sharedMailboxesWithoutOwnerSignalLifecycle) { $offboardingObserved += "$sharedMailboxesWithoutOwnerSignalLifecycle shared mailbox(es) lacked an ownership signal" }
+    if ($offboardingObserved.Count -eq 0) { $offboardingObserved += 'identity, collaboration, and mailbox lifecycle signals were reviewed, and the current source did not show a large offboarding backlog, but ownership and activity indicators were still evaluated' }
+    $whyOffboarding = 'This matters in this tenant because the same lifecycle pattern appears across identities, collaboration content, and shared workloads: access or data can remain in place after clear day-to-day ownership has faded. That creates both security risk and operational drag when later cleanup depends on reconstructing who is responsible.'
+    $observations.Add((New-CustomerTechnicalObservationSection -SectionTitle 'Offboarding & Lifecycle Management' -WhatWasReviewed 'Ownership mismatches, stale collaboration locations, inactive guest and privileged identities, dormant Teams and groups, inactive licensed users, and shared mailbox ownership signals were reviewed.' -WhatWasObserved ((Join-ArrayaReadableList -Items $offboardingObserved) + '.') -WhyItMatters $whyOffboarding)) | Out-Null
+
+    $staleAdminRows = @(
+        $adminRows |
+            Where-Object {
+                $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime'))
+                $lastSignIn -and $lastSignIn -lt (Get-Date).AddDays(-180)
+            } |
+            Sort-Object { Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime')) }
+    )
+    $globalAdminCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $privilegedSummaryRecord -Names @('GlobalAdministratorCount'))
+    if ($null -eq $globalAdminCount) {
+        $globalAdminCount = @($adminRows | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('Role', 'RolesAssigned'))) -match 'global administrator' }).Count
+    }
+    $totalPrivilegedIdentities = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $privilegedSummaryRecord -Names @('TotalPrivilegedIdentities'))
+    $recipientRowsForMessaging = if ($recipientRows.Count -gt 0) { $recipientRows } else { $mailboxRows }
+    $recipientBreakdown = Get-CustomerTypeBreakdownText -Rows $recipientRowsForMessaging -PropertyName 'RecipientTypeDetails' -Top 6
+    $domainBreakdown = Get-CustomerRecipientDomainBreakdownText -DomainRows $domainRows -Top 3
+    $recipientBreakdownShort = Get-CustomerCondensedListText -Text $recipientBreakdown -MaxItems 3
+    $domainBreakdownShort = Get-CustomerCondensedListText -Text $domainBreakdown -MaxItems 2
+    $recipientBreakdownItems = Get-CustomerListItemsFromText -Text $recipientBreakdown -MaxItems 3
+    $domainBreakdownItems = Get-CustomerListItemsFromText -Text $domainBreakdown -MaxItems 3
+    $verifiedDomains = @($domainRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsVerified', 'Verified'))) -eq $true }).Count
+    $licensePressureText = Get-CustomerTopLicensePressureText -LicenseRows $licenseRows -Top 3
+    $licenseTopTwoText = Get-CustomerTopLicensePressureText -LicenseRows $licenseRows -Top 2
+    $retentionCount = if ($retentionPolicyRows.Count -gt 0) { $retentionPolicyRows.Count } else { $null }
+    $policyNames = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $authConfigSummaryRecord -Names @('PermissionGrantPolicies'))
+    if ($policyNames.Count -eq 0) {
+        $policyNames = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $authConfig -Names @('PermissionGrantPoliciesAssigned', 'PermissionGrantPolicies'))
+    }
+    $identityExamples = Get-CustomerExampleText -Rows $staleAdminRows -Top 2 -Default 'No specific stale admin examples were surfaced in the current source.' -Project {
+        param($row)
+        $displayName = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $row -Names @('DisplayName')) -Default 'Unnamed admin'
+        $upn = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $row -Names @('UserPrincipalName', 'Mail')) -Default 'UPN not surfaced'
+        $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $row -Names @('LastSignInDateTime'))
+        '{0} ({1}, last sign-in {2})' -f $displayName, $upn, $(if ($lastSignIn) { $lastSignIn.ToString('yyyy-MM-dd') } else { 'not surfaced' })
+    }
+    $forwardedMailboxExamples = Get-CustomerExampleText -Rows @($mailboxRows | Where-Object {
+        (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DeliverToMailboxAndForward'))) -or
+        -not [string]::IsNullOrWhiteSpace((Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ForwardingSmtpAddress')) -Default ''))
+    }) -Top 2 -Default 'No individual forwarded mailbox examples were surfaced in the current source.' -Project {
+        param($row)
+        $name = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $row -Names @('DisplayName')) -Default 'Unnamed mailbox'
+        $address = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $row -Names @('PrimarySmtpAddress')) -Default 'address not surfaced'
+        '{0} ({1})' -f $name, $address
+    }
+    $teamExamples = Get-CustomerExampleText -Rows @($teamRows | Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('OwnerCount'))) -eq 0 }) -Top 2 -Default 'No specific ownerless Team examples were surfaced in the current source.' -Project {
+        param($row)
+        $displayName = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $row -Names @('DisplayName')) -Default 'Unnamed Team'
+        $guestCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $row -Names @('GuestCount'))
+        '{0} ({1} guests)' -f $displayName, $(if ($null -eq $guestCount) { 0 } else { $guestCount })
+    }
+    $inactiveLicensedUsers = @(
+        $userRows |
+            Where-Object {
+                $assignedLicenses = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $_ -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
+                $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
+                $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime'))
+                $assignedLicenses.Count -gt 0 -and (($enabled -eq $false) -or ($lastSignIn -and $lastSignIn -lt (Get-Date).AddDays(-90)))
+            }
+    )
+    $inactiveLicensedExamples = Get-CustomerExampleText -Rows $inactiveLicensedUsers -Top 2 -Default 'No inactive licensed-user examples were surfaced in the current source.' -Project {
+        param($row)
+        $name = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $row -Names @('DisplayName', 'UserPrincipalName')) -Default 'Unnamed user'
+        $licenses = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $row -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
+        '{0} ({1})' -f $name, $(if ($licenses.Count -gt 0) { ($licenses -join ', ') } else { 'license names not surfaced' })
+    }
+
+    foreach ($observation in @($observations.ToArray())) {
+        switch ($observation.SectionTitle) {
+            'Identity & Access (Entra ID)' {
+                $observation.ConfigurationRows = @(
+                    New-CustomerConfigurationRow -Signal 'Global Administrator count' -State $globalAdminCount
+                    New-CustomerConfigurationRow -Signal 'Privileged identities reviewed' -State $(if ($null -eq $totalPrivilegedIdentities) { $adminRows.Count } else { $totalPrivilegedIdentities })
+                    New-CustomerConfigurationRow -Signal 'Stale privileged admins (>180 days)' -State $(if ($null -eq $stalePrivileged90Days) { $staleAdminRows.Count } else { $stalePrivileged90Days })
+                    New-CustomerConfigurationRow -Signal 'Conditional Access policies' -State $caPolicies.Count
+                    New-CustomerConfigurationRow -Signal 'Report-only Conditional Access policies' -State $reportOnlyPolicies
+                    New-CustomerConfigurationRow -Signal 'Policies with exclusions' -State $policiesWithExclusions
+                    New-CustomerConfigurationRow -Signal 'MFA registration rate' -State $(if ($null -ne $mfaPercent) { "$mfaPercent%" } else { $null })
+                    New-CustomerConfigurationRow -Signal 'Inactive guest accounts (>90 days)' -State $inactiveGuests90Days
+                    New-CustomerConfigurationRow -Signal 'Guest invitation control' -State $guestInvitationControl
+                    New-CustomerConfigurationRow -Signal 'Cross-tenant partner count' -State $crossTenantPartnerCount
+                    New-CustomerConfigurationRow -Signal 'Default inbound MFA trust' -State $defaultInboundMfaTrust
+                    New-CustomerConfigurationRow -Signal 'Admin consent workflow' -State $adminConsentWorkflowEnabled
+                    New-CustomerConfigurationRow -Signal 'Permission-grant policies' -State $(if ($policyNames.Count -gt 0) { ($policyNames | Select-Object -First 2) -join '; ' } else { $null })
+                    New-CustomerConfigurationRow -Signal 'Example stale privileged identities' -State $identityExamples
+                )
+                $observation.ObservedNarrative = "Identity stood out because the tenant is carrying $globalAdminCount Global Administrators while also showing $reportOnlyPolicies report-only Conditional Access policies and $policiesWithExclusions policies with exclusions. MFA registration is $mfaPercent%, which means the baseline has started to take shape but is not yet reinforced evenly across the identities carrying the most exposure. Guest invitation control is currently shown as $guestInvitationControl, and cross-tenant partner count is $crossTenantPartnerCount, which means external identity exposure should be reviewed alongside privileged access rather than as a separate track. The stale-admin examples in the table show that some long-lived privileged access remains in place well past what would normally be expected in a tighter operating model."
+                $observation.PositiveNarrative = if (($policiesUsingRiskSignals -gt 0) -or ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $authConfig -Names @('MFAEnabled'))) -eq $true)) { "What is working well is that the tenant already has risk-aware Conditional Access coverage in place, MFA is enabled, and the current source contains enough identity telemetry to target cleanup precisely." } else { "What is working well is that this source still surfaces administrator, guest, and policy telemetry clearly enough to support evidence-based identity cleanup." }
+            }
+            'Devices & Endpoint Management' {
+                $observation.ConfigurationRows = @(
+                    New-CustomerConfigurationRow -Signal 'Devices represented in current source' -State $(if ($null -ne $totalDevices) { $totalDevices } else { $deviceRows.Count })
+                    New-CustomerConfigurationRow -Signal 'Non-compliant devices' -State $nonCompliantDevices
+                    New-CustomerConfigurationRow -Signal 'Unmanaged devices' -State $unmanagedDevices
+                    New-CustomerConfigurationRow -Signal 'Stale devices (>180 days)' -State $staleDevices
+                    New-CustomerConfigurationRow -Signal 'Unsupported operating-system devices' -State $unsupportedOsDevices
+                    New-CustomerConfigurationRow -Signal 'Intune management coverage' -State $(if ($null -ne $intuneCoverage) { "$intuneCoverage%" } else { $null })
+                )
+                $observation.ObservedNarrative = "Endpoint posture is uneven in this tenant. The current source shows $nonCompliantDevices non-compliant devices, $unmanagedDevices unmanaged devices, and $staleDevices stale devices, which indicates the tenant has device visibility but not yet the managed coverage needed for consistent compliance-based access control."
+                $observation.PositiveNarrative = if ($deviceRows.Count -gt 0) { "What is working well is that the tenant does have a usable device inventory and management summary. That makes it possible to separate compliance gaps from simple data gaps." } else { "What is working well is that endpoint visibility is still represented in the source, even though detailed device state is limited." }
+            }
+            'Messaging (Exchange Online)' {
+                $observation.ConfigurationRows = @(
+                    New-CustomerConfigurationRow -Signal 'Recipients in current source' -State $recipientRowsForMessaging.Count
+                    New-CustomerConfigurationRow -Signal 'Mailboxes with forwarding configured' -State $forwardedMailboxCount
+                    New-CustomerConfigurationRow -Signal 'Inbox rules forwarding externally' -State $externalForwardRuleCount
+                    New-CustomerConfigurationRow -Signal 'Mail-flow connectors' -State $connectorRows.Count
+                    New-CustomerConfigurationRow -Signal 'Remote domains allowing auto-forwarding' -State $remoteDomainsAllowingAutoForwarding
+                    New-CustomerConfigurationRow -Signal 'Shared mailboxes without ownership signal' -State $sharedMailboxesWithoutOwnerSignal
+                    New-CustomerConfigurationRow -Signal 'Public folders still present' -State $publicFolderRows.Count
+                    New-CustomerConfigurationRow -Signal 'Example forwarded mailboxes' -State $forwardedMailboxExamples
+                )
+                $typeIndex = 0
+                foreach ($item in $recipientBreakdownItems) {
+                    $typeIndex++
+                    $observation.ConfigurationRows += New-CustomerConfigurationRow -Signal ("Top recipient type {0}" -f $typeIndex) -State $item
+                }
+                $domainIndex = 0
+                foreach ($item in $domainBreakdownItems) {
+                    $domainIndex++
+                    $observation.ConfigurationRows += New-CustomerConfigurationRow -Signal ("Top recipient domain {0}" -f $domainIndex) -State $item
+                }
+                $observation.ObservedNarrative = "Messaging is carrying both scale and control complexity. The tenant has $($recipientRowsForMessaging.Count) recipients in scope, and the largest share of that population sits in $recipientBreakdownShort. The domain footprint is centered on $domainBreakdownShort, which means mailbox-governance decisions affect a concentrated part of the namespace rather than a small edge case. Against that backdrop, $forwardedMailboxCount mailbox(es) still show forwarding and $sharedMailboxesWithoutOwnerSignal shared mailboxes do not yet show an ownership signal."
+                $observation.PositiveNarrative = if ($externalForwardRuleCount -eq 0) { "What is working well is that the current source does not show inbox-rule-based external forwarding. The messaging inventory is also detailed enough to separate recipient, transport, and mailbox-governance concerns." } else { "What is working well is that the tenant messaging inventory is detailed enough to distinguish mailbox behavior from transport-level forwarding controls." }
+            }
+            'Collaboration (Teams, SharePoint, OneDrive)' {
+                $observation.ConfigurationRows = @(
+                    New-CustomerConfigurationRow -Signal 'SharePoint sites reviewed' -State $sharePointRows.Count
+                    New-CustomerConfigurationRow -Signal 'OneDrive sites reviewed' -State $oneDriveRows.Count
+                    New-CustomerConfigurationRow -Signal 'Teams reviewed' -State $teamRows.Count
+                    New-CustomerConfigurationRow -Signal 'Microsoft 365 groups reviewed' -State $unifiedGroupRows.Count
+                    New-CustomerConfigurationRow -Signal 'Ownerless Teams' -State $ownerlessTeams
+                    New-CustomerConfigurationRow -Signal 'Ownerless Microsoft 365 groups' -State $ownerlessGroups
+                    New-CustomerConfigurationRow -Signal 'Stale SharePoint locations' -State $staleSharePointSites
+                    New-CustomerConfigurationRow -Signal 'Stale OneDrive locations' -State $staleOneDrives
+                    New-CustomerConfigurationRow -Signal 'Guest-heavy Teams' -State $guestHeavyTeams
+                    New-CustomerConfigurationRow -Signal 'Sharing posture' -State "$tenantSharingCapability; default link type $defaultSharingLinkType"
+                    New-CustomerConfigurationRow -Signal 'Sharing domain restriction mode' -State $sharingDomainRestrictionMode
+                    New-CustomerConfigurationRow -Signal 'Sites with external sharing enabled' -State $sitesWithExternalSharingEnabled
+                    New-CustomerConfigurationRow -Signal 'Site-level sharing overrides' -State $siteOverrideCount
+                    New-CustomerConfigurationRow -Signal 'Dormant Microsoft 365 groups' -State $dormantGroups
+                    New-CustomerConfigurationRow -Signal 'Example ownerless Teams' -State $teamExamples
+                )
+                $observation.ObservedNarrative = "Collaboration is carrying a clear ownership-and-lifecycle imbalance. The current source shows $($sharePointRows.Count) SharePoint sites, $($oneDriveRows.Count) OneDrive sites, $($teamRows.Count) Teams, and $($unifiedGroupRows.Count) Microsoft 365 groups. Within that footprint, $ownerlessTeams Team(s) and $ownerlessGroups group(s) do not show ownership, while $staleSharePointSites SharePoint sites and $staleOneDrives OneDrive locations already appear stale. External sharing is not just enabled at the tenant level; $sitesWithExternalSharingEnabled reviewed site(s) surfaced external-sharing capability and $siteOverrideCount site-level sharing override(s) were identified, which shows that exposure is being shaped at both the organization and workload layers. The examples in the table make that drift more tangible by showing specific workspaces where ownership has not kept pace with collaboration growth."
+                $observation.PositiveNarrative = if ($oneDriveOwnerMismatches.Count -eq 0 -and ($null -ne $dormantGroups -and $dormantGroups -eq 0)) { "What is working well is that the current source does not show OneDrive ownership mismatches or a large dormant-group backlog. That suggests collaboration telemetry is healthy even where governance follow-through is uneven." } else { "What is working well is that this source separates ownership, activity, and sharing posture clearly enough to show where collaboration drift is concentrated." }
+            }
+            'Data Protection & Governance' {
+                $observation.ConfigurationRows = @(
+                    New-CustomerConfigurationRow -Signal 'Domains reviewed' -State $domainRows.Count
+                    New-CustomerConfigurationRow -Signal 'Verified / unverified domains' -State "$verifiedDomains verified; $unverifiedDomains unverified"
+                    New-CustomerConfigurationRow -Signal 'Secure Score' -State $(if ($null -ne $secureScoreCurrent -and $null -ne $secureScoreMax) { "$secureScoreCurrent / $secureScoreMax ($secureScorePercent%)" } else { $null })
+                    New-CustomerConfigurationRow -Signal 'Highest license utilization' -State $licensePressureText
+                    New-CustomerConfigurationRow -Signal 'Directory synchronization' -State $(if ($null -eq $dirSyncEnabled) { $null } elseif ($dirSyncEnabled) { 'Enabled' } else { 'Disabled' })
+                    New-CustomerConfigurationRow -Signal 'SMTP-authenticated accounts' -State $smtpAuthUsers
+                    New-CustomerConfigurationRow -Signal 'Retention policies surfaced' -State $retentionCount
+                    New-CustomerConfigurationRow -Signal 'Admin consent workflow' -State $adminConsentWorkflowEnabled
+                )
+                $observation.ObservedNarrative = "Governance signals show a mixed baseline rather than an empty one. The current source shows $($domainRows.Count) domains, Secure Score at $(if ($null -ne $secureScorePercent) { "$secureScorePercent%" } else { 'not surfaced' }), and directory synchronization $(if ($null -eq $dirSyncEnabled) { 'not surfaced' } elseif ($dirSyncEnabled) { 'enabled' } else { 'disabled' }). At the same time, license saturation is visible on $licenseTopTwoText, and retention policies are $(if ($null -eq $retentionCount) { 'not surfaced in this source' } else { "surfaced as $retentionCount policy objects" })."
+                $observation.PositiveNarrative = if ($unverifiedDomains -eq 0) { "What is working well is that the current source does not show unverified domains. Secure Score telemetry and sync-state visibility are also present, which gives the tenant a stronger governance baseline than a blind environment." } else { "What is working well is that foundational governance telemetry is present across domains, licenses, sync, and Secure Score, which supports targeted remediation." }
+            }
+            'Offboarding & Lifecycle Management' {
+                $observation.ConfigurationRows = @(
+                    New-CustomerConfigurationRow -Signal 'Inactive guest accounts (>90 days)' -State $inactiveGuests90Days
+                    New-CustomerConfigurationRow -Signal 'Stale privileged accounts (>90 days)' -State $stalePrivileged90Days
+                    New-CustomerConfigurationRow -Signal 'Inactive or disabled licensed users' -State $inactiveLicensedUsers.Count
+                    New-CustomerConfigurationRow -Signal 'Stale SharePoint / OneDrive locations' -State "$staleSharePointSites SharePoint; $staleOneDrives OneDrive"
+                    New-CustomerConfigurationRow -Signal 'Dormant Teams / groups' -State "$dormantTeams Teams; $(if ($null -eq $dormantGroups) { 'Not surfaced in current source' } else { $dormantGroups }) groups"
+                    New-CustomerConfigurationRow -Signal 'Shared mailboxes without ownership signal' -State $sharedMailboxesWithoutOwnerSignalLifecycle
+                    New-CustomerConfigurationRow -Signal 'OneDrive ownership mismatches' -State $oneDriveOwnerMismatches.Count
+                    New-CustomerConfigurationRow -Signal 'Example inactive licensed users' -State $inactiveLicensedExamples
+                )
+                $observation.ObservedNarrative = "Lifecycle signals show that stale access and stale content are accumulating in parallel. The current source shows $inactiveGuests90Days inactive guests, $stalePrivileged90Days stale privileged identities, $($inactiveLicensedUsers.Count) inactive or disabled licensed users, and $sharedMailboxesWithoutOwnerSignalLifecycle shared mailboxes without ownership signal. The examples in the table show that this is not just a count issue; it is affecting named identities and workloads that now need an ownership decision."
+                $observation.PositiveNarrative = if ($oneDriveOwnerMismatches.Count -eq 0 -and ($null -ne $dormantGroups -and $dormantGroups -eq 0)) { "What is working well is that the current source does not show OneDrive ownership mismatches and does not indicate a large dormant Microsoft 365 group backlog. Not every lifecycle indicator is drifting at the same rate." } else { "What is working well is that stale identities, stale content, and shared-mailbox ownership are all surfaced separately, which gives cleanup efforts a usable starting point." }
+            }
+        }
+    }
+
+    return @($observations.ToArray())
 }
 
 function Get-CondensedWorkstreamSignalText {
@@ -1541,83 +2454,607 @@ function Get-CondensedWorkstreamSignalText {
     return ($items -join '; ')
 }
 
+function Resolve-ImprovementPlanInputSources {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path -Path $Path)) {
+        throw "Assessment input path was not found: $Path"
+    }
+
+    $resolvedPath = (Resolve-Path -Path $Path).Path
+    if (Test-Path -Path $resolvedPath -PathType Container) {
+        $manifestFiles = @(
+            Get-ChildItem -Path $resolvedPath -Recurse -Filter '*.manifest.json' -File -ErrorAction SilentlyContinue |
+                Sort-Object FullName
+        )
+
+        if ($manifestFiles.Count -eq 0) {
+            throw "No manifest.json files were found under: $resolvedPath"
+        }
+
+        return @(
+            $manifestFiles | ForEach-Object {
+                [pscustomobject]@{
+                    InputPath   = $_.FullName
+                    SourceType  = 'Manifest'
+                    SourceLabel = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetFileNameWithoutExtension($_.Name))
+                }
+            }
+        )
+    }
+
+    $sourceType = if ($resolvedPath -match '\.manifest\.json$') { 'Manifest' } else { 'Snapshot' }
+    $sourceLabel = if ($sourceType -eq 'Manifest') {
+        [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetFileName($resolvedPath)))
+    }
+    else {
+        [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetFileName($resolvedPath))
+    }
+
+    return @(
+        [pscustomobject]@{
+            InputPath   = $resolvedPath
+            SourceType  = $sourceType
+            SourceLabel = $sourceLabel
+        }
+    )
+}
+
+function Convert-ToArrayaSafeFileComponent {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    $safe = $Value -replace '[^a-zA-Z0-9\-_\. ]+', '-' -replace '\s+', ' '
+    $safe = $safe.Trim()
+    if ([string]::IsNullOrWhiteSpace($safe)) {
+        return 'Source'
+    }
+
+    return $safe
+}
+
+function Get-CustomerSourceSummaryText {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$SourceModel)
+
+    $severityText = if (@($SourceModel.SeverityCounts).Count -gt 0) {
+        (@($SourceModel.SeverityCounts) | ForEach-Object { '{0} {1}' -f $_.Count, $_.Name }) -join ', '
+    }
+    else {
+        'no formal severity counts'
+    }
+
+    $workstreamText = if (@($SourceModel.OwnerGroups).Count -gt 0) {
+        (@($SourceModel.OwnerGroups) | Select-Object -First 3 | ForEach-Object { '{0} ({1})' -f $_.Name, $_.Count }) -join '; '
+    }
+    else {
+        'core tenant governance areas'
+    }
+
+    return "This source was reviewed across Microsoft 365 identity, messaging, collaboration, endpoint, security, and governance signals. The clearest concentration in this tenant appears in $workstreamText, with a severity mix of $severityText. This stood out because the same environment is carrying findings across both control-heavy areas and ownership-dependent areas, which suggests the pressure is operational as well as technical."
+}
+
+function New-CustomerReportSourceModel {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$TenantName,
+        [Parameter(Mandatory = $true)][string]$AssessmentJsonPath,
+        [Parameter(Mandatory = $true)][string]$SourceInputPath,
+        [Parameter(Mandatory = $true)][string]$SourceType,
+        [Parameter(Mandatory = $true)][string]$SourceLabel,
+        [Parameter(Mandatory = $true)][object[]]$Findings,
+        [Parameter(Mandatory = $false)][object[]]$WorkstreamSummaries = @(),
+        [Parameter(Mandatory = $false)][object[]]$TechnicalObservations = @()
+    )
+
+    $severityCounts = @($Findings | Group-Object Severity | Sort-Object Name)
+    $ownerGroups = @($Findings | Group-Object OwnerTeam | Sort-Object Count -Descending)
+    $executiveThemes = Get-CustomerExecutiveThemes -Findings $Findings -Count 5
+    $roadmapActions = Get-CustomerRoadmapActions -Findings $Findings -MaxPerPhase 5
+    $technicalObservations = if ($PSBoundParameters.ContainsKey('TechnicalObservations') -and @($TechnicalObservations).Count -gt 0) { @($TechnicalObservations) } else { @() }
+    $executiveNarrative = Get-CustomerExecutiveSummaryNarrative -Findings $Findings -ExecutiveThemes $executiveThemes -OwnerGroups $ownerGroups
+
+    $sourceModel = [pscustomobject]@{
+        TenantName          = $TenantName
+        AssessmentJsonPath  = $AssessmentJsonPath
+        SourceInputPath     = $SourceInputPath
+        SourceType          = $SourceType
+        SourceLabel         = $SourceLabel
+        Findings            = @($Findings)
+        WorkstreamSummaries = @($WorkstreamSummaries)
+        SeverityCounts      = $severityCounts
+        OwnerGroups         = $ownerGroups
+        ExecutiveThemes     = @($executiveThemes)
+        RoadmapActions      = @($roadmapActions)
+        ExecutiveNarrative  = $executiveNarrative
+        TechnicalObservations = $technicalObservations
+    }
+
+    $sourceModel | Add-Member -NotePropertyName SummaryText -NotePropertyValue (Get-CustomerSourceSummaryText -SourceModel $sourceModel)
+    return $sourceModel
+}
+
+function New-CustomerReportModel {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$TenantName,
+        [Parameter(Mandatory = $true)][datetime]$GeneratedAt,
+        [Parameter(Mandatory = $true)][object[]]$Sources
+    )
+
+    $isMultiSource = (@($Sources).Count -gt 1)
+    $overview = if ($isMultiSource) {
+        "This Microsoft 365 assessment report reflects $(@($Sources).Count) separately prepared assessment sources. Each source is presented independently so the observed conditions remain attributable to the environment reviewed, rather than being blended into a generalized summary."
+    }
+    else {
+        "This Microsoft 365 assessment report describes the current-state conditions identified in this tenant. The report is written to show where risk is concentrated, where control coverage is uneven, and where day-to-day ownership appears weaker than the exposure carried by the environment."
+    }
+
+    $methodology = if ($isMultiSource) {
+        'Each assessment source was considered independently and is presented in a separate source section. Observations, recommendations, and technical walkthroughs remain grouped to that source so the report preserves where each condition was observed.'
+    }
+    else {
+        'The report is based on the current tenant signals available in the assessment source and organizes those signals into executive observations, recommendations, and technical walkthroughs. The intent is to show what stood out in this tenant and why those patterns matter operationally.'
+    }
+
+    $appendixSections = Get-CustomerDocumentationAppendixSections
+
+    $numberedSources = @()
+    $sourceIndex = 0
+    foreach ($source in @($Sources)) {
+        $sourceIndex++
+        $observationIndex = 0
+        foreach ($technicalObservation in @($source.TechnicalObservations)) {
+            $observationIndex++
+            if ($technicalObservation.PSObject.Properties.Name -contains 'SectionNumber') {
+                $technicalObservation.SectionNumber = "5.$sourceIndex.$observationIndex"
+            }
+            else {
+                $technicalObservation | Add-Member -NotePropertyName SectionNumber -NotePropertyValue "5.$sourceIndex.$observationIndex"
+            }
+        }
+        $numberedSources += $source
+    }
+
+    $appendixIndex = 0
+    foreach ($section in @($appendixSections)) {
+        $appendixIndex++
+        if ($section.PSObject.Properties.Name -contains 'SectionNumber') {
+            $section.SectionNumber = "6.$appendixIndex"
+        }
+        else {
+            $section | Add-Member -NotePropertyName SectionNumber -NotePropertyValue "6.$appendixIndex"
+        }
+    }
+
+    return [pscustomobject]@{
+        TenantName      = $TenantName
+        GeneratedAt     = $GeneratedAt
+        Sources         = @($numberedSources)
+        IsMultiSource   = $isMultiSource
+        OverviewText    = $overview
+        MethodologyText = $methodology
+        AppendixSections = @($appendixSections)
+    }
+}
+
+function New-CustomerRecommendationBlockMarkdown {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Title,
+        [Parameter(Mandatory = $false)][string]$ObservedText,
+        [Parameter(Mandatory = $false)][string]$StandoutText,
+        [Parameter(Mandatory = $false)][string]$WhyItMattersText,
+        [Parameter(Mandatory = $false)][string]$ExampleText,
+        [Parameter(Mandatory = $false)][string]$Action,
+        [Parameter(Mandatory = $false)][string]$ValueText
+    )
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add("**$Title**") | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($ObservedText)) {
+        $lines.Add("**What was observed:** $ObservedText") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($StandoutText)) {
+        $lines.Add("**Why this stood out:** $StandoutText") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($WhyItMattersText)) {
+        $lines.Add("**Why it matters:** $WhyItMattersText") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExampleText)) {
+        $lines.Add("**Example from this tenant:** $ExampleText") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Action)) {
+        $lines.Add("**Recommended action:** $Action") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ValueText)) {
+        $lines.Add("**Expected outcome:** $ValueText") | Out-Null
+    }
+    $lines.Add('') | Out-Null
+    return ($lines -join [Environment]::NewLine)
+}
+
+function New-CustomerRecommendationBlockHtml {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Title,
+        [Parameter(Mandatory = $false)][string]$ObservedText,
+        [Parameter(Mandatory = $false)][string]$StandoutText,
+        [Parameter(Mandatory = $false)][string]$WhyItMattersText,
+        [Parameter(Mandatory = $false)][string]$ExampleText,
+        [Parameter(Mandatory = $false)][string]$Action,
+        [Parameter(Mandatory = $false)][string]$ValueText
+    )
+
+    $observedHtml = if ([string]::IsNullOrWhiteSpace($ObservedText)) { '' } else { "<p><strong>What was observed:</strong> $(Convert-ToArrayaHtmlFragment $ObservedText)</p>" }
+    $standoutHtml = if ([string]::IsNullOrWhiteSpace($StandoutText)) { '' } else { "<p><strong>Why this stood out:</strong> $(Convert-ToArrayaHtmlFragment $StandoutText)</p>" }
+    $whyHtml = if ([string]::IsNullOrWhiteSpace($WhyItMattersText)) { '' } else { "<p><strong>Why it matters:</strong> $(Convert-ToArrayaHtmlFragment $WhyItMattersText)</p>" }
+    $exampleHtml = if ([string]::IsNullOrWhiteSpace($ExampleText)) { '' } else { "<p><strong>Example from this tenant:</strong> $(Convert-ToArrayaHtmlFragment $ExampleText)</p>" }
+    $actionHtml = if ([string]::IsNullOrWhiteSpace($Action)) { '' } else { "<p><strong>Recommended action:</strong> $(Convert-ToArrayaHtmlFragment $Action)</p>" }
+    $valueHtml = if ([string]::IsNullOrWhiteSpace($ValueText)) { '' } else { "<p><strong>Expected outcome:</strong> $(Convert-ToArrayaHtmlFragment $ValueText)</p>" }
+    return @"
+<div class="recommendation-block">
+  <h4>$(Convert-ToArrayaHtmlEncodedText $Title)</h4>
+  $observedHtml
+  $standoutHtml
+  $whyHtml
+  $exampleHtml
+  $actionHtml
+  $valueHtml
+</div>
+"@
+}
+
+function New-CustomerRemediationReportMarkdownFromModel {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$Model)
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add("# $($Model.TenantName) Microsoft 365 Assessment Report") | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add("Generated: $($Model.GeneratedAt.ToString('yyyy-MM-dd HH:mm:ss'))") | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add('## **1.0 Executive Summary**') | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add($Model.OverviewText) | Out-Null
+    $lines.Add('') | Out-Null
+    if ($Model.IsMultiSource) {
+        $lines.Add("This report contains **$(@($Model.Sources).Count)** separately presented assessment sources, and each one is addressed independently in the sections that follow.") | Out-Null
+    }
+    else {
+        $lines.Add($Model.Sources[0].ExecutiveNarrative) | Out-Null
+    }
+    $lines.Add('') | Out-Null
+    $lines.Add('## **2.0 Assessment Scope And Methodology**') | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add($Model.MethodologyText) | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add('The review considered the tenant signals available across identity, collaboration, messaging, endpoint, and governance. The intent of this report is to show what the environment is currently doing, where the strongest concentrations appear, and why those patterns matter in day-to-day operations.') | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add('## **3.0 Key Observations**') | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add('The following observations highlight the patterns that stood out most clearly in this tenant. Each observation ties the current concentration back to the control area where it was seen so the narrative reads as an environment review, not a generalized issue list.') | Out-Null
+    $lines.Add('') | Out-Null
+
+    $sourceIndex = 0
+    foreach ($source in @($Model.Sources)) {
+        $sourceIndex++
+        if ($Model.IsMultiSource) {
+            $lines.Add("### **3.$sourceIndex Manifest Source: $($source.SourceInputPath)**") | Out-Null
+            $lines.Add('') | Out-Null
+            $lines.Add($source.SummaryText) | Out-Null
+            $lines.Add('') | Out-Null
+        }
+
+        foreach ($theme in @($source.ExecutiveThemes)) {
+            $lines.Add((New-CustomerRecommendationBlockMarkdown -Title $theme.Theme -ObservedText $theme.WhatThisMeans -StandoutText $theme.StandoutReason -WhyItMattersText $theme.WhyItMatters -ExampleText $theme.ExampleText -Action $theme.RecommendedNextStep -ValueText $theme.CustomerValue)) | Out-Null
+        }
+    }
+
+    $lines.Add('## **4.0 Recommendations**') | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add('The recommendations below keep the existing remediation actions intact and place them against the conditions observed in the tenant. The explanatory text focuses on why each work item is rising to the surface now, given the current concentration of findings.') | Out-Null
+    $lines.Add('') | Out-Null
+    $sourceIndex = 0
+    foreach ($source in @($Model.Sources)) {
+        $sourceIndex++
+        if ($Model.IsMultiSource) {
+            $lines.Add("### **4.$sourceIndex Manifest Source: $($source.SourceInputPath)**") | Out-Null
+            $lines.Add('') | Out-Null
+        }
+
+        foreach ($action in @($source.RoadmapActions)) {
+            $title = '{0} ({1})' -f $action.ActionTitle, $action.RoadmapPhase
+            $lines.Add((New-CustomerRecommendationBlockMarkdown -Title $title -ObservedText $action.WhatThisAddresses -StandoutText $action.StandoutReason -WhyItMattersText $action.WhyItMatters -ExampleText $action.ExampleText -Action $action.RecommendedNextStep -ValueText $action.BusinessValue)) | Out-Null
+        }
+    }
+
+    $lines.Add('## **5.0 Workstream Detail**') | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add('The following workstream detail presents the current state of the tenant by workload. Each source begins with the workstream concentration table, followed by numbered technical sections that show the current configuration, what stood out, what is already working, and why those conditions matter.') | Out-Null
+    $lines.Add('') | Out-Null
+    $sourceIndex = 0
+    foreach ($source in @($Model.Sources)) {
+        $sourceIndex++
+        $label = if ($source.SourceType -eq 'Manifest') { 'Manifest Source' } else { 'Assessment Snapshot Source' }
+        $lines.Add("### **5.$sourceIndex ${label}: $($source.SourceInputPath)**") | Out-Null
+        $lines.Add('') | Out-Null
+        $lines.Add($source.SummaryText) | Out-Null
+        $lines.Add('') | Out-Null
+        $lines.Add('| Workstream | Area | Open Findings | Severity | Observation Summary |') | Out-Null
+        $lines.Add('|---|---|---|---|---|') | Out-Null
+        foreach ($summary in @($source.WorkstreamSummaries)) {
+            $signalText = Get-CondensedWorkstreamSignalText -Text $summary.TopSignals -MaxItems 3
+            $lines.Add("| $(Convert-ToArrayaMarkdownText $summary.Workstream) | $(Convert-ToArrayaMarkdownText $summary.Area) | $($summary.OpenFindings) | $(Convert-ToArrayaMarkdownText $summary.Severity) | $(Convert-ToArrayaMarkdownText $signalText) |") | Out-Null
+        }
+        $lines.Add('') | Out-Null
+        $lines.Add('The following numbered sections provide the deeper current-state review for this source.') | Out-Null
+        $lines.Add('') | Out-Null
+        foreach ($technicalObservation in @($source.TechnicalObservations)) {
+            $lines.Add("### **$($technicalObservation.SectionNumber) $($technicalObservation.SectionTitle)**") | Out-Null
+            $lines.Add('') | Out-Null
+            $lines.Add('| Configuration Signal | Current State |') | Out-Null
+            $lines.Add('|---|---|') | Out-Null
+            foreach ($configurationRow in @($technicalObservation.ConfigurationRows)) {
+                $lines.Add("| $(Convert-ToArrayaMarkdownText $configurationRow.Signal) | $(Convert-ToArrayaMarkdownText $configurationRow.State) |") | Out-Null
+            }
+            $lines.Add('') | Out-Null
+            $lines.Add('**Current-state observation**') | Out-Null
+            $lines.Add($technicalObservation.ObservedNarrative) | Out-Null
+            $lines.Add('') | Out-Null
+            $lines.Add('**What is working well**') | Out-Null
+            $lines.Add($technicalObservation.PositiveNarrative) | Out-Null
+            $lines.Add('') | Out-Null
+            $lines.Add('**Why it matters in this tenant**') | Out-Null
+            $lines.Add($technicalObservation.WhyItMatters) | Out-Null
+            $lines.Add('') | Out-Null
+        }
+    }
+
+    $lines.Add('## **6.0 Appendix: Microsoft Documentation**') | Out-Null
+    $lines.Add('') | Out-Null
+    foreach ($appendixSection in @($Model.AppendixSections)) {
+        $lines.Add("### **$($appendixSection.SectionNumber) $($appendixSection.Title)**") | Out-Null
+        $lines.Add('') | Out-Null
+        $lines.Add($appendixSection.Intro) | Out-Null
+        $lines.Add('') | Out-Null
+        $lines.Add('| Microsoft Guidance | Why It Is Relevant |') | Out-Null
+        $lines.Add('|---|---|') | Out-Null
+        foreach ($reference in @($appendixSection.References)) {
+            $lines.Add("| [$($reference.Title)]($($reference.Url)) | $(Convert-ToArrayaMarkdownText $reference.WhyItIsRelevant) |") | Out-Null
+        }
+        $lines.Add('') | Out-Null
+    }
+    return ($lines -join [Environment]::NewLine)
+}
+
+function New-CustomerRemediationReportHtmlFromModel {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$Model)
+
+    $observationSections = New-Object System.Collections.Generic.List[string]
+    $recommendationSections = New-Object System.Collections.Generic.List[string]
+    $workstreamSections = New-Object System.Collections.Generic.List[string]
+    $manifestList = New-Object System.Collections.Generic.List[string]
+
+    $sourceIndex = 0
+    foreach ($source in @($Model.Sources)) {
+        $sourceIndex++
+        $sourceKindLabel = if ($source.SourceType -eq 'Manifest') { 'Manifest Source' } else { 'Assessment Snapshot Source' }
+        $sourceHeadingLabel = Convert-ToArrayaHtmlEncodedText ("3.$sourceIndex $sourceKindLabel")
+        $sourceKindLabelHtml = Convert-ToArrayaHtmlEncodedText $sourceKindLabel
+        $sourcePathHtml = Convert-ToArrayaHtmlEncodedText $source.SourceInputPath
+        $sourceSummaryHtml = Convert-ToArrayaHtmlFragment $source.SummaryText
+        $sourceHeading = if ($Model.IsMultiSource) {
+            "<h3>$sourceHeadingLabel</h3><p class=""source-note""><strong>${sourceKindLabelHtml}:</strong> $sourcePathHtml</p><p>$sourceSummaryHtml</p>"
+        }
+        else {
+            ''
+        }
+
+        $blocks = @($source.ExecutiveThemes | ForEach-Object {
+            New-CustomerRecommendationBlockHtml -Title $_.Theme -ObservedText $_.WhatThisMeans -StandoutText $_.StandoutReason -WhyItMattersText $_.WhyItMatters -ExampleText $_.ExampleText -Action $_.RecommendedNextStep -ValueText $_.CustomerValue
+        }) -join [Environment]::NewLine
+        $observationSections.Add("<section class=""source-section"">$sourceHeading$blocks</section>") | Out-Null
+
+        $recommendationHeading = if ($Model.IsMultiSource) {
+            ('<h3>{0}</h3><p class="source-note"><strong>{1}:</strong> {2}</p>' -f (Convert-ToArrayaHtmlEncodedText ("4.$sourceIndex $sourceKindLabel")), $sourceKindLabelHtml, $sourcePathHtml)
+        }
+        else {
+            ''
+        }
+        $recommendationBlocks = @($source.RoadmapActions | ForEach-Object {
+            New-CustomerRecommendationBlockHtml -Title ('{0} ({1})' -f $_.ActionTitle, $_.RoadmapPhase) -ObservedText $_.WhatThisAddresses -StandoutText $_.StandoutReason -WhyItMattersText $_.WhyItMatters -ExampleText $_.ExampleText -Action $_.RecommendedNextStep -ValueText $_.BusinessValue
+        }) -join [Environment]::NewLine
+        $recommendationSections.Add("<section class=""source-section"">$recommendationHeading$recommendationBlocks</section>") | Out-Null
+
+        $workstreamRows = @($source.WorkstreamSummaries | ForEach-Object {
+@"
+<tr>
+  <td>$(Convert-ToArrayaHtmlEncodedText $_.Workstream)</td>
+  <td>$(Convert-ToArrayaHtmlEncodedText $_.Area)</td>
+  <td>$($_.OpenFindings)</td>
+  <td>$(Convert-ToArrayaHtmlEncodedText $_.Severity)</td>
+  <td>$(Convert-ToArrayaHtmlFragment (Get-CondensedWorkstreamSignalText -Text $_.TopSignals -MaxItems 3))</td>
+</tr>
+"@
+        }) -join [Environment]::NewLine
+        $label = $sourceKindLabel
+        $technicalObservationHtml = @($source.TechnicalObservations | ForEach-Object {
+            $configurationRowsHtml = @($_.ConfigurationRows | ForEach-Object {
+@"
+      <tr>
+        <td>$(Convert-ToArrayaHtmlEncodedText $_.Signal)</td>
+        <td>$(Convert-ToArrayaHtmlFragment $_.State)</td>
+      </tr>
+"@
+            }) -join [Environment]::NewLine
+@"
+  <section class="technical-observation">
+    <h3>$(Convert-ToArrayaHtmlEncodedText ("$($_.SectionNumber) $($_.SectionTitle)"))</h3>
+    <table class="configuration-table">
+      <thead>
+        <tr>
+          <th>Configuration Signal</th>
+          <th>Current State</th>
+        </tr>
+      </thead>
+      <tbody>
+$configurationRowsHtml
+      </tbody>
+    </table>
+    <p><strong>Current-state observation</strong><br/>$(Convert-ToArrayaHtmlFragment $_.ObservedNarrative)</p>
+    <p><strong>What is working well</strong><br/>$(Convert-ToArrayaHtmlFragment $_.PositiveNarrative)</p>
+    <p><strong>Why it matters in this tenant</strong><br/>$(Convert-ToArrayaHtmlFragment $_.WhyItMatters)</p>
+  </section>
+"@
+        }) -join [Environment]::NewLine
+        $workstreamSections.Add(@"
+<section class="source-section">
+  <h3>$(Convert-ToArrayaHtmlEncodedText ("5.$sourceIndex $label"))</h3>
+  <p class="source-note"><strong>${sourceKindLabelHtml}:</strong> $sourcePathHtml</p>
+  <p>$sourceSummaryHtml</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Workstream</th>
+        <th>Area</th>
+        <th>Open Findings</th>
+        <th>Severity</th>
+        <th>Observation Summary</th>
+      </tr>
+    </thead>
+    <tbody>
+$workstreamRows
+    </tbody>
+  </table>
+  <p>The following numbered sections provide the deeper current-state review for this source.</p>
+$technicalObservationHtml
+</section>
+"@) | Out-Null
+
+        $manifestList.Add("<li><strong>${sourceKindLabelHtml}:</strong> $sourcePathHtml</li>") | Out-Null
+    }
+
+    $appendixSectionsHtml = @($Model.AppendixSections | ForEach-Object {
+        $referenceRows = @($_.References | ForEach-Object {
+@"
+      <tr>
+        <td><a href="$(Convert-ToArrayaHtmlEncodedText $_.Url)">$(Convert-ToArrayaHtmlEncodedText $_.Title)</a></td>
+        <td>$(Convert-ToArrayaHtmlFragment $_.WhyItIsRelevant)</td>
+      </tr>
+"@
+        }) -join [Environment]::NewLine
+@"
+      <section class="source-section">
+        <h3>$(Convert-ToArrayaHtmlEncodedText ("$($_.SectionNumber) $($_.Title)"))</h3>
+        <p>$(Convert-ToArrayaHtmlFragment $_.Intro)</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Microsoft Guidance</th>
+              <th>Why It Is Relevant</th>
+            </tr>
+          </thead>
+          <tbody>
+$referenceRows
+          </tbody>
+        </table>
+      </section>
+"@
+    }) -join [Environment]::NewLine
+
+    return @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>$([System.Net.WebUtility]::HtmlEncode($Model.TenantName)) Microsoft 365 Assessment Report</title>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #f7f8fa; color: #1f2933; }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px 24px 48px; }
+    .hero, .panel { background: #ffffff; border: 1px solid #d8dee4; border-radius: 16px; padding: 24px; margin-bottom: 20px; }
+    .hero { border-top: 6px solid #12343b; }
+    h1, h2, h3, h4 { color: #12343b; margin-top: 0; }
+    h2 { font-size: 1.45rem; }
+    h3 { font-size: 1.1rem; margin-top: 24px; }
+    h4 { margin-bottom: 8px; }
+    p, li, td, th { line-height: 1.6; }
+    .recommendation-block { border: 1px solid #d8dee4; border-left: 4px solid #1e5160; border-radius: 10px; padding: 16px; margin: 14px 0; background: #fcfcfd; }
+    .technical-observation { border-top: 1px solid #d8dee4; margin-top: 18px; padding-top: 18px; }
+    .configuration-table { margin-top: 8px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+    th, td { border: 1px solid #d8dee4; padding: 10px 12px; text-align: left; vertical-align: top; }
+    th { background: #eef3f5; }
+    .source-note { color: #52606d; font-size: 0.95rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1>$([System.Net.WebUtility]::HtmlEncode($Model.TenantName)) Microsoft 365 Assessment Report</h1>
+      <p><strong>Generated:</strong> $($Model.GeneratedAt.ToString('yyyy-MM-dd HH:mm:ss'))</p>
+      <p>$(Convert-ToArrayaHtmlFragment $Model.OverviewText)</p>
+    </section>
+
+    <section class="panel">
+      <h2>1.0 Executive Summary</h2>
+      <p>$(Convert-ToArrayaHtmlFragment $Model.OverviewText)</p>
+      <p>$(Convert-ToArrayaHtmlFragment $(if ($Model.IsMultiSource) { "This report contains $(@($Model.Sources).Count) separately presented assessment sources, each shown independently so the observed conditions remain attributable to the source reviewed." } else { $Model.Sources[0].ExecutiveNarrative }))</p>
+    </section>
+
+    <section class="panel">
+      <h2>2.0 Assessment Scope And Methodology</h2>
+      <p>$(Convert-ToArrayaHtmlFragment $Model.MethodologyText)</p>
+      <p>The review considered the tenant signals available across identity, collaboration, messaging, endpoint, and governance. The intent of this report is to show what the environment is currently doing, where the strongest concentrations appear, and why those patterns matter in day-to-day operations.</p>
+    </section>
+
+    <section class="panel">
+      <h2>3.0 Key Observations</h2>
+      <p>The following observations highlight the patterns that stood out most clearly in this tenant. Each observation ties the current concentration back to the control area where it was seen so the narrative reads as an environment review, not a generalized issue list.</p>
+      $($observationSections -join [Environment]::NewLine)
+    </section>
+
+    <section class="panel">
+      <h2>4.0 Recommendations</h2>
+      <p>The recommendations below keep the existing remediation actions intact and place them against the conditions observed in the tenant. The explanatory text focuses on why each work item is rising to the surface now, given the current concentration of findings.</p>
+      $($recommendationSections -join [Environment]::NewLine)
+    </section>
+
+    <section class="panel">
+      <h2>5.0 Workstream Detail</h2>
+      <p>The following workstream detail presents the current state of the tenant by workload. Each source begins with the workstream concentration table, followed by numbered technical sections that show the current configuration, what stood out, what is already working, and why those conditions matter.</p>
+      $($workstreamSections -join [Environment]::NewLine)
+    </section>
+
+    <section class="panel">
+      <h2>6.0 Appendix: Microsoft Documentation</h2>
+      $appendixSectionsHtml
+    </section>
+  </main>
+</body>
+</html>
+"@
+}
+
 function New-CustomerRemediationReport {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][object[]]$Findings,
         [Parameter(Mandatory = $false)][object[]]$WorkstreamSummaries = @(),
+        [Parameter(Mandatory = $false)][object[]]$TechnicalObservations = @(),
         [Parameter(Mandatory = $true)][string]$TenantName,
         [Parameter(Mandatory = $true)][string]$AssessmentJsonPath,
         [Parameter(Mandatory = $true)][datetime]$GeneratedAt
     )
 
-    $severityCounts = $Findings | Group-Object Severity | Sort-Object Name
-    $ownerGroups = $Findings | Group-Object OwnerTeam | Sort-Object Count -Descending
-    $executiveThemes = Get-CustomerExecutiveThemes -Findings $Findings -Count 5
-    $roadmapActions = Get-CustomerRoadmapActions -Findings $Findings -MaxPerPhase 5
-    $executiveNarrative = Get-CustomerExecutiveSummaryNarrative -Findings $Findings -ExecutiveThemes $executiveThemes
-
-    $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add("# $TenantName Microsoft 365 Remediation Report") | Out-Null
-    $lines.Add('') | Out-Null
-    $lines.Add("Generated: $($GeneratedAt.ToString('yyyy-MM-dd HH:mm:ss'))") | Out-Null
-    $lines.Add("Assessment Snapshot: $AssessmentJsonPath") | Out-Null
-    $lines.Add('') | Out-Null
-    $lines.Add('## Tenant Overview') | Out-Null
-    $lines.Add('') | Out-Null
-    $lines.Add('This report turns the tenant assessment into a customer-ready remediation roadmap. It emphasizes business-impacting controls, governance gaps, and the workstreams needed to improve tenant posture.') | Out-Null
-    $lines.Add('') | Out-Null
-    $lines.Add('## Executive Summary') | Out-Null
-    $lines.Add('') | Out-Null
-    $lines.Add($executiveNarrative) | Out-Null
-    $lines.Add('') | Out-Null
-    foreach ($group in $severityCounts) {
-        $lines.Add("- $($group.Name): $($group.Count) finding(s)") | Out-Null
-    }
-    $lines.Add('') | Out-Null
-    if ($ownerGroups.Count -gt 0) {
-        $lines.Add("Primary workstreams: $((@($ownerGroups | Select-Object -First 4 | ForEach-Object { '{0} ({1})' -f $_.Name, $_.Count }) -join '; '))") | Out-Null
-        $lines.Add('') | Out-Null
-    }
-    $lines.Add('## Executive Priorities') | Out-Null
-    $lines.Add('') | Out-Null
-    foreach ($theme in $executiveThemes) {
-        $lines.Add("### $($theme.Theme)") | Out-Null
-        $lines.Add('') | Out-Null
-        $lines.Add("- What this means: $($theme.WhatThisMeans)") | Out-Null
-        $lines.Add("- Why it matters: $($theme.WhyItMatters)") | Out-Null
-        $lines.Add("- Recommended next step: $($theme.RecommendedNextStep)") | Out-Null
-        $lines.Add("- Customer value: $($theme.CustomerValue)") | Out-Null
-        $lines.Add('') | Out-Null
-    }
-
-    $lines.Add('## Phased Roadmap') | Out-Null
-    $lines.Add('') | Out-Null
-    foreach ($phaseName in @('Immediate', 'Near Term', 'Planned', 'Monitor')) {
-        $phaseRows = @($roadmapActions | Where-Object { $_.RoadmapPhase -eq $phaseName })
-        if ($phaseRows.Count -eq 0) { continue }
-        $lines.Add("### $phaseName") | Out-Null
-        $lines.Add('') | Out-Null
-        foreach ($action in $phaseRows) {
-            $lines.Add("- $($action.ActionTitle)") | Out-Null
-            $lines.Add("  Addresses: $($action.WhatThisAddresses)") | Out-Null
-            $lines.Add("  Why it matters: $($action.WhyItMatters)") | Out-Null
-            $lines.Add("  Recommended next step: $($action.RecommendedNextStep)") | Out-Null
-            $lines.Add("  Business value: $($action.BusinessValue)") | Out-Null
-        }
-        $lines.Add('') | Out-Null
-    }
-
-    if ($WorkstreamSummaries.Count -gt 0) {
-        $lines.Add('## Workstream Summary') | Out-Null
-        $lines.Add('') | Out-Null
-        foreach ($summary in $WorkstreamSummaries) {
-            $lines.Add("- $($summary.Workstream) / $($summary.Area): $($summary.OpenFindings) open finding(s); top signals: $(Get-CondensedWorkstreamSignalText -Text $summary.TopSignals).") | Out-Null
-        }
-        $lines.Add('') | Out-Null
-    }
-
-    return ($lines -join [Environment]::NewLine)
+    $sourceModel = New-CustomerReportSourceModel -TenantName $TenantName -AssessmentJsonPath $AssessmentJsonPath -SourceInputPath $AssessmentJsonPath -SourceType 'Snapshot' -SourceLabel ([System.IO.Path]::GetFileNameWithoutExtension($AssessmentJsonPath)) -Findings $Findings -WorkstreamSummaries $WorkstreamSummaries -TechnicalObservations $TechnicalObservations
+    $model = New-CustomerReportModel -TenantName $TenantName -GeneratedAt $GeneratedAt -Sources @($sourceModel)
+    return (New-CustomerRemediationReportMarkdownFromModel -Model $model)
 }
 
 function New-CustomerRemediationReportHtml {
@@ -1625,344 +3062,15 @@ function New-CustomerRemediationReportHtml {
     param(
         [Parameter(Mandatory = $true)][object[]]$Findings,
         [Parameter(Mandatory = $false)][object[]]$WorkstreamSummaries = @(),
+        [Parameter(Mandatory = $false)][object[]]$TechnicalObservations = @(),
         [Parameter(Mandatory = $true)][string]$TenantName,
         [Parameter(Mandatory = $true)][string]$AssessmentJsonPath,
         [Parameter(Mandatory = $true)][datetime]$GeneratedAt
     )
 
-    $severityCounts = $Findings | Group-Object Severity | Sort-Object Name
-    $ownerGroups = $Findings | Group-Object OwnerTeam | Sort-Object Count -Descending
-    $executiveThemes = Get-CustomerExecutiveThemes -Findings $Findings -Count 5
-    $roadmapActions = Get-CustomerRoadmapActions -Findings $Findings -MaxPerPhase 5
-    $executiveNarrative = Get-CustomerExecutiveSummaryNarrative -Findings $Findings -ExecutiveThemes $executiveThemes
-
-    $severitySummaryHtml = if ($severityCounts.Count -gt 0) {
-        (($severityCounts | ForEach-Object {
-            "<li><strong>{0}</strong>: {1} finding(s)</li>" -f (Convert-ToArrayaHtmlEncodedText $_.Name), $_.Count
-        }) -join [Environment]::NewLine)
-    } else {
-        '<li><strong>Info</strong>: 0 finding(s)</li>'
-    }
-
-    $workstreamSummaryHtml = if ($WorkstreamSummaries.Count -gt 0) {
-        (($WorkstreamSummaries | ForEach-Object {
-            @"
-<tr>
-  <td>{0}</td>
-  <td>{1}</td>
-  <td>{2}</td>
-  <td>{3}</td>
-  <td>{4}</td>
-  <td>{5}</td>
-  <td>{6}</td>
-  <td>{7}</td>
-</tr>
-"@ -f `
-                (Convert-ToArrayaHtmlEncodedText $_.Severity),
-                (Convert-ToArrayaHtmlEncodedText $_.Workstream),
-                (Convert-ToArrayaHtmlEncodedText $_.Area),
-                $_.OpenFindings,
-                $_.CriticalCount,
-                $_.WarningCount,
-                $_.InfoCount,
-                (Convert-ToArrayaHtmlFragment (Get-CondensedWorkstreamSignalText -Text $_.TopSignals))
-        }) -join [Environment]::NewLine)
-    } else {
-        '<tr><td colspan="8">No workstream summary rows were generated.</td></tr>'
-    }
-
-    $executivePriorityHtml = if ($executiveThemes.Count -gt 0) {
-        (($executiveThemes | ForEach-Object {
-            @"
-<article class="priority-card">
-  <div class="risk-meta">
-    <span class="badge severity-{0}">{1}</span>
-    <span class="badge phase">{2}</span>
-    <span class="muted">{3}</span>
-  </div>
-  <h3>{4}</h3>
-  <p><strong>What this means:</strong> {5}</p>
-  <p><strong>Why it matters:</strong> {6}</p>
-  <p><strong>Recommended next step:</strong> {7}</p>
-  <p><strong>Customer value:</strong> {8}</p>
-</article>
-"@ -f `
-                ([string]$_.Severity).ToLowerInvariant(),
-                (Convert-ToArrayaHtmlEncodedText $_.Severity),
-                (Convert-ToArrayaHtmlEncodedText $_.PriorityBand),
-                (Convert-ToArrayaHtmlEncodedText $_.WorkstreamLabel),
-                (Convert-ToArrayaHtmlEncodedText $_.Theme),
-                (Convert-ToArrayaHtmlFragment $_.WhatThisMeans),
-                (Convert-ToArrayaHtmlFragment $_.WhyItMatters),
-                (Convert-ToArrayaHtmlFragment $_.RecommendedNextStep),
-                (Convert-ToArrayaHtmlFragment $_.CustomerValue)
-        }) -join [Environment]::NewLine)
-    } else {
-        '<p>No executive priorities were generated.</p>'
-    }
-
-    $phaseSectionsHtml = @()
-    foreach ($phaseName in @('Immediate', 'Near Term', 'Planned', 'Monitor')) {
-        $phaseRows = @($roadmapActions | Where-Object { $_.RoadmapPhase -eq $phaseName })
-        if ($phaseRows.Count -eq 0) { continue }
-
-        $phaseItems = (($phaseRows | ForEach-Object {
-            @"
-<li class="roadmap-item">
-  <strong>{0}</strong>
-  <span class="muted">[{1}]</span>
-  <p><strong>Addresses:</strong> {2}</p>
-  <p><strong>Why it matters:</strong> {3}</p>
-  <p><strong>Recommended next step:</strong> {4}</p>
-  <p><strong>Business value:</strong> {5}</p>
-</li>
-"@ -f `
-                (Convert-ToArrayaHtmlEncodedText $_.ActionTitle),
-                (Convert-ToArrayaHtmlEncodedText $_.Workstream),
-                (Convert-ToArrayaHtmlFragment $_.WhatThisAddresses),
-                (Convert-ToArrayaHtmlFragment $_.WhyItMatters),
-                (Convert-ToArrayaHtmlFragment $_.RecommendedNextStep),
-                (Convert-ToArrayaHtmlFragment $_.BusinessValue)
-        }) -join [Environment]::NewLine)
-
-        $phaseSectionsHtml += @"
-<section class="phase-block">
-  <h3>$([System.Net.WebUtility]::HtmlEncode($phaseName))</h3>
-  <ul class="roadmap-list">
-$phaseItems
-  </ul>
-</section>
-"@
-    }
-    if ($phaseSectionsHtml.Count -eq 0) {
-        $phaseSectionsHtml = @('<p>No phased remediation items were generated.</p>')
-    }
-
-    $primaryWorkstreamsText = if ($ownerGroups.Count -gt 0) {
-        ((@($ownerGroups | Select-Object -First 4 | ForEach-Object { '{0} ({1})' -f $_.Name, $_.Count }) -join '; '))
-    } else {
-        'No dominant workstreams identified'
-    }
-
-    return @"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>$([System.Net.WebUtility]::HtmlEncode($TenantName)) Customer Remediation Report | Arraya Solutions</title>
-  <style>
-    :root {
-      --bg: #f3f0e8;
-      --surface: #fffdf8;
-      --ink: #1f2933;
-      --muted: #52606d;
-      --line: #d9d2c3;
-      --accent: #12343b;
-      --accent-strong: #1e5160;
-      --accent-soft: #e4eef1;
-      --critical: #a61b29;
-      --high: #b45309;
-      --medium: #0f766e;
-      --low: #2563eb;
-      --info: #475569;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: "Segoe UI", "Aptos", Tahoma, sans-serif;
-      color: var(--ink);
-      background: linear-gradient(180deg, #e9e3d6 0%, var(--bg) 24%, #f7f4ed 100%);
-      line-height: 1.55;
-    }
-    main {
-      max-width: 1180px;
-      margin: 0 auto;
-      padding: 32px 20px 56px;
-    }
-    header, section {
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      padding: 24px;
-      margin-bottom: 20px;
-      box-shadow: 0 12px 30px rgba(31, 41, 51, 0.06);
-    }
-    h1, h2, h3 { margin-top: 0; color: #173042; }
-    h1 { font-size: 2rem; margin-bottom: 0.3rem; }
-    h2 { font-size: 1.25rem; margin-bottom: 0.9rem; }
-    .lede { color: var(--muted); max-width: 72ch; }
-    .meta { color: var(--muted); font-size: 0.95rem; margin-top: 12px; }
-    .summary-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 16px;
-      margin-top: 18px;
-    }
-    .summary-card {
-      background: #fbf8f1;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 16px;
-    }
-    .summary-card ul { margin: 0; padding-left: 18px; }
-    .eyebrow {
-      color: var(--accent);
-      font: 700 11px/1.4 "Segoe UI", "Aptos", Tahoma, sans-serif;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      margin-bottom: 10px;
-    }
-    .priority-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 16px;
-    }
-    .priority-card, .phase-block {
-      background: #fbf8f1;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 16px;
-    }
-    .risk-meta {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-bottom: 10px;
-    }
-    .badge {
-      display: inline-block;
-      border-radius: 999px;
-      padding: 4px 10px;
-      font-size: 0.82rem;
-      font-weight: 600;
-    }
-    .severity-critical { background: rgba(166, 27, 41, 0.12); color: var(--critical); }
-    .severity-high { background: rgba(180, 83, 9, 0.12); color: var(--high); }
-    .severity-medium { background: rgba(15, 118, 110, 0.12); color: var(--medium); }
-    .severity-low { background: rgba(37, 99, 235, 0.12); color: var(--low); }
-    .severity-info { background: rgba(71, 85, 105, 0.12); color: var(--info); }
-    .phase { background: var(--accent-soft); color: var(--accent); }
-    .muted { color: var(--muted); }
-    .roadmap-list {
-      list-style: none;
-      padding: 0;
-      margin: 0;
-      display: grid;
-      gap: 12px;
-    }
-    .roadmap-item {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 14px;
-      background: #fffdf8;
-    }
-    .roadmap-item p,
-    .priority-card p {
-      margin: 6px 0 0;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.95rem;
-    }
-    th, td {
-      text-align: left;
-      vertical-align: top;
-      border-bottom: 1px solid var(--line);
-      padding: 10px 8px;
-    }
-    th {
-      background: #f3ede2;
-      color: #173042;
-      position: sticky;
-      top: 0;
-    }
-    .table-wrap { overflow-x: auto; }
-    ul { margin-top: 0.4rem; margin-bottom: 0; }
-    @media print {
-      body { background: #ffffff; }
-      header, section, .priority-card, .phase-block, .summary-card {
-        box-shadow: none;
-        break-inside: avoid;
-      }
-      th { position: static; }
-    }
-  </style>
-</head>
-<body>
-  <main>
-    <header>
-      <div class="eyebrow">Prepared by Arraya Solutions</div>
-      <h1>$([System.Net.WebUtility]::HtmlEncode($TenantName)) Microsoft 365 Remediation Report</h1>
-      <p class="lede">This report turns the tenant assessment into a remediation-first customer deliverable. It focuses on business-impacting risks, governance gaps, and the workstreams needed to improve tenant posture.</p>
-      <div class="meta">
-        <div><strong>Generated:</strong> $([System.Net.WebUtility]::HtmlEncode($GeneratedAt.ToString('yyyy-MM-dd HH:mm:ss')))</div>
-        <div><strong>Assessment Snapshot:</strong> $([System.Net.WebUtility]::HtmlEncode($AssessmentJsonPath))</div>
-        <div><strong>Prepared by:</strong> Arraya Solutions</div>
-        <div><strong>Artifact:</strong> Customer Remediation Report</div>
-      </div>
-    </header>
-
-    <section>
-      <h2>Executive Summary</h2>
-      <p class="lede">$([System.Net.WebUtility]::HtmlEncode($executiveNarrative))</p>
-      <div class="summary-grid">
-        <div class="summary-card">
-          <h3>Severity Mix</h3>
-          <ul>
-$severitySummaryHtml
-          </ul>
-        </div>
-        <div class="summary-card">
-          <h3>Primary Workstreams</h3>
-          <p>$([System.Net.WebUtility]::HtmlEncode($primaryWorkstreamsText))</p>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <h2>Executive Priorities</h2>
-      <div class="priority-grid">
-$executivePriorityHtml
-      </div>
-    </section>
-
-    <section>
-      <h2>Phased Roadmap</h2>
-      $($phaseSectionsHtml -join [Environment]::NewLine)
-    </section>
-
-    <section>
-      <h2>Workstream Summary</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Severity</th>
-              <th>Workstream</th>
-              <th>Area</th>
-              <th>Open Findings</th>
-              <th>Critical</th>
-              <th>Warning</th>
-              <th>Info</th>
-              <th>Top Signals</th>
-            </tr>
-          </thead>
-          <tbody>
-$workstreamSummaryHtml
-          </tbody>
-        </table>
-      </div>
-    </section>
-    <section>
-      <h2>Prepared By</h2>
-      <p>Arraya Solutions prepared this remediation summary from the collected Microsoft 365 assessment snapshot for customer review and execution planning.</p>
-    </section>
-  </main>
-</body>
-</html>
-"@
+    $sourceModel = New-CustomerReportSourceModel -TenantName $TenantName -AssessmentJsonPath $AssessmentJsonPath -SourceInputPath $AssessmentJsonPath -SourceType 'Snapshot' -SourceLabel ([System.IO.Path]::GetFileNameWithoutExtension($AssessmentJsonPath)) -Findings $Findings -WorkstreamSummaries $WorkstreamSummaries -TechnicalObservations $TechnicalObservations
+    $model = New-CustomerReportModel -TenantName $TenantName -GeneratedAt $GeneratedAt -Sources @($sourceModel)
+    return (New-CustomerRemediationReportHtmlFromModel -Model $model)
 }
 
 function New-EngineerActionPack {
@@ -2036,6 +3144,185 @@ function New-EngineerActionPack {
     return ($lines -join [Environment]::NewLine)
 }
 
+function New-MultiSourceEngineerActionPack {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]]$SourcePayloads,
+        [Parameter(Mandatory = $true)][string]$TenantName,
+        [Parameter(Mandatory = $true)][datetime]$GeneratedAt,
+        [Parameter(Mandatory = $true)][string]$SupportFolderPath,
+        [Parameter(Mandatory = $true)][string]$JsonOutPath,
+        [Parameter(Mandatory = $true)][string]$SnippetOutPath
+    )
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add("# $TenantName Engineer Action Pack") | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add("Generated: $($GeneratedAt.ToString('yyyy-MM-dd HH:mm:ss'))") | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add('Use this pack to review the findings associated with each assessment source independently. Findings remain grouped by source so technical follow-up can preserve traceability.') | Out-Null
+    $lines.Add('') | Out-Null
+
+    $sourceIndex = 0
+    foreach ($payload in @($SourcePayloads)) {
+        $sourceIndex++
+        $sourcePath = Convert-ToArrayaDisplayText -Value $payload.SourceInputPath -Default (Convert-ToArrayaDisplayText -Value $payload.SourceFile -Default 'Unknown source')
+        $lines.Add("## Source $sourceIndex") | Out-Null
+        $lines.Add('') | Out-Null
+        $lines.Add("Source path: $sourcePath") | Out-Null
+        $lines.Add('') | Out-Null
+        $lines.Add('| Severity | Phase | Workstream | Reference | What Needs Attention | Why It Matters | Technical Remediation | Current Evidence | Where To Verify | Done When |') | Out-Null
+        $lines.Add('|---|---|---|---|---|---|---|---|---|---|') | Out-Null
+        foreach ($finding in (Convert-ArrayaObjectToArray $payload.Findings)) {
+            $lines.Add("| $($finding.Severity) | $($finding.RoadmapPhase) | $($finding.OwnerTeam) | $($finding.RuleId) | $(Convert-ToArrayaMarkdownText $finding.Finding) | $(Convert-ToArrayaMarkdownText $finding.WhyFlagged) | $(Convert-ToArrayaMarkdownText $finding.TechnicalRemediation) | $(Convert-ToArrayaMarkdownText $finding.CurrentValue) | $(Convert-ToArrayaMarkdownText $finding.EvidenceLocation) | $(Convert-ToArrayaMarkdownText $finding.TargetValue) |") | Out-Null
+        }
+        $lines.Add('') | Out-Null
+    }
+
+    $lines.Add('## Supporting Files') | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add(('- Support folder: `{0}`' -f $SupportFolderPath)) | Out-Null
+    $lines.Add(('- Improvement plan JSON: `{0}`' -f $JsonOutPath)) | Out-Null
+    $lines.Add(('- Remediation snippets: `{0}`' -f $SnippetOutPath)) | Out-Null
+    $lines.Add('') | Out-Null
+    return ($lines -join [Environment]::NewLine)
+}
+
+$originalAssessmentInputPath = $AssessmentJsonPath
+$inputSources = Resolve-ImprovementPlanInputSources -Path $AssessmentJsonPath
+if ($inputSources.Count -gt 1) {
+    $resolvedInputRoot = (Resolve-Path -Path $AssessmentJsonPath).Path
+    if ([string]::IsNullOrWhiteSpace($OutputFolder)) {
+        $OutputFolder = $resolvedInputRoot
+    }
+    if (-not (Test-Path -Path $OutputFolder)) {
+        $null = New-Item -ItemType Directory -Path $OutputFolder -Force
+    }
+    $OutputFolder = (Resolve-Path -Path $OutputFolder).Path
+    if ([string]::IsNullOrWhiteSpace($OutputPrefix)) {
+        $OutputPrefix = Split-Path -Path $resolvedInputRoot -Leaf
+    }
+
+    $generatedAt = Get-Date
+    $supportFolder = Join-Path -Path $OutputFolder -ChildPath 'Support'
+    if (-not (Test-Path -Path $supportFolder)) {
+        $null = New-Item -ItemType Directory -Path $supportFolder -Force
+    }
+
+    $jsonOutPath = Join-Path -Path $supportFolder -ChildPath "$OutputPrefix-ImprovementPlan.json"
+    $engineerMdOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-EngineerActionPack.md"
+    $customerAssessmentReportMarkdownPaths = New-Object System.Collections.Generic.List[string]
+    $snippetOutPath = Join-Path -Path $supportFolder -ChildPath "$OutputPrefix-RemediationSnippets.ps1"
+
+    $sourcePayloads = New-Object System.Collections.Generic.List[object]
+    $tenantNames = New-Object System.Collections.Generic.List[string]
+    $customerAssessmentReportPaths = New-Object System.Collections.Generic.List[string]
+    $snippetBlocks = New-Object System.Collections.Generic.List[string]
+    $snippetBlocks.Add('<#') | Out-Null
+    $snippetBlocks.Add('Remediation snippets grouped by manifest source. Review and test each command before use.') | Out-Null
+    $snippetBlocks.Add('#>') | Out-Null
+    $snippetBlocks.Add('') | Out-Null
+
+    foreach ($source in @($inputSources)) {
+        $safeSourceLabel = Convert-ToArrayaSafeFileComponent -Value $source.SourceLabel
+        $perSourceOutputFolder = Join-Path -Path $supportFolder -ChildPath ("PerSource\" + $safeSourceLabel)
+        if (-not (Test-Path -Path $perSourceOutputFolder)) {
+            $null = New-Item -ItemType Directory -Path $perSourceOutputFolder -Force
+        }
+
+        $sourceResult = & $PSCommandPath `
+            -AssessmentJsonPath $source.InputPath `
+            -OutputFolder $perSourceOutputFolder `
+            -OutputPrefix $safeSourceLabel `
+            -IncludeLegacyArtifacts:$IncludeLegacyArtifacts `
+            -PassThru `
+            -Quiet
+
+        if (-not $sourceResult) {
+            continue
+        }
+
+        $sourcePayload = Get-Content -Path $sourceResult.JsonPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 25
+        $sourcePayload | Add-Member -NotePropertyName SourceInputPath -NotePropertyValue $source.InputPath -Force
+        $sourcePayload | Add-Member -NotePropertyName SourceType -NotePropertyValue $source.SourceType -Force
+        $sourcePayload | Add-Member -NotePropertyName SourceLabel -NotePropertyValue $source.SourceLabel -Force
+        $sourcePayloads.Add($sourcePayload) | Out-Null
+
+        $sourceTenantName = Get-TenantDisplayName -LegacyData $null -OutputPrefix $source.SourceLabel
+        if (-not [string]::IsNullOrWhiteSpace($sourceTenantName)) {
+            $tenantNames.Add($sourceTenantName) | Out-Null
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$sourceResult.CustomerAssessmentReportPath)) {
+            $customerAssessmentReportPaths.Add([string]$sourceResult.CustomerAssessmentReportPath) | Out-Null
+        }
+        if ($sourceResult.PSObject.Properties.Name -contains 'CustomerAssessmentReportMarkdownPath' -and -not [string]::IsNullOrWhiteSpace([string]$sourceResult.CustomerAssessmentReportMarkdownPath)) {
+            $customerAssessmentReportMarkdownPaths.Add([string]$sourceResult.CustomerAssessmentReportMarkdownPath) | Out-Null
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace([string]$sourceResult.RemediationPs1Path) -and (Test-Path -Path $sourceResult.RemediationPs1Path)) {
+            $snippetBlocks.Add("##############################") | Out-Null
+            $snippetBlocks.Add("# Source: $($source.InputPath)") | Out-Null
+            $snippetBlocks.Add("##############################") | Out-Null
+            foreach ($line in (Get-Content -Path $sourceResult.RemediationPs1Path -Encoding UTF8)) {
+                $snippetBlocks.Add($line) | Out-Null
+            }
+            $snippetBlocks.Add('') | Out-Null
+        }
+    }
+
+    $tenantName = @($tenantNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique | Select-Object -First 1)
+    if ($tenantName.Count -eq 0) {
+        $tenantName = @((Split-Path -Path $resolvedInputRoot -Leaf))
+    }
+
+    $engineerActionPackMarkdown = New-MultiSourceEngineerActionPack -SourcePayloads $sourcePayloads.ToArray() -TenantName ([string]$tenantName[0]) -GeneratedAt $generatedAt -SupportFolderPath $supportFolder -JsonOutPath $jsonOutPath -SnippetOutPath $snippetOutPath
+
+    [System.IO.File]::WriteAllText($engineerMdOutPath, $engineerActionPackMarkdown, [System.Text.UTF8Encoding]::new($false))
+    Set-Content -Path $snippetOutPath -Value ($snippetBlocks -join [Environment]::NewLine) -Encoding UTF8
+
+    $multiSourcePayload = [PSCustomObject]@{
+        GeneratedAt  = $generatedAt.ToString('o')
+        SourceFolder = $resolvedInputRoot
+        SourceCount  = $sourcePayloads.Count
+        Sources      = $sourcePayloads.ToArray()
+    }
+    $multiSourcePayload | ConvertTo-Json -Depth 30 | Set-Content -Path $jsonOutPath -Encoding UTF8
+
+    $outputSummary = [PSCustomObject]@{
+        FindingsCount                        = (@($sourcePayloads | ForEach-Object { @(Convert-ArrayaObjectToArray $_.Findings).Count } | Measure-Object -Sum).Sum)
+        SupportFolderPath                    = $supportFolder
+        JsonPath                             = $jsonOutPath
+        CsvPath                              = $null
+        MarkdownPath                         = $null
+        CustomerAssessmentReportPath         = $null
+        CustomerAssessmentReportPaths        = $customerAssessmentReportPaths.ToArray()
+        CustomerAssessmentReportMarkdownPath = $null
+        CustomerAssessmentReportMarkdownPaths = $customerAssessmentReportMarkdownPaths.ToArray()
+        EngineerActionPackPath               = $engineerMdOutPath
+        RemediationPs1Path                   = $snippetOutPath
+    }
+
+    if (-not $Quiet) {
+        Write-Host 'Improvement plan generated.'
+        foreach ($customerAssessmentReportPath in $customerAssessmentReportPaths.ToArray()) {
+            Write-Host "  Customer report : $customerAssessmentReportPath" -ForegroundColor Green
+        }
+        foreach ($customerAssessmentMarkdownPath in $customerAssessmentReportMarkdownPaths.ToArray()) {
+            Write-Host "  Customer markdown: $customerAssessmentMarkdownPath" -ForegroundColor DarkGreen
+        }
+        Write-Host "  Engineer pack    : $engineerMdOutPath" -ForegroundColor Cyan
+        Write-Host "  Support folder   : $supportFolder" -ForegroundColor DarkGray
+    }
+
+    if ($PassThru) {
+        $outputSummary
+    }
+    return
+}
+
+$sourceInputMetadata = $inputSources[0]
+$AssessmentJsonPath = $sourceInputMetadata.InputPath
+
 $snapshotContext = Import-ArrayaTenantSnapshotContext -Path $AssessmentJsonPath -Purpose ImprovementPlan
 $AssessmentJsonPath = $snapshotContext.Path
 $tenantData = $snapshotContext.LegacyData
@@ -2099,7 +3386,15 @@ $domainRows = Get-ImprovementPlanDataset -DataRoot $tenantData -Names @('Domains
 $licenseRows = Get-ImprovementPlanDataset -DataRoot $tenantData -Names @('LicenseSKUs', 'Licenses') -GraphUri '/v1.0/subscribedSkus' -Activity 'Subscribed SKU fallback' -UseGraphFallback:$graphFallbackEnabled
 $deviceRows = Get-ImprovementPlanDataset -DataRoot $tenantData -Names @('DeviceDetails', 'Devices') -GraphUri '/v1.0/devices?$select=id,displayName,approximateLastSignInDateTime' -Activity 'Device fallback' -UseGraphFallback:$graphFallbackEnabled
 $userRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('Users', 'UserFullDetails'))
+$recipientRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('AllRecipients', 'Recipients'))
 $mailboxRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('AllMailboxes', 'MailboxFullDetails'))
+$primaryMailboxStatsRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('PrimaryMailboxStats'))
+$archiveMailboxRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('ArchiveMailboxes'))
+$archiveMailboxStatsRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('ArchiveMailboxStats'))
+$inactiveMailboxRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('InactiveMailboxes', 'InactiveMailboxDetails'))
+$nonUserMailboxRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('NonUserMailboxes'))
+$emailActivitySummary = Get-ArrayaObjectValue -Object $tenantData -Names @('EmailActivitySummary')
+$emailActivityTopSenders = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('EmailActivityTopSenders'))
 $connectorRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('MailFlowConnectors'))
 $remoteDomainRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('RemoteDomains'))
 $publicFolderRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('PublicFolderDetails'))
@@ -2108,6 +3403,7 @@ $oneDriveRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tena
 $teamRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('AllTeams'))
 $unifiedGroupRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('UnifiedGroups', 'EntraIDGroups'))
 $smtpRelaySummary = Get-ArrayaObjectValue -Object $tenantData -Names @('SMTPRelaySummary')
+$smtpRelayConfig = Get-ArrayaObjectValue -Object $tenantData -Names @('SMTPRelayConfig')
 $authConfig = Get-ArrayaObjectValue -Object $tenantData -Names @('AuthenticationConfig')
 $mfaSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('MfaRegistrationSummary', 'MFARegistrationSummary', 'MfaRegistration', 'MFARegistration')
 $ownershipSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('OwnershipGovernanceSummary')
@@ -2115,6 +3411,7 @@ $unmanagedObjects = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $
 $oneDriveOwnerMismatches = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $snapshotDerived -Names @('OneDriveOwnerMismatches'))
 $tenantInfoSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('TenantInfoSummary')
 $authSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('AuthenticationConfigSummary')
+$passwordLifecycleSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('PasswordLifecycleSummary')
 $mfaDerivedSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('MfaRegistrationSummary')
 $conditionalAccessSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('ConditionalAccessPolicySummary')
 $securityDefaultsPolicy = Get-ArrayaObjectValue -Object $tenantData -Names @('SecurityDefaultsPolicy')
@@ -2127,8 +3424,75 @@ $inboxRuleForwardingSummary = Get-ArrayaObjectValue -Object $tenantData -Names @
 $forwardingPolicySummary = Get-ArrayaObjectValue -Object $tenantData -Names @('ForwardingPolicySummary')
 $sharedMailboxGovernanceSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('SharedMailboxGovernanceSummary')
 $sharePointSharingSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('SharePointSharingSummary')
+$externalSharingSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('ExternalSharingSummary')
+$externalSharingSiteOverrides = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('ExternalSharingSiteOverrides'))
 $collaborationActivitySummary = Get-ArrayaObjectValue -Object $tenantData -Names @('CollaborationActivitySummary')
+$teamsVoiceSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('TeamsVoiceSummary')
 $deviceManagementSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('DeviceManagementSummary')
+$spamFilteringSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('SpamFilteringSummary')
+$adConnectConfiguration = Get-ArrayaObjectValue -Object $tenantData -Names @('AdConnectConfiguration')
+$externalIdentityRestrictions = Get-ArrayaObjectValue -Object $tenantData -Names @('ExternalIdentityRestrictions')
+$guestAccessConfiguration = Get-ArrayaObjectValue -Object $tenantData -Names @('GuestAccessConfiguration')
+$retentionPolicyRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('RetentionPolicies', 'CompliancePolicies'))
+$dlpPolicyRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('DlpPolicies'))
+
+if ($retentionPolicyRows.Count -eq 0 -and $mailboxRows.Count -gt 0) {
+    $retentionPolicyRows = @(
+        $mailboxRows |
+            Group-Object {
+                $policyName = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('RetentionPolicy')) -Default ''
+                $hasHoldSignals =
+                    (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('LitigationHoldEnabled'))) -eq $true -or
+                    (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RetentionHoldEnabled'))) -eq $true -or
+                    (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DelayHoldApplied'))) -eq $true
+
+                if (-not [string]::IsNullOrWhiteSpace($policyName)) {
+                    return $policyName
+                }
+                if ($hasHoldSignals) {
+                    return 'HoldSignalsWithoutNamedPolicy'
+                }
+
+                return $null
+            } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Name) } |
+            ForEach-Object {
+                [pscustomobject]@{
+                    PolicyName                 = $_.Name
+                    MailboxCount               = $_.Count
+                    LitigationHoldMailboxCount = @($_.Group | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('LitigationHoldEnabled'))) -eq $true }).Count
+                    RetentionHoldMailboxCount  = @($_.Group | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RetentionHoldEnabled'))) -eq $true }).Count
+                    DelayHoldMailboxCount      = @($_.Group | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DelayHoldApplied'))) -eq $true }).Count
+                }
+            }
+    )
+}
+
+if (-not $passwordLifecycleSummary -and $adConnectConfiguration) {
+    $adConnectSummary = Get-ArrayaObjectValue -Object $adConnectConfiguration -Names @('Summary')
+    if ($adConnectSummary) {
+        $derivedPasswordLifecycleSummary = [ordered]@{}
+        foreach ($field in @(
+            'PasswordWriteback',
+            'PasswordWritebackEnabled',
+            'PassThroughAuthentication',
+            'PassThroughAuthenticationEnabled',
+            'SelfServicePasswordReset',
+            'SelfServicePasswordResetEnabled',
+            'OnPremisesSyncEnabled',
+            'OnPremisesLastSyncDateTime'
+        )) {
+            $fieldValue = Get-ArrayaObjectValue -Object $adConnectSummary -Names @($field)
+            if ($null -ne $fieldValue) {
+                $derivedPasswordLifecycleSummary[$field] = $fieldValue
+            }
+        }
+
+        if ($derivedPasswordLifecycleSummary.Count -gt 0) {
+            $passwordLifecycleSummary = [pscustomobject]$derivedPasswordLifecycleSummary
+        }
+    }
+}
 
 $snapshotMetrics = Get-ArrayaTenantSnapshotMetricSet `
     -SecureScoreRows $secureScoreRows `
@@ -2640,6 +4004,61 @@ foreach ($finding in $sortedFindings) {
 }
 $sortedWorkstreamSummaries = Get-SortedWorkstreamSummaries -Summaries (Resolve-VisibleWorkstreamSummaries -Summaries $workstreamSummaries.ToArray() -Findings $sortedFindings)
 $tenantName = Get-TenantDisplayName -TenantInfoSummary $(if ($tenantInfoSummary) { Get-ArrayaObjectValue -Object $tenantInfoSummary -Names @('Summary') } else { $null }) -LegacyData $tenantData -OutputPrefix $OutputPrefix
+$customerAssessmentSignals = [pscustomobject]@{
+    Admins                     = $adminRows
+    ConditionalAccessPolicies  = $caPolicies
+    ConditionalAccessSummary   = $conditionalAccessSummary
+    AuthenticationConfig       = $authConfig
+    MfaRegistrationSummary     = $mfaSummary
+    EnterpriseApplications     = $enterpriseApplications
+    EnterpriseApplicationSummary = $enterpriseApplicationSummary
+    GuestSignInSummary         = $guestSignInSummary
+    PrivilegedAccessSummary    = $privilegedAccessSummary
+    DeviceDetails              = $deviceRows
+    DeviceManagementSummary    = $deviceManagementSummary
+    AllRecipients              = $recipientRows
+    AllMailboxes               = $mailboxRows
+    PrimaryMailboxStats        = $primaryMailboxStatsRows
+    ArchiveMailboxes           = $archiveMailboxRows
+    ArchiveMailboxStats        = $archiveMailboxStatsRows
+    InactiveMailboxes          = $inactiveMailboxRows
+    NonUserMailboxes           = $nonUserMailboxRows
+    EmailActivitySummary       = $emailActivitySummary
+    EmailActivityTopSenders    = $emailActivityTopSenders
+    InboxRulesExternalForwarding = $inboxRulesExternalForwarding
+    InboxRuleForwardingSummary = $inboxRuleForwardingSummary
+    ForwardingPolicySummary    = $forwardingPolicySummary
+    MailFlowConnectors         = $connectorRows
+    RemoteDomains              = $remoteDomainRows
+    SharedMailboxGovernanceSummary = $sharedMailboxGovernanceSummary
+    PublicFolderDetails        = $publicFolderRows
+    SharePoint                 = $sharePointRows
+    OneDrive                   = $oneDriveRows
+    AllTeams                   = $teamRows
+    TeamsVoiceSummary          = $teamsVoiceSummary
+    UnifiedGroups              = $unifiedGroupRows
+    SharePointSharingSummary   = $sharePointSharingSummary
+    ExternalSharingSummary     = $externalSharingSummary
+    ExternalSharingSiteOverrides = $externalSharingSiteOverrides
+    CollaborationActivitySummary = $collaborationActivitySummary
+    OneDriveOwnerMismatches    = $oneDriveOwnerMismatches
+    Domains                    = $domainRows
+    LicenseSKUs                = $licenseRows
+    TenantInfoSummary          = $tenantInfoSummary
+    SecuritySecureScore        = $secureScoreRows
+    SMTPRelaySummary           = $smtpRelaySummary
+    SMTPRelayConfig            = $smtpRelayConfig
+    SpamFilteringSummary       = $spamFilteringSummary
+    AuthenticationConfigSummary = $authConfigSummary
+    ExternalIdentityRestrictions = $externalIdentityRestrictions
+    GuestAccessConfiguration   = $guestAccessConfiguration
+    RetentionPolicies          = $retentionPolicyRows
+    DlpPolicies                = $dlpPolicyRows
+    PasswordLifecycleSummary   = $passwordLifecycleSummary
+    AdConnectConfiguration     = $adConnectConfiguration
+    Users                      = $userRows
+}
+$technicalObservations = Get-CustomerTechnicalObservations -Signals $customerAssessmentSignals -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries
 
 $supportFolder = Join-Path -Path $OutputFolder -ChildPath 'Support'
 if (-not (Test-Path -Path $supportFolder)) {
@@ -2649,14 +4068,15 @@ if (-not (Test-Path -Path $supportFolder)) {
 $jsonOutPath = Join-Path -Path $supportFolder -ChildPath "$OutputPrefix-ImprovementPlan.json"
 $csvOutPath = if ($IncludeLegacyArtifacts) { Join-Path -Path $supportFolder -ChildPath "$OutputPrefix-ImprovementPlan.csv" } else { $null }
 $mdOutPath = if ($IncludeLegacyArtifacts) { Join-Path -Path $supportFolder -ChildPath "$OutputPrefix-ImprovementPlan.md" } else { $null }
-$customerHtmlOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-CustomerRemediationReport.html"
-$customerMdOutPath = if ($IncludeLegacyArtifacts) { Join-Path -Path $supportFolder -ChildPath "$OutputPrefix-CustomerRemediationReport.md" } else { $null }
+$customerAssessmentReportOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-CustomerAssessmentReport.docx"
+$customerAssessmentReportMarkdownOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-CustomerAssessmentReport.md"
 $engineerMdOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-EngineerActionPack.md"
 $snippetOutPath = Join-Path -Path $supportFolder -ChildPath "$OutputPrefix-RemediationSnippets.ps1"
 
 $deliverables = [ordered]@{
     ImprovementPlanJson       = $jsonOutPath
-    CustomerRemediationReport = $customerHtmlOutPath
+    CustomerAssessmentReport  = $customerAssessmentReportOutPath
+    CustomerAssessmentReportMarkdown = $customerAssessmentReportMarkdownOutPath
     EngineerActionPack        = $engineerMdOutPath
     RemediationSnippets       = $snippetOutPath
     SupportFolder             = $supportFolder
@@ -2664,7 +4084,6 @@ $deliverables = [ordered]@{
 if ($IncludeLegacyArtifacts) {
     $deliverables['ImprovementPlanCsv'] = $csvOutPath
     $deliverables['ImprovementPlanMarkdown'] = $mdOutPath
-    $deliverables['CustomerRemediationReportMarkdown'] = $customerMdOutPath
 }
 
 $payload = [PSCustomObject]@{
@@ -2677,6 +4096,7 @@ $payload = [PSCustomObject]@{
     Deliverables = [PSCustomObject]$deliverables
     WorkstreamSummaries = $sortedWorkstreamSummaries
     Findings           = $sortedFindings
+    TechnicalObservations = $technicalObservations
 }
 
 $payload | ConvertTo-Json -Depth 10 | Set-Content -Path $jsonOutPath -Encoding UTF8
@@ -2722,13 +4142,11 @@ if ($IncludeLegacyArtifacts) {
     Set-Content -Path $mdOutPath -Value ($summaryLines -join [Environment]::NewLine) -Encoding UTF8
 }
 
-$customerReportHtml = New-CustomerRemediationReportHtml -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt
-Set-Content -Path $customerHtmlOutPath -Value $customerReportHtml -Encoding UTF8
-
-if ($IncludeLegacyArtifacts) {
-    $customerReportMarkdown = New-CustomerRemediationReport -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt
-    Set-Content -Path $customerMdOutPath -Value $customerReportMarkdown -Encoding UTF8
-}
+$customerSourceModel = New-CustomerReportSourceModel -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -SourceInputPath $AssessmentJsonPath -SourceType 'Snapshot' -SourceLabel ([System.IO.Path]::GetFileNameWithoutExtension($AssessmentJsonPath)) -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TechnicalObservations $technicalObservations
+$customerAssessmentTemplatePath = Get-CustomerAssessmentTemplatePath
+$customerAssessmentBlocks = New-CustomerAssessmentDocumentBlocks -SourceModel $customerSourceModel -Signals $customerAssessmentSignals -GeneratedAt $generatedAt
+Write-CustomerAssessmentDocxFromModel -TemplatePath $customerAssessmentTemplatePath -OutputPath $customerAssessmentReportOutPath -TenantName $tenantName -GeneratedAt $generatedAt -Blocks $customerAssessmentBlocks
+Write-CustomerAssessmentMarkdownFromDocx -InputPath $customerAssessmentReportOutPath -OutputPath $customerAssessmentReportMarkdownOutPath
 
 $engineerActionPackMarkdown = New-EngineerActionPack -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt -JsonOutPath $jsonOutPath -CsvOutPath $csvOutPath -SnippetOutPath $snippetOutPath -SupportFolderPath $supportFolder
 Set-Content -Path $engineerMdOutPath -Value $engineerActionPackMarkdown -Encoding UTF8
@@ -2864,16 +4282,21 @@ $outputSummary = [PSCustomObject]@{
     JsonPath                      = $jsonOutPath
     CsvPath                       = $csvOutPath
     MarkdownPath                  = $mdOutPath
-    CustomerRemediationReportPath = $customerHtmlOutPath
-    CustomerRemediationReportMarkdownPath = $customerMdOutPath
+    CustomerAssessmentReportPath  = $customerAssessmentReportOutPath
+    CustomerAssessmentReportMarkdownPath = $customerAssessmentReportMarkdownOutPath
+    CustomerRemediationReportPath = $null
+    CustomerRemediationReportMarkdownPath = $null
     EngineerActionPackPath        = $engineerMdOutPath
     RemediationPs1Path            = $snippetOutPath
 }
 
-Write-Host 'Improvement plan generated.'
-Write-Host "  Customer report : $customerHtmlOutPath" -ForegroundColor Green
-Write-Host "  Engineer pack   : $engineerMdOutPath" -ForegroundColor Cyan
-Write-Host "  Support folder  : $supportFolder" -ForegroundColor DarkGray
+if (-not $Quiet) {
+    Write-Host 'Improvement plan generated.'
+    Write-Host "  Customer report  : $customerAssessmentReportOutPath" -ForegroundColor Green
+    Write-Host "  Customer markdown: $customerAssessmentReportMarkdownOutPath" -ForegroundColor DarkGreen
+    Write-Host "  Engineer pack    : $engineerMdOutPath" -ForegroundColor Cyan
+    Write-Host "  Support folder   : $supportFolder" -ForegroundColor DarkGray
+}
 
 if ($PassThru) {
     $outputSummary

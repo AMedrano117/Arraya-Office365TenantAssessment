@@ -230,44 +230,95 @@ function Update-AssessmentArtifactManifestWithImproveOutputs {
         return
     }
 
-    $artifactMap = [ordered]@{
-        'Customer Remediation HTML' = $ImproveResult.CustomerRemediationReportPath
-        'Engineer Action Pack'      = $ImproveResult.EngineerActionPackPath
-        'Improvement Plan JSON'     = $ImproveResult.JsonPath
-        'Remediation Snippets'      = $ImproveResult.RemediationPs1Path
+    $artifactEntries = @()
+    if (-not [string]::IsNullOrWhiteSpace([string]$ImproveResult.CustomerAssessmentReportPath)) {
+        $artifactEntries += [pscustomobject][ordered]@{
+            Type = 'Customer Assessment Report'
+            Path = [string]$ImproveResult.CustomerAssessmentReportPath
+        }
+    }
+    elseif ($ImproveResult.PSObject.Properties.Name -contains 'CustomerAssessmentReportPaths') {
+        $reportIndex = 0
+        foreach ($reportPath in @($ImproveResult.CustomerAssessmentReportPaths | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)) {
+            $reportIndex++
+            $artifactEntries += [pscustomobject][ordered]@{
+                Type = ('Customer Assessment Report {0}' -f $reportIndex)
+                Path = [string]$reportPath
+            }
+        }
+    }
+    if ($ImproveResult.PSObject.Properties.Name -contains 'CustomerAssessmentReportMarkdownPath' -and -not [string]::IsNullOrWhiteSpace([string]$ImproveResult.CustomerAssessmentReportMarkdownPath)) {
+        $artifactEntries += [pscustomobject][ordered]@{
+            Type = 'Customer Assessment Report Markdown'
+            Path = [string]$ImproveResult.CustomerAssessmentReportMarkdownPath
+        }
+    }
+    elseif ($ImproveResult.PSObject.Properties.Name -contains 'CustomerAssessmentReportMarkdownPaths') {
+        $markdownIndex = 0
+        foreach ($markdownPath in @($ImproveResult.CustomerAssessmentReportMarkdownPaths | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)) {
+            $markdownIndex++
+            $artifactEntries += [pscustomobject][ordered]@{
+                Type = ('Customer Assessment Report Markdown {0}' -f $markdownIndex)
+                Path = [string]$markdownPath
+            }
+        }
+    }
+    $artifactEntries += [pscustomobject][ordered]@{
+        Type = 'Engineer Action Pack'
+        Path = [string]$ImproveResult.EngineerActionPackPath
+    }
+    $artifactEntries += [pscustomobject][ordered]@{
+        Type = 'Improvement Plan JSON'
+        Path = [string]$ImproveResult.JsonPath
+    }
+    $artifactEntries += [pscustomobject][ordered]@{
+        Type = 'Remediation Snippets'
+        Path = [string]$ImproveResult.RemediationPs1Path
     }
     if ($IncludeLegacyArtifacts) {
-        if (-not [string]::IsNullOrWhiteSpace([string]$ImproveResult.CustomerRemediationReportMarkdownPath)) {
-            $artifactMap['Customer Remediation Markdown'] = $ImproveResult.CustomerRemediationReportMarkdownPath
-        }
         if (-not [string]::IsNullOrWhiteSpace([string]$ImproveResult.CsvPath)) {
-            $artifactMap['Improvement Plan CSV'] = $ImproveResult.CsvPath
+            $artifactEntries += [pscustomobject][ordered]@{
+                Type = 'Improvement Plan CSV'
+                Path = [string]$ImproveResult.CsvPath
+            }
         }
         if (-not [string]::IsNullOrWhiteSpace([string]$ImproveResult.MarkdownPath)) {
-            $artifactMap['Improvement Plan Markdown'] = $ImproveResult.MarkdownPath
+            $artifactEntries += [pscustomobject][ordered]@{
+                Type = 'Improvement Plan Markdown'
+                Path = [string]$ImproveResult.MarkdownPath
+            }
         }
     }
 
-    $artifactRows = New-Object System.Collections.Generic.List[object]
+    $artifactRows = @()
+    $newArtifactPaths = @{}
+    foreach ($entry in @($artifactEntries)) {
+        if ($null -eq $entry) { continue }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.Path)) { continue }
+        $newArtifactPaths[[string]$entry.Path] = $true
+    }
     if ($manifest.Artifacts) {
         foreach ($artifact in @($manifest.Artifacts)) {
             if (-not $artifact) { continue }
-            if ($artifactMap.Contains([string]$artifact.Type)) { continue }
-            $artifactRows.Add([ordered]@{
+            if ($newArtifactPaths.ContainsKey([string]$artifact.Path)) { continue }
+            $artifactRows += [pscustomobject][ordered]@{
                 Type      = [string]$artifact.Type
                 Path      = [string]$artifact.Path
                 Exists    = [bool]$artifact.Exists
                 SizeBytes = $artifact.SizeBytes
-            }) | Out-Null
+            }
         }
     }
 
-    foreach ($entry in $artifactMap.GetEnumerator()) {
-        if ([string]::IsNullOrWhiteSpace([string]$entry.Value)) {
+    foreach ($entry in @($artifactEntries)) {
+        if ($null -eq $entry) {
+            continue
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.Path)) {
             continue
         }
 
-        $artifactPath = [string]$entry.Value
+        $artifactPath = [string]$entry.Path
         $exists = Test-Path -Path $artifactPath
         $sizeBytes = $null
         if ($exists) {
@@ -277,16 +328,23 @@ function Update-AssessmentArtifactManifestWithImproveOutputs {
             catch {}
         }
 
-        $artifactRows.Add([ordered]@{
-            Type      = [string]$entry.Key
+        $artifactRows += [pscustomobject][ordered]@{
+            Type      = [string]$entry.Type
             Path      = $artifactPath
             Exists    = [bool]$exists
             SizeBytes = $sizeBytes
-        }) | Out-Null
+        }
     }
 
-    $manifest.Artifacts = @($artifactRows.ToArray())
-    $json = $manifest | ConvertTo-Json -Depth 10
+    $manifestData = [ordered]@{}
+    foreach ($property in $manifest.PSObject.Properties) {
+        if ([string]$property.Name -eq 'Artifacts') {
+            continue
+        }
+        $manifestData[[string]$property.Name] = $property.Value
+    }
+    $manifestData['Artifacts'] = @($artifactRows)
+    $json = ([pscustomobject]$manifestData) | ConvertTo-Json -Depth 10
     [System.IO.File]::WriteAllText($ManifestPath, $json, [System.Text.UTF8Encoding]::new($false))
 }
 

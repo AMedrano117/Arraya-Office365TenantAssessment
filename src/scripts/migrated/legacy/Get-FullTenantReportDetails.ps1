@@ -810,7 +810,7 @@ function Write-ConsoleArtifactSummary {
     Write-Host "Assessment complete in $DurationText" -ForegroundColor Green
 
     $primaryArtifactLabels = @(
-        'Customer Remediation HTML',
+        'Customer Assessment Report',
         'Engineer Action Pack'
     )
     $primaryArtifacts = @()
@@ -831,7 +831,7 @@ function Write-ConsoleArtifactSummary {
             Path  = $artifactPath
         }
 
-        if ($primaryArtifactLabels -contains [string]$entry.Key) {
+        if (([string]$entry.Key) -like 'Customer Assessment Report*' -or $primaryArtifactLabels -contains [string]$entry.Key) {
             $primaryArtifacts += $artifactRecord
             continue
         }
@@ -851,7 +851,7 @@ function Write-ConsoleArtifactSummary {
 
     if ($primaryArtifacts.Count -gt 0) {
         foreach ($artifact in $primaryArtifacts) {
-            $foreground = if ($artifact.Label -eq 'Customer Remediation HTML') { 'Green' } else { 'Cyan' }
+            $foreground = if ($artifact.Label -like 'Customer Assessment Report*') { 'Green' } else { 'Cyan' }
             Write-Host ("  {0}: {1}" -f $artifact.Label, $artifact.Path) -ForegroundColor $foreground
         }
 
@@ -1437,6 +1437,10 @@ function Write-CollectorInventoryMatrix {
         [PSCustomObject]@{ Collector = 'Teams Activity Top Users'; Key = 'TeamsActivityTopUsers'; Source = 'Graph'; Consumers = 'Workbook, BestPractices, HTML'; Count = 0 }
         [PSCustomObject]@{ Collector = 'Office 365 Groups Activity Top Groups'; Key = 'Office365GroupsActivityTopGroups'; Source = 'Graph'; Consumers = 'Workbook, BestPractices, HTML'; Count = 0 }
         [PSCustomObject]@{ Collector = 'Employee Experience Summary'; Key = 'EmployeeExperienceInsightsSummary'; Source = 'Graph'; Consumers = 'Workbook, BestPractices'; Count = 0 }
+        [PSCustomObject]@{ Collector = 'External Sharing Summary'; Key = 'ExternalSharingSummary'; Source = 'Graph/SPO + Derived'; Consumers = 'Workbook, CustomerReport'; Count = 0 }
+        [PSCustomObject]@{ Collector = 'External Sharing Site Overrides'; Key = 'ExternalSharingSiteOverrides'; Source = 'SharePoint/OneDrive + Derived'; Consumers = 'Workbook, CustomerReport'; Count = 0 }
+        [PSCustomObject]@{ Collector = 'External Identity Restrictions'; Key = 'ExternalIdentityRestrictions'; Source = 'Graph + Derived'; Consumers = 'Workbook, CustomerReport'; Count = 0 }
+        [PSCustomObject]@{ Collector = 'Guest Access Configuration'; Key = 'GuestAccessConfiguration'; Source = 'Graph + Collaboration + Derived'; Consumers = 'Workbook, CustomerReport'; Count = 0 }
     )
 
     foreach ($entry in $inventory) {
@@ -5918,6 +5922,25 @@ function Get-AuthenticationConfiguration {
         $collectSsoAppDetails = ($depthPolicy.CollectSsoApplicationDetails -eq $true)
         $collectExtendedIdentityTierB = ($depthPolicy.CollectExtendedGraphEnrichment -eq $true)
 
+        function Set-AuthenticationConfigurationProperty {
+            param(
+                [Parameter(Mandatory = $true)]
+                [pscustomobject]$TargetObject,
+                [Parameter(Mandatory = $true)]
+                [string]$Name,
+                [Parameter(Mandatory = $false)]
+                $Value
+            )
+
+            $existingProperty = $TargetObject.PSObject.Properties[$Name]
+            if ($null -ne $existingProperty) {
+                $existingProperty.Value = $Value
+                return
+            }
+
+            $TargetObject | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+        }
+
         # Get authentication methods policy
         $authMethodsPolicy = [PSCustomObject]@{
             MFAEnabled = $false
@@ -5927,6 +5950,7 @@ function Get-AuthenticationConfiguration {
             FederatedDomains = @()
             PasswordlessMethods = @()
             DefaultUserCanCreateApps = $null
+            SelfServicePasswordResetEnabled = $null
             PermissionGrantPoliciesAssigned = @()
             AdminConsentWorkflowEnabled = $null
             AdminConsentWorkflowReviewerCount = 0
@@ -6019,6 +6043,24 @@ function Get-AuthenticationConfiguration {
             $authorizationPolicyResponse = Office365Custom\Get-GraphData -Uri "https://graph.microsoft.com/v1.0/policies/authorizationPolicy" -Activity "Fetching authorization policy"
             $authorizationPolicy = @($authorizationPolicyResponse | Select-Object -First 1)
             if ($authorizationPolicy.Count -gt 0 -and $authorizationPolicy[0]) {
+                if ($authorizationPolicy[0].PSObject.Properties['allowInvitesFrom']) {
+                    Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'AllowInvitesFrom' -Value ([string]$authorizationPolicy[0].allowInvitesFrom)
+                } elseif ($authorizationPolicy[0].PSObject.Properties['AllowInvitesFrom']) {
+                    Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'AllowInvitesFrom' -Value ([string]$authorizationPolicy[0].AllowInvitesFrom)
+                }
+
+                if ($authorizationPolicy[0].PSObject.Properties['allowEmailVerifiedUsersToJoinOrganization']) {
+                    Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'AllowEmailVerifiedUsersToJoinOrganization' -Value ([bool]$authorizationPolicy[0].allowEmailVerifiedUsersToJoinOrganization)
+                } elseif ($authorizationPolicy[0].PSObject.Properties['AllowEmailVerifiedUsersToJoinOrganization']) {
+                    Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'AllowEmailVerifiedUsersToJoinOrganization' -Value ([bool]$authorizationPolicy[0].AllowEmailVerifiedUsersToJoinOrganization)
+                }
+
+                if ($authorizationPolicy[0].PSObject.Properties['guestUserRoleId']) {
+                    Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'GuestUserRoleId' -Value ([string]$authorizationPolicy[0].guestUserRoleId)
+                } elseif ($authorizationPolicy[0].PSObject.Properties['GuestUserRoleId']) {
+                    Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'GuestUserRoleId' -Value ([string]$authorizationPolicy[0].GuestUserRoleId)
+                }
+
                 $defaultPermissions = $null
                 if ($authorizationPolicy[0].PSObject.Properties['defaultUserRolePermissions']) {
                     $defaultPermissions = $authorizationPolicy[0].defaultUserRolePermissions
@@ -6028,9 +6070,21 @@ function Get-AuthenticationConfiguration {
 
                 if ($defaultPermissions) {
                     if ($defaultPermissions.PSObject.Properties['allowedToCreateApps']) {
-                        $authMethodsPolicy.DefaultUserCanCreateApps = [bool]$defaultPermissions.allowedToCreateApps
+                        Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'DefaultUserCanCreateApps' -Value ([bool]$defaultPermissions.allowedToCreateApps)
                     } elseif ($defaultPermissions.PSObject.Properties['AllowedToCreateApps']) {
-                        $authMethodsPolicy.DefaultUserCanCreateApps = [bool]$defaultPermissions.AllowedToCreateApps
+                        Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'DefaultUserCanCreateApps' -Value ([bool]$defaultPermissions.AllowedToCreateApps)
+                    }
+
+                    if ($defaultPermissions.PSObject.Properties['allowedToUseSspr']) {
+                        Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'SelfServicePasswordResetEnabled' -Value ([bool]$defaultPermissions.allowedToUseSspr)
+                    } elseif ($defaultPermissions.PSObject.Properties['AllowedToUseSspr']) {
+                        Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'SelfServicePasswordResetEnabled' -Value ([bool]$defaultPermissions.AllowedToUseSspr)
+                    }
+
+                    if ($defaultPermissions.PSObject.Properties['allowedToReadOtherUsers']) {
+                        Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'DefaultUserCanReadOtherUsers' -Value ([bool]$defaultPermissions.allowedToReadOtherUsers)
+                    } elseif ($defaultPermissions.PSObject.Properties['AllowedToReadOtherUsers']) {
+                        Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'DefaultUserCanReadOtherUsers' -Value ([bool]$defaultPermissions.AllowedToReadOtherUsers)
                     }
 
                     $assignedGrantPolicies = @()
@@ -6039,7 +6093,7 @@ function Get-AuthenticationConfiguration {
                     } elseif ($defaultPermissions.PSObject.Properties['PermissionGrantPoliciesAssigned']) {
                         $assignedGrantPolicies = @($defaultPermissions.PermissionGrantPoliciesAssigned)
                     }
-                    $authMethodsPolicy.PermissionGrantPoliciesAssigned = @($assignedGrantPolicies | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                    Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'PermissionGrantPoliciesAssigned' -Value (@($assignedGrantPolicies | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }))
                 }
             }
         } catch {
@@ -6211,9 +6265,44 @@ function Get-AuthenticationConfiguration {
             PasswordlessMethods          = ($authMethodsPolicy.PasswordlessMethods -join ', ')
             MFAConditionalAccessPolicies = $(if ($authMethodsPolicy.PSObject.Properties['MFAConditionalAccessPolicies']) { $authMethodsPolicy.MFAConditionalAccessPolicies } else { 0 })
             DefaultUserCanCreateApps     = $(if ($null -eq $authMethodsPolicy.DefaultUserCanCreateApps) { 'Not available' } elseif ($authMethodsPolicy.DefaultUserCanCreateApps) { 'Yes' } else { 'No' })
+            SelfServicePasswordReset     = $(if ($null -eq $authMethodsPolicy.SelfServicePasswordResetEnabled) { 'Not available' } elseif ($authMethodsPolicy.SelfServicePasswordResetEnabled) { 'Enabled' } else { 'Disabled' })
             PermissionGrantPolicies      = $(if (@($authMethodsPolicy.PermissionGrantPoliciesAssigned).Count -gt 0) { $authMethodsPolicy.PermissionGrantPoliciesAssigned -join ', ' } else { 'Not available' })
             AdminConsentWorkflowEnabled  = $(if ($null -eq $authMethodsPolicy.AdminConsentWorkflowEnabled) { 'Not available' } elseif ($authMethodsPolicy.AdminConsentWorkflowEnabled) { 'Enabled' } else { 'Disabled' })
             AdminConsentWorkflowReviewers = $authMethodsPolicy.AdminConsentWorkflowReviewerCount
+        }
+
+        $existingPasswordLifecycleSummary = $null
+        if ($script:tenantStatsHash.ContainsKey("PasswordLifecycleSummary")) {
+            $existingPasswordLifecycleSummary = $script:tenantStatsHash["PasswordLifecycleSummary"]
+        }
+        $passwordLifecycleSummary = [ordered]@{}
+        foreach ($field in @(
+            'PasswordWriteback',
+            'PasswordWritebackEnabled',
+            'PasswordSyncEnabled',
+            'CloudPasswordPolicyForPasswordSyncedUsersEnabled',
+            'UserForcePasswordChangeOnLogonEnabled',
+            'PassThroughAuthentication',
+            'PassThroughAuthenticationEnabled',
+            'DeviceWritebackEnabled',
+            'UnifiedGroupWritebackEnabled',
+            'UserWritebackEnabled',
+            'OnPremisesSyncEnabled',
+            'OnPremisesLastSyncDateTime'
+        )) {
+            $fieldValue = Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @($field)
+            if ($null -ne $fieldValue) {
+                $passwordLifecycleSummary[$field] = $fieldValue
+            }
+        }
+
+        if ($null -ne $authMethodsPolicy.SelfServicePasswordResetEnabled) {
+            $passwordLifecycleSummary['SelfServicePasswordReset'] = $authMethodsPolicy.SelfServicePasswordResetEnabled
+            $passwordLifecycleSummary['SelfServicePasswordResetEnabled'] = $authMethodsPolicy.SelfServicePasswordResetEnabled
+        }
+
+        if ($passwordLifecycleSummary.Count -gt 0) {
+            $script:tenantStatsHash["PasswordLifecycleSummary"] = [pscustomobject]$passwordLifecycleSummary
         }
 
         $methodIndex = 0
@@ -6440,13 +6529,143 @@ function Get-AdConnectSyncDetails {
         $org = $null
         try { $org = Get-AssessmentTenantOrganization } catch {}
         
+        $getNamedPropertyValue = {
+            param(
+                $Object,
+                [string[]]$Names
+            )
+
+            if ($null -eq $Object) {
+                return $null
+            }
+
+            foreach ($name in $Names) {
+                if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($name)) {
+                    return $Object[$name]
+                }
+
+                $matchedProperty = @($Object.PSObject.Properties.Match($name) | Select-Object -First 1)
+                if ($matchedProperty.Count -gt 0) {
+                    return $matchedProperty[0].Value
+                }
+
+                if (-not [string]::IsNullOrWhiteSpace($name)) {
+                    $camelName = if ($name.Length -gt 1) {
+                        '{0}{1}' -f $name.Substring(0, 1).ToLowerInvariant(), $name.Substring(1)
+                    }
+                    else {
+                        $name.ToLowerInvariant()
+                    }
+
+                    $camelProperty = @($Object.PSObject.Properties.Match($camelName) | Select-Object -First 1)
+                    if ($camelProperty.Count -gt 0) {
+                        return $camelProperty[0].Value
+                    }
+                }
+            }
+
+            return $null
+        }
+
+        $firstPopulatedValue = {
+            param([object[]]$Values)
+
+            foreach ($value in $Values) {
+                if ($null -eq $value) {
+                    continue
+                }
+                if ($value -is [string] -and [string]::IsNullOrWhiteSpace($value)) {
+                    continue
+                }
+                return $value
+            }
+
+            return $null
+        }
+
         $summary = [pscustomobject]@{
-            OnPremisesSyncEnabled = if ($org) { $org.OnPremisesSyncEnabled } else { $null }
-            OnPremisesLastSyncDateTime = if ($org) { $org.OnPremisesLastSyncDateTime } else { $null }
+            OnPremisesSyncEnabled                     = if ($org) { $org.OnPremisesSyncEnabled } else { $null }
+            OnPremisesLastSyncDateTime               = if ($org) { $org.OnPremisesLastSyncDateTime } else { $null }
+            PasswordSyncEnabled                      = $null
+            PasswordWritebackEnabled                 = $null
+            CloudPasswordPolicyForPasswordSyncedUsersEnabled = $null
+            UserForcePasswordChangeOnLogonEnabled    = $null
+            DeviceWritebackEnabled                   = $null
+            UnifiedGroupWritebackEnabled             = $null
+            UserWritebackEnabled                     = $null
+            PassThroughAuthenticationEnabled         = $null
         }
         
         $serviceDetails = @()
         $syncErrors = @()
+
+        try {
+            $syncServiceResponse = $null
+            if (Get-Command Get-MgDirectoryOnPremiseSynchronization -ErrorAction SilentlyContinue) {
+                $syncServiceResponse = Get-MgDirectoryOnPremiseSynchronization -ErrorAction Stop
+            }
+            elseif ($global:GraphHeaders) {
+                $syncServiceResponse = Office365Custom\Get-GraphData -Uri 'https://graph.microsoft.com/v1.0/directory/onPremisesSynchronization' -Activity 'Fetching directory synchronization service features'
+            }
+
+            $syncServiceObject = @($syncServiceResponse) | Select-Object -First 1
+            if ($syncServiceObject) {
+                $features = $null
+                if ($syncServiceObject.PSObject.Properties['Features']) {
+                    $features = $syncServiceObject.Features
+                } elseif ($syncServiceObject.PSObject.Properties['features']) {
+                    $features = $syncServiceObject.features
+                }
+
+                if ($features) {
+                    foreach ($mapping in @(
+                        @{ Summary = 'PasswordSyncEnabled'; PropertyNames = @('PasswordSyncEnabled', 'PasswordHashSyncEnabled') },
+                        @{ Summary = 'PasswordWritebackEnabled'; PropertyNames = @('PasswordWritebackEnabled') },
+                        @{ Summary = 'CloudPasswordPolicyForPasswordSyncedUsersEnabled'; PropertyNames = @('CloudPasswordPolicyForPasswordSyncedUsersEnabled') },
+                        @{ Summary = 'UserForcePasswordChangeOnLogonEnabled'; PropertyNames = @('UserForcePasswordChangeOnLogonEnabled') },
+                        @{ Summary = 'DeviceWritebackEnabled'; PropertyNames = @('DeviceWritebackEnabled') },
+                        @{ Summary = 'UnifiedGroupWritebackEnabled'; PropertyNames = @('UnifiedGroupWritebackEnabled') },
+                        @{ Summary = 'UserWritebackEnabled'; PropertyNames = @('UserWritebackEnabled') },
+                        @{ Summary = 'PassThroughAuthenticationEnabled'; PropertyNames = @('PassThroughAuthenticationEnabled', 'PassthroughAuthenticationEnabled', 'PassThroughAuthentication') }
+                    )) {
+                        $featureValue = & $getNamedPropertyValue $features $mapping.PropertyNames
+                        if ($null -ne $featureValue) {
+                            try {
+                                $summary.$($mapping.Summary) = [bool]$featureValue
+                            }
+                            catch {
+                                $summary.$($mapping.Summary) = $featureValue
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch {
+            Write-Log -Type DEBUG -Message "[Get-AdConnectSyncDetails] Unable to retrieve directory synchronization feature flags: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        }
+
+        $existingPasswordLifecycleSummary = $null
+        if ($script:tenantStatsHash.ContainsKey("PasswordLifecycleSummary")) {
+            $existingPasswordLifecycleSummary = $script:tenantStatsHash["PasswordLifecycleSummary"]
+        }
+
+        $script:tenantStatsHash["PasswordLifecycleSummary"] = [pscustomobject]@{
+            PasswordWriteback                          = & $firstPopulatedValue @($summary.PasswordWritebackEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('PasswordWriteback', 'PasswordWritebackEnabled')))
+            PasswordWritebackEnabled                   = & $firstPopulatedValue @($summary.PasswordWritebackEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('PasswordWritebackEnabled', 'PasswordWriteback')))
+            PasswordSyncEnabled                        = & $firstPopulatedValue @($summary.PasswordSyncEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('PasswordSyncEnabled', 'PasswordHashSyncEnabled')))
+            CloudPasswordPolicyForPasswordSyncedUsersEnabled = & $firstPopulatedValue @($summary.CloudPasswordPolicyForPasswordSyncedUsersEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('CloudPasswordPolicyForPasswordSyncedUsersEnabled')))
+            UserForcePasswordChangeOnLogonEnabled      = & $firstPopulatedValue @($summary.UserForcePasswordChangeOnLogonEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('UserForcePasswordChangeOnLogonEnabled')))
+            PassThroughAuthentication                  = & $firstPopulatedValue @($summary.PassThroughAuthenticationEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('PassThroughAuthentication', 'PassThroughAuthenticationEnabled')))
+            PassThroughAuthenticationEnabled           = & $firstPopulatedValue @($summary.PassThroughAuthenticationEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('PassThroughAuthenticationEnabled', 'PassThroughAuthentication')))
+            SelfServicePasswordReset                   = & $firstPopulatedValue @((Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('SelfServicePasswordReset', 'SelfServicePasswordResetEnabled')))
+            SelfServicePasswordResetEnabled            = & $firstPopulatedValue @((Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('SelfServicePasswordResetEnabled', 'SelfServicePasswordReset')))
+            DeviceWritebackEnabled                     = & $firstPopulatedValue @($summary.DeviceWritebackEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('DeviceWritebackEnabled')))
+            UnifiedGroupWritebackEnabled               = & $firstPopulatedValue @($summary.UnifiedGroupWritebackEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('UnifiedGroupWritebackEnabled')))
+            UserWritebackEnabled                       = & $firstPopulatedValue @($summary.UserWritebackEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('UserWritebackEnabled')))
+            OnPremisesSyncEnabled                      = & $firstPopulatedValue @($summary.OnPremisesSyncEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('OnPremisesSyncEnabled')))
+            OnPremisesLastSyncDateTime                 = & $firstPopulatedValue @($summary.OnPremisesLastSyncDateTime, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('OnPremisesLastSyncDateTime')))
+        }
         
         if (Get-Command Get-AzureADConnectHealthSyncServices -ErrorAction SilentlyContinue) {
             try {
@@ -6487,6 +6706,295 @@ function Get-AdConnectSyncDetails {
     $elapsed = ((Get-Date) - $start).ToString('hh\:mm\:ss')
     Write-Host " Completed in $elapsed" -ForegroundColor Green
     Write-Log -Type INFO -Message "[Get-AdConnectSyncDetails] COMPLETED in $elapsed" -ExportFileLocation $ExportDetails
+}
+
+function Get-AssessmentInitialDomainName {
+    [CmdletBinding()]
+    param()
+
+    if ($connectionResult -and $connectionResult.PSObject.Properties['InitialDomain'] -and -not [string]::IsNullOrWhiteSpace([string]$connectionResult.InitialDomain)) {
+        return [string]$connectionResult.InitialDomain
+    }
+
+    if (
+        $script:tenantStatsHash -and
+        $script:tenantStatsHash.ContainsKey('TenantInfo') -and
+        $script:tenantStatsHash['TenantInfo']
+    ) {
+        $tenantInfo = $script:tenantStatsHash['TenantInfo']
+        foreach ($candidateName in @('DefaultDomainName', 'InitialDomain', 'DefaultDomain')) {
+            $candidateValue = Get-ArrayaObjectValue -Object $tenantInfo -Names @($candidateName)
+            if (-not [string]::IsNullOrWhiteSpace([string]$candidateValue)) {
+                return [string]$candidateValue
+            }
+        }
+    }
+
+    try {
+        $org = Get-AssessmentTenantOrganization
+        if ($org -and $org.PSObject.Properties['VerifiedDomains']) {
+            $initialDomain = @($org.VerifiedDomains | Where-Object { $_.IsInitial -eq $true } | Select-Object -First 1)
+            if ($initialDomain.Count -gt 0) {
+                $candidateValue = Get-ArrayaObjectValue -Object $initialDomain[0] -Names @('Name', 'Id')
+                if (-not [string]::IsNullOrWhiteSpace([string]$candidateValue)) {
+                    return [string]$candidateValue
+                }
+            }
+        }
+    }
+    catch {}
+
+    return $null
+}
+
+function Ensure-PurviewComplianceSession {
+    [CmdletBinding()]
+    param()
+
+    if ($script:PurviewComplianceSessionInitialized) {
+        return [bool]$script:PurviewComplianceSessionAvailable
+    }
+
+    $script:PurviewComplianceSessionInitialized = $true
+    $script:PurviewComplianceSessionAvailable = $false
+
+    $requiredComplianceCommands = @('Get-RetentionCompliancePolicy', 'Get-DlpCompliancePolicy')
+    $existingComplianceCommands = @(
+        $requiredComplianceCommands | Where-Object { Get-Command -Name $_ -ErrorAction SilentlyContinue }
+    )
+    if ($existingComplianceCommands.Count -eq $requiredComplianceCommands.Count) {
+        $script:PurviewComplianceSessionAvailable = $true
+        return $true
+    }
+
+    $connectCommand = Get-Command -Name 'Connect-IPPSSession' -ErrorAction SilentlyContinue
+    if (-not $connectCommand) {
+        Write-Log -Type WARNING -Message "[Ensure-PurviewComplianceSession] Connect-IPPSSession is unavailable. Retention/DLP policy collection will be skipped." -ExportFileLocation $ExportDetails
+        return $false
+    }
+
+    $connectParams = @{
+        ErrorAction = 'Stop'
+    }
+    if ($connectCommand.Parameters.ContainsKey('CommandName')) {
+        $connectParams.CommandName = @('Get-RetentionCompliancePolicy', 'Get-DlpCompliancePolicy')
+    }
+    if ($connectCommand.Parameters.ContainsKey('ShowBanner')) {
+        $connectParams.ShowBanner = $false
+    }
+
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
+            $organization = Get-AssessmentInitialDomainName
+            if ([string]::IsNullOrWhiteSpace($ClientId) -or [string]::IsNullOrWhiteSpace($organization)) {
+                throw "Certificate-based Purview collection requires both the application ClientId and the tenant initial domain."
+            }
+
+            $connectParams.AppId = $ClientId
+            $connectParams.Organization = $organization
+            $connectParams.CertificateThumbprint = $CertificateThumbprint
+            Connect-IPPSSession @connectParams | Out-Null
+            Write-Log -Type INFO -Message "[Ensure-PurviewComplianceSession] Connected to Purview compliance PowerShell using certificate authentication." -ExportFileLocation $ExportDetails
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($ClientSecret)) {
+            Write-Log -Type INFO -Message "[Ensure-PurviewComplianceSession] Client secret authentication is not supported for Purview compliance PowerShell in this workflow." -ExportFileLocation $ExportDetails
+            return $false
+        }
+        else {
+            $graphContext = Get-MgContext -ErrorAction SilentlyContinue
+            if ($graphContext -and -not [string]::IsNullOrWhiteSpace([string]$graphContext.Account) -and $connectCommand.Parameters.ContainsKey('UserPrincipalName')) {
+                $connectParams.UserPrincipalName = [string]$graphContext.Account
+            }
+
+            Connect-IPPSSession @connectParams | Out-Null
+            Write-Log -Type INFO -Message "[Ensure-PurviewComplianceSession] Connected to Purview compliance PowerShell using delegated authentication." -ExportFileLocation $ExportDetails
+        }
+    }
+    catch {
+        Write-Log -Type WARNING -Message "[Ensure-PurviewComplianceSession] Unable to establish Purview compliance PowerShell session: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        return $false
+    }
+
+    $existingComplianceCommands = @(
+        $requiredComplianceCommands | Where-Object { Get-Command -Name $_ -ErrorAction SilentlyContinue }
+    )
+    $script:PurviewComplianceSessionAvailable = ($existingComplianceCommands.Count -eq $requiredComplianceCommands.Count)
+    return [bool]$script:PurviewComplianceSessionAvailable
+}
+
+function Get-PurviewCompliancePolicies {
+    [CmdletBinding()]
+    param()
+
+    $start = Get-Date
+    if (-not $script:tenantStatsHash) { $script:tenantStatsHash = @{} }
+    $script:tenantStatsHash["RetentionPolicies"] = [ordered]@{}
+    $script:tenantStatsHash["DlpPolicies"] = [ordered]@{}
+
+    Write-Log -Type INFO -Message "[Get-PurviewCompliancePolicies] START" -ExportFileLocation $ExportDetails
+
+    $formatComplianceValue = {
+        param($Value)
+
+        if ($null -eq $Value) {
+            return 'Not surfaced in current source'
+        }
+
+        if ($Value -is [string]) {
+            if ([string]::IsNullOrWhiteSpace($Value)) {
+                return 'Not surfaced in current source'
+            }
+
+            return $Value
+        }
+
+        if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+            $rows = @($Value)
+            if ($rows.Count -eq 0) {
+                return 'None'
+            }
+
+            $displayValues = @(
+                $rows |
+                    Select-Object -First 3 |
+                    ForEach-Object {
+                        $candidate = Get-ArrayaObjectValue -Object $_ -Names @('DisplayName', 'Name', 'Id', 'Identity')
+                        if ([string]::IsNullOrWhiteSpace([string]$candidate)) {
+                            $candidate = [string]$_
+                        }
+                        $candidate
+                    } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+            )
+
+            if ($displayValues.Count -eq 0) {
+                return ('{0} item(s)' -f $rows.Count)
+            }
+
+            if ($rows.Count -le 3) {
+                return ($displayValues -join '; ')
+            }
+
+            return ('{0} item(s): {1}' -f $rows.Count, ($displayValues -join '; '))
+        }
+
+        return [string]$Value
+    }
+
+    try {
+        if (-not (Ensure-PurviewComplianceSession)) {
+            $message = if (-not (Get-Command -Name 'Connect-IPPSSession' -ErrorAction SilentlyContinue)) {
+                'Connect-IPPSSession is unavailable in the current session.'
+            }
+            elseif (-not [string]::IsNullOrWhiteSpace($ClientSecret)) {
+                'Client secret authentication is not supported for Purview compliance PowerShell in this workflow.'
+            }
+            else {
+                'Purview compliance PowerShell session could not be established.'
+            }
+
+            return (New-AssessmentStepResult -Status Skipped -Message $message)
+        }
+
+        $issues = New-Object System.Collections.Generic.List[string]
+        $retentionCollected = $false
+        $dlpCollected = $false
+
+        try {
+            if (Get-Command -Name 'Get-RetentionCompliancePolicy' -ErrorAction SilentlyContinue) {
+                $retentionPolicies = @(Get-RetentionCompliancePolicy -ErrorAction Stop | Sort-Object -Property Name)
+                $retentionCollected = $true
+                $retentionIndex = 0
+                foreach ($policy in $retentionPolicies) {
+                    $policyName = Convert-ToAssessmentPathComponent -Value ([string](Get-ArrayaObjectValue -Object $policy -Names @('Name', 'Identity'))) -Fallback 'RetentionPolicy'
+                    $retentionIndex++
+                    $script:tenantStatsHash["RetentionPolicies"][("{0:D3}-{1}" -f $retentionIndex, $policyName)] = [pscustomobject]@{
+                        PolicyName                 = Get-ArrayaObjectValue -Object $policy -Names @('Name', 'Identity')
+                        Enabled                    = Get-ArrayaObjectValue -Object $policy -Names @('Enabled', 'IsEnabled')
+                        Mode                       = Get-ArrayaObjectValue -Object $policy -Names @('Mode')
+                        Workload                   = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('Workload', 'Workloads'))
+                        Priority                   = Get-ArrayaObjectValue -Object $policy -Names @('Priority')
+                        ExchangeLocation           = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('ExchangeLocation'))
+                        SharePointLocation         = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('SharePointLocation'))
+                        OneDriveLocation           = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('OneDriveLocation'))
+                        TeamsChatLocation          = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('TeamsChatLocation'))
+                        TeamsChannelLocation       = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('TeamsChannelLocation'))
+                        ModernGroupLocation        = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('ModernGroupLocation'))
+                        ExchangeLocationException  = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('ExchangeLocationException'))
+                        SharePointLocationException = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('SharePointLocationException'))
+                        OneDriveLocationException  = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('OneDriveLocationException'))
+                        Comment                    = Get-ArrayaObjectValue -Object $policy -Names @('Comment', 'Description')
+                    }
+                }
+            }
+            else {
+                $issues.Add('Retention policy cmdlet was not available after establishing the compliance session.') | Out-Null
+            }
+        }
+        catch {
+            $issues.Add("Retention policy collection failed: $($_.Exception.Message)") | Out-Null
+        }
+
+        try {
+            if (Get-Command -Name 'Get-DlpCompliancePolicy' -ErrorAction SilentlyContinue) {
+                $dlpPolicies = @(Get-DlpCompliancePolicy -ErrorAction Stop | Sort-Object -Property Name)
+                $dlpCollected = $true
+                $dlpIndex = 0
+                foreach ($policy in $dlpPolicies) {
+                    $policyName = Convert-ToAssessmentPathComponent -Value ([string](Get-ArrayaObjectValue -Object $policy -Names @('Name', 'Identity'))) -Fallback 'DlpPolicy'
+                    $dlpIndex++
+                    $script:tenantStatsHash["DlpPolicies"][("{0:D3}-{1}" -f $dlpIndex, $policyName)] = [pscustomobject]@{
+                        PolicyName                  = Get-ArrayaObjectValue -Object $policy -Names @('Name', 'Identity')
+                        Enabled                     = Get-ArrayaObjectValue -Object $policy -Names @('Enabled', 'IsEnabled')
+                        Mode                        = Get-ArrayaObjectValue -Object $policy -Names @('Mode')
+                        Workload                    = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('Workload', 'Workloads'))
+                        ExchangeLocation            = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('ExchangeLocation'))
+                        SharePointLocation          = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('SharePointLocation'))
+                        OneDriveLocation            = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('OneDriveLocation'))
+                        TeamsLocation               = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('TeamsLocation', 'TeamsChatLocation', 'TeamsChannelLocation'))
+                        EndpointDlpLocation         = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('EndpointDlpLocation'))
+                        ExchangeLocationException   = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('ExchangeLocationException'))
+                        SharePointLocationException = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('SharePointLocationException'))
+                        OneDriveLocationException   = & $formatComplianceValue (Get-ArrayaObjectValue -Object $policy -Names @('OneDriveLocationException'))
+                        Comment                     = Get-ArrayaObjectValue -Object $policy -Names @('Comment', 'Description')
+                    }
+                }
+            }
+            else {
+                $issues.Add('DLP policy cmdlet was not available after establishing the compliance session.') | Out-Null
+            }
+        }
+        catch {
+            $issues.Add("DLP policy collection failed: $($_.Exception.Message)") | Out-Null
+        }
+
+        $status = if ($issues.Count -eq 0) {
+            'Completed'
+        }
+        elseif ($retentionCollected -or $dlpCollected) {
+            'Partial'
+        }
+        else {
+            'Skipped'
+        }
+
+        $message = if ($status -eq 'Completed') {
+            'Retention policies={0}; DLP policies={1}' -f $script:tenantStatsHash["RetentionPolicies"].Count, $script:tenantStatsHash["DlpPolicies"].Count
+        }
+        else {
+            ($issues -join '; ')
+        }
+
+        return (New-AssessmentStepResult -Status $status -Message $message)
+    }
+    catch {
+        Write-Log -Type WARNING -Message "[Get-PurviewCompliancePolicies] Error: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        return (New-AssessmentStepResult -Status Partial -Message $_.Exception.Message)
+    }
+    finally {
+        $elapsed = ((Get-Date) - $start).ToString('hh\:mm\:ss')
+        Write-Log -Type INFO -Message "[Get-PurviewCompliancePolicies] COMPLETED in $elapsed" -ExportFileLocation $ExportDetails
+    }
 }
 
 function Get-MfaRegistrationDetails {
@@ -7297,6 +7805,7 @@ $script:ProfileCollectionPlan = [ordered]@{
     CollectPublicFolders             = $true
     CollectThirdPartySpamFiltering   = $true
     CollectSmtpRelayConfiguration    = $true
+    CollectGovernanceCompliancePolicies = ($effectiveGenerateTechnicalHtml -or $effectiveGenerateWorkbook -or $effectiveGenerateBestPracticesHtml -or $effectiveGenerateJson)
     CollectTeamsDetails              = ($effectiveGenerateTechnicalHtml -or $effectiveGenerateWorkbook -or $effectiveGenerateBestPracticesHtml -or $effectiveGenerateJson)
     CollectTeamsVoiceDetails         = $true
     CollectUnifiedGroups             = $true
@@ -7394,6 +7903,15 @@ $script:SnapshotCollectionPlan = [ordered]@{
         }
         NotCollectedReason = $null
     }
+    Governance = [ordered]@{
+        Status = if ($script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies) { 'Collected' } else { 'Partial' }
+        Collectors = [ordered]@{
+            RetentionPolicies = [bool]$script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies
+            DlpPolicies       = [bool]$script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies
+            PasswordLifecycle = $true
+        }
+        NotCollectedReason = if ($script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies) { $null } else { 'Governance compliance policy collection was disabled by output profile policy.' }
+    }
     Tenant = [ordered]@{
         Status = 'Collected'
         Collectors = [ordered]@{
@@ -7423,7 +7941,7 @@ if (
 }
 
 Write-Log -Type INFO -Message ("Collection depth policy: Mode={0}; EntraDeep={1}; GroupCounts={2}; GroupLicenses={3}; SSOAppDetails={4}; ExtendedGraphEnrichment={5}; SecureScoreMappings={6}" -f $script:CollectionDepthPolicy.ReportingMode, $script:CollectionDepthPolicy.CollectEntraGroupDeepDetails, $script:CollectionDepthPolicy.CollectEntraGroupMemberCounts, $script:CollectionDepthPolicy.CollectEntraGroupLicenseChecks, $script:CollectionDepthPolicy.CollectSsoApplicationDetails, $script:CollectionDepthPolicy.CollectExtendedGraphEnrichment, $script:CollectionDepthPolicy.CollectSecureScoreMappings) -ExportFileLocation $ExportDetails
-Write-Log -Type INFO -Message ("Profile collection plan ({0}): ExchangeRecipients={1}; EmailActivity={2}; ExchangeGroups={3}; MailFlow={4}; PublicFolders={5}; SpamFiltering={6}; SMTPRelay={7}; TeamsDetails={8}; TeamsVoice={9}; UnifiedGroups={10}; OwnershipTables={11}; AssessmentTables={12}; ConfigSummaryTables={13}; LicenseMetadata={14}; CombinedUserMailboxProjection={15}" -f $effectiveOutputProfileLabel, $script:ProfileCollectionPlan.CollectExchangeRecipients, $script:ProfileCollectionPlan.CollectEmailActivityDetails, $script:ProfileCollectionPlan.CollectExchangeGroups, $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors, $script:ProfileCollectionPlan.CollectPublicFolders, $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering, $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration, $script:ProfileCollectionPlan.CollectTeamsDetails, $script:ProfileCollectionPlan.CollectTeamsVoiceDetails, $script:ProfileCollectionPlan.CollectUnifiedGroups, $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables, $script:ProfileCollectionPlan.BuildAssessmentReportTables, $script:ProfileCollectionPlan.BuildConfigurationSummaryTables, $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata, $script:ProfileCollectionPlan.BuildCombinedUserMailboxProjection) -ExportFileLocation $ExportDetails
+Write-Log -Type INFO -Message ("Profile collection plan ({0}): ExchangeRecipients={1}; EmailActivity={2}; ExchangeGroups={3}; MailFlow={4}; PublicFolders={5}; SpamFiltering={6}; SMTPRelay={7}; GovernancePolicies={8}; TeamsDetails={9}; TeamsVoice={10}; UnifiedGroups={11}; OwnershipTables={12}; AssessmentTables={13}; ConfigSummaryTables={14}; LicenseMetadata={15}; CombinedUserMailboxProjection={16}" -f $effectiveOutputProfileLabel, $script:ProfileCollectionPlan.CollectExchangeRecipients, $script:ProfileCollectionPlan.CollectEmailActivityDetails, $script:ProfileCollectionPlan.CollectExchangeGroups, $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors, $script:ProfileCollectionPlan.CollectPublicFolders, $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering, $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration, $script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies, $script:ProfileCollectionPlan.CollectTeamsDetails, $script:ProfileCollectionPlan.CollectTeamsVoiceDetails, $script:ProfileCollectionPlan.CollectUnifiedGroups, $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables, $script:ProfileCollectionPlan.BuildAssessmentReportTables, $script:ProfileCollectionPlan.BuildConfigurationSummaryTables, $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata, $script:ProfileCollectionPlan.BuildCombinedUserMailboxProjection) -ExportFileLocation $ExportDetails
 
 #Global Start Time for Script
 $global:InitialStart = Get-Date
@@ -7704,6 +8222,11 @@ function Update-TierBOperationalSummaries {
         DefaultLinkPermission            = 'Not collected'
         FileAnonymousLinkType            = 'Not collected'
         AnonymousLinkExpirationInDays    = 'Not collected'
+        SharingDomainRestrictionMode     = 'Not collected'
+        SharingAllowedDomainList         = 'Not collected'
+        SharingBlockedDomainList         = 'Not collected'
+        RequireInvitedUserMatch          = 'Not collected'
+        ExternalResharingEnabled         = 'Not collected'
     }
     if (Get-Command -Name 'Get-SPOTenant' -ErrorAction SilentlyContinue) {
         try {
@@ -7716,6 +8239,64 @@ function Update-TierBOperationalSummaries {
         }
         catch {
             Write-Log -Type DEBUG -Message "[Update-TierBOperationalSummaries] SharePoint tenant sharing summary lookup failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        }
+    }
+
+    $requiresGraphSharePointSettings = @(
+        'TenantSharingCapability',
+        'SharingDomainRestrictionMode',
+        'SharingAllowedDomainList',
+        'SharingBlockedDomainList',
+        'RequireInvitedUserMatch',
+        'ExternalResharingEnabled'
+    ) | Where-Object { [string]$sharePointSummary[$_] -eq 'Not collected' }
+
+    if ($requiresGraphSharePointSettings.Count -gt 0) {
+        try {
+            $sharePointSettingsResponse = Office365Custom\Get-GraphData -Uri 'https://graph.microsoft.com/v1.0/admin/sharepoint/settings' -Activity 'Fetching SharePoint tenant settings'
+            $sharePointSettings = @($sharePointSettingsResponse | Select-Object -First 1)
+            if ($sharePointSettings.Count -gt 0 -and $sharePointSettings[0]) {
+                $graphSharePointSettings = $sharePointSettings[0]
+                $graphPropertyMap = @{
+                    TenantSharingCapability      = @('sharingCapability', 'SharingCapability')
+                    SharingDomainRestrictionMode = @('sharingDomainRestrictionMode', 'SharingDomainRestrictionMode')
+                    SharingAllowedDomainList     = @('sharingAllowedDomainList', 'SharingAllowedDomainList')
+                    SharingBlockedDomainList     = @('sharingBlockedDomainList', 'SharingBlockedDomainList')
+                    RequireInvitedUserMatch      = @('isRequireAcceptingUserToMatchInvitedUserEnabled', 'IsRequireAcceptingUserToMatchInvitedUserEnabled')
+                    ExternalResharingEnabled     = @('isResharingByExternalUsersEnabled', 'IsResharingByExternalUsersEnabled')
+                }
+
+                foreach ($summaryKey in $graphPropertyMap.Keys) {
+                    if ([string]$sharePointSummary[$summaryKey] -ne 'Not collected') {
+                        continue
+                    }
+
+                    $rawValue = $null
+                    foreach ($propertyName in $graphPropertyMap[$summaryKey]) {
+                        if ($graphSharePointSettings.PSObject.Properties[$propertyName]) {
+                            $rawValue = $graphSharePointSettings.$propertyName
+                            break
+                        }
+                    }
+
+                    if ($null -eq $rawValue) {
+                        continue
+                    }
+
+                    if ($rawValue -is [System.Collections.IEnumerable] -and -not ($rawValue -is [string])) {
+                        $normalizedValues = @($rawValue | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+                        if ($normalizedValues.Count -gt 0) {
+                            $sharePointSummary[$summaryKey] = ($normalizedValues -join ', ')
+                        }
+                    }
+                    elseif (-not [string]::IsNullOrWhiteSpace([string]$rawValue)) {
+                        $sharePointSummary[$summaryKey] = $rawValue
+                    }
+                }
+            }
+        }
+        catch {
+            Write-Log -Type DEBUG -Message "[Update-TierBOperationalSummaries] Graph SharePoint settings lookup failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
     }
 
@@ -7762,6 +8343,292 @@ function Update-TierBOperationalSummaries {
     }
 
     $TenantStatsHash['SharePointSharingSummary']['Summary'] = [pscustomobject]$sharePointSummary
+}
+
+function Update-ExternalExposureSummaries {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$TenantStatsHash
+    )
+
+    function Get-ExternalExposureValue {
+        param(
+            [AllowNull()][object]$Object,
+            [Parameter(Mandatory = $true)][string[]]$Names
+        )
+
+        if ($null -eq $Object) { return $null }
+        foreach ($name in $Names) {
+            if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($name)) {
+                return $Object[$name]
+            }
+            if ($Object.PSObject -and $Object.PSObject.Properties[$name]) {
+                return $Object.$name
+            }
+        }
+
+        return $null
+    }
+
+    function Convert-ToExternalExposureArray {
+        param([AllowNull()][object]$Value)
+
+        if ($null -eq $Value) { return @() }
+        if ($Value -is [System.Collections.IDictionary]) { return @($Value.Values) }
+        if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) { return @($Value) }
+        return @($Value)
+    }
+
+    function Convert-ToExternalExposureText {
+        param(
+            [AllowNull()][object]$Value,
+            [string]$Default = 'Not surfaced in current source'
+        )
+
+        if ($null -eq $Value) { return $Default }
+        if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+            $items = @($Value | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+            if ($items.Count -eq 0) { return $Default }
+            return ($items -join ', ')
+        }
+
+        $text = [string]$Value
+        if ([string]::IsNullOrWhiteSpace($text)) { return $Default }
+        return $text
+    }
+
+    function Test-ExternalExposureValuePresent {
+        param([AllowNull()][object]$Value)
+
+        if ($null -eq $Value) { return $false }
+        if ($Value -is [string]) {
+            return -not [string]::IsNullOrWhiteSpace($Value) -and $Value -notin @('Not collected', 'Not surfaced in current source')
+        }
+        if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+            return @($Value).Count -gt 0
+        }
+
+        return $true
+    }
+
+    if (-not $TenantStatsHash.ContainsKey('ExternalSharingSummary')) { $TenantStatsHash['ExternalSharingSummary'] = @{} }
+    if (-not $TenantStatsHash.ContainsKey('ExternalSharingSiteOverrides')) { $TenantStatsHash['ExternalSharingSiteOverrides'] = @() }
+    if (-not $TenantStatsHash.ContainsKey('ExternalIdentityRestrictions')) { $TenantStatsHash['ExternalIdentityRestrictions'] = @{} }
+    if (-not $TenantStatsHash.ContainsKey('GuestAccessConfiguration')) { $TenantStatsHash['GuestAccessConfiguration'] = @{} }
+
+    $sharePointSummaryRecord = if ($TenantStatsHash.ContainsKey('SharePointSharingSummary')) {
+        Get-ExternalExposureValue -Object $TenantStatsHash['SharePointSharingSummary'] -Names @('Summary')
+    } else { $null }
+    $sharePointRows = Convert-ToExternalExposureArray -Value $(if ($TenantStatsHash.ContainsKey('SharePoint')) { $TenantStatsHash['SharePoint'] } else { $null })
+    $oneDriveRows = Convert-ToExternalExposureArray -Value $(if ($TenantStatsHash.ContainsKey('OneDrive')) { $TenantStatsHash['OneDrive'] } else { $null })
+    $unifiedGroupRows = Convert-ToExternalExposureArray -Value $(if ($TenantStatsHash.ContainsKey('UnifiedGroups')) { $TenantStatsHash['UnifiedGroups'] } else { $null })
+    $teamRows = Convert-ToExternalExposureArray -Value $(if ($TenantStatsHash.ContainsKey('AllTeams')) { $TenantStatsHash['AllTeams'] } else { $null })
+    $guestSummaryRecord = if ($TenantStatsHash.ContainsKey('GuestSignInSummary')) {
+        Get-ExternalExposureValue -Object $TenantStatsHash['GuestSignInSummary'] -Names @('Summary')
+    } else { $null }
+    $conditionalAccessSummaryRecord = if ($TenantStatsHash.ContainsKey('ConditionalAccessPolicySummary')) {
+        Get-ExternalExposureValue -Object $TenantStatsHash['ConditionalAccessPolicySummary'] -Names @('Summary')
+    } else { $null }
+    $authConfig = if ($TenantStatsHash.ContainsKey('AuthenticationConfig')) { $TenantStatsHash['AuthenticationConfig'] } else { $null }
+    $federationConfiguration = if ($TenantStatsHash.ContainsKey('FederationConfiguration')) { $TenantStatsHash['FederationConfiguration'] } else { $null }
+    $crossTenantSummary = Get-ExternalExposureValue -Object $federationConfiguration -Names @('CrossTenantAccess')
+    $externalIdentities = Get-ExternalExposureValue -Object $federationConfiguration -Names @('ExternalIdentities')
+
+    $tenantSharingCapability = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $sharePointSummaryRecord -Names @('TenantSharingCapability')) -Default 'Not collected'
+    $defaultSharingLinkType = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $sharePointSummaryRecord -Names @('DefaultSharingLinkType')) -Default 'Not collected'
+    $defaultLinkPermission = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $sharePointSummaryRecord -Names @('DefaultLinkPermission')) -Default 'Not collected'
+    $sharingDomainRestrictionMode = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $sharePointSummaryRecord -Names @('SharingDomainRestrictionMode')) -Default 'Not collected'
+    $sharingAllowedDomainList = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $sharePointSummaryRecord -Names @('SharingAllowedDomainList')) -Default 'Not surfaced in current source'
+    $sharingBlockedDomainList = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $sharePointSummaryRecord -Names @('SharingBlockedDomainList')) -Default 'Not surfaced in current source'
+    $anonymousLinkExpirationInDays = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $sharePointSummaryRecord -Names @('AnonymousLinkExpirationInDays')) -Default 'Not collected'
+    $requireInvitedUserMatch = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $sharePointSummaryRecord -Names @('RequireInvitedUserMatch')) -Default 'Not surfaced in current source'
+    $externalResharingEnabled = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $sharePointSummaryRecord -Names @('ExternalResharingEnabled')) -Default 'Not surfaced in current source'
+
+    $siteRows = @($sharePointRows) + @($oneDriveRows)
+    $siteOverrides = @(
+        foreach ($site in $siteRows) {
+            $siteSharingCapability = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $site -Names @('SharingCapability')) -Default ''
+            $siteDefaultSharingLinkType = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $site -Names @('DefaultSharingLinkType')) -Default ''
+            $siteDefaultLinkPermission = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $site -Names @('DefaultLinkPermission')) -Default ''
+
+            $overrideReasons = New-Object System.Collections.Generic.List[string]
+            if (-not [string]::IsNullOrWhiteSpace($siteSharingCapability) -and $tenantSharingCapability -ne 'Not collected' -and $siteSharingCapability -ne $tenantSharingCapability) {
+                $overrideReasons.Add('Sharing capability differs from tenant setting') | Out-Null
+            }
+            if (-not [string]::IsNullOrWhiteSpace($siteDefaultSharingLinkType) -and $defaultSharingLinkType -ne 'Not collected' -and $siteDefaultSharingLinkType -ne $defaultSharingLinkType) {
+                $overrideReasons.Add('Default sharing link type differs from tenant setting') | Out-Null
+            }
+            if (-not [string]::IsNullOrWhiteSpace($siteDefaultLinkPermission) -and $defaultLinkPermission -ne 'Not collected' -and $siteDefaultLinkPermission -ne $defaultLinkPermission) {
+                $overrideReasons.Add('Default link permission differs from tenant setting') | Out-Null
+            }
+            if ($overrideReasons.Count -eq 0 -and -not [string]::IsNullOrWhiteSpace($siteSharingCapability) -and $siteSharingCapability -notmatch 'Disabled|Internal|OnlyPeopleInYourOrganization') {
+                $overrideReasons.Add('Site supports external sharing') | Out-Null
+            }
+
+            if ($overrideReasons.Count -eq 0) {
+                continue
+            }
+
+            [pscustomobject]@{
+                Workload               = $(if ([string](Get-ExternalExposureValue -Object $site -Names @('Url')) -match '-my\.sharepoint\.com') { 'OneDrive' } else { 'SharePoint' })
+                Title                  = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $site -Names @('Title', 'DisplayName')) -Default 'Untitled site'
+                Url                    = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $site -Names @('Url')) -Default 'Not surfaced in current source'
+                SharingCapability      = $(if ([string]::IsNullOrWhiteSpace($siteSharingCapability)) { 'Not surfaced in current source' } else { $siteSharingCapability })
+                DefaultSharingLinkType = $(if ([string]::IsNullOrWhiteSpace($siteDefaultSharingLinkType)) { 'Not surfaced in current source' } else { $siteDefaultSharingLinkType })
+                DefaultLinkPermission  = $(if ([string]::IsNullOrWhiteSpace($siteDefaultLinkPermission)) { 'Not surfaced in current source' } else { $siteDefaultLinkPermission })
+                OverrideReason         = ($overrideReasons -join '; ')
+            }
+        }
+    ) | Sort-Object Url, Title
+
+    $sitesWithExternalSharingEnabled = @(
+        $siteRows | Where-Object {
+            $sharingCapability = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $_ -Names @('SharingCapability')) -Default ''
+            -not [string]::IsNullOrWhiteSpace($sharingCapability) -and $sharingCapability -notmatch 'Disabled|Internal|OnlyPeopleInYourOrganization'
+        }
+    ).Count
+    $sitesWithAnonymousDefaultLinks = @(
+        $siteRows | Where-Object {
+            (Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $_ -Names @('DefaultSharingLinkType')) -Default '') -match 'Anonymous|Anyone'
+        }
+    ).Count
+    $sitesWithSpecificPeopleDefaults = @(
+        $siteRows | Where-Object {
+            (Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $_ -Names @('DefaultSharingLinkType')) -Default '') -match 'SpecificPeople'
+        }
+    ).Count
+
+    $sharingSignalsPresent = @(
+        Test-ExternalExposureValuePresent -Value $tenantSharingCapability
+        Test-ExternalExposureValuePresent -Value $defaultSharingLinkType
+        Test-ExternalExposureValuePresent -Value $defaultLinkPermission
+        Test-ExternalExposureValuePresent -Value $sharingDomainRestrictionMode
+    ) | Where-Object { $_ -eq $true }
+    $sharingCollectionState = if ($sharingSignalsPresent.Count -eq 0 -and $siteRows.Count -eq 0) {
+        'Not collected'
+    }
+    elseif (
+        $tenantSharingCapability -eq 'Not collected' -or
+        $defaultSharingLinkType -eq 'Not collected' -or
+        $defaultLinkPermission -eq 'Not collected'
+    ) {
+        'Partial'
+    }
+    else {
+        'Collected'
+    }
+
+    $TenantStatsHash['ExternalSharingSummary']['Summary'] = [pscustomobject]@{
+        CollectionState                = $sharingCollectionState
+        TenantSharingCapability        = $tenantSharingCapability
+        DefaultSharingLinkType         = $defaultSharingLinkType
+        DefaultLinkPermission          = $defaultLinkPermission
+        SharingDomainRestrictionMode   = $sharingDomainRestrictionMode
+        SharingAllowedDomainList       = $sharingAllowedDomainList
+        SharingBlockedDomainList       = $sharingBlockedDomainList
+        AnonymousLinkExpirationInDays  = $anonymousLinkExpirationInDays
+        GuestExpirationInDays          = 'Not surfaced in current source'
+        RequireInvitedUserMatch        = $requireInvitedUserMatch
+        ExternalResharingEnabled       = $externalResharingEnabled
+        SharePointSitesReviewed        = $sharePointRows.Count
+        OneDriveSitesReviewed          = $oneDriveRows.Count
+        SitesWithExternalSharingEnabled = $sitesWithExternalSharingEnabled
+        SitesWithAnonymousDefaultLinks = $sitesWithAnonymousDefaultLinks
+        SitesWithSpecificPeopleLinks   = $sitesWithSpecificPeopleDefaults
+        SiteOverrideCount              = @($siteOverrides).Count
+    }
+    $TenantStatsHash['ExternalSharingSiteOverrides'] = @($siteOverrides)
+
+    $authConfigDetails = Get-ExternalExposureValue -Object $authConfig -Names @('Configuration')
+    if ($null -eq $authConfigDetails) {
+        $authConfigDetails = $authConfig
+    }
+
+    $allowInvitesFrom = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $authConfigDetails -Names @('AllowInvitesFrom')) -Default 'Not surfaced in current source'
+    $allowEmailVerifiedUsersToJoin = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $authConfigDetails -Names @('AllowEmailVerifiedUsersToJoinOrganization')) -Default 'Not surfaced in current source'
+    $defaultUserCanReadOtherUsers = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $authConfigDetails -Names @('DefaultUserCanReadOtherUsers')) -Default 'Not surfaced in current source'
+    $guestUserRoleId = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $authConfigDetails -Names @('GuestUserRoleId')) -Default $(Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $externalIdentities -Names @('GuestUserRole')) -Default 'Not surfaced in current source')
+    $b2bInvitationSetting = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $externalIdentities -Names @('InvitationsAllowed')) -Default 'Not surfaced in current source'
+    $crossTenantPartnerCount = Get-ExternalExposureValue -Object $crossTenantSummary -Names @('PartnerCount')
+    $partnerTenantNames = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $crossTenantSummary -Names @('PartnerTenantNames')) -Default 'Not surfaced in current source'
+    $defaultInboundMfaTrust = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $crossTenantSummary -Names @('DefaultInboundAccess')) -Default 'Not surfaced in current source'
+    $defaultOutboundMfaTrust = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $crossTenantSummary -Names @('DefaultOutboundAccess')) -Default 'Not surfaced in current source'
+    $defaultB2BInbound = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $crossTenantSummary -Names @('DefaultB2BDirectConnectInbound')) -Default 'Not surfaced in current source'
+    $defaultB2BOutbound = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $crossTenantSummary -Names @('DefaultB2BDirectConnectOutbound')) -Default 'Not surfaced in current source'
+    $hasCrossTenantAccessPolicy = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $crossTenantSummary -Names @('HasCrossTenantAccessPolicy')) -Default 'Not surfaced in current source'
+
+    $externalIdentitySignalsPresent = @(
+        Test-ExternalExposureValuePresent -Value $allowInvitesFrom
+        Test-ExternalExposureValuePresent -Value $crossTenantPartnerCount
+        Test-ExternalExposureValuePresent -Value $hasCrossTenantAccessPolicy
+        Test-ExternalExposureValuePresent -Value $guestUserRoleId
+    ) | Where-Object { $_ -eq $true }
+    $externalIdentityCollectionState = if ($externalIdentitySignalsPresent.Count -eq 0) { 'Not collected' } elseif ($allowInvitesFrom -eq 'Not surfaced in current source') { 'Partial' } else { 'Collected' }
+
+    $TenantStatsHash['ExternalIdentityRestrictions']['Summary'] = [pscustomobject]@{
+        CollectionState                        = $externalIdentityCollectionState
+        AllowInvitesFrom                       = $allowInvitesFrom
+        AllowEmailVerifiedUsersToJoinOrganization = $allowEmailVerifiedUsersToJoin
+        DefaultUserCanReadOtherUsers           = $defaultUserCanReadOtherUsers
+        GuestUserRoleId                        = $guestUserRoleId
+        B2BInvitationPolicyAllowedToInvite     = $b2bInvitationSetting
+        HasCrossTenantAccessPolicy             = $hasCrossTenantAccessPolicy
+        CrossTenantPartnerCount                = $(if ($null -eq $crossTenantPartnerCount) { 'Not surfaced in current source' } else { $crossTenantPartnerCount })
+        DefaultInboundMfaTrust                 = $defaultInboundMfaTrust
+        DefaultOutboundMfaTrust                = $defaultOutboundMfaTrust
+        DefaultB2BDirectConnectInbound         = $defaultB2BInbound
+        DefaultB2BDirectConnectOutbound        = $defaultB2BOutbound
+        PartnerTenantNames                     = $partnerTenantNames
+    }
+
+    $inactiveGuests90Days = Get-ExternalExposureValue -Object $guestSummaryRecord -Names @('InactiveGuests90Days')
+    $guestCoverage = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $conditionalAccessSummaryRecord -Names @('HasGuestCoverage')) -Default 'Not surfaced in current source'
+    $groupsAllowingGuests = @(
+        $unifiedGroupRows | Where-Object {
+            $allowGuests = Get-ExternalExposureValue -Object $_ -Names @('AllowAddGuests')
+            $null -ne $allowGuests -and [bool]$allowGuests -eq $true
+        }
+    ).Count
+    $groupsBlockingGuests = @(
+        $unifiedGroupRows | Where-Object {
+            $allowGuests = Get-ExternalExposureValue -Object $_ -Names @('AllowAddGuests')
+            $null -ne $allowGuests -and [bool]$allowGuests -eq $false
+        }
+    ).Count
+    $guestHeavyTeams = @(
+        $teamRows | Where-Object {
+            $guestCount = Get-ExternalExposureValue -Object $_ -Names @('GuestCount')
+            $memberCount = Get-ExternalExposureValue -Object $_ -Names @('MemberCount')
+            $null -ne $guestCount -and $null -ne $memberCount -and [int]$memberCount -gt 0 -and (([double]$guestCount / [double]$memberCount) -ge 0.4)
+        }
+    ).Count
+
+    $guestSignalsPresent = @(
+        Test-ExternalExposureValuePresent -Value $inactiveGuests90Days
+        Test-ExternalExposureValuePresent -Value $tenantSharingCapability
+        Test-ExternalExposureValuePresent -Value $allowInvitesFrom
+        Test-ExternalExposureValuePresent -Value $guestCoverage
+    ) | Where-Object { $_ -eq $true }
+    $guestAccessCollectionState = if ($guestSignalsPresent.Count -eq 0) { 'Not collected' } elseif ($allowInvitesFrom -eq 'Not surfaced in current source') { 'Partial' } else { 'Collected' }
+
+    $TenantStatsHash['GuestAccessConfiguration']['Summary'] = [pscustomobject]@{
+        CollectionState                 = $guestAccessCollectionState
+        InactiveGuests90Days            = $(if ($null -eq $inactiveGuests90Days) { 'Not surfaced in current source' } else { $inactiveGuests90Days })
+        ConditionalAccessGuestCoverage  = $guestCoverage
+        GuestInvitationControl          = $allowInvitesFrom
+        GuestUserRoleId                 = $guestUserRoleId
+        TenantSharingCapability         = $tenantSharingCapability
+        DefaultSharingLinkType          = $defaultSharingLinkType
+        DefaultLinkPermission           = $defaultLinkPermission
+        UnifiedGroupsReviewed           = $unifiedGroupRows.Count
+        GroupsAllowingGuests            = $groupsAllowingGuests
+        GroupsBlockingGuests            = $groupsBlockingGuests
+        TeamsReviewed                   = $teamRows.Count
+        GuestHeavyTeams                 = $guestHeavyTeams
+        CrossTenantPartnerCount         = $(if ($null -eq $crossTenantPartnerCount) { 'Not surfaced in current source' } else { $crossTenantPartnerCount })
+        SiteOverrideCount               = @($siteOverrides).Count
+    }
 }
 
 ########################################################
@@ -7813,7 +8680,7 @@ if ($runExportOnly) {
     }
 }
 else {
-    $baseCollectionSteps = 13 # Exchange(6) + Hybrid(4) + Collaboration(3)
+    $baseCollectionSteps = 14 # Exchange(6) + Hybrid(5) + Collaboration(3)
     $identitySteps = if ($GraphTest -eq 'REST') { 2 } else { 13 }
     $combineSteps = 3
     $postProcessingSteps = 4
@@ -7833,6 +8700,7 @@ else {
     Invoke-AssessmentProgressStep -Name 'Federation/cross-tenant configuration' -ScriptBlock { Get-FederationAndCrossTenantConfiguration }
     Invoke-ProfileAwareAssessmentStep -Name 'Third-party spam filtering configuration' -Enabled $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering -SkipReason 'Requires mail flow connector/rule collection, which is disabled for this profile.' -ScriptBlock { Get-ThirdPartySpamFilteringConfig -Context $script:AssessmentContext }
     Invoke-ProfileAwareAssessmentStep -Name 'SMTP relay configuration' -Enabled $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration -SkipReason 'Requires mail flow connector collection, which is disabled for this profile.' -ScriptBlock { Get-SMTPRelayConfiguration -Context $script:AssessmentContext }
+    Invoke-ProfileAwareAssessmentStep -Name 'Purview retention/DLP policies' -Enabled $script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies -SkipReason 'Governance compliance collection is disabled for this profile.' -ScriptBlock { Get-PurviewCompliancePolicies }
 
     Write-ConsoleSection -Step '3/5' -Title 'Identity, devices, and licensing'
     # Determine if using REST or SDK Graph API
@@ -7883,6 +8751,7 @@ else {
     Invoke-ProfileAwareAssessmentStep -Name 'Combined user/mailbox reporting' -Enabled $script:ProfileCollectionPlan.BuildCombinedUserMailboxProjection -SkipReason 'Reserved for TenantToTenantMigration / All profile runs.' -ScriptBlock { Report-UserAndMailboxStats }
     Invoke-AssessmentProgressStep -Name 'Exchange governance Tier B summaries' -ScriptBlock { Update-ExchangeGovernanceTables -TenantStatsHash $script:tenantStatsHash -DetailLevel $reportingMode }
     Invoke-AssessmentProgressStep -Name 'Operational Tier B summaries' -ScriptBlock { Update-TierBOperationalSummaries -TenantStatsHash $script:tenantStatsHash }
+    Invoke-AssessmentProgressStep -Name 'External sharing and guest access summaries' -ScriptBlock { Update-ExternalExposureSummaries -TenantStatsHash $script:tenantStatsHash }
 
     Invoke-ProfileAwareAssessmentStep -Name 'Ownership governance tables' -Enabled $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables -SkipReason 'Ownership governance table build is disabled for this profile.' -ScriptBlock { Update-OwnershipGovernanceTables -TenantStatsHash $script:tenantStatsHash }
     Invoke-ProfileAwareAssessmentStep -Name 'License classification metadata' -Enabled $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata -SkipReason 'License classification metadata is disabled for this profile.' -ScriptBlock { Update-LicenseClassificationMetadata -TenantStatsHash $script:tenantStatsHash }

@@ -297,13 +297,13 @@ For a fully non-interactive improvement-plan run, call the reporting wrapper dir
 
 Use `-LiveRefresh` when you want a "snapshot plus live refresh" run. It is a friendlier alias for the existing `-UseGraphFallback` switch and tells `Improve` to use the saved snapshot first, then fill supported gaps from Microsoft Graph when needed.
 
-Add `-IncludeLegacyArtifacts` only if you still want the older `*-ImprovementPlan.csv`, `*-ImprovementPlan.md`, and `*-CustomerRemediationReport.md` outputs in addition to the default set.
+Add `-IncludeLegacyArtifacts` only if you still want the older `*-ImprovementPlan.csv` and `*-ImprovementPlan.md` planning artifacts in addition to the default set.
 Add `-IncludeLegacyAssessmentArtifacts` when you also want the older assessment HTML / best-practices HTML / questionnaire / PDF family.
 
 The `Improve` workflow now produces this simplified default output set:
 
-- top level: `*-CustomerRemediationReport.html`, `*-EngineerActionPack.md`
-- support folder: `*-ImprovementPlan.json`, `*.manifest.json`, `*-RemediationSnippets.ps1`
+- top level: `*-CustomerAssessmentReport.docx`, `*-EngineerActionPack.md`
+- support folder: `*-AssessmentSnapshot.json`, `*-ImprovementPlan.json`, `*.manifest.json`, `*-RemediationSnippets.ps1`
 
 If you still need the older technical CSV and Markdown artifacts, generate them explicitly with `-IncludeLegacyArtifacts` when calling the reporting wrapper directly.
 
@@ -337,7 +337,7 @@ You can pass more than one profile in a comma-separated list:
 
 Default `M365` now creates these top-level operator deliverables:
 
-- `*-CustomerRemediationReport.html`
+- `*-CustomerAssessmentReport.docx`
 - `*-EngineerActionPack.md`
 - `*.xlsx` for profiles whose policy enables workbook output, including `SolutionsEngineer` and `TenantToTenantMigration`
 
@@ -362,21 +362,21 @@ Operational logs and exported error details are written to a `Debugging` subfold
 
 Start with the artifact that best matches your audience:
 
-- `CustomerRemediationReport.html`: primary customer-facing deliverable.
+- `CustomerAssessmentReport.docx`: primary customer-facing deliverable.
 - `EngineerActionPack.md`: primary operator-facing deliverable.
 - `Support\ImprovementPlan.json`: best for export reuse, filtering, comparisons, and automation.
 - `Support\RemediationSnippets.ps1`: support helper commands.
 
 Recommended review flow:
 
-1. Open `CustomerRemediationReport.html` first.
+1. Open `CustomerAssessmentReport.docx` first.
 2. Review `EngineerActionPack.md` for implementation planning.
 3. Keep `Support\ImprovementPlan.json` as your baseline for later comparison or downstream processing.
 4. Use legacy workbook / assessment HTML outputs only when you explicitly generated them for a deeper technical review.
 
 When reviewing `Improve` outputs:
 
-1. Start with `*-CustomerRemediationReport.html` for stakeholder-facing messaging.
+1. Start with `*-CustomerAssessmentReport.docx` for stakeholder-facing messaging.
 2. Use `*-EngineerActionPack.md` for operator execution planning.
 3. Use `Support\ImprovementPlan.json` for filtering, automation, or downstream transformations.
 4. Use `RelatedWorksheet` and `Source` to trace each finding back to its evidence and rule origin.

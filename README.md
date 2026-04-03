@@ -98,12 +98,13 @@ Examples:
 ## Assessment Outputs
 For a default `-Action M365` run, the top-level operator deliverables are now:
 
-- `*-CustomerRemediationReport.html`: the primary customer-facing deliverable generated from `Improve`
+- `*-CustomerAssessmentReport.docx`: the primary customer-facing deliverable generated from `Improve`
 - `*-EngineerActionPack.md`: the primary engineer-facing remediation deliverable
 
 Support and machine-readable artifacts are written under `Support\...`:
 
 - `Support\*-ImprovementPlan.json`: the machine-readable remediation payload
+- `Support\*-AssessmentSnapshot.json`: the assessment snapshot used by `Improve`, replay, and export workflows
 - `Support\*.manifest.json`: artifact index for the run
 - `Support\*-RemediationSnippets.ps1`: support helper commands
 
@@ -118,7 +119,7 @@ Legacy assessment artifacts are still available, but they are now compatibility 
 - `*-TenantToTenantQuestionnaire.md`
 - `*.pdf`
 
-Workbook output is still a default deliverable for `SolutionsEngineer` and `TenantToTenantMigration`. Use `-IncludeLegacyAssessmentArtifacts` when you explicitly want the older HTML / questionnaire / PDF artifact family in the same run. Use `-IncludeLegacyArtifacts` when you also want the older `Improve` CSV/Markdown outputs.
+Workbook output is still a default deliverable for `SolutionsEngineer` and `TenantToTenantMigration`. Use `-IncludeLegacyAssessmentArtifacts` when you explicitly want the older HTML / questionnaire / PDF artifact family in the same run. Use `-IncludeLegacyArtifacts` when you also want the older `Improve` CSV/Markdown planning artifacts.
 
 For operator guidance on how to interpret `Improve` findings and rule IDs, see [Improvement Plan Rule Taxonomy](docs/runbooks/improvement-plan-rule-taxonomy.md).
 
@@ -159,7 +160,7 @@ Reporting scope is not prompted interactively. Scope is automatically derived fr
 - Run logs now include collector duration and memory summaries (`[CollectorMetrics]`) plus inventory row counts (`[CollectorInventory]`) for hotspot review.
 
 ## HTML And PDF
-- `CustomerRemediationReport.html` is now the primary customer-facing HTML deliverable and is generated from the `Improve` model.
+- `CustomerAssessmentReport.docx` is now the primary customer-facing deliverable and is generated from the approved Word template.
 - The best practices analysis HTML and full technical HTML are compatibility artifacts generated only when `-IncludeLegacyAssessmentArtifacts` is used.
 - PDF is also a compatibility artifact in this model and remains skippable with `-SkipPdfReport`.
 - PDF rendering uses a locally installed Chromium-based browser, preferring Google Chrome and falling back to Microsoft Edge.

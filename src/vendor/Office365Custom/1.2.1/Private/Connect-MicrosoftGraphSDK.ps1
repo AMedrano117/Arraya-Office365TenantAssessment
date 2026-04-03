@@ -101,7 +101,8 @@
                         "MailboxSettings.ReadWrite", "AuditLog.Read.All", "Policy.Read.All",
                         "Team.ReadBasic.All", "TeamSettings.Read.All", "TeamsTab.Read.All",
                         "LicenseAssignment.ReadWrite.All", "User.EnableDisableAccount.All", "User.Export.All",
-                        "Device.Read.All", "SecurityEvents.Read.All", "SharePointTenantSettings.Read.All", "Organization.Read.All"
+                        "Device.Read.All", "SecurityEvents.Read.All", "SharePointTenantSettings.Read.All", "Organization.Read.All",
+                        "OnPremDirectorySynchronization.Read.All"
                     )
     
                     $WriteScopes = @(

@@ -24,6 +24,7 @@ function New-ArrayaTenantSnapshot {
             Identity      = [ordered]@{}
             Collaboration = [ordered]@{}
             Security      = [ordered]@{}
+            Governance    = [ordered]@{}
             Tenant        = [ordered]@{}
             Other         = [ordered]@{}
         }
@@ -66,4 +67,3 @@ function New-ArrayaTenantSnapshot {
 
     return $snapshot
 }
-

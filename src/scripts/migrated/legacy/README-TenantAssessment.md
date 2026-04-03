@@ -48,9 +48,10 @@ If you run `Improve` separately, use `-LiveRefresh` when you want snapshot-plus-
 ## Current Output Set
 A default Microsoft 365 assessment run now produces:
 
-- `*-CustomerRemediationReport.html`
+- `*-CustomerAssessmentReport.docx`
 - `*-EngineerActionPack.md`
 - `*.xlsx` when the selected profile enables workbook output, including `SolutionsEngineer` and `TenantToTenantMigration`
+- `Support\*-AssessmentSnapshot.json`
 - `Support\*-ImprovementPlan.json`
 - `Support\*-RemediationSnippets.ps1`
 - `Support\*.manifest.json`
@@ -106,7 +107,7 @@ The assessment script supports six need-based output profiles:
 `SolutionsEngineer` is the default profile.
 
 ## HTML And PDF
-The remediation workflow now generates `*-CustomerRemediationReport.html` by default.
+The remediation workflow now generates `*-CustomerAssessmentReport.docx` by default.
 
 The legacy assessment HTML/PDF family is generated only when `-IncludeLegacyAssessmentArtifacts` is used:
 

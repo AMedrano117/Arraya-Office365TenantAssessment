@@ -5,6 +5,36 @@ Describe 'Improve workflow' {
         $script:improveScriptPath = Join-Path $script:repoRoot 'src\scripts\migrated\legacy\New-M365TenantImprovementPlan.ps1'
 
         Import-Module -Name $script:commonManifestPath -Force -ErrorAction Stop
+
+        function Get-TestDocxDocumentXmlText {
+            param([Parameter(Mandatory = $true)][string]$Path)
+
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+            try {
+                $entry = $archive.GetEntry('word/document.xml')
+                if ($null -eq $entry) {
+                    throw "DOCX did not contain word/document.xml: $Path"
+                }
+
+                $reader = New-Object System.IO.StreamReader($entry.Open())
+                try {
+                    return $reader.ReadToEnd()
+                }
+                finally {
+                    $reader.Dispose()
+                }
+            }
+            finally {
+                $archive.Dispose()
+            }
+        }
+
+        function Get-TestDocxDocumentXml {
+            param([Parameter(Mandatory = $true)][string]$Path)
+
+            [xml](Get-TestDocxDocumentXmlText -Path $Path)
+        }
     }
 
     It 'generates normalized findings, customer deliverables, and fixed remediation snippets' {
@@ -114,6 +144,19 @@ Describe 'Improve workflow' {
                             InactiveGuests90Days = 12
                         }
                     }
+                    ExternalIdentityRestrictions = @{
+                        Summary = [pscustomobject]@{
+                            AllowInvitesFrom        = 'adminsAndGuestInviters'
+                            CrossTenantPartnerCount = 2
+                            DefaultInboundMfaTrust  = $true
+                        }
+                    }
+                    GuestAccessConfiguration = @{
+                        Summary = [pscustomobject]@{
+                            GuestInvitationControl      = 'adminsAndGuestInviters'
+                            ConditionalAccessGuestCoverage = $true
+                        }
+                    }
                     DeviceManagementSummary = @{
                         Summary = [pscustomobject]@{
                             TotalDevices         = 10
@@ -129,6 +172,23 @@ Describe 'Improve workflow' {
                     }
                 }
                 Exchange = @{
+                    AllRecipients = @(
+                        [pscustomobject]@{
+                            DisplayName          = 'Forwarded Mailbox'
+                            RecipientTypeDetails = 'UserMailbox'
+                            PrimarySmtpAddress   = 'forwarded@contoso.com'
+                        },
+                        [pscustomobject]@{
+                            DisplayName          = 'Shared Projects'
+                            RecipientTypeDetails = 'SharedMailbox'
+                            PrimarySmtpAddress   = 'shared@contoso.com'
+                        },
+                        [pscustomobject]@{
+                            DisplayName          = 'Executive Team'
+                            RecipientTypeDetails = 'GroupMailbox'
+                            PrimarySmtpAddress   = 'executive@contoso.com'
+                        }
+                    )
                     AllMailboxes = @{
                         '001-forwarded-mailbox' = [pscustomobject]@{
                             DisplayName             = 'Forwarded Mailbox'
@@ -216,6 +276,22 @@ Describe 'Improve workflow' {
                             DefaultSharingLinkType  = 'AnonymousAccess'
                         }
                     }
+                    ExternalSharingSummary = @{
+                        Summary = [pscustomobject]@{
+                            SharingDomainRestrictionMode = 'allowList'
+                            SiteOverrideCount            = 1
+                        }
+                    }
+                    ExternalSharingSiteOverrides = @(
+                        [pscustomobject]@{
+                            Title                  = 'Projects'
+                            Url                    = 'https://contoso.sharepoint.com/sites/projects'
+                            SharingCapability      = 'ExistingExternalUserSharingOnly'
+                            DefaultSharingLinkType = 'SpecificPeople'
+                            DefaultLinkPermission  = 'View'
+                            OverrideReason         = 'Sharing capability differs from tenant setting'
+                        }
+                    )
                 }
                 Security = @{
                     SecuritySecureScore = @(
@@ -234,8 +310,15 @@ Describe 'Improve workflow' {
                 Tenant = @{
                     Domains = @(
                         [pscustomobject]@{
-                            Id         = 'contoso.com'
-                            IsVerified = $false
+                            Domain                = 'contoso.com'
+                            Id                    = 'contoso.com'
+                            IsVerified            = $false
+                            Verified              = $false
+                            TotalDomainRecipients = 3
+                            PrimarySMTPRecipients = 2
+                            AliasOnlyRecipients   = 1
+                            DmarcConfigured       = $false
+                            DkimConfigured        = $true
                         }
                     )
                 }
@@ -310,9 +393,16 @@ Describe 'Improve workflow' {
         Split-Path -Path $result.JsonPath -Parent | Should -Be (Join-Path $TestDrive 'Support')
         $result.CsvPath | Should -BeNullOrEmpty
         $result.MarkdownPath | Should -BeNullOrEmpty
-        Test-Path $result.CustomerRemediationReportPath | Should -BeTrue
-        $result.CustomerRemediationReportPath | Should -Match '\.html$'
-        $result.CustomerRemediationReportMarkdownPath | Should -BeNullOrEmpty
+        Test-Path $result.CustomerAssessmentReportPath | Should -BeTrue
+        $result.CustomerAssessmentReportPath | Should -Match '\.docx$'
+        Test-Path $result.CustomerAssessmentReportMarkdownPath | Should -BeTrue
+        $result.CustomerAssessmentReportMarkdownPath | Should -Match '\.md$'
+        if ($result.PSObject.Properties.Name -contains 'CustomerRemediationReportPath') {
+            $result.CustomerRemediationReportPath | Should -BeNullOrEmpty
+        }
+        if ($result.PSObject.Properties.Name -contains 'CustomerRemediationReportMarkdownPath') {
+            $result.CustomerRemediationReportMarkdownPath | Should -BeNullOrEmpty
+        }
         Test-Path $result.EngineerActionPackPath | Should -BeTrue
         Test-Path $result.RemediationPs1Path | Should -BeTrue
         Split-Path -Path $result.RemediationPs1Path -Parent | Should -Be (Join-Path $TestDrive 'Support')
@@ -374,23 +464,75 @@ Describe 'Improve workflow' {
         $ex006.CurrentValue | Should -Match 'Observed policy modes: Default=Off; Pilot Allow External=On'
         $ex006.TargetValue | Should -Be 'All external inbox-rule forwarding paths reviewed and either approved or removed, with tenant forwarding policy aligned to the approved baseline'
 
-        $customerReport = Get-Content -Raw $result.CustomerRemediationReportPath
-        $customerReport | Should -Match '<!DOCTYPE html>'
-        $customerReport | Should -Match '<h2>Executive Summary</h2>'
-        $customerReport | Should -Match '<h2>Executive Priorities</h2>'
-        $customerReport | Should -Match '<h2>Phased Roadmap</h2>'
-        $customerReport | Should -Match '<h2>Workstream Summary</h2>'
-        $customerReport | Should -Match 'What this means:'
-        $customerReport | Should -Match 'Business value:'
-        $customerReport | Should -Not -Match 'AREA-'
-        $customerReport | Should -Not -Match '<h2>Top Priority Risks</h2>'
-        $customerReport | Should -Not -Match '<h2>Remediation Themes By Workstream</h2>'
-        $customerReport | Should -Not -Match 'Supporting Findings Appendix'
-        $customerReport | Should -Not -Match 'Not provided'
-        $customerReport | Should -Not -Match 'Success criteria:'
-        $customerReport | Should -Not -Match 'unauthorized mailbox forwarding'
-        $customerReport | Should -Not -Match 'unauthorized inbox-rule forwarding'
-        @([regex]::Matches($customerReport, '<article class="priority-card">')).Count | Should -BeLessOrEqual 5
+        $customerReportDocument = Get-TestDocxDocumentXmlText -Path $result.CustomerAssessmentReportPath
+        $customerReportXml = Get-TestDocxDocumentXml -Path $result.CustomerAssessmentReportPath
+        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
+        $ns = New-Object System.Xml.XmlNamespaceManager($customerReportXml.NameTable)
+        $ns.AddNamespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main')
+        $customerTables = $customerReportXml.SelectNodes('//w:tbl', $ns)
+        $customerReportDocument | Should -Match 'Introduction'
+        $customerReportDocument | Should -Match 'Project Scope'
+        $customerReportDocument | Should -Match 'Executive Summary'
+        $customerReportDocument | Should -Match 'Modern Workplace Recommendations'
+        $customerReportDocument | Should -Match 'Entra ID Review: User and Device Inventory'
+        $customerReportDocument | Should -Match 'Device Registration and Compliance Gaps'
+        $customerReportDocument | Should -Match 'Entra Guest Access Configuration'
+        $customerReportDocument | Should -Match 'Entra Applications and Access Review'
+        $customerReportDocument | Should -Match 'Modernizing Authentication: Duo Integration, Conditional Access, and MFA Coverage'
+        $customerReportDocument | Should -Match 'Password Writeback and Self-Service Password Reset'
+        $customerReportDocument | Should -Match 'Authorization: Admin Access and Role Assignments'
+        $customerReportDocument | Should -Match 'Exchange Online: Mailboxes and Storage Overview'
+        $customerReportDocument | Should -Match 'User Mailbox Growth'
+        $customerReportDocument | Should -Match 'Shared Mailbox Review'
+        $customerReportDocument | Should -Match 'Inactive Mailboxes'
+        $customerReportDocument | Should -Match 'Group Mailbox Utilization'
+        $customerReportDocument | Should -Match 'Archive Mailbox Usage and Licensing'
+        $customerReportDocument | Should -Match 'SMTP Relay Usage and Service Accounts'
+        $customerReportDocument | Should -Match 'Microsoft Teams Governance and Cleanup'
+        $customerReportDocument | Should -Match 'SharePoint Online Storage and External Sharing'
+        $customerReportDocument | Should -Match 'Retention Policies and Data Loss Prevention'
+        $customerReportDocument | Should -Match 'Domain Configuration and DNS Overview'
+        $customerReportDocument | Should -Match 'Offboarding Recommendation'
+        $customerReportDocument | Should -Match 'Application User Consent Management'
+        $customerReportDocument | Should -Match 'Authentication Methods Migration'
+        $customerReportDocument | Should -Match 'DMARC Records'
+        $customerReportDocument | Should -Match 'Password Writeback with AD Sync'
+        $customerReportDocument | Should -Match 'Version History'
+        $customerReportDocument | Should -Match 'Arraya Solutions'
+        $customerReportDocument | Should -Match 'Not surfaced in current source'
+        $customerReportDocument | Should -Match 'Configuration Signal'
+        $customerReportDocument | Should -Match 'Current State'
+        $customerReportDocument | Should -Match 'Guest invitation control'
+        $customerReportDocument | Should -Match 'Cross-tenant partner count'
+        $customerReportDocument | Should -Match 'Default inbound MFA trust'
+        $customerReportDocument | Should -Match 'adminsAndGuestInviters'
+        $customerReportDocument | Should -Match 'allowList'
+        $customerReportDocument | Should -Match 'Microsoft Guidance'
+        $customerReportDocument | Should -Match 'Why It Is Relevant'
+        $customerReportDocument | Should -Match 'Recommendation'
+        $customerReportDocument | Should -Match 'Criticality / Impact'
+        $customerReportDocument | Should -Match 'Level of Effort'
+        $customerReportDocument | Should -Match 'Action:'
+        $customerReportDocument | Should -Not -Match 'AREA-'
+        $customerReportDocument | Should -Not -Match 'CustomerRemediationReport'
+        $customerReportDocument | Should -Not -Match 'unauthorized mailbox forwarding'
+        $customerReportDocument | Should -Not -Match 'unauthorized inbox-rule forwarding'
+        $customerTables.Count | Should -BeGreaterThan 10
+        $customerTables[0].SelectNodes('./w:tr[1]/w:tc', $ns).Count | Should -Be 5
+        $customerTables[0].SelectNodes('./w:tr[2]/w:tc', $ns).Count | Should -Be 5
+        $customerTables[1].SelectNodes('./w:tr[1]/w:tc', $ns).Count | Should -Be 3
+        $customerTables[1].SelectNodes('./w:tr[2]/w:tc', $ns).Count | Should -Be 3
+        $customerReportMarkdown | Should -Match '# .+ Microsoft 365 Tenant Best Practices Assessment'
+        $customerReportMarkdown | Should -Match '## Executive Summary'
+        $customerReportMarkdown | Should -Match '## Modern Workplace Recommendations'
+        $customerReportMarkdown | Should -Match '\| Recommendation \| Criticality / Impact \| Level of Effort \|'
+        $customerReportMarkdown | Should -Match '## Entra Guest Access Configuration'
+        $customerReportMarkdown | Should -Match '## SharePoint Online Storage and External Sharing'
+        $customerReportMarkdown | Should -Match '## Retention Policies and Data Loss Prevention'
+        $customerReportMarkdown | Should -Match '## Offboarding Recommendation'
+        $customerReportMarkdown | Should -Match 'adminsAndGuestInviters'
+        $customerReportMarkdown | Should -Match 'Guest invitation control'
+        $customerReportMarkdown | Should -Not -Match 'CustomerRemediationReport'
 
         $engineerPack = Get-Content -Raw $result.EngineerActionPackPath
         $engineerPack | Should -Match '## Engineering Summary'

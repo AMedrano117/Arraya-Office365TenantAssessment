@@ -74,7 +74,8 @@ function Export-HashTableToExcel {
         'TeamsActivityTopUsers',
         'Office365GroupsActivityTopGroups',
         'EmployeeExperienceInsightsSummary',
-        'InboxRulesExternalForwarding'
+        'InboxRulesExternalForwarding',
+        'ExternalSharingSiteOverrides'
     )
 
     $excludedWorksheets = @(
@@ -115,7 +116,7 @@ function Export-HashTableToExcel {
         "BestPractices", "BestPracticeFindings", "MigrationReadiness", "SecureScoreActions", "UnmanagedObjects", "OneDriveOwnerMismatches",
 
         # Licensing & Tenant Info
-        "LicenseSKUs", "Domains", "AuthenticationMethods", "AuthenticationSSOApplications", "EnterpriseApplications", "AuthenticationConfig", "ConditionalAccessPolicySummary", "SecurityDefaultsPolicy", "GuestSignInSummary", "PrivilegedAccessSummary", "Admins",
+        "LicenseSKUs", "Domains", "AuthenticationMethods", "AuthenticationSSOApplications", "EnterpriseApplications", "AuthenticationConfig", "ConditionalAccessPolicySummary", "SecurityDefaultsPolicy", "GuestSignInSummary", "GuestAccessConfiguration", "ExternalIdentityRestrictions", "PrivilegedAccessSummary", "Admins",
 
         # Users
         "Users", "UserFullDetails", "DeviceDetails",
@@ -130,14 +131,14 @@ function Export-HashTableToExcel {
         "PublicFolderDetails", "PublicFolderPerms",
 
         # Mail Flow
-        "MailFlowRules", "MailFlowConnectors", "RemoteDomains", "SMTPRelayConfig",
+        "MailFlowRules", "MailFlowConnectors", "RemoteDomains", "SMTPRelayConfig", "SMTPRelayServiceAccounts",
 
         # Security & Compliance
-        "SecuritySecureScore", "ConditionalAccessPolicies", "SMTPRelaySummary", "TeamsVoiceSummary", "SpamFilteringConfig",
+        "SecuritySecureScore", "ConditionalAccessPolicies", "SMTPRelaySummary", "TeamsVoiceSummary", "SpamFilteringConfig", "RetentionPolicies", "DlpPolicies", "PasswordLifecycleSummary",
 
         # Cloud Services
         "OneDrive",
-        "SharePoint", "SharePointSharingSummary",
+        "SharePoint", "SharePointSharingSummary", "ExternalSharingSummary", "ExternalSharingSiteOverrides",
 
         # Hybrid / Infra
         "HybridConfiguration", "TenantInfo", "DeviceManagementSummary"
