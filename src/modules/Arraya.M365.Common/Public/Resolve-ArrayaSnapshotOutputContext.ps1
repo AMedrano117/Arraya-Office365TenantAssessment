@@ -9,6 +9,39 @@ function Resolve-ArrayaSnapshotOutputContext {
         [string]$OutputPrefix
     )
 
+    function Get-NormalizedArrayaOutputPrefix {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Candidate
+        )
+
+        $normalized = $Candidate
+        foreach ($suffix in @('-AssessmentSnapshot', '-Snapshot')) {
+            if ($normalized.EndsWith($suffix, [System.StringComparison]::Ordinal)) {
+                $normalized = $normalized.Substring(0, $normalized.Length - $suffix.Length)
+                break
+            }
+        }
+
+        $normalized = $normalized.Replace(' Tenant Discovery Report-', '-')
+
+        $replacements = [ordered]@{
+            '-TenantToTenantMigration_' = '-T2T_'
+            '-SolutionsEngineer_'       = '-SE_'
+            '-ExecutiveLevel_'          = '-Exec_'
+            '-TenantToTenantMigration'  = '-T2T'
+            '-SolutionsEngineer'        = '-SE'
+            '-ExecutiveLevel'           = '-Exec'
+        }
+
+        foreach ($entry in $replacements.GetEnumerator()) {
+            $normalized = $normalized.Replace([string]$entry.Key, [string]$entry.Value)
+        }
+
+        return $normalized
+    }
+
     $resolvedPrimaryInputPath = if (Test-Path -Path $PrimaryInputPath) {
         (Resolve-Path -Path $PrimaryInputPath).Path
     }
@@ -34,6 +67,7 @@ function Resolve-ArrayaSnapshotOutputContext {
     if ([string]::IsNullOrWhiteSpace($OutputPrefix)) {
         $OutputPrefix = [System.IO.Path]::GetFileNameWithoutExtension($resolvedPrimaryInputPath)
     }
+    $OutputPrefix = Get-NormalizedArrayaOutputPrefix -Candidate $OutputPrefix
 
     return [PSCustomObject]@{
         PrimaryInputPath = $resolvedPrimaryInputPath

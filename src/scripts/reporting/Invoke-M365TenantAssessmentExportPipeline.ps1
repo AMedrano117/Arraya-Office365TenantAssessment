@@ -52,6 +52,24 @@ function Invoke-M365TenantAssessmentExportPipeline {
         return $supportDirectory
     }
 
+    function Get-ArtifactFilePrefix {
+        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($ExportDetails)
+        if ([string]::IsNullOrWhiteSpace($baseName)) {
+            return $null
+        }
+
+        if ($baseName.EndsWith('-Assess', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $baseName = $baseName.Substring(0, $baseName.Length - '-Assess'.Length)
+        }
+
+        $baseName = ($baseName -replace '\s+', ' ').Trim()
+        if ([string]::IsNullOrWhiteSpace($baseName) -or [string]::Equals($baseName, 'Assess', [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $null
+        }
+
+        return $baseName
+    }
+
     function Test-SuppressedConsoleWarningMessage {
         param([string]$Message)
 
@@ -159,7 +177,9 @@ function Invoke-M365TenantAssessmentExportPipeline {
             if (-not (Get-Command -Name Export-TenantStatsJson -ErrorAction SilentlyContinue)) {
                 throw 'Export-TenantStatsJson function is unavailable in the current session.'
             }
-            $jsonExportPath = Join-Path -Path (Get-SupportDirectory) -ChildPath ([System.IO.Path]::GetFileNameWithoutExtension($ExportDetails) + '-AssessmentSnapshot.json')
+            $artifactPrefix = Get-ArtifactFilePrefix
+            $jsonExportFileName = if ([string]::IsNullOrWhiteSpace($artifactPrefix)) { 'Snap.json' } else { '{0}-Snap.json' -f $artifactPrefix }
+            $jsonExportPath = Join-Path -Path (Get-SupportDirectory) -ChildPath $jsonExportFileName
             # Preserve the full collection snapshot for re-export scenarios.
             Export-TenantStatsJson -TenantStatsHash $TenantStatsHash -Path $jsonExportPath
             $generatedArtifacts['Assessment Snapshot JSON'] = $jsonExportPath

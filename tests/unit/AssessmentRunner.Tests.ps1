@@ -79,7 +79,7 @@ Describe 'Arraya.M365.AssessmentRunner' {
                 },
                 [pscustomobject]@{
                     Type      = 'Assessment Snapshot JSON'
-                    Path      = 'C:\Temp\tenant-AssessmentSnapshot.json'
+                    Path      = 'C:\Temp\tenant-Snapshot.json'
                     Exists    = $true
                     SizeBytes = 5678
                 }
@@ -87,11 +87,11 @@ Describe 'Arraya.M365.AssessmentRunner' {
         } | ConvertTo-Json -Depth 10 | Set-Content -Path $manifestPath -Encoding UTF8
 
         $improveResult = [pscustomobject]@{
-            CustomerAssessmentReportPath         = 'C:\Temp\tenant-CustomerAssessmentReport.docx'
-            CustomerAssessmentReportMarkdownPath = 'C:\Temp\tenant-CustomerAssessmentReport.md'
-            EngineerActionPackPath               = 'C:\Temp\tenant-EngineerActionPack.md'
-            JsonPath                             = 'C:\Temp\tenant-ImprovementPlan.json'
-            RemediationPs1Path                   = 'C:\Temp\tenant-RemediationSnippets.ps1'
+            CustomerAssessmentReportPath         = 'C:\Temp\Contoso-CustRpt.docx'
+            CustomerAssessmentReportMarkdownPath = 'C:\Temp\Contoso-CustRpt.md'
+            EngineerActionPackPath               = 'C:\Temp\Contoso-EngPack.md'
+            JsonPath                             = 'C:\Temp\Support\Contoso-Plan.json'
+            RemediationPs1Path                   = 'C:\Temp\Support\Contoso-Snips.ps1'
             CsvPath                              = $null
             MarkdownPath                         = $null
         }

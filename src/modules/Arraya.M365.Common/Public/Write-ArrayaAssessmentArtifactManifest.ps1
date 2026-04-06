@@ -25,7 +25,16 @@ function Write-ArrayaAssessmentArtifactManifest {
         $null = New-Item -ItemType Directory -Path $supportDirectory -Force
     }
 
-    $manifestFileName = [System.IO.Path]::GetFileNameWithoutExtension($resolvedBasePath) + '.manifest.json'
+    $baseLeaf = [System.IO.Path]::GetFileNameWithoutExtension($resolvedBasePath)
+    if ($baseLeaf.EndsWith('-Assess', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $baseLeaf = $baseLeaf.Substring(0, $baseLeaf.Length - '-Assess'.Length)
+    }
+    $manifestFileName = if ([string]::IsNullOrWhiteSpace($baseLeaf) -or [string]::Equals($baseLeaf, 'Assess', [System.StringComparison]::OrdinalIgnoreCase)) {
+        'Run.manifest.json'
+    }
+    else {
+        '{0}-Run.manifest.json' -f $baseLeaf
+    }
     $manifestPath = Join-Path -Path $supportDirectory -ChildPath $manifestFileName
 
     $artifactRecords = @()
