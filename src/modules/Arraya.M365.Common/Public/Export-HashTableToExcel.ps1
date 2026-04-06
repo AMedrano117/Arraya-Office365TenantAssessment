@@ -138,7 +138,7 @@ function Export-HashTableToExcel {
 
         # Cloud Services
         "OneDrive",
-        "SharePoint", "SharePointSharingSummary", "ExternalSharingSummary", "ExternalSharingSiteOverrides",
+        "SharePoint", "SharePointSharingSummary", "ExternalSharingSummary", "ExternalSharingSiteOverrides", "ExternalExposureFindings",
 
         # Hybrid / Infra
         "HybridConfiguration", "TenantInfo", "DeviceManagementSummary"

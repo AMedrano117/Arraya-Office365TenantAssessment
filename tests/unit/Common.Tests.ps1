@@ -170,6 +170,16 @@ Describe 'Arraya.M365.Common' {
         $outputContext.OutputPrefix | Should -Be 'tenant-snapshot'
     }
 
+    It 'normalizes exported assessment snapshot prefixes for shorter improve outputs' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        $snapshotPath = Join-Path $TestDrive 'Contoso Tenant Discovery Report-SolutionsEngineer_20260403_101500-Snapshot.json'
+        Set-Content -Path $snapshotPath -Value '{}' -Encoding UTF8
+
+        $outputContext = Resolve-ArrayaSnapshotOutputContext -PrimaryInputPath $snapshotPath
+        $outputContext.OutputPrefix | Should -Be 'Contoso-SE_20260403_101500'
+    }
+
     It 'resolves assessment snapshot JSON from a manifest artifact declaration' {
         Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
 
@@ -269,6 +279,15 @@ Describe 'Arraya.M365.Common' {
         Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
 
         $legacyTenantStats = @{
+            SharePointSharingSummary = @{
+                Summary = [pscustomobject]@{
+                    CollectionSource                      = 'Microsoft Graph SharePoint tenant settings'
+                    TenantSharingCapability               = 'ExternalUserAndGuestSharing'
+                    OneDriveSharingCapability             = 'ExternalUserSharingOnly'
+                    DeletedUserPersonalSiteRetentionPeriodInDays = 30
+                    IsLegacyAuthProtocolsEnabled          = $true
+                }
+            }
             ExternalSharingSummary = @{
                 Summary = [pscustomobject]@{
                     TenantSharingCapability      = 'ExternalUserAndGuestSharing'
@@ -285,6 +304,23 @@ Describe 'Arraya.M365.Common' {
                     DefaultSharingLinkType = 'SpecificPeople'
                     DefaultLinkPermission  = 'View'
                     OverrideReason         = 'Sharing capability differs from tenant setting'
+                }
+            )
+            ExternalExposureFindings = @(
+                [pscustomobject]@{
+                    Workload         = 'SharePoint'
+                    AssetType        = 'Site'
+                    Title            = 'Projects'
+                    UrlOrIdentifier  = 'https://contoso.sharepoint.com/sites/projects'
+                    ExposureCategory = 'Stale externally shared content'
+                    TenantBaseline   = 'SharingCapability=ExternalUserAndGuestSharing'
+                    ObservedSetting  = 'SharingCapability=ExistingExternalUserSharingOnly'
+                    OwnerSignal      = 'Owner=siteowner@contoso.com'
+                    GuestSignal      = 'Not applicable'
+                    ActivitySignal   = 'LastContentModifiedDate=2025-01-01'
+                    StaleSignal      = 'Yes'
+                    GapReason        = 'Site supports external sharing and last content activity is older than the 180-day stale threshold.'
+                    ReviewPriority   = 'High'
                 }
             )
             ExternalIdentityRestrictions = @{
@@ -304,8 +340,11 @@ Describe 'Arraya.M365.Common' {
 
         $snapshot = Convert-ArrayaLegacyTenantStatsToSnapshot -TenantStatsHash $legacyTenantStats
 
+        $snapshot.Data.Collaboration.SharePointSharingSummary.Summary.OneDriveSharingCapability | Should -Be 'ExternalUserSharingOnly'
+        $snapshot.Data.Collaboration.SharePointSharingSummary.Summary.DeletedUserPersonalSiteRetentionPeriodInDays | Should -Be 30
         $snapshot.Data.Tenant.ExternalSharingSummary.Summary.TenantSharingCapability | Should -Be 'ExternalUserAndGuestSharing'
         $snapshot.Data.Tenant.ExternalSharingSiteOverrides.Count | Should -Be 1
+        $snapshot.Data.Tenant.ExternalExposureFindings.Count | Should -Be 1
         $snapshot.Data.Identity.ExternalIdentityRestrictions.Summary.AllowInvitesFrom | Should -Be 'adminsAndGuestInviters'
         $snapshot.Data.Identity.GuestAccessConfiguration.Summary.GuestInvitationControl | Should -Be 'adminsAndGuestInviters'
     }
@@ -362,6 +401,13 @@ Describe 'Arraya.M365.Common' {
                     OverrideReason = 'Sharing capability differs from tenant setting'
                 }
             )
+            ExternalExposureFindings = @(
+                [pscustomobject]@{
+                    Workload       = 'SharePoint'
+                    Title          = 'Projects'
+                    ReviewPriority = 'High'
+                }
+            )
         }
 
         Export-HashTableToExcel -hashtable $tenantStats -ExportDetails $exportPath
@@ -371,9 +417,11 @@ Describe 'Arraya.M365.Common' {
         ($worksheetNames -contains 'ExternalIdentityRestrictions') | Should -BeTrue
         ($worksheetNames -contains 'ExternalSharingSummary') | Should -BeTrue
         ($worksheetNames -contains 'ExternalSharingSiteOverrides') | Should -BeTrue
+        ($worksheetNames -contains 'ExternalExposureFindings') | Should -BeTrue
         $worksheetNames.IndexOf('GuestSignInSummary') | Should -BeLessThan $worksheetNames.IndexOf('GuestAccessConfiguration')
         $worksheetNames.IndexOf('GuestAccessConfiguration') | Should -BeLessThan $worksheetNames.IndexOf('ExternalIdentityRestrictions')
         $worksheetNames.IndexOf('SharePointSharingSummary') | Should -BeLessThan $worksheetNames.IndexOf('ExternalSharingSummary')
         $worksheetNames.IndexOf('ExternalSharingSummary') | Should -BeLessThan $worksheetNames.IndexOf('ExternalSharingSiteOverrides')
+        $worksheetNames.IndexOf('ExternalSharingSiteOverrides') | Should -BeLessThan $worksheetNames.IndexOf('ExternalExposureFindings')
     }
 }

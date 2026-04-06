@@ -1088,6 +1088,39 @@ function Get-TenantDisplayName {
     return $OutputPrefix
 }
 
+function Get-ImprovementOutputPrefix {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$OutputPrefix
+    )
+
+    $normalized = if ([string]::IsNullOrWhiteSpace($OutputPrefix)) { 'assessment' } else { $OutputPrefix.Trim() }
+
+    foreach ($suffix in @('-AssessmentSnapshot', '-Snapshot')) {
+        if ($normalized.EndsWith($suffix, [System.StringComparison]::Ordinal)) {
+            $normalized = $normalized.Substring(0, $normalized.Length - $suffix.Length)
+            break
+        }
+    }
+
+    $normalized = $normalized.Replace(' Tenant Discovery Report-', '-')
+
+    $replacements = [ordered]@{
+        '-TenantToTenantMigration_' = '-T2T_'
+        '-SolutionsEngineer_'       = '-SE_'
+        '-ExecutiveLevel_'          = '-Exec_'
+        '-TenantToTenantMigration'  = '-T2T'
+        '-SolutionsEngineer'        = '-SE'
+        '-ExecutiveLevel'           = '-Exec'
+    }
+
+    foreach ($entry in $replacements.GetEnumerator()) {
+        $normalized = $normalized.Replace([string]$entry.Key, [string]$entry.Value)
+    }
+
+    return $normalized
+}
+
 function Get-TopFindings {
     [CmdletBinding()]
     param(
@@ -1341,7 +1374,15 @@ function Get-CustomerThemeProfile {
         }
     }
 
-    if ($ownerTeam -eq 'Governance' -or $combinedText -match 'licens|sku|domain|sync|ad connect|capacity') {
+    if ($combinedText -match 'spf|dkim|dmarc|spoof|dns|mail-auth|unverified domain|domain verification') {
+        return [pscustomobject]@{
+            Key         = 'domain-authentication'
+            Theme       = 'Domain authentication and DNS posture'
+            ActionTitle = 'Strengthen domain and anti-spoofing controls'
+        }
+    }
+
+    if ($ownerTeam -eq 'Governance' -or $combinedText -match 'licens|sku|sync|ad connect|capacity') {
         return [pscustomobject]@{
             Key         = 'governance-capacity'
             Theme       = 'Licensing, capacity, and tenant governance'
@@ -1443,6 +1484,92 @@ function Get-CustomerExecutiveThemes {
     return @($themes.ToArray())
 }
 
+function Get-CustomerActionPrimaryOwnerLabel {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$Finding)
+
+    $ownerTeam = Convert-ToArrayaDisplayText -Value $Finding.OwnerTeam -Default ''
+    switch ($ownerTeam.ToLowerInvariant()) {
+        'identity' { return 'Identity and access administration' }
+        'messaging' { return 'Messaging and email administration' }
+        'collaboration' { return 'Collaboration service owner / workspace sponsor' }
+        'endpoint' { return 'Endpoint engineering / device administration' }
+        'governance' { return 'Tenant governance and platform ownership' }
+        'security' { return 'Security operations / control owner' }
+        default {
+            if ([string]::IsNullOrWhiteSpace($ownerTeam)) {
+                return 'Platform owner not clearly surfaced in the current source'
+            }
+
+            return "$ownerTeam owner"
+        }
+    }
+}
+
+function Get-CustomerActionReferenceSection {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$LeadFinding)
+
+    $relatedSection = Convert-ToArrayaDisplayText -Value $LeadFinding.RelatedSection -Default ''
+    if (-not [string]::IsNullOrWhiteSpace($relatedSection) -and $relatedSection -ne 'N/A') {
+        return $relatedSection
+    }
+
+    $area = Convert-ToArrayaDisplayText -Value $LeadFinding.Area -Default ''
+    if (-not [string]::IsNullOrWhiteSpace($area) -and $area -ne 'N/A') {
+        return $area
+    }
+
+    return $null
+}
+
+function Get-CustomerActionFirstValidationStep {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$LeadFinding,
+        [Parameter(Mandatory = $false)][string[]]$Areas = @()
+    )
+
+    $referenceSection = Get-CustomerActionReferenceSection -LeadFinding $LeadFinding
+    $findingLead = Convert-ToArrayaSentenceFragment -Text (Get-ArrayaLeadSentence -Text $LeadFinding.Finding)
+    $areaText = Join-ArrayaReadableList -Items @(
+        $Areas |
+            ForEach-Object { Convert-ToArrayaDisplayText -Value $_ -Default '' } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($referenceSection) -and -not [string]::IsNullOrWhiteSpace($findingLead)) {
+        return "Start in the $referenceSection detailed section and validate whether $findingLead."
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($referenceSection)) {
+        return "Start in the $referenceSection detailed section and confirm the current state still matches the reviewed evidence."
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($areaText) -and -not [string]::IsNullOrWhiteSpace($findingLead)) {
+        return "Validate the current state across $areaText, starting with whether $findingLead."
+    }
+
+    return 'Validate the current state behind this work item before scheduling remediation.'
+}
+
+function Get-CustomerActionSuccessCheck {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$LeadFinding)
+
+    $targetValue = Convert-ToArrayaDisplayText -Value $LeadFinding.TargetValue -Default ''
+    if (-not [string]::IsNullOrWhiteSpace($targetValue) -and $targetValue -ne 'N/A') {
+        return $targetValue
+    }
+
+    $businessValue = Convert-ToArrayaOutcomeSentence -Text $LeadFinding.BusinessValue
+    if (-not [string]::IsNullOrWhiteSpace($businessValue)) {
+        return $businessValue
+    }
+
+    return 'The reviewed condition is validated, the agreed target state is in place, and the supporting detailed section no longer shows the same control gap.'
+}
+
 function Get-CustomerRoadmapActions {
     [CmdletBinding()]
     param(
@@ -1497,6 +1624,10 @@ function Get-CustomerRoadmapActions {
                 WhyItMatters        = $(if ([string]::IsNullOrWhiteSpace([string](Convert-ToArrayaSentenceFragment -Text $leadFinding.WhyFlagged))) { 'This indicates that the tenant is carrying a repeat control pattern that will remain visible until this workstream is addressed.' } else { 'This matters because ' + (Convert-ToArrayaSentenceFragment -Text $leadFinding.WhyFlagged) + '.' })
                 RecommendedNextStep = Get-ArrayaLeadSentence -Text $leadFinding.Recommendation
                 BusinessValue       = $(if ([string]::IsNullOrWhiteSpace([string](Convert-ToArrayaOutcomeSentence -Text $leadFinding.BusinessValue))) { 'If it remains open, the tenant will continue to carry the same exposure and operational friction reflected in the current findings.' } else { (Convert-ToArrayaOutcomeSentence -Text $leadFinding.BusinessValue) + '.' })
+                PrimaryOwner        = Get-CustomerActionPrimaryOwnerLabel -Finding $leadFinding
+                FirstValidationStep = Get-CustomerActionFirstValidationStep -LeadFinding $leadFinding -Areas $areas
+                SuccessCheck        = Get-CustomerActionSuccessCheck -LeadFinding $leadFinding
+                RelatedSection      = Get-CustomerActionReferenceSection -LeadFinding $leadFinding
             }) | Out-Null
         }
     }
@@ -1527,14 +1658,14 @@ function Get-CustomerExecutiveSummaryNarrative {
     $themeNames = @($ExecutiveThemes | Select-Object -First 3 | ForEach-Object { $_.Theme })
 
     $workstreamText = if ($topOwnerGroups.Count -gt 0) {
-        ($topOwnerGroups | ForEach-Object { '{0} ({1})' -f $_.Name, $_.Count }) -join ', '
+        Join-ArrayaReadableList -Items @($topOwnerGroups | ForEach-Object { $_.Name })
     }
     else {
         'the tenant overall'
     }
     $themeText = if ($themeNames.Count -gt 0) { $themeNames -join '; ' } else { 'the highest-risk Microsoft 365 control areas' }
 
-    return "The assessment identified $findingCount remediation findings in this tenant, with the heaviest concentration in $workstreamText. A consistent pattern observed was that identity exposure, messaging hygiene, and governance discipline are all under pressure at the same time, rather than in a single isolated area. This is notable because the top executive themes of $themeText show both control weakness and ownership strain in the current environment. Left unaddressed, this creates a broader operational issue: security risk, service administration, and tenant governance all depend on the same parts of the environment that are already carrying the most findings."
+    return "The current review shows the most consistent pressure in $workstreamText. That matters because the leading executive themes of $themeText point to a pattern that is broader than a single isolated misconfiguration and is instead showing up in the same operating areas that already carry the most day-to-day administration load. Use the Overall Findings Summary table for the grouped picture, 4.0 Modern Workplace Recommendations for the action sequence, and 15.10 Full Findings Inventory for the itemized crosswalk."
 }
 
 function Join-ArrayaReadableList {
@@ -2158,8 +2289,14 @@ function Get-CustomerTechnicalObservations {
     }).Count
     $staleSharePointSites = @($sharePointRows | Where-Object { $lastModified = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastContentModifiedDate')); $lastModified -and $lastModified -lt (Get-Date).AddDays(-180) }).Count
     $staleOneDrives = @($oneDriveRows | Where-Object { $lastModified = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastContentModifiedDate')); $lastModified -and $lastModified -lt (Get-Date).AddDays(-180) }).Count
-    $tenantSharingCapability = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $sharePointSharingSummaryRecord -Names @('TenantSharingCapability')) -Default ''
-    $defaultSharingLinkType = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $sharePointSharingSummaryRecord -Names @('DefaultSharingLinkType')) -Default ''
+    $tenantSharingCapability = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('TenantSharingCapability')) -Default ''
+    if ([string]::IsNullOrWhiteSpace($tenantSharingCapability)) {
+        $tenantSharingCapability = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $sharePointSharingSummaryRecord -Names @('TenantSharingCapability')) -Default ''
+    }
+    $defaultSharingLinkType = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('DefaultSharingLinkType')) -Default ''
+    if ([string]::IsNullOrWhiteSpace($defaultSharingLinkType)) {
+        $defaultSharingLinkType = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $sharePointSharingSummaryRecord -Names @('DefaultSharingLinkType')) -Default ''
+    }
     $sharingDomainRestrictionMode = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('SharingDomainRestrictionMode')) -Default ''
     $sitesWithExternalSharingEnabled = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('SitesWithExternalSharingEnabled'))
     $siteOverrideCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('SiteOverrideCount'))
@@ -2517,25 +2654,113 @@ function Convert-ToArrayaSafeFileComponent {
     return $safe
 }
 
+function Get-TenantArtifactFilePrefix {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$TenantName,
+        [AllowNull()][string]$Fallback = 'Tenant'
+    )
+
+    $candidate = if ([string]::IsNullOrWhiteSpace($TenantName)) { $Fallback } else { $TenantName }
+    $safe = Convert-ToArrayaSafeFileComponent -Value $candidate
+    $safe = ($safe -replace '\s+', ' ').Trim()
+    if ([string]::IsNullOrWhiteSpace($safe)) {
+        return $Fallback
+    }
+
+    return $safe
+}
+
+function Get-CustomerFindingsLegendRows {
+    [CmdletBinding()]
+    param()
+
+    return @(
+        [pscustomobject]@{
+            Term    = 'Open Findings'
+            Meaning = 'Assessment items that still need remediation, validation, or an explicit decision to accept or retain the current state.'
+        },
+        [pscustomobject]@{
+            Term    = 'Severity / Impact'
+            Meaning = 'The highest current impact level associated with the findings grouped into that row.'
+        },
+        [pscustomobject]@{
+            Term    = 'Critical'
+            Meaning = 'A concentrated control gap that should be addressed first because the current exposure or operational impact is already significant.'
+        },
+        [pscustomobject]@{
+            Term    = 'High'
+            Meaning = 'A higher-priority gap or control weakness that should be reviewed early because the exposure or operational impact is concentrated.'
+        },
+        [pscustomobject]@{
+            Term    = 'Medium'
+            Meaning = 'A meaningful inconsistency or governance gap that belongs in the planned remediation sequence.'
+        },
+        [pscustomobject]@{
+            Term    = 'Low'
+            Meaning = 'A narrower-scope cleanup item or limited-surface issue that still deserves follow-through.'
+        },
+        [pscustomobject]@{
+            Term    = 'Info'
+            Meaning = 'Context or supporting evidence that helps explain current state, but is not urgent by itself.'
+        },
+        [pscustomobject]@{
+            Term    = 'Full Itemized Reference'
+            Meaning = 'See 15.10 Full Findings Inventory for the detailed finding-by-finding list used to build the recommendations.'
+        },
+        [pscustomobject]@{
+            Term    = 'How grouped rows map forward'
+            Meaning = 'Each workstream row rolls related findings into one customer-readable summary. Use 4.0 Modern Workplace Recommendations for execution planning and 15.10 Full Findings Inventory for the detailed crosswalk.'
+        }
+    )
+}
+
+function Get-CustomerSourceSummaryRows {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$SourceModel)
+
+    $topWorkstreams = @(
+        $SourceModel.OwnerGroups |
+            Select-Object -First 3 |
+            ForEach-Object { Convert-ToArrayaDisplayText -Value $_.Name -Default '' } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    $topWorkstreamText = if ($topWorkstreams.Count -gt 0) {
+        Join-ArrayaReadableList -Items $topWorkstreams
+    }
+    else {
+        'Not surfaced in current source'
+    }
+
+    return @(
+        [pscustomobject]@{
+            Signal = 'Scope reviewed'
+            State  = 'Identity, messaging, collaboration, endpoint, security, and governance signals'
+        },
+        [pscustomobject]@{
+            Signal = 'Open findings in this source'
+            State  = ('{0} assessment item(s) still requiring remediation, validation, or an explicit accept/retain decision' -f @($SourceModel.Findings).Count)
+        },
+        [pscustomobject]@{
+            Signal = 'Where concentration is highest'
+            State  = $topWorkstreamText
+        },
+        [pscustomobject]@{
+            Signal = 'Where the counts are explained'
+            State  = 'Use the Overall Findings Summary and Findings Legend tables near the front of the report for context.'
+        },
+        [pscustomobject]@{
+            Signal = 'Where the full itemized list appears'
+            State  = '15.10 Full Findings Inventory'
+        }
+    )
+}
+
 function Get-CustomerSourceSummaryText {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)]$SourceModel)
 
-    $severityText = if (@($SourceModel.SeverityCounts).Count -gt 0) {
-        (@($SourceModel.SeverityCounts) | ForEach-Object { '{0} {1}' -f $_.Count, $_.Name }) -join ', '
-    }
-    else {
-        'no formal severity counts'
-    }
-
-    $workstreamText = if (@($SourceModel.OwnerGroups).Count -gt 0) {
-        (@($SourceModel.OwnerGroups) | Select-Object -First 3 | ForEach-Object { '{0} ({1})' -f $_.Name, $_.Count }) -join '; '
-    }
-    else {
-        'core tenant governance areas'
-    }
-
-    return "This source was reviewed across Microsoft 365 identity, messaging, collaboration, endpoint, security, and governance signals. The clearest concentration in this tenant appears in $workstreamText, with a severity mix of $severityText. This stood out because the same environment is carrying findings across both control-heavy areas and ownership-dependent areas, which suggests the pressure is operational as well as technical."
+    return 'This source was reviewed across Microsoft 365 identity, messaging, collaboration, endpoint, security, and governance signals. The tables below show where findings cluster in this source, how to read the count and severity labels, and where to find the full itemized list later in the report.'
 }
 
 function New-CustomerReportSourceModel {
@@ -2575,6 +2800,8 @@ function New-CustomerReportSourceModel {
     }
 
     $sourceModel | Add-Member -NotePropertyName SummaryText -NotePropertyValue (Get-CustomerSourceSummaryText -SourceModel $sourceModel)
+    $sourceModel | Add-Member -NotePropertyName SummaryRows -NotePropertyValue (Get-CustomerSourceSummaryRows -SourceModel $sourceModel)
+    $sourceModel | Add-Member -NotePropertyName FindingsLegendRows -NotePropertyValue (Get-CustomerFindingsLegendRows)
     return $sourceModel
 }
 
@@ -3202,17 +3429,14 @@ if ($inputSources.Count -gt 1) {
     if ([string]::IsNullOrWhiteSpace($OutputPrefix)) {
         $OutputPrefix = Split-Path -Path $resolvedInputRoot -Leaf
     }
+    $OutputPrefix = Get-ImprovementOutputPrefix -OutputPrefix $OutputPrefix
 
     $generatedAt = Get-Date
     $supportFolder = Join-Path -Path $OutputFolder -ChildPath 'Support'
     if (-not (Test-Path -Path $supportFolder)) {
         $null = New-Item -ItemType Directory -Path $supportFolder -Force
     }
-
-    $jsonOutPath = Join-Path -Path $supportFolder -ChildPath "$OutputPrefix-ImprovementPlan.json"
-    $engineerMdOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-EngineerActionPack.md"
     $customerAssessmentReportMarkdownPaths = New-Object System.Collections.Generic.List[string]
-    $snippetOutPath = Join-Path -Path $supportFolder -ChildPath "$OutputPrefix-RemediationSnippets.ps1"
 
     $sourcePayloads = New-Object System.Collections.Generic.List[object]
     $tenantNames = New-Object System.Collections.Generic.List[string]
@@ -3275,6 +3499,11 @@ if ($inputSources.Count -gt 1) {
         $tenantName = @((Split-Path -Path $resolvedInputRoot -Leaf))
     }
 
+    $artifactPrefix = Get-TenantArtifactFilePrefix -TenantName ([string]$tenantName[0]) -Fallback $OutputPrefix
+    $jsonOutPath = Join-Path -Path $supportFolder -ChildPath ("{0}-Plan.json" -f $artifactPrefix)
+    $engineerMdOutPath = Join-Path -Path $OutputFolder -ChildPath ("{0}-EngPack.md" -f $artifactPrefix)
+    $snippetOutPath = Join-Path -Path $supportFolder -ChildPath ("{0}-Snips.ps1" -f $artifactPrefix)
+
     $engineerActionPackMarkdown = New-MultiSourceEngineerActionPack -SourcePayloads $sourcePayloads.ToArray() -TenantName ([string]$tenantName[0]) -GeneratedAt $generatedAt -SupportFolderPath $supportFolder -JsonOutPath $jsonOutPath -SnippetOutPath $snippetOutPath
 
     [System.IO.File]::WriteAllText($engineerMdOutPath, $engineerActionPackMarkdown, [System.Text.UTF8Encoding]::new($false))
@@ -3331,7 +3560,7 @@ $snapshotDiagnostics = $snapshotContext.Diagnostics
 
 $outputContext = Resolve-ArrayaSnapshotOutputContext -PrimaryInputPath $AssessmentJsonPath -OutputFolder $OutputFolder -OutputPrefix $OutputPrefix
 $OutputFolder = $outputContext.OutputFolder
-$OutputPrefix = $outputContext.OutputPrefix
+$OutputPrefix = Get-ImprovementOutputPrefix -OutputPrefix $outputContext.OutputPrefix
 
 $generatedAt = Get-Date
 $findingStore = @{}
@@ -3398,6 +3627,7 @@ $emailActivityTopSenders = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -O
 $connectorRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('MailFlowConnectors'))
 $remoteDomainRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('RemoteDomains'))
 $publicFolderRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('PublicFolderDetails'))
+$smtpRelayServiceAccounts = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('SMTPRelayServiceAccounts'))
 $sharePointRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('SharePoint'))
 $oneDriveRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('OneDrive'))
 $teamRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('AllTeams'))
@@ -3411,7 +3641,10 @@ $unmanagedObjects = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $
 $oneDriveOwnerMismatches = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $snapshotDerived -Names @('OneDriveOwnerMismatches'))
 $tenantInfoSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('TenantInfoSummary')
 $authSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('AuthenticationConfigSummary')
-$passwordLifecycleSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('PasswordLifecycleSummary')
+$passwordLifecycleSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('PasswordLifecycleSummary')
+if (-not $passwordLifecycleSummary) {
+    $passwordLifecycleSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('PasswordLifecycleSummary')
+}
 $mfaDerivedSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('MfaRegistrationSummary')
 $conditionalAccessSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('ConditionalAccessPolicySummary')
 $securityDefaultsPolicy = Get-ArrayaObjectValue -Object $tenantData -Names @('SecurityDefaultsPolicy')
@@ -3426,6 +3659,7 @@ $sharedMailboxGovernanceSummary = Get-ArrayaObjectValue -Object $tenantData -Nam
 $sharePointSharingSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('SharePointSharingSummary')
 $externalSharingSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('ExternalSharingSummary')
 $externalSharingSiteOverrides = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('ExternalSharingSiteOverrides'))
+$externalExposureFindings = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('ExternalExposureFindings'))
 $collaborationActivitySummary = Get-ArrayaObjectValue -Object $tenantData -Names @('CollaborationActivitySummary')
 $teamsVoiceSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('TeamsVoiceSummary')
 $deviceManagementSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('DeviceManagementSummary')
@@ -3908,13 +4142,61 @@ if (($null -ne $oversizedSharedMailboxCount -and $oversizedSharedMailboxCount -g
 }
 
 $sharePointSharingRecord = if ($sharePointSharingSummary) { Get-ArrayaObjectValue -Object $sharePointSharingSummary -Names @('Summary') } else { $null }
-$tenantSharingCapability = [string](Get-ArrayaObjectValue -Object $sharePointSharingRecord -Names @('TenantSharingCapability'))
-$defaultSharingLinkType = [string](Get-ArrayaObjectValue -Object $sharePointSharingRecord -Names @('DefaultSharingLinkType'))
+$externalSharingSummaryRecord = if ($externalSharingSummary) { Get-ArrayaObjectValue -Object $externalSharingSummary -Names @('Summary') } else { $null }
+$tenantSharingCapability = [string](Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('TenantSharingCapability'))
+if ([string]::IsNullOrWhiteSpace($tenantSharingCapability)) {
+    $tenantSharingCapability = [string](Get-ArrayaObjectValue -Object $sharePointSharingRecord -Names @('TenantSharingCapability'))
+}
+$defaultSharingLinkType = [string](Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('DefaultSharingLinkType'))
+if ([string]::IsNullOrWhiteSpace($defaultSharingLinkType)) {
+    $defaultSharingLinkType = [string](Get-ArrayaObjectValue -Object $sharePointSharingRecord -Names @('DefaultSharingLinkType'))
+}
+$sharingDomainRestrictionMode = [string](Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('SharingDomainRestrictionMode'))
+$anonymousLinkExpirationDays = [string](Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('AnonymousLinkExpirationInDays'))
+$requireInvitedUserMatch = [string](Get-ArrayaObjectValue -Object $sharePointSharingRecord -Names @('RequireInvitedUserMatch'))
+$preventExternalUsersFromResharing = [string](Get-ArrayaObjectValue -Object $sharePointSharingRecord -Names @('PreventExternalUsersFromResharing'))
+$oneDriveSharingCapability = [string](Get-ArrayaObjectValue -Object $sharePointSharingRecord -Names @('OneDriveSharingCapability'))
+$externalIdentityRestrictionsRecord = if ($externalIdentityRestrictions) { Get-ArrayaObjectValue -Object $externalIdentityRestrictions -Names @('Summary') } else { $null }
+$guestAccessConfigurationRecord = if ($guestAccessConfiguration) { Get-ArrayaObjectValue -Object $guestAccessConfiguration -Names @('Summary') } else { $null }
+$allowInvitesFrom = [string](Get-ArrayaObjectValue -Object $externalIdentityRestrictionsRecord -Names @('AllowInvitesFrom'))
+if ([string]::IsNullOrWhiteSpace($allowInvitesFrom)) {
+    $allowInvitesFrom = [string](Get-ArrayaObjectValue -Object $guestAccessConfigurationRecord -Names @('GuestInvitationControl'))
+}
+$crossTenantPartnerCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $externalIdentityRestrictionsRecord -Names @('CrossTenantPartnerCount'))
+$defaultInboundMfaTrust = [string](Get-ArrayaObjectValue -Object $externalIdentityRestrictionsRecord -Names @('DefaultInboundMfaTrust'))
+$defaultOutboundMfaTrust = [string](Get-ArrayaObjectValue -Object $externalIdentityRestrictionsRecord -Names @('DefaultOutboundMfaTrust'))
+$hasCrossTenantAccessPolicy = [string](Get-ArrayaObjectValue -Object $externalIdentityRestrictionsRecord -Names @('HasCrossTenantAccessPolicy'))
+$guestCoverageSummary = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $guestAccessConfigurationRecord -Names @('ConditionalAccessGuestCoverage'))
 if ($tenantSharingCapability -match 'ExternalUserAndGuestSharing|ExternalUserSharingOnly') {
-    Add-HeuristicFinding -Store $findingStore -RuleId 'COL-005' -Area 'SharePoint / OneDrive Governance' -Category 'SharePoint / OneDrive Governance' -Severity 'Medium' -Finding 'SharePoint sharing is configured to allow external sharing at the tenant level.' -Recommendation 'Validate whether tenant-wide external sharing and default link settings match the intended collaboration governance model.' -CurrentValue "SharingCapability=$tenantSharingCapability; DefaultSharingLinkType=$defaultSharingLinkType" -TargetValue 'Tenant sharing posture documented and aligned to policy' -Source 'Summary/SharePointSharing' -RelatedWorksheet 'SharePointSharingSummary' -RelatedSection 'Sharing'
+    Add-HeuristicFinding -Store $findingStore -RuleId 'COL-005' -Area 'SharePoint / OneDrive Governance' -Category 'SharePoint / OneDrive Governance' -Severity 'Medium' -Finding 'SharePoint sharing is configured to allow external sharing at the tenant level.' -Recommendation 'Validate whether tenant-wide external sharing and default link settings match the intended collaboration governance model.' -CurrentValue "SharingCapability=$tenantSharingCapability; OneDriveSharingCapability=$oneDriveSharingCapability; DefaultSharingLinkType=$defaultSharingLinkType; SharingDomainRestrictionMode=$sharingDomainRestrictionMode; RequireInvitedUserMatch=$requireInvitedUserMatch; PreventExternalUsersFromResharing=$preventExternalUsersFromResharing" -TargetValue 'Tenant sharing posture documented and aligned to policy' -Source 'Summary/SharePointSharing' -RelatedWorksheet 'SharePointSharingSummary' -RelatedSection 'Sharing'
 }
 if ($defaultSharingLinkType -match 'AnonymousAccess') {
-    Add-HeuristicFinding -Store $findingStore -RuleId 'COL-006' -Area 'SharePoint / OneDrive Governance' -Category 'SharePoint / OneDrive Governance' -Severity 'Medium' -Finding 'Anonymous links appear to remain the default sharing link type.' -Recommendation 'Review anonymous link defaults, external sharing use cases, and whether named-user links should be the default posture.' -CurrentValue "DefaultSharingLinkType=$defaultSharingLinkType" -TargetValue 'Default sharing link type aligned to policy' -Source 'Summary/SharePointSharing' -RelatedWorksheet 'SharePointSharingSummary' -RelatedSection 'Sharing'
+    Add-HeuristicFinding -Store $findingStore -RuleId 'COL-006' -Area 'SharePoint / OneDrive Governance' -Category 'SharePoint / OneDrive Governance' -Severity 'Medium' -Finding 'Anonymous links appear to remain the default sharing link type.' -Recommendation 'Review anonymous link defaults, external sharing use cases, and whether named-user links should be the default posture.' -CurrentValue "DefaultSharingLinkType=$defaultSharingLinkType; AnonymousLinkExpirationInDays=$anonymousLinkExpirationDays; RequireInvitedUserMatch=$requireInvitedUserMatch" -TargetValue 'Default sharing link type aligned to policy' -Source 'Summary/SharePointSharing' -RelatedWorksheet 'SharePointSharingSummary' -RelatedSection 'Sharing'
+}
+if ($tenantSharingCapability -match 'ExternalUserAndGuestSharing|ExternalUserSharingOnly' -and $guestCoverageSummary -eq $false) {
+    Add-HeuristicFinding -Store $findingStore -RuleId 'CA-013' -Area 'Conditional Access' -Category 'Conditional Access Quality' -Severity 'High' -Finding 'External sharing is enabled, but the review does not show guest Conditional Access coverage.' -Recommendation 'Review guest and external-user Conditional Access coverage so external collaboration is protected by the same access-control baseline expected for the tenant.' -CurrentValue "SharingCapability=$tenantSharingCapability; ConditionalAccessGuestCoverage=$guestCoverageSummary" -TargetValue 'Guest and external-user access covered by documented Conditional Access policy' -Source 'Summary/ExternalExposure' -RelatedWorksheet 'ExternalExposureFindings' -RelatedSection 'External Exposure Review'
+}
+if ($externalExposureFindings.Count -gt 0) {
+    $staleExternallyExposedAssets = @($externalExposureFindings | Where-Object { [string]$_.ExposureCategory -eq 'Stale externally shared content' })
+    $mismatchedExternallyExposedAssets = @($externalExposureFindings | Where-Object { [string]$_.ExposureCategory -eq 'Externally sharable OneDrive with ownership mismatch' })
+    $trustReviewRows = @($externalExposureFindings | Where-Object { [string]$_.ExposureCategory -eq 'Cross-tenant trust posture review' -or [string]$_.ExposureCategory -eq 'Guest invitation posture review' })
+
+    if ($staleExternallyExposedAssets.Count -gt 0 -or $mismatchedExternallyExposedAssets.Count -gt 0) {
+        Add-HeuristicFinding -Store $findingStore -RuleId 'COL-007' -Area 'SharePoint / OneDrive Governance' -Category 'SharePoint / OneDrive Governance' -Severity 'High' -Finding 'Externally exposed SharePoint or OneDrive locations now show stale activity or ownership drift.' -Recommendation 'Review externally exposed stale sites and OneDrives, confirm whether sharing is still required, and close ownership or lifecycle gaps before those locations remain externally accessible by default.' -CurrentValue "$($staleExternallyExposedAssets.Count) stale externally exposed location(s); $($mismatchedExternallyExposedAssets.Count) externally exposed ownership mismatch(es)" -TargetValue 'Externally exposed stale or mismatched collaboration locations reviewed and governed' -Source 'Summary/ExternalExposure' -RelatedWorksheet 'ExternalExposureFindings' -RelatedSection 'External Exposure Review'
+    }
+
+    $guestHeavyOrDormantRows = @(
+        $externalExposureFindings | Where-Object {
+            [string]$_.ExposureCategory -in @('Guest-heavy dormant Team', 'Guest-heavy Team', 'Dormant guest-enabled Team', 'Guest-enabled ownerless Team', 'Guest-enabled ownerless Microsoft 365 Group')
+        }
+    )
+    if ($guestHeavyOrDormantRows.Count -gt 0) {
+        Add-HeuristicFinding -Store $findingStore -RuleId 'TM-008' -Area 'Teams / M365 Groups Governance' -Category 'Teams / M365 Groups Governance' -Severity 'Medium' -Finding 'Externally relevant Teams or groups show guest-heavy, dormant, or ownerless patterns.' -Recommendation 'Review guest-enabled Teams and Microsoft 365 groups that are dormant, guest-heavy, or lacking ownership so external collaboration remains tied to an accountable business purpose.' -CurrentValue "$($guestHeavyOrDormantRows.Count) externally relevant Team/group exposure row(s)" -TargetValue 'Guest-enabled Teams and groups reviewed, owned, and governed' -Source 'Summary/ExternalExposure' -RelatedWorksheet 'ExternalExposureFindings' -RelatedSection 'External Exposure Review'
+    }
+
+    if ($trustReviewRows.Count -gt 0) {
+        Add-HeuristicFinding -Store $findingStore -RuleId 'ID-008' -Area 'Identity Governance' -Category 'Identity Governance' -Severity 'Medium' -Finding 'External invitation or cross-tenant trust posture should be reviewed against the intended external-access baseline.' -Recommendation 'Review guest invitation controls, cross-tenant partner trust, and default trust settings so external access remains aligned to documented collaboration requirements.' -CurrentValue "$($trustReviewRows.Count) external identity / trust review row(s); AllowInvitesFrom=$allowInvitesFrom; DefaultInboundMfaTrust=$defaultInboundMfaTrust; DefaultOutboundMfaTrust=$defaultOutboundMfaTrust" -TargetValue 'External invitation and cross-tenant trust posture documented and aligned to policy' -Source 'Summary/ExternalExposure' -RelatedWorksheet 'ExternalExposureFindings' -RelatedSection 'External Exposure Review'
+    }
 }
 
 $collaborationSummaryRecord = if ($collaborationActivitySummary) { Get-ArrayaObjectValue -Object $collaborationActivitySummary -Names @('Summary') } else { $null }
@@ -4040,6 +4322,7 @@ $customerAssessmentSignals = [pscustomobject]@{
     SharePointSharingSummary   = $sharePointSharingSummary
     ExternalSharingSummary     = $externalSharingSummary
     ExternalSharingSiteOverrides = $externalSharingSiteOverrides
+    ExternalExposureFindings   = $externalExposureFindings
     CollaborationActivitySummary = $collaborationActivitySummary
     OneDriveOwnerMismatches    = $oneDriveOwnerMismatches
     Domains                    = $domainRows
@@ -4048,6 +4331,7 @@ $customerAssessmentSignals = [pscustomobject]@{
     SecuritySecureScore        = $secureScoreRows
     SMTPRelaySummary           = $smtpRelaySummary
     SMTPRelayConfig            = $smtpRelayConfig
+    SMTPRelayServiceAccounts   = $smtpRelayServiceAccounts
     SpamFilteringSummary       = $spamFilteringSummary
     AuthenticationConfigSummary = $authConfigSummary
     ExternalIdentityRestrictions = $externalIdentityRestrictions
@@ -4056,6 +4340,7 @@ $customerAssessmentSignals = [pscustomobject]@{
     DlpPolicies                = $dlpPolicyRows
     PasswordLifecycleSummary   = $passwordLifecycleSummary
     AdConnectConfiguration     = $adConnectConfiguration
+    SecurityDefaultsPolicy     = $securityDefaultsPolicy
     Users                      = $userRows
 }
 $technicalObservations = Get-CustomerTechnicalObservations -Signals $customerAssessmentSignals -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries
@@ -4065,13 +4350,14 @@ if (-not (Test-Path -Path $supportFolder)) {
     $null = New-Item -ItemType Directory -Path $supportFolder -Force
 }
 
-$jsonOutPath = Join-Path -Path $supportFolder -ChildPath "$OutputPrefix-ImprovementPlan.json"
-$csvOutPath = if ($IncludeLegacyArtifacts) { Join-Path -Path $supportFolder -ChildPath "$OutputPrefix-ImprovementPlan.csv" } else { $null }
-$mdOutPath = if ($IncludeLegacyArtifacts) { Join-Path -Path $supportFolder -ChildPath "$OutputPrefix-ImprovementPlan.md" } else { $null }
-$customerAssessmentReportOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-CustomerAssessmentReport.docx"
-$customerAssessmentReportMarkdownOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-CustomerAssessmentReport.md"
-$engineerMdOutPath = Join-Path -Path $OutputFolder -ChildPath "$OutputPrefix-EngineerActionPack.md"
-$snippetOutPath = Join-Path -Path $supportFolder -ChildPath "$OutputPrefix-RemediationSnippets.ps1"
+$artifactPrefix = Get-TenantArtifactFilePrefix -TenantName $tenantName -Fallback $OutputPrefix
+$jsonOutPath = Join-Path -Path $supportFolder -ChildPath ("{0}-Plan.json" -f $artifactPrefix)
+$csvOutPath = if ($IncludeLegacyArtifacts) { Join-Path -Path $supportFolder -ChildPath ("{0}-Plan.csv" -f $artifactPrefix) } else { $null }
+$mdOutPath = if ($IncludeLegacyArtifacts) { Join-Path -Path $supportFolder -ChildPath ("{0}-Plan.md" -f $artifactPrefix) } else { $null }
+$customerAssessmentReportOutPath = Join-Path -Path $OutputFolder -ChildPath ("{0}-CustRpt.docx" -f $artifactPrefix)
+$customerAssessmentReportMarkdownOutPath = Join-Path -Path $OutputFolder -ChildPath ("{0}-CustRpt.md" -f $artifactPrefix)
+$engineerMdOutPath = Join-Path -Path $OutputFolder -ChildPath ("{0}-EngPack.md" -f $artifactPrefix)
+$snippetOutPath = Join-Path -Path $supportFolder -ChildPath ("{0}-Snips.ps1" -f $artifactPrefix)
 
 $deliverables = [ordered]@{
     ImprovementPlanJson       = $jsonOutPath
@@ -4097,6 +4383,7 @@ $payload = [PSCustomObject]@{
     WorkstreamSummaries = $sortedWorkstreamSummaries
     Findings           = $sortedFindings
     TechnicalObservations = $technicalObservations
+    ExternalExposureFindings = $externalExposureFindings
 }
 
 $payload | ConvertTo-Json -Depth 10 | Set-Content -Path $jsonOutPath -Encoding UTF8

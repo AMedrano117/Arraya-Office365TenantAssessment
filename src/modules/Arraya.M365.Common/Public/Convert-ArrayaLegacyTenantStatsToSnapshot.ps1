@@ -241,7 +241,7 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
         Tenant = @(
             'TenantInfo', 'TenantInfoSummary', 'Domains', 'HybridConfiguration',
             'FederationConfiguration', 'FederationSummary', 'AdConnectConfiguration',
-            'ExternalSharingSummary', 'ExternalSharingSiteOverrides'
+            'ExternalSharingSummary', 'ExternalSharingSiteOverrides', 'ExternalExposureFindings'
         )
     }
 

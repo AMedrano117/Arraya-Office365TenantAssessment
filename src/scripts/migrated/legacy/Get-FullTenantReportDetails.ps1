@@ -894,8 +894,7 @@ function Get-ExportPath {
         return Office365Custom\Get-ExportPath -FileName $FileName -DefaultExtension $DefaultExtension
     }
 
-    $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-    $defaultFileName = "{0}_{1}{2}" -f $FileName, $timestamp, $DefaultExtension
+    $defaultFileName = "{0}{1}" -f $FileName, $DefaultExtension
 
     try {
         if (Test-Path -Path $requestedPath -PathType Container) {
@@ -960,6 +959,42 @@ function Convert-ToAssessmentPathComponent {
     return $sanitizedValue
 }
 
+function Convert-ToShortAssessmentProfileLabel {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Value,
+        [Parameter(Mandatory = $false)]
+        [string]$Fallback = 'Profile'
+    )
+
+    $candidate = if ([string]::IsNullOrWhiteSpace($Value)) { $Fallback } else { $Value }
+    $shortLabel = $candidate
+
+    $replacements = [ordered]@{
+        'TenantToTenantMigration' = 'T2T'
+        'SolutionsEngineer'       = 'SE'
+        'ExecutiveLevel'          = 'Exec'
+        'Presales'                = 'Presales'
+        'Machine'                 = 'Machine'
+        'Geek'                    = 'Geek'
+    }
+
+    foreach ($entry in $replacements.GetEnumerator()) {
+        $shortLabel = $shortLabel.Replace([string]$entry.Key, [string]$entry.Value)
+    }
+
+    $shortLabel = $shortLabel.Replace('Merged(', 'Merged-').Replace(')', '')
+    $shortLabel = ($shortLabel -replace '[,\s]+', '-').Trim('-')
+    $shortLabel = ($shortLabel -replace '-{2,}', '-')
+
+    if ([string]::IsNullOrWhiteSpace($shortLabel)) {
+        return $Fallback
+    }
+
+    return $shortLabel
+}
+
 function Resolve-AssessmentExportTargetPath {
     [CmdletBinding()]
     param(
@@ -1003,8 +1038,9 @@ function Resolve-AssessmentExportTargetPath {
 
     $resolvedBaseRoot = (Resolve-Path -Path $resolvedBaseRoot).Path
     $safeTenantName = Convert-ToAssessmentPathComponent -Value $TenantDisplayName -Fallback 'Tenant'
-    $safeOutputProfileLabel = Convert-ToAssessmentPathComponent -Value $OutputProfileFolderLabel -Fallback 'Profile'
-    $expectedFolderName = "{0} Assessment Reporting {1}" -f $safeTenantName, $safeOutputProfileLabel
+    $shortOutputProfileLabel = Convert-ToShortAssessmentProfileLabel -Value $OutputProfileFolderLabel -Fallback 'Profile'
+    $safeOutputProfileLabel = Convert-ToAssessmentPathComponent -Value $shortOutputProfileLabel -Fallback 'Profile'
+    $expectedFolderName = "{0} {1}" -f $safeTenantName, $safeOutputProfileLabel
 
     if ([string]::Equals((Split-Path -Path $resolvedBaseRoot -Leaf), $expectedFolderName, [System.StringComparison]::OrdinalIgnoreCase)) {
         return $resolvedBaseRoot
@@ -1441,6 +1477,7 @@ function Write-CollectorInventoryMatrix {
         [PSCustomObject]@{ Collector = 'External Sharing Site Overrides'; Key = 'ExternalSharingSiteOverrides'; Source = 'SharePoint/OneDrive + Derived'; Consumers = 'Workbook, CustomerReport'; Count = 0 }
         [PSCustomObject]@{ Collector = 'External Identity Restrictions'; Key = 'ExternalIdentityRestrictions'; Source = 'Graph + Derived'; Consumers = 'Workbook, CustomerReport'; Count = 0 }
         [PSCustomObject]@{ Collector = 'Guest Access Configuration'; Key = 'GuestAccessConfiguration'; Source = 'Graph + Collaboration + Derived'; Consumers = 'Workbook, CustomerReport'; Count = 0 }
+        [PSCustomObject]@{ Collector = 'External Exposure Findings'; Key = 'ExternalExposureFindings'; Source = 'Derived'; Consumers = 'Workbook, CustomerReport'; Count = 0 }
     )
 
     foreach ($entry in $inventory) {
@@ -2756,6 +2793,49 @@ function Get-SharePointAndOneDriveSites {
         $defaultLinkPermission = $null
         $defaultSharingLinkType = $null
 
+        function Resolve-DefaultSharingLinkTypeValue {
+            param([AllowNull()][object]$SourceObject)
+
+            if ($null -eq $SourceObject) {
+                return $null
+            }
+
+            foreach ($propertyName in @('DefaultSharingLinkType', 'DefaultShareLinkScope', 'DefaultSharingScope')) {
+                if ($SourceObject.PSObject.Properties[$propertyName] -and -not [string]::IsNullOrWhiteSpace([string]$SourceObject.$propertyName)) {
+                    return [string]$SourceObject.$propertyName
+                }
+            }
+
+            foreach ($propertyName in @('DefaultLinkToExistingAccess', 'DefaultShareLinkToExistingAccess')) {
+                if ($SourceObject.PSObject.Properties[$propertyName] -and $null -ne $SourceObject.$propertyName) {
+                    try {
+                        if ([bool]$SourceObject.$propertyName) {
+                            return 'ExistingAccess'
+                        }
+                    }
+                    catch {}
+                }
+            }
+
+            return $null
+        }
+
+        function Resolve-DefaultLinkPermissionValue {
+            param([AllowNull()][object]$SourceObject)
+
+            if ($null -eq $SourceObject) {
+                return $null
+            }
+
+            foreach ($propertyName in @('DefaultLinkPermission', 'DefaultShareLinkRole')) {
+                if ($SourceObject.PSObject.Properties[$propertyName] -and -not [string]::IsNullOrWhiteSpace([string]$SourceObject.$propertyName)) {
+                    return [string]$SourceObject.$propertyName
+                }
+            }
+
+            return $null
+        }
+
         switch ($Source) {
             'SPO' {
                 $storageUsageCurrent = [int]($Site.StorageUsageCurrent ?? 0)
@@ -2772,8 +2852,8 @@ function Get-SharePointAndOneDriveSites {
                 $lockState = $Site.LockState
                 $storageQuota = $Site.StorageQuota
                 $sharingCapability = $Site.SharingCapability
-                $defaultLinkPermission = $Site.DefaultLinkPermission
-                $defaultSharingLinkType = $Site.DefaultSharingLinkType
+                $defaultLinkPermission = Resolve-DefaultLinkPermissionValue -SourceObject $Site
+                $defaultSharingLinkType = Resolve-DefaultSharingLinkTypeValue -SourceObject $Site
             }
             'API' {
                 $additionalProperties = $Site.additionalProperties
@@ -2791,8 +2871,8 @@ function Get-SharePointAndOneDriveSites {
                 $lockState = $additionalProperties.lockState
                 $storageQuota = $additionalProperties.storageQuota
                 $sharingCapability = $additionalProperties.sharingCapability
-                $defaultLinkPermission = $additionalProperties.defaultLinkPermission
-                $defaultSharingLinkType = $additionalProperties.defaultSharingLinkType
+                $defaultLinkPermission = Resolve-DefaultLinkPermissionValue -SourceObject $additionalProperties
+                $defaultSharingLinkType = Resolve-DefaultSharingLinkTypeValue -SourceObject $additionalProperties
             }
             default {
                 $storageUsageCurrent = [int]($Site.Usage.Storage ?? 0)
@@ -2824,8 +2904,8 @@ function Get-SharePointAndOneDriveSites {
                 $lockState = $Site.AdditionalProperties.LockState
                 $storageQuota = $Site.AdditionalProperties.StorageQuota
                 $sharingCapability = $Site.AdditionalProperties.SharingCapability
-                $defaultLinkPermission = $Site.AdditionalProperties.DefaultLinkPermission
-                $defaultSharingLinkType = $Site.AdditionalProperties.DefaultSharingLinkType
+                $defaultLinkPermission = Resolve-DefaultLinkPermissionValue -SourceObject $Site.AdditionalProperties
+                $defaultSharingLinkType = Resolve-DefaultSharingLinkTypeValue -SourceObject $Site.AdditionalProperties
             }
         }
 
@@ -6061,6 +6141,16 @@ function Get-AuthenticationConfiguration {
                     Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'GuestUserRoleId' -Value ([string]$authorizationPolicy[0].GuestUserRoleId)
                 }
 
+                if ($authorizationPolicy[0].PSObject.Properties['allowedToUseSSPR']) {
+                    Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'SelfServicePasswordResetEnabled' -Value ([bool]$authorizationPolicy[0].allowedToUseSSPR)
+                } elseif ($authorizationPolicy[0].PSObject.Properties['AllowedToUseSSPR']) {
+                    Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'SelfServicePasswordResetEnabled' -Value ([bool]$authorizationPolicy[0].AllowedToUseSSPR)
+                } elseif ($authorizationPolicy[0].PSObject.Properties['allowedToUseSspr']) {
+                    Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'SelfServicePasswordResetEnabled' -Value ([bool]$authorizationPolicy[0].allowedToUseSspr)
+                } elseif ($authorizationPolicy[0].PSObject.Properties['AllowedToUseSspr']) {
+                    Set-AuthenticationConfigurationProperty -TargetObject $authMethodsPolicy -Name 'SelfServicePasswordResetEnabled' -Value ([bool]$authorizationPolicy[0].AllowedToUseSspr)
+                }
+
                 $defaultPermissions = $null
                 if ($authorizationPolicy[0].PSObject.Properties['defaultUserRolePermissions']) {
                     $defaultPermissions = $authorizationPolicy[0].defaultUserRolePermissions
@@ -6599,6 +6689,7 @@ function Get-AdConnectSyncDetails {
         $serviceDetails = @()
         $syncErrors = @()
 
+        $syncFeatureCollectionNote = $null
         try {
             $syncServiceResponse = $null
             if (Get-Command Get-MgDirectoryOnPremiseSynchronization -ErrorAction SilentlyContinue) {
@@ -6642,6 +6733,11 @@ function Get-AdConnectSyncDetails {
             }
         }
         catch {
+            $syncFeatureCollectionNote = if ($_.Exception.Message -match 'Authorization_RequestDenied|Insufficient privileges|403 Forbidden') {
+                'Not available in current auth mode'
+            } else {
+                'Not surfaced in current source'
+            }
             Write-Log -Type DEBUG -Message "[Get-AdConnectSyncDetails] Unable to retrieve directory synchronization feature flags: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
 
@@ -6650,21 +6746,27 @@ function Get-AdConnectSyncDetails {
             $existingPasswordLifecycleSummary = $script:tenantStatsHash["PasswordLifecycleSummary"]
         }
 
+        $passwordFeatureFallback = $null
+        if ($summary.OnPremisesSyncEnabled -eq $true -and -not [string]::IsNullOrWhiteSpace($syncFeatureCollectionNote)) {
+            $passwordFeatureFallback = $syncFeatureCollectionNote
+        }
+
         $script:tenantStatsHash["PasswordLifecycleSummary"] = [pscustomobject]@{
-            PasswordWriteback                          = & $firstPopulatedValue @($summary.PasswordWritebackEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('PasswordWriteback', 'PasswordWritebackEnabled')))
-            PasswordWritebackEnabled                   = & $firstPopulatedValue @($summary.PasswordWritebackEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('PasswordWritebackEnabled', 'PasswordWriteback')))
-            PasswordSyncEnabled                        = & $firstPopulatedValue @($summary.PasswordSyncEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('PasswordSyncEnabled', 'PasswordHashSyncEnabled')))
-            CloudPasswordPolicyForPasswordSyncedUsersEnabled = & $firstPopulatedValue @($summary.CloudPasswordPolicyForPasswordSyncedUsersEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('CloudPasswordPolicyForPasswordSyncedUsersEnabled')))
-            UserForcePasswordChangeOnLogonEnabled      = & $firstPopulatedValue @($summary.UserForcePasswordChangeOnLogonEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('UserForcePasswordChangeOnLogonEnabled')))
-            PassThroughAuthentication                  = & $firstPopulatedValue @($summary.PassThroughAuthenticationEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('PassThroughAuthentication', 'PassThroughAuthenticationEnabled')))
-            PassThroughAuthenticationEnabled           = & $firstPopulatedValue @($summary.PassThroughAuthenticationEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('PassThroughAuthenticationEnabled', 'PassThroughAuthentication')))
+            PasswordWriteback                          = & $firstPopulatedValue @($summary.PasswordWritebackEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('PasswordWriteback', 'PasswordWritebackEnabled')), $passwordFeatureFallback)
+            PasswordWritebackEnabled                   = & $firstPopulatedValue @($summary.PasswordWritebackEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('PasswordWritebackEnabled', 'PasswordWriteback')), $passwordFeatureFallback)
+            PasswordSyncEnabled                        = & $firstPopulatedValue @($summary.PasswordSyncEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('PasswordSyncEnabled', 'PasswordHashSyncEnabled')), $passwordFeatureFallback)
+            CloudPasswordPolicyForPasswordSyncedUsersEnabled = & $firstPopulatedValue @($summary.CloudPasswordPolicyForPasswordSyncedUsersEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('CloudPasswordPolicyForPasswordSyncedUsersEnabled')), $passwordFeatureFallback)
+            UserForcePasswordChangeOnLogonEnabled      = & $firstPopulatedValue @($summary.UserForcePasswordChangeOnLogonEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('UserForcePasswordChangeOnLogonEnabled')), $passwordFeatureFallback)
+            PassThroughAuthentication                  = & $firstPopulatedValue @($summary.PassThroughAuthenticationEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('PassThroughAuthentication', 'PassThroughAuthenticationEnabled')), $passwordFeatureFallback)
+            PassThroughAuthenticationEnabled           = & $firstPopulatedValue @($summary.PassThroughAuthenticationEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('PassThroughAuthenticationEnabled', 'PassThroughAuthentication')), $passwordFeatureFallback)
             SelfServicePasswordReset                   = & $firstPopulatedValue @((Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('SelfServicePasswordReset', 'SelfServicePasswordResetEnabled')))
             SelfServicePasswordResetEnabled            = & $firstPopulatedValue @((Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('SelfServicePasswordResetEnabled', 'SelfServicePasswordReset')))
-            DeviceWritebackEnabled                     = & $firstPopulatedValue @($summary.DeviceWritebackEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('DeviceWritebackEnabled')))
-            UnifiedGroupWritebackEnabled               = & $firstPopulatedValue @($summary.UnifiedGroupWritebackEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('UnifiedGroupWritebackEnabled')))
-            UserWritebackEnabled                       = & $firstPopulatedValue @($summary.UserWritebackEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('UserWritebackEnabled')))
+            DeviceWritebackEnabled                     = & $firstPopulatedValue @($summary.DeviceWritebackEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('DeviceWritebackEnabled')), $passwordFeatureFallback)
+            UnifiedGroupWritebackEnabled               = & $firstPopulatedValue @($summary.UnifiedGroupWritebackEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('UnifiedGroupWritebackEnabled')), $passwordFeatureFallback)
+            UserWritebackEnabled                       = & $firstPopulatedValue @($summary.UserWritebackEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('UserWritebackEnabled')), $passwordFeatureFallback)
             OnPremisesSyncEnabled                      = & $firstPopulatedValue @($summary.OnPremisesSyncEnabled, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('OnPremisesSyncEnabled')))
             OnPremisesLastSyncDateTime                 = & $firstPopulatedValue @($summary.OnPremisesLastSyncDateTime, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('OnPremisesLastSyncDateTime')))
+            FeatureCollectionNote                      = $syncFeatureCollectionNote
         }
         
         if (Get-Command Get-AzureADConnectHealthSyncServices -ErrorAction SilentlyContinue) {
@@ -7135,12 +7237,50 @@ function Get-FederationAndCrossTenantConfiguration {
             }
         }
 
-        $defaultInboundMfa = if ($crossTenantPolicy -and $crossTenantPolicy.Default -and $crossTenantPolicy.Default.InboundTrust) {
-            $crossTenantPolicy.Default.InboundTrust.IsMfaAccepted
-        } else { $null }
-        $defaultOutboundMfa = if ($crossTenantPolicy -and $crossTenantPolicy.Default -and $crossTenantPolicy.Default.OutboundTrust) {
-            $crossTenantPolicy.Default.OutboundTrust.IsMfaAccepted
-        } else { $null }
+        function Resolve-CrossTenantTrustValue {
+            param(
+                [AllowNull()][object]$TrustObject,
+                [Parameter(Mandatory = $true)][string[]]$PropertyNames,
+                [string]$Unavailable = 'Not available in current source'
+            )
+
+            if (-not $TrustObject) {
+                return $Unavailable
+            }
+
+            $propertyFound = $false
+            foreach ($propertyName in $PropertyNames) {
+                if (-not $TrustObject.PSObject.Properties[$propertyName]) {
+                    continue
+                }
+
+                $propertyFound = $true
+                $value = $TrustObject.$propertyName
+                if ($null -eq $value) {
+                    continue
+                }
+
+                try {
+                    return [bool]$value
+                }
+                catch {
+                    return $value
+                }
+            }
+
+            if ($propertyFound) {
+                return 'Not configured'
+            }
+
+            return $Unavailable
+        }
+
+        $defaultInboundMfa = if ($crossTenantPolicy -and $crossTenantPolicy.Default) {
+            Resolve-CrossTenantTrustValue -TrustObject $crossTenantPolicy.Default.InboundTrust -PropertyNames @('IsMfaAccepted')
+        } else { 'Not available in current source' }
+        $defaultOutboundMfa = if ($crossTenantPolicy -and $crossTenantPolicy.Default) {
+            Resolve-CrossTenantTrustValue -TrustObject $crossTenantPolicy.Default.OutboundTrust -PropertyNames @('IsMfaAccepted')
+        } else { 'Not available in current source' }
 
         function Get-B2BDirectConnectSummary {
             param([object]$Setting)
@@ -7166,7 +7306,7 @@ function Get-FederationAndCrossTenantConfiguration {
             if ($uAccess -or $uTargetText) { $parts += "Users: $uAccess $uTargetText".Trim() }
             if ($aAccess -or $aTargetText) { $parts += "Apps: $aAccess $aTargetText".Trim() }
             if ($parts.Count -gt 0) { return ($parts -join '; ') }
-            return "Configured (details unavailable)"
+            return "Not configured"
         }
 
         function Resolve-TenantDisplayName {
@@ -7283,9 +7423,9 @@ function Get-FederationAndCrossTenantConfiguration {
                 DisplayName = $displayName
                 B2BDirectConnectInbound = $b2bInboundSummary
                 B2BDirectConnectOutbound = $b2bOutboundSummary
-                TrustMfa = if ($inboundTrust) { $inboundTrust.IsMfaAccepted } else { $null }
-                TrustCompliantDevices = if ($inboundTrust) { $inboundTrust.IsCompliantDeviceAccepted } else { $null }
-                TrustHybridJoinedDevices = if ($inboundTrust) { $inboundTrust.IsHybridAzureAdJoinedDeviceAccepted } else { $null }
+                TrustMfa = Resolve-CrossTenantTrustValue -TrustObject $inboundTrust -PropertyNames @('IsMfaAccepted')
+                TrustCompliantDevices = Resolve-CrossTenantTrustValue -TrustObject $inboundTrust -PropertyNames @('IsCompliantDeviceAccepted')
+                TrustHybridJoinedDevices = Resolve-CrossTenantTrustValue -TrustObject $inboundTrust -PropertyNames @('IsHybridAzureAdJoinedDeviceAccepted')
             }
         }
 
@@ -7768,8 +7908,9 @@ else {
 
 #Get Export Path
 $profileFileTagSource = if ([string]::IsNullOrWhiteSpace($effectiveOutputProfileLabel)) { $OutputProfile } else { $effectiveOutputProfileLabel }
-$profileFileTag = if ([string]::IsNullOrWhiteSpace($profileFileTagSource)) { 'Profile' } else { ($profileFileTagSource -replace '[^A-Za-z0-9_-]', '') }
-$defaultReportFileName = ("{0} Tenant Discovery Report-{1}" -f $defaultTenantDisplayName, $profileFileTag)
+$profileFileTag = Convert-ToAssessmentPathComponent -Value (Convert-ToShortAssessmentProfileLabel -Value $profileFileTagSource -Fallback 'Profile') -Fallback 'Profile'
+$tenantFileTag = Convert-ToAssessmentPathComponent -Value $defaultTenantDisplayName -Fallback 'Tenant'
+$defaultReportFileName = "{0}-Assess" -f $tenantFileTag
 $outputFolderProfileLabel = if ($isMergedOutputProfileSelection) { $effectiveOutputProfileLabel } else { $OutputProfile }
 $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $PSScriptRoot
 $resolvedExportTargetPath = Resolve-AssessmentExportTargetPath `
@@ -8217,25 +8358,150 @@ function Update-TierBOperationalSummaries {
     }
 
     $sharePointSummary = [ordered]@{
-        TenantSharingCapability          = 'Not collected'
-        DefaultSharingLinkType           = 'Not collected'
-        DefaultLinkPermission            = 'Not collected'
-        FileAnonymousLinkType            = 'Not collected'
-        AnonymousLinkExpirationInDays    = 'Not collected'
-        SharingDomainRestrictionMode     = 'Not collected'
-        SharingAllowedDomainList         = 'Not collected'
-        SharingBlockedDomainList         = 'Not collected'
-        RequireInvitedUserMatch          = 'Not collected'
-        ExternalResharingEnabled         = 'Not collected'
+        CollectionState                         = 'Not collected'
+        CollectionSource                        = 'Not collected'
+        SettingsApiVersion                      = 'Not collected'
+        TenantSharingCapability                 = 'Not collected'
+        OneDriveSharingCapability               = 'Not collected'
+        DefaultSharingLinkType                  = 'Not collected'
+        DefaultLinkPermission                   = 'Not collected'
+        FileAnonymousLinkType                   = 'Not collected'
+        AnonymousLinkExpirationInDays           = 'Not collected'
+        RequireAnonymousLinksExpire             = 'Not collected'
+        SharingDomainRestrictionMode            = 'Not collected'
+        SharingAllowedDomainList                = 'Not collected'
+        SharingBlockedDomainList                = 'Not collected'
+        RequireInvitedUserMatch                 = 'Not collected'
+        ExternalResharingEnabled                = 'Not collected'
+        PreventExternalUsersFromResharing       = 'Not collected'
+        GuestAccessExpirationInDays             = 'Not collected'
+        OneDriveStorageQuotaMB                  = 'Not collected'
+        SiteCreationDefaultStorageQuotaMB       = 'Not collected'
+        IsSitesStorageLimitAutomatic            = 'Not collected'
+        DeletedUserPersonalSiteRetentionPeriodInDays = 'Not collected'
+        IsLegacyAuthProtocolsEnabled            = 'Not collected'
+        DisableCustomAppAuthentication          = 'Not collected'
+        IsUnmanagedSyncAppForTenantRestricted   = 'Not collected'
+        IsSyncButtonHiddenOnPersonalSite        = 'Not collected'
+        IsSiteCreationEnabled                   = 'Not collected'
+        IsSiteCreationUIEnabled                 = 'Not collected'
+        IsLoopEnabled                           = 'Not collected'
+        AvailableManagedPathsForSiteCreation    = 'Not collected'
+        SiteCreationDefaultManagedPath          = 'Not collected'
+        AllowedDomainGuidsForSyncApp            = 'Not collected'
+        ExcludedFileExtensionsForSyncApp        = 'Not collected'
     }
+    $sharePointSettingsPropertyMap = [ordered]@{
+        TenantSharingCapability                 = @('sharingCapability', 'SharingCapability')
+        OneDriveSharingCapability               = @('oneDriveSharingCapability', 'OneDriveSharingCapability', 'ODBSharingCapability')
+        DefaultSharingLinkType                  = @('defaultSharingLinkType', 'DefaultSharingLinkType', 'defaultShareLinkScope', 'DefaultShareLinkScope', 'defaultSharingScope', 'DefaultSharingScope')
+        DefaultLinkPermission                   = @('defaultLinkPermission', 'DefaultLinkPermission', 'defaultShareLinkRole', 'DefaultShareLinkRole')
+        FileAnonymousLinkType                   = @('fileAnonymousLinkType', 'FileAnonymousLinkType')
+        AnonymousLinkExpirationInDays           = @('anonymousLinkExpirationInDays', 'AnonymousLinkExpirationInDays', 'RequireAnonymousLinksExpireInDays')
+        SharingDomainRestrictionMode            = @('sharingDomainRestrictionMode', 'SharingDomainRestrictionMode')
+        SharingAllowedDomainList                = @('sharingAllowedDomainList', 'SharingAllowedDomainList')
+        SharingBlockedDomainList                = @('sharingBlockedDomainList', 'SharingBlockedDomainList')
+        RequireInvitedUserMatch                 = @('isRequireAcceptingUserToMatchInvitedUserEnabled', 'IsRequireAcceptingUserToMatchInvitedUserEnabled', 'RequireAcceptingUserToMatchInvitedUserEnabled')
+        ExternalResharingEnabled                = @('isResharingByExternalUsersEnabled', 'IsResharingByExternalUsersEnabled')
+        GuestAccessExpirationInDays             = @('guestExpirationInDays', 'GuestExpirationInDays', 'ExternalUserExpirationInDays', 'ExternalUserExpireInDays')
+        OneDriveStorageQuotaMB                  = @('personalSiteDefaultStorageLimitInMB', 'PersonalSiteDefaultStorageLimitInMB', 'OneDriveStorageQuota')
+        SiteCreationDefaultStorageQuotaMB       = @('siteCreationDefaultStorageLimitInMB', 'SiteCreationDefaultStorageLimitInMB', 'SiteCreationDefaultStorageQuota')
+        IsSitesStorageLimitAutomatic            = @('isSitesStorageLimitAutomatic', 'IsSitesStorageLimitAutomatic', 'AutoQuotaEnabled')
+        DeletedUserPersonalSiteRetentionPeriodInDays = @('deletedUserPersonalSiteRetentionPeriodInDays', 'DeletedUserPersonalSiteRetentionPeriodInDays', 'OrphanedPersonalSitesRetentionPeriod')
+        IsLegacyAuthProtocolsEnabled            = @('isLegacyAuthProtocolsEnabled', 'IsLegacyAuthProtocolsEnabled', 'LegacyAuthProtocolsEnabled')
+        DisableCustomAppAuthentication          = @('disableCustomAppAuthentication', 'DisableCustomAppAuthentication')
+        IsUnmanagedSyncAppForTenantRestricted   = @('isUnmanagedSyncAppForTenantRestricted', 'IsUnmanagedSyncAppForTenantRestricted')
+        IsSyncButtonHiddenOnPersonalSite        = @('isSyncButtonHiddenOnPersonalSite', 'IsSyncButtonHiddenOnPersonalSite')
+        IsSiteCreationEnabled                   = @('isSiteCreationEnabled', 'IsSiteCreationEnabled')
+        IsSiteCreationUIEnabled                 = @('isSiteCreationUIEnabled', 'IsSiteCreationUIEnabled')
+        IsLoopEnabled                           = @('isLoopEnabled', 'IsLoopEnabled')
+        AvailableManagedPathsForSiteCreation    = @('availableManagedPathsForSiteCreation', 'AvailableManagedPathsForSiteCreation')
+        SiteCreationDefaultManagedPath          = @('siteCreationDefaultManagedPath', 'SiteCreationDefaultManagedPath')
+        AllowedDomainGuidsForSyncApp            = @('allowedDomainGuidsForSyncApp', 'AllowedDomainGuidsForSyncApp')
+        ExcludedFileExtensionsForSyncApp        = @('excludedFileExtensionsForSyncApp', 'ExcludedFileExtensionsForSyncApp')
+    }
+    $sharePointSettingsSources = New-Object System.Collections.Generic.List[string]
+    $sharePointSettingsApiVersions = New-Object System.Collections.Generic.List[string]
+    $spoTenantSettingsRetrieved = $false
+    $graphSharePointSettingsRetrieved = $false
+
+    function Update-SharePointSummaryFromSettingsObject {
+        param(
+            [AllowNull()][object]$SettingsObject,
+            [string]$SourceLabel,
+            [string]$ApiVersion
+        )
+
+        if ($null -eq $SettingsObject) {
+            return $false
+        }
+
+        $updated = $false
+        foreach ($summaryKey in $sharePointSettingsPropertyMap.Keys) {
+            if ([string]$sharePointSummary[$summaryKey] -ne 'Not collected') {
+                continue
+            }
+
+            $rawValue = $null
+            foreach ($propertyName in @($sharePointSettingsPropertyMap[$summaryKey])) {
+                if ($SettingsObject.PSObject -and $SettingsObject.PSObject.Properties[$propertyName]) {
+                    $rawValue = $SettingsObject.$propertyName
+                    break
+                }
+            }
+
+            if ($null -eq $rawValue) {
+                continue
+            }
+
+            if ($rawValue -is [System.Collections.IEnumerable] -and -not ($rawValue -is [string])) {
+                $normalizedValues = @($rawValue | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+                if ($normalizedValues.Count -eq 0) {
+                    continue
+                }
+                $sharePointSummary[$summaryKey] = ($normalizedValues -join ', ')
+                $updated = $true
+                continue
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace([string]$rawValue)) {
+                $sharePointSummary[$summaryKey] = $rawValue
+                $updated = $true
+            }
+        }
+
+        if ([string]$sharePointSummary['DefaultSharingLinkType'] -eq 'Not collected') {
+            foreach ($propertyName in @('DefaultLinkToExistingAccess', 'DefaultShareLinkToExistingAccess', 'defaultLinkToExistingAccess', 'defaultShareLinkToExistingAccess')) {
+                if ($SettingsObject.PSObject -and $SettingsObject.PSObject.Properties[$propertyName] -and $null -ne $SettingsObject.$propertyName) {
+                    try {
+                        if ([bool]$SettingsObject.$propertyName) {
+                            $sharePointSummary['DefaultSharingLinkType'] = 'ExistingAccess'
+                            $updated = $true
+                            break
+                        }
+                    }
+                    catch {}
+                }
+            }
+        }
+
+        if ($updated) {
+            if (-not [string]::IsNullOrWhiteSpace($SourceLabel) -and -not $sharePointSettingsSources.Contains($SourceLabel)) {
+                $sharePointSettingsSources.Add($SourceLabel) | Out-Null
+            }
+            if (-not [string]::IsNullOrWhiteSpace($ApiVersion) -and -not $sharePointSettingsApiVersions.Contains($ApiVersion)) {
+                $sharePointSettingsApiVersions.Add($ApiVersion) | Out-Null
+            }
+        }
+
+        return $updated
+    }
+
     if (Get-Command -Name 'Get-SPOTenant' -ErrorAction SilentlyContinue) {
         try {
             $spoTenant = Get-SPOTenant -ErrorAction Stop
-            foreach ($propertyName in $sharePointSummary.Keys) {
-                if ($spoTenant.PSObject.Properties[$propertyName]) {
-                    $sharePointSummary[$propertyName] = $spoTenant.$propertyName
-                }
-            }
+            $spoTenantSettingsRetrieved = $true
+            $null = Update-SharePointSummaryFromSettingsObject -SettingsObject $spoTenant -SourceLabel 'SharePoint Online Management Shell' -ApiVersion 'SPO'
         }
         catch {
             Write-Log -Type DEBUG -Message "[Update-TierBOperationalSummaries] SharePoint tenant sharing summary lookup failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
@@ -8243,56 +8509,16 @@ function Update-TierBOperationalSummaries {
     }
 
     $requiresGraphSharePointSettings = @(
-        'TenantSharingCapability',
-        'SharingDomainRestrictionMode',
-        'SharingAllowedDomainList',
-        'SharingBlockedDomainList',
-        'RequireInvitedUserMatch',
-        'ExternalResharingEnabled'
-    ) | Where-Object { [string]$sharePointSummary[$_] -eq 'Not collected' }
+        $sharePointSettingsPropertyMap.Keys | Where-Object { [string]$sharePointSummary[$_] -eq 'Not collected' }
+    )
 
     if ($requiresGraphSharePointSettings.Count -gt 0) {
         try {
             $sharePointSettingsResponse = Office365Custom\Get-GraphData -Uri 'https://graph.microsoft.com/v1.0/admin/sharepoint/settings' -Activity 'Fetching SharePoint tenant settings'
             $sharePointSettings = @($sharePointSettingsResponse | Select-Object -First 1)
             if ($sharePointSettings.Count -gt 0 -and $sharePointSettings[0]) {
-                $graphSharePointSettings = $sharePointSettings[0]
-                $graphPropertyMap = @{
-                    TenantSharingCapability      = @('sharingCapability', 'SharingCapability')
-                    SharingDomainRestrictionMode = @('sharingDomainRestrictionMode', 'SharingDomainRestrictionMode')
-                    SharingAllowedDomainList     = @('sharingAllowedDomainList', 'SharingAllowedDomainList')
-                    SharingBlockedDomainList     = @('sharingBlockedDomainList', 'SharingBlockedDomainList')
-                    RequireInvitedUserMatch      = @('isRequireAcceptingUserToMatchInvitedUserEnabled', 'IsRequireAcceptingUserToMatchInvitedUserEnabled')
-                    ExternalResharingEnabled     = @('isResharingByExternalUsersEnabled', 'IsResharingByExternalUsersEnabled')
-                }
-
-                foreach ($summaryKey in $graphPropertyMap.Keys) {
-                    if ([string]$sharePointSummary[$summaryKey] -ne 'Not collected') {
-                        continue
-                    }
-
-                    $rawValue = $null
-                    foreach ($propertyName in $graphPropertyMap[$summaryKey]) {
-                        if ($graphSharePointSettings.PSObject.Properties[$propertyName]) {
-                            $rawValue = $graphSharePointSettings.$propertyName
-                            break
-                        }
-                    }
-
-                    if ($null -eq $rawValue) {
-                        continue
-                    }
-
-                    if ($rawValue -is [System.Collections.IEnumerable] -and -not ($rawValue -is [string])) {
-                        $normalizedValues = @($rawValue | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-                        if ($normalizedValues.Count -gt 0) {
-                            $sharePointSummary[$summaryKey] = ($normalizedValues -join ', ')
-                        }
-                    }
-                    elseif (-not [string]::IsNullOrWhiteSpace([string]$rawValue)) {
-                        $sharePointSummary[$summaryKey] = $rawValue
-                    }
-                }
+                $graphSharePointSettingsRetrieved = $true
+                $null = Update-SharePointSummaryFromSettingsObject -SettingsObject $sharePointSettings[0] -SourceLabel 'Microsoft Graph SharePoint tenant settings' -ApiVersion 'v1.0'
             }
         }
         catch {
@@ -8300,8 +8526,38 @@ function Update-TierBOperationalSummaries {
         }
     }
 
+    $requiresGraphBetaSharePointSettings = @(
+        'OneDriveSharingCapability',
+        'DefaultSharingLinkType',
+        'DefaultLinkPermission',
+        'AnonymousLinkExpirationInDays',
+        'GuestAccessExpirationInDays'
+    ) | Where-Object { [string]$sharePointSummary[$_] -eq 'Not collected' }
+
+    if ($requiresGraphBetaSharePointSettings.Count -gt 0) {
+        try {
+            $sharePointBetaSettingsResponse = Office365Custom\Get-GraphData -Uri 'https://graph.microsoft.com/beta/admin/sharepoint/settings' -Activity 'Fetching SharePoint tenant settings (beta fallback)'
+            $sharePointBetaSettings = @($sharePointBetaSettingsResponse | Select-Object -First 1)
+            if ($sharePointBetaSettings.Count -gt 0 -and $sharePointBetaSettings[0]) {
+                $graphSharePointSettingsRetrieved = $true
+                $null = Update-SharePointSummaryFromSettingsObject -SettingsObject $sharePointBetaSettings[0] -SourceLabel 'Microsoft Graph SharePoint tenant settings beta fallback' -ApiVersion 'beta'
+            }
+        }
+        catch {
+            Write-Log -Type DEBUG -Message "[Update-TierBOperationalSummaries] Graph SharePoint settings beta fallback failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        }
+    }
+
     $sharePointInventoryRows = @($sharePointRows) + @($oneDriveRows)
     if ($sharePointInventoryRows.Count -gt 0) {
+        $oneDriveSharingCapabilities = @(
+            $oneDriveRows |
+                ForEach-Object {
+                    if ($_.PSObject.Properties['SharingCapability']) { [string]$_.SharingCapability } else { $null }
+                } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Select-Object -Unique
+        )
         $sharingCapabilities = @(
             $sharePointInventoryRows |
                 ForEach-Object {
@@ -8330,6 +8586,9 @@ function Update-TierBOperationalSummaries {
         if ($sharingCapabilities.Count -gt 0 -and [string]$sharePointSummary['TenantSharingCapability'] -eq 'Not collected') {
             $sharePointSummary['TenantSharingCapability'] = ($sharingCapabilities -join ', ')
         }
+        if ($oneDriveSharingCapabilities.Count -gt 0 -and [string]$sharePointSummary['OneDriveSharingCapability'] -eq 'Not collected') {
+            $sharePointSummary['OneDriveSharingCapability'] = ($oneDriveSharingCapabilities -join ', ')
+        }
         if ($defaultSharingLinkTypes.Count -gt 0 -and [string]$sharePointSummary['DefaultSharingLinkType'] -eq 'Not collected') {
             $sharePointSummary['DefaultSharingLinkType'] = ($defaultSharingLinkTypes -join ', ')
         }
@@ -8340,6 +8599,121 @@ function Update-TierBOperationalSummaries {
             $sharePointSummary['DerivedFromSiteInventory'] = $true
             $sharePointSummary['DerivedSiteCount'] = $sharePointInventoryRows.Count
         }
+    }
+
+    $sharePointLinkSettingUnavailableText = if ([string]$AuthMode -in @('Certificate', 'ClientSecret')) {
+        'Not available in current app-only source'
+    }
+    else {
+        'Not surfaced in current source'
+    }
+
+    foreach ($summaryKey in @('DefaultSharingLinkType', 'DefaultLinkPermission', 'AnonymousLinkExpirationInDays', 'GuestAccessExpirationInDays', 'OneDriveSharingCapability')) {
+        if ([string]$sharePointSummary[$summaryKey] -ne 'Not collected') {
+            continue
+        }
+
+        if ($spoTenantSettingsRetrieved) {
+            $sharePointSummary[$summaryKey] = 'Not surfaced in current source'
+            continue
+        }
+
+        if ($graphSharePointSettingsRetrieved -or [string]$sharePointSummary['TenantSharingCapability'] -ne 'Not collected') {
+            $sharePointSummary[$summaryKey] = $sharePointLinkSettingUnavailableText
+        }
+    }
+
+    foreach ($summaryKey in @(
+        'SharingDomainRestrictionMode',
+        'SharingAllowedDomainList',
+        'SharingBlockedDomainList',
+        'RequireInvitedUserMatch',
+        'ExternalResharingEnabled',
+        'OneDriveStorageQuotaMB',
+        'SiteCreationDefaultStorageQuotaMB',
+        'IsSitesStorageLimitAutomatic',
+        'DeletedUserPersonalSiteRetentionPeriodInDays',
+        'IsLegacyAuthProtocolsEnabled',
+        'DisableCustomAppAuthentication',
+        'IsUnmanagedSyncAppForTenantRestricted',
+        'IsSyncButtonHiddenOnPersonalSite',
+        'IsSiteCreationEnabled',
+        'IsSiteCreationUIEnabled',
+        'IsLoopEnabled',
+        'AvailableManagedPathsForSiteCreation',
+        'SiteCreationDefaultManagedPath',
+        'AllowedDomainGuidsForSyncApp',
+        'ExcludedFileExtensionsForSyncApp'
+    )) {
+        if ([string]$sharePointSummary[$summaryKey] -ne 'Not collected') {
+            continue
+        }
+
+        if ($spoTenantSettingsRetrieved -or $graphSharePointSettingsRetrieved) {
+            $sharePointSummary[$summaryKey] = 'Not surfaced in current source'
+        }
+    }
+
+    $anonymousLinkExpirationDays = $null
+    try {
+        $anonymousLinkExpirationDays = [int]$sharePointSummary['AnonymousLinkExpirationInDays']
+    }
+    catch {}
+    if ($null -ne $anonymousLinkExpirationDays) {
+        $sharePointSummary['RequireAnonymousLinksExpire'] = [bool]($anonymousLinkExpirationDays -gt 0)
+    }
+    elseif ([string]$sharePointSummary['AnonymousLinkExpirationInDays'] -in @('Not collected', 'Not surfaced in current source', 'Not available in current app-only source')) {
+        $sharePointSummary['RequireAnonymousLinksExpire'] = [string]$sharePointSummary['AnonymousLinkExpirationInDays']
+    }
+
+    $externalResharingEnabledValue = $sharePointSummary['ExternalResharingEnabled']
+    if ($externalResharingEnabledValue -is [bool]) {
+        $sharePointSummary['PreventExternalUsersFromResharing'] = (-not $externalResharingEnabledValue)
+    }
+    else {
+        $externalResharingEnabledText = [string]$externalResharingEnabledValue
+        switch -Regex ($externalResharingEnabledText) {
+            '^(true|yes|enabled|on|1)$' { $sharePointSummary['PreventExternalUsersFromResharing'] = $false; break }
+            '^(false|no|disabled|off|0)$' { $sharePointSummary['PreventExternalUsersFromResharing'] = $true; break }
+            default {
+                if ([string]::IsNullOrWhiteSpace($externalResharingEnabledText) -or $externalResharingEnabledText -eq 'Not collected') {
+                    $sharePointSummary['PreventExternalUsersFromResharing'] = 'Not collected'
+                }
+                else {
+                    $sharePointSummary['PreventExternalUsersFromResharing'] = 'Not surfaced in current source'
+                }
+            }
+        }
+    }
+
+    $sharePointSettingsEvaluatedKeys = @(
+        $sharePointSummary.Keys | Where-Object { $_ -notin @('CollectionState', 'CollectionSource', 'SettingsApiVersion') }
+    )
+    $presentSharePointSettingsCount = @(
+        $sharePointSettingsEvaluatedKeys |
+            Where-Object {
+                [string]$sharePointSummary[$_] -notin @('Not collected', 'Not surfaced in current source', 'Not available in current app-only source')
+            }
+    ).Count
+    if ($presentSharePointSettingsCount -eq 0) {
+        $sharePointSummary['CollectionState'] = 'Not collected'
+    }
+    elseif ($presentSharePointSettingsCount -lt $sharePointSettingsEvaluatedKeys.Count) {
+        $sharePointSummary['CollectionState'] = 'Partial'
+    }
+    else {
+        $sharePointSummary['CollectionState'] = 'Collected'
+    }
+
+    if ($sharePointSettingsSources.Count -gt 0) {
+        $sharePointSummary['CollectionSource'] = ($sharePointSettingsSources -join '; ')
+    }
+    elseif ($sharePointInventoryRows.Count -gt 0) {
+        $sharePointSummary['CollectionSource'] = 'Derived site inventory fallback'
+    }
+
+    if ($sharePointSettingsApiVersions.Count -gt 0) {
+        $sharePointSummary['SettingsApiVersion'] = ($sharePointSettingsApiVersions -join '; ')
     }
 
     $TenantStatsHash['SharePointSharingSummary']['Summary'] = [pscustomobject]$sharePointSummary
@@ -8403,7 +8777,7 @@ function Update-ExternalExposureSummaries {
 
         if ($null -eq $Value) { return $false }
         if ($Value -is [string]) {
-            return -not [string]::IsNullOrWhiteSpace($Value) -and $Value -notin @('Not collected', 'Not surfaced in current source')
+            return -not [string]::IsNullOrWhiteSpace($Value) -and $Value -notin @('Not collected', 'Not surfaced in current source', 'Not available in current auth mode')
         }
         if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
             return @($Value).Count -gt 0
@@ -8412,10 +8786,81 @@ function Update-ExternalExposureSummaries {
         return $true
     }
 
+    function Get-ExternalExposureSharingCapabilityRank {
+        param([string]$Value)
+
+        if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+        $text = $Value.Trim()
+        if ($text -match 'Not collected|Not surfaced|Not available') { return $null }
+        if ($text -match 'Disabled|Internal|OnlyPeopleInYourOrganization') { return 1 }
+        if ($text -match 'ExistingExternalUserSharingOnly|ExternalUserSharingOnly') { return 2 }
+        if ($text -match 'ExternalUserAndGuestSharing|Anyone|Anonymous') { return 3 }
+        return $null
+    }
+
+    function Get-ExternalExposureLinkTypeRank {
+        param([string]$Value)
+
+        if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+        $text = $Value.Trim()
+        if ($text -match 'Not collected|Not surfaced|Not available') { return $null }
+        if ($text -match 'ExistingAccess') { return 1 }
+        if ($text -match 'SpecificPeople') { return 2 }
+        if ($text -match 'Organization|PeopleInYourOrganization|Internal') { return 3 }
+        if ($text -match 'Anonymous|Anyone') { return 4 }
+        return $null
+    }
+
+    function Get-ExternalExposureLinkPermissionRank {
+        param([string]$Value)
+
+        if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+        $text = $Value.Trim()
+        if ($text -match 'Not collected|Not surfaced|Not available') { return $null }
+        if ($text -match 'View|Read') { return 1 }
+        if ($text -match 'Edit') { return 2 }
+        return $null
+    }
+
+    function New-ExternalExposureFindingRow {
+        param(
+            [Parameter(Mandatory = $true)][string]$Workload,
+            [Parameter(Mandatory = $true)][string]$AssetType,
+            [Parameter(Mandatory = $true)][string]$Title,
+            [Parameter(Mandatory = $true)][string]$UrlOrIdentifier,
+            [Parameter(Mandatory = $true)][string]$ExposureCategory,
+            [Parameter(Mandatory = $true)][string]$TenantBaseline,
+            [Parameter(Mandatory = $true)][string]$ObservedSetting,
+            [Parameter(Mandatory = $true)][string]$OwnerSignal,
+            [Parameter(Mandatory = $true)][string]$GuestSignal,
+            [Parameter(Mandatory = $true)][string]$ActivitySignal,
+            [Parameter(Mandatory = $true)][string]$StaleSignal,
+            [Parameter(Mandatory = $true)][string]$GapReason,
+            [Parameter(Mandatory = $true)][string]$ReviewPriority
+        )
+
+        [pscustomobject]@{
+            Workload         = $Workload
+            AssetType        = $AssetType
+            Title            = $Title
+            UrlOrIdentifier  = $UrlOrIdentifier
+            ExposureCategory = $ExposureCategory
+            TenantBaseline   = $TenantBaseline
+            ObservedSetting  = $ObservedSetting
+            OwnerSignal      = $OwnerSignal
+            GuestSignal      = $GuestSignal
+            ActivitySignal   = $ActivitySignal
+            StaleSignal      = $StaleSignal
+            GapReason        = $GapReason
+            ReviewPriority   = $ReviewPriority
+        }
+    }
+
     if (-not $TenantStatsHash.ContainsKey('ExternalSharingSummary')) { $TenantStatsHash['ExternalSharingSummary'] = @{} }
     if (-not $TenantStatsHash.ContainsKey('ExternalSharingSiteOverrides')) { $TenantStatsHash['ExternalSharingSiteOverrides'] = @() }
     if (-not $TenantStatsHash.ContainsKey('ExternalIdentityRestrictions')) { $TenantStatsHash['ExternalIdentityRestrictions'] = @{} }
     if (-not $TenantStatsHash.ContainsKey('GuestAccessConfiguration')) { $TenantStatsHash['GuestAccessConfiguration'] = @{} }
+    if (-not $TenantStatsHash.ContainsKey('ExternalExposureFindings')) { $TenantStatsHash['ExternalExposureFindings'] = @() }
 
     $sharePointSummaryRecord = if ($TenantStatsHash.ContainsKey('SharePointSharingSummary')) {
         Get-ExternalExposureValue -Object $TenantStatsHash['SharePointSharingSummary'] -Names @('Summary')
@@ -8509,9 +8954,9 @@ function Update-ExternalExposureSummaries {
         'Not collected'
     }
     elseif (
-        $tenantSharingCapability -eq 'Not collected' -or
-        $defaultSharingLinkType -eq 'Not collected' -or
-        $defaultLinkPermission -eq 'Not collected'
+        $tenantSharingCapability -in @('Not collected', 'Not surfaced in current source', 'Not available in current auth mode', 'Not available in current app-only source') -or
+        $defaultSharingLinkType -in @('Not collected', 'Not surfaced in current source', 'Not available in current auth mode', 'Not available in current app-only source') -or
+        $defaultLinkPermission -in @('Not collected', 'Not surfaced in current source', 'Not available in current auth mode', 'Not available in current app-only source')
     ) {
         'Partial'
     }
@@ -8528,9 +8973,10 @@ function Update-ExternalExposureSummaries {
         SharingAllowedDomainList       = $sharingAllowedDomainList
         SharingBlockedDomainList       = $sharingBlockedDomainList
         AnonymousLinkExpirationInDays  = $anonymousLinkExpirationInDays
-        GuestExpirationInDays          = 'Not surfaced in current source'
+        GuestExpirationInDays          = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $sharePointSummaryRecord -Names @('GuestAccessExpirationInDays')) -Default 'Not surfaced in current source'
         RequireInvitedUserMatch        = $requireInvitedUserMatch
         ExternalResharingEnabled       = $externalResharingEnabled
+        PreventExternalUsersFromResharing = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $sharePointSummaryRecord -Names @('PreventExternalUsersFromResharing')) -Default 'Not surfaced in current source'
         SharePointSitesReviewed        = $sharePointRows.Count
         OneDriveSitesReviewed          = $oneDriveRows.Count
         SitesWithExternalSharingEnabled = $sitesWithExternalSharingEnabled
@@ -8629,6 +9075,313 @@ function Update-ExternalExposureSummaries {
         CrossTenantPartnerCount         = $(if ($null -eq $crossTenantPartnerCount) { 'Not surfaced in current source' } else { $crossTenantPartnerCount })
         SiteOverrideCount               = @($siteOverrides).Count
     }
+
+    $externalExposureRows = New-Object System.Collections.Generic.List[object]
+    $tenantSharingRank = Get-ExternalExposureSharingCapabilityRank -Value $tenantSharingCapability
+    $tenantLinkTypeRank = Get-ExternalExposureLinkTypeRank -Value $defaultSharingLinkType
+    $tenantLinkPermissionRank = Get-ExternalExposureLinkPermissionRank -Value $defaultLinkPermission
+    $staleSiteCutoff = (Get-Date).AddDays(-180)
+    $staleTeamCutoff = (Get-Date).AddDays(-90)
+
+    $oneDriveMismatchLookup = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($mismatch in (Convert-ToExternalExposureArray -Value $(if ($TenantStatsHash.ContainsKey('OneDriveOwnerMismatches')) { $TenantStatsHash['OneDriveOwnerMismatches'] } else { $null }))) {
+        foreach ($candidate in @(
+            (Get-ExternalExposureValue -Object $mismatch -Names @('SiteUrl', 'Url')),
+            (Get-ExternalExposureValue -Object $mismatch -Names @('OwnerPrincipalName', 'UserPrincipalName'))
+        )) {
+            $candidateText = Convert-ToExternalExposureText -Value $candidate -Default ''
+            if (-not [string]::IsNullOrWhiteSpace($candidateText)) {
+                $null = $oneDriveMismatchLookup.Add($candidateText)
+            }
+        }
+    }
+
+    foreach ($site in $siteRows) {
+        $siteUrl = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $site -Names @('Url')) -Default 'Not surfaced in current source'
+        $siteTitle = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $site -Names @('Title', 'DisplayName')) -Default 'Untitled site'
+        $siteSharingCapability = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $site -Names @('SharingCapability')) -Default ''
+        $siteDefaultSharingLinkType = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $site -Names @('DefaultSharingLinkType')) -Default ''
+        $siteDefaultLinkPermission = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $site -Names @('DefaultLinkPermission')) -Default ''
+        $siteOwner = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $site -Names @('Owner')) -Default 'Not surfaced in current source'
+        $lastModified = Get-ExternalExposureValue -Object $site -Names @('LastContentModifiedDate')
+        $lastModifiedDate = $null
+        try { if ($lastModified) { $lastModifiedDate = [datetime]$lastModified } } catch {}
+        $staleSite = ($lastModifiedDate -and $lastModifiedDate -lt $staleSiteCutoff)
+        $siteSharingRank = Get-ExternalExposureSharingCapabilityRank -Value $siteSharingCapability
+        $siteLinkTypeRank = Get-ExternalExposureLinkTypeRank -Value $siteDefaultSharingLinkType
+        $siteLinkPermissionRank = Get-ExternalExposureLinkPermissionRank -Value $siteDefaultLinkPermission
+        $externallySharable = ($null -ne $siteSharingRank -and $siteSharingRank -gt 1)
+        $sharingMorePermissive = ($externallySharable -and $null -ne $tenantSharingRank -and $siteSharingRank -gt $tenantSharingRank)
+        $linkTypeDiffers = (-not [string]::IsNullOrWhiteSpace($siteDefaultSharingLinkType) -and $defaultSharingLinkType -notin @('Not collected', 'Not surfaced in current source', 'Not available in current auth mode') -and $siteDefaultSharingLinkType -ne $defaultSharingLinkType)
+        $linkPermissionDiffers = (-not [string]::IsNullOrWhiteSpace($siteDefaultLinkPermission) -and $defaultLinkPermission -notin @('Not collected', 'Not surfaced in current source', 'Not available in current auth mode') -and $siteDefaultLinkPermission -ne $defaultLinkPermission)
+        $oneDriveOwnershipMismatch = (($siteUrl -match '-my\.sharepoint\.com' -or $siteTitle -match 'OneDrive') -and ($oneDriveMismatchLookup.Contains($siteUrl) -or $oneDriveMismatchLookup.Contains($siteOwner)))
+
+        $gapReasons = New-Object System.Collections.Generic.List[string]
+        $exposureCategory = $null
+        $reviewPriority = 'Medium'
+
+        if ($externallySharable -and $staleSite) {
+            $gapReasons.Add('Site supports external sharing and last content activity is older than the 180-day stale threshold.') | Out-Null
+            $exposureCategory = 'Stale externally shared content'
+            $reviewPriority = 'High'
+        }
+        if ($externallySharable -and $oneDriveOwnershipMismatch) {
+            $gapReasons.Add('Externally sharable OneDrive also appears in the ownership-mismatch review.') | Out-Null
+            if (-not $exposureCategory) { $exposureCategory = 'Externally sharable OneDrive with ownership mismatch' }
+            $reviewPriority = 'High'
+        }
+        if ($sharingMorePermissive) {
+            $gapReasons.Add('Site sharing capability is more permissive than the tenant baseline.') | Out-Null
+            if (-not $exposureCategory) { $exposureCategory = 'More permissive site sharing than tenant baseline' }
+        }
+        if ($linkTypeDiffers) {
+            $gapReasons.Add('Site default sharing link type differs from the tenant baseline.') | Out-Null
+            if (-not $exposureCategory) { $exposureCategory = 'Site default sharing link type differs from tenant baseline' }
+        }
+        if ($linkPermissionDiffers) {
+            $gapReasons.Add('Site default link permission differs from the tenant baseline.') | Out-Null
+            if (-not $exposureCategory) { $exposureCategory = 'Site default link permission differs from tenant baseline' }
+        }
+
+        if ($gapReasons.Count -eq 0) {
+            continue
+        }
+
+        $observedSettingParts = New-Object System.Collections.Generic.List[string]
+        if (-not [string]::IsNullOrWhiteSpace($siteSharingCapability)) { $observedSettingParts.Add("SharingCapability=$siteSharingCapability") | Out-Null }
+        if (-not [string]::IsNullOrWhiteSpace($siteDefaultSharingLinkType)) { $observedSettingParts.Add("DefaultSharingLinkType=$siteDefaultSharingLinkType") | Out-Null }
+        if (-not [string]::IsNullOrWhiteSpace($siteDefaultLinkPermission)) { $observedSettingParts.Add("DefaultLinkPermission=$siteDefaultLinkPermission") | Out-Null }
+
+        $tenantBaselineParts = New-Object System.Collections.Generic.List[string]
+        if ($tenantSharingCapability -notin @('Not collected', 'Not surfaced in current source', 'Not available in current auth mode')) { $tenantBaselineParts.Add("SharingCapability=$tenantSharingCapability") | Out-Null }
+        if ($defaultSharingLinkType -notin @('Not collected', 'Not surfaced in current source', 'Not available in current auth mode')) { $tenantBaselineParts.Add("DefaultSharingLinkType=$defaultSharingLinkType") | Out-Null }
+        if ($defaultLinkPermission -notin @('Not collected', 'Not surfaced in current source', 'Not available in current auth mode')) { $tenantBaselineParts.Add("DefaultLinkPermission=$defaultLinkPermission") | Out-Null }
+
+        $externalExposureRows.Add((New-ExternalExposureFindingRow `
+            -Workload $(if ($siteUrl -match '-my\.sharepoint\.com') { 'OneDrive' } else { 'SharePoint' }) `
+            -AssetType $(if ($siteUrl -match '-my\.sharepoint\.com') { 'Personal Site' } else { 'Site' }) `
+            -Title $siteTitle `
+            -UrlOrIdentifier $siteUrl `
+            -ExposureCategory $exposureCategory `
+            -TenantBaseline $(if ($tenantBaselineParts.Count -gt 0) { $tenantBaselineParts -join '; ' } else { 'Not surfaced in current source' }) `
+            -ObservedSetting $(if ($observedSettingParts.Count -gt 0) { $observedSettingParts -join '; ' } else { 'Not surfaced in current source' }) `
+            -OwnerSignal $(if ($oneDriveOwnershipMismatch) { "Owner=$siteOwner; ownership mismatch surfaced" } else { "Owner=$siteOwner" }) `
+            -GuestSignal 'Not applicable' `
+            -ActivitySignal $(if ($lastModifiedDate) { "LastContentModifiedDate=$($lastModifiedDate.ToString('yyyy-MM-dd'))" } else { 'Last content activity not surfaced' }) `
+            -StaleSignal $(if ($staleSite) { 'Yes' } else { 'No' }) `
+            -GapReason ($gapReasons.ToArray() -join ' ') `
+            -ReviewPriority $reviewPriority
+        )) | Out-Null
+    }
+
+    foreach ($team in $teamRows) {
+        $teamTitle = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $team -Names @('DisplayName', 'Title')) -Default 'Untitled Team'
+        $teamIdentifier = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $team -Names @('SharePointSiteUrl', 'TeamId', 'GroupId')) -Default 'Not surfaced in current source'
+        $guestCount = Get-ExternalExposureValue -Object $team -Names @('GuestCount', 'Guests')
+        $memberCount = Get-ExternalExposureValue -Object $team -Names @('MemberCount', 'Members')
+        $ownerCount = Get-ExternalExposureValue -Object $team -Names @('OwnerCount')
+        $lastActivityValue = Get-ExternalExposureValue -Object $team -Names @('LastActivityDate')
+        $lastActivityDate = $null
+        try { if ($lastActivityValue) { $lastActivityDate = [datetime]$lastActivityValue } } catch {}
+        $guestCountNumber = $null
+        $memberCountNumber = $null
+        $ownerCountNumber = $null
+        try { if ($null -ne $guestCount) { $guestCountNumber = [double]$guestCount } } catch {}
+        try { if ($null -ne $memberCount) { $memberCountNumber = [double]$memberCount } } catch {}
+        try { if ($null -ne $ownerCount -and -not [string]::IsNullOrWhiteSpace([string]$ownerCount)) { $ownerCountNumber = [int]$ownerCount } } catch {}
+        $guestHeavy = ($null -ne $guestCountNumber -and $null -ne $memberCountNumber -and $memberCountNumber -gt 0 -and (($guestCountNumber / $memberCountNumber) -ge 0.4))
+        $guestEnabledDormant = ($null -ne $guestCountNumber -and $guestCountNumber -gt 0 -and $lastActivityDate -and $lastActivityDate -lt $staleTeamCutoff)
+        $guestEnabledOwnerless = ($null -ne $guestCountNumber -and $guestCountNumber -gt 0 -and $null -ne $ownerCountNumber -and $ownerCountNumber -eq 0)
+
+        if (-not ($guestHeavy -or $guestEnabledDormant -or $guestEnabledOwnerless)) {
+            continue
+        }
+
+        $gapReasons = New-Object System.Collections.Generic.List[string]
+        $exposureCategory = $null
+        $reviewPriority = 'Medium'
+
+        if ($guestHeavy -and $guestEnabledDormant) {
+            $gapReasons.Add('Team is guest-heavy and its recorded activity is older than the 90-day dormant threshold.') | Out-Null
+            $exposureCategory = 'Guest-heavy dormant Team'
+            $reviewPriority = 'High'
+        }
+        elseif ($guestHeavy) {
+            $gapReasons.Add('Team guest membership is at or above the 40% guest-heavy threshold.') | Out-Null
+            $exposureCategory = 'Guest-heavy Team'
+        }
+        elseif ($guestEnabledDormant) {
+            $gapReasons.Add('Team still has guests but recorded activity is older than the 90-day dormant threshold.') | Out-Null
+            $exposureCategory = 'Dormant guest-enabled Team'
+        }
+
+        if ($guestEnabledOwnerless) {
+            $gapReasons.Add('Guest-enabled Team does not currently show an owner signal.') | Out-Null
+            if (-not $exposureCategory) { $exposureCategory = 'Guest-enabled ownerless Team' }
+            if ($reviewPriority -ne 'High') { $reviewPriority = 'High' }
+        }
+
+        $guestRatioText = if ($null -ne $guestCountNumber -and $null -ne $memberCountNumber -and $memberCountNumber -gt 0) {
+            '{0:P0}' -f ($guestCountNumber / $memberCountNumber)
+        } else {
+            'Not surfaced in current source'
+        }
+
+        $externalExposureRows.Add((New-ExternalExposureFindingRow `
+            -Workload 'Teams' `
+            -AssetType 'Team' `
+            -Title $teamTitle `
+            -UrlOrIdentifier $teamIdentifier `
+            -ExposureCategory $exposureCategory `
+            -TenantBaseline "GuestInvitationControl=$allowInvitesFrom; ConditionalAccessGuestCoverage=$guestCoverage" `
+            -ObservedSetting "Guests=$($guestCountNumber); Members=$($memberCountNumber); GuestRatio=$guestRatioText" `
+            -OwnerSignal $(if ($null -ne $ownerCountNumber) { "$ownerCountNumber owner(s)" } else { 'Owner signal not surfaced' }) `
+            -GuestSignal $(if ($null -ne $guestCountNumber) { "$guestCountNumber guest(s)" } else { 'Guest count not surfaced' }) `
+            -ActivitySignal $(if ($lastActivityDate) { "LastActivityDate=$($lastActivityDate.ToString('yyyy-MM-dd'))" } else { 'Last activity not surfaced' }) `
+            -StaleSignal $(if ($guestEnabledDormant) { 'Yes' } else { 'No' }) `
+            -GapReason ($gapReasons.ToArray() -join ' ') `
+            -ReviewPriority $reviewPriority
+        )) | Out-Null
+    }
+
+    foreach ($group in $unifiedGroupRows) {
+        $allowGuests = Get-ExternalExposureValue -Object $group -Names @('AllowAddGuests')
+        if ($null -eq $allowGuests) { continue }
+
+        $allowsGuests = $false
+        try { $allowsGuests = [bool]$allowGuests } catch {}
+        if (-not $allowsGuests) { continue }
+
+        $ownerCount = Get-ExternalExposureValue -Object $group -Names @('OwnerCount')
+        $groupOwnerless = $false
+        if ($null -ne $ownerCount) {
+            try { $groupOwnerless = ([int]$ownerCount -eq 0) } catch {}
+        }
+        else {
+            $managedByDetails = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $group -Names @('ManagedByDetails')) -Default ''
+            $groupOwnerless = [string]::IsNullOrWhiteSpace($managedByDetails)
+        }
+
+        if (-not $groupOwnerless) { continue }
+
+        $groupTitle = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $group -Names @('DisplayName', 'Title')) -Default 'Untitled Microsoft 365 Group'
+        $groupIdentifier = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $group -Names @('ExternalDirectoryObjectId', 'Id', 'GroupId')) -Default 'Not surfaced in current source'
+
+        $externalExposureRows.Add((New-ExternalExposureFindingRow `
+            -Workload 'Microsoft 365 Groups' `
+            -AssetType 'Group' `
+            -Title $groupTitle `
+            -UrlOrIdentifier $groupIdentifier `
+            -ExposureCategory 'Guest-enabled ownerless Microsoft 365 Group' `
+            -TenantBaseline "GuestInvitationControl=$allowInvitesFrom" `
+            -ObservedSetting 'AllowAddGuests=True' `
+            -OwnerSignal '0 owners surfaced' `
+            -GuestSignal 'Guest-enabled group' `
+            -ActivitySignal 'Group activity not surfaced in current source' `
+            -StaleSignal 'Not evaluated at object level' `
+            -GapReason 'Group allows guests but does not currently show an owner signal.' `
+            -ReviewPriority 'High'
+        )) | Out-Null
+    }
+
+    $tenantAllowsBroadExternalSharing = ($tenantSharingCapability -match 'ExternalUserAndGuestSharing|ExternalUserSharingOnly')
+    $guestCoverageEnabled = $false
+    try { if ($guestCoverage -notin @('Not surfaced in current source', 'Not collected', 'Not available in current auth mode')) { $guestCoverageEnabled = [bool]$guestCoverage } } catch {}
+    if ($tenantAllowsBroadExternalSharing -and -not $guestCoverageEnabled) {
+        $externalExposureRows.Add((New-ExternalExposureFindingRow `
+            -Workload 'Tenant Policy' `
+            -AssetType 'External Access Baseline' `
+            -Title 'Tenant external sharing without guest Conditional Access coverage' `
+            -UrlOrIdentifier 'Tenant-level summary' `
+            -ExposureCategory 'Guest access protection gap' `
+            -TenantBaseline "SharingCapability=$tenantSharingCapability; GuestCoverageExpected=True" `
+            -ObservedSetting "ConditionalAccessGuestCoverage=$guestCoverage; GuestInvitationControl=$allowInvitesFrom" `
+            -OwnerSignal 'Tenant-level policy' `
+            -GuestSignal $(if ($null -eq $inactiveGuests90Days) { 'Inactive guest count not surfaced' } else { "$inactiveGuests90Days inactive guest(s) over 90 days" }) `
+            -ActivitySignal 'Not applicable' `
+            -StaleSignal 'Not applicable' `
+            -GapReason 'Tenant-wide external sharing is enabled, but Conditional Access summary does not show guest or external-user coverage.' `
+            -ReviewPriority 'High'
+        )) | Out-Null
+    }
+
+    $crossTenantPolicyEnabled = $false
+    try { if ($hasCrossTenantAccessPolicy -notin @('Not surfaced in current source', 'Not collected', 'Not available in current auth mode')) { $crossTenantPolicyEnabled = [bool]$hasCrossTenantAccessPolicy } } catch {}
+    $crossTenantTrustNeedsReview = $false
+    $crossTenantTrustReasons = New-Object System.Collections.Generic.List[string]
+    if ($crossTenantPolicyEnabled) {
+        if ($defaultInboundMfaTrust -in @('Not configured', 'True')) {
+            $crossTenantTrustNeedsReview = $true
+            $crossTenantTrustReasons.Add("Default inbound MFA trust is $defaultInboundMfaTrust") | Out-Null
+        }
+        if ($defaultOutboundMfaTrust -in @('Not configured', 'True')) {
+            $crossTenantTrustNeedsReview = $true
+            $crossTenantTrustReasons.Add("Default outbound MFA trust is $defaultOutboundMfaTrust") | Out-Null
+        }
+    }
+    if ($crossTenantTrustNeedsReview) {
+        $externalExposureRows.Add((New-ExternalExposureFindingRow `
+            -Workload 'Cross-Tenant Access' `
+            -AssetType 'Tenant Policy' `
+            -Title 'Cross-tenant default trust posture' `
+            -UrlOrIdentifier 'Tenant-level summary' `
+            -ExposureCategory 'Cross-tenant trust posture review' `
+            -TenantBaseline 'Cross-tenant trust documented and intentionally configured' `
+            -ObservedSetting "PartnerCount=$(if ($null -eq $crossTenantPartnerCount) { 'Not surfaced in current source' } else { $crossTenantPartnerCount }); DefaultInboundMfaTrust=$defaultInboundMfaTrust; DefaultOutboundMfaTrust=$defaultOutboundMfaTrust" `
+            -OwnerSignal 'Tenant-level policy' `
+            -GuestSignal "PartnerTenants=$partnerTenantNames" `
+            -ActivitySignal 'Not applicable' `
+            -StaleSignal 'Not applicable' `
+            -GapReason (($crossTenantTrustReasons.ToArray()) -join '; ') `
+            -ReviewPriority 'Medium'
+        )) | Out-Null
+    }
+
+    if ($allowInvitesFrom -notin @('Not surfaced in current source', 'Not collected', 'Not available in current auth mode', 'adminsAndGuestInviters', 'none')) {
+        $externalExposureRows.Add((New-ExternalExposureFindingRow `
+            -Workload 'External Identity' `
+            -AssetType 'Tenant Policy' `
+            -Title 'Guest invitation posture allows broad invitation paths' `
+            -UrlOrIdentifier 'Tenant-level summary' `
+            -ExposureCategory 'Guest invitation posture review' `
+            -TenantBaseline 'Guest invitations restricted to documented sponsor paths' `
+            -ObservedSetting "AllowInvitesFrom=$allowInvitesFrom; AllowEmailVerifiedUsersToJoinOrganization=$allowEmailVerifiedUsersToJoin" `
+            -OwnerSignal 'Tenant-level policy' `
+            -GuestSignal $(if ($null -eq $crossTenantPartnerCount) { 'Partner count not surfaced' } else { "$crossTenantPartnerCount cross-tenant partner(s)" }) `
+            -ActivitySignal 'Not applicable' `
+            -StaleSignal 'Not applicable' `
+            -GapReason 'Guest invitation control is broader than the tighter admin/sponsor-only baseline usually expected for external collaboration review.' `
+            -ReviewPriority 'Medium'
+        )) | Out-Null
+    }
+
+    $priorityRank = @{
+        High   = 1
+        Medium = 2
+        Low    = 3
+    }
+    $categoryRank = @{
+        'Stale externally shared content'                   = 1
+        'Externally sharable OneDrive with ownership mismatch' = 2
+        'Guest-heavy dormant Team'                          = 3
+        'Guest-enabled ownerless Team'                      = 4
+        'Guest-heavy Team'                                  = 5
+        'Dormant guest-enabled Team'                        = 6
+        'Guest-enabled ownerless Microsoft 365 Group'       = 7
+        'More permissive site sharing than tenant baseline' = 8
+        'Site default sharing link type differs from tenant baseline' = 9
+        'Site default link permission differs from tenant baseline' = 10
+        'Guest access protection gap'                       = 11
+        'Cross-tenant trust posture review'                 = 12
+        'Guest invitation posture review'                   = 13
+    }
+    $TenantStatsHash['ExternalExposureFindings'] = @(
+        $externalExposureRows.ToArray() |
+            Sort-Object `
+                @{ Expression = { if ($priorityRank.ContainsKey([string]$_.ReviewPriority)) { $priorityRank[[string]$_.ReviewPriority] } else { 99 } } }, `
+                @{ Expression = { if ($categoryRank.ContainsKey([string]$_.ExposureCategory)) { $categoryRank[[string]$_.ExposureCategory] } else { 99 } } }, `
+                Workload, Title, UrlOrIdentifier
+    )
 }
 
 ########################################################

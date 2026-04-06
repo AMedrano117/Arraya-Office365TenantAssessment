@@ -100,6 +100,19 @@ function Resolve-AssessmentLatestManifestPath {
 
     $candidateManifestPaths = New-Object System.Collections.Generic.List[string]
     $fullExportPath = [System.IO.Path]::GetFullPath($ExportPath)
+    if (Test-Path -Path $fullExportPath -PathType Container) {
+        $candidateManifestPaths.Add((Join-Path -Path $fullExportPath -ChildPath 'Support\Run.manifest.json'))
+        foreach ($manifest in @(Get-ChildItem -Path (Join-Path -Path $fullExportPath -ChildPath 'Support') -Filter '*-Run.manifest.json' -File -ErrorAction SilentlyContinue)) {
+            $candidateManifestPaths.Add($manifest.FullName)
+        }
+    }
+    $fullExportPathParent = Split-Path -Path $fullExportPath -Parent
+    if (-not [string]::IsNullOrWhiteSpace($fullExportPathParent)) {
+        $candidateManifestPaths.Add((Join-Path -Path $fullExportPathParent -ChildPath 'Support\Run.manifest.json'))
+        foreach ($manifest in @(Get-ChildItem -Path (Join-Path -Path $fullExportPathParent -ChildPath 'Support') -Filter '*-Run.manifest.json' -File -ErrorAction SilentlyContinue)) {
+            $candidateManifestPaths.Add($manifest.FullName)
+        }
+    }
 
     if (Test-Path -Path $fullExportPath -PathType Leaf) {
         if ($fullExportPath -match '\.manifest\.json$') {
@@ -107,6 +120,11 @@ function Resolve-AssessmentLatestManifestPath {
         }
         elseif ($fullExportPath -match '\.xlsx$') {
             $candidateManifestPaths.Add(($fullExportPath -replace '\.xlsx$', '.manifest.json'))
+            $leafBaseName = [System.IO.Path]::GetFileNameWithoutExtension($fullExportPath)
+            if ($leafBaseName.EndsWith('-Assess', [System.StringComparison]::OrdinalIgnoreCase)) {
+                $manifestLeaf = '{0}-Run.manifest.json' -f $leafBaseName.Substring(0, $leafBaseName.Length - '-Assess'.Length)
+                $candidateManifestPaths.Add((Join-Path -Path (Join-Path -Path (Split-Path -Path $fullExportPath -Parent) -ChildPath 'Support') -ChildPath $manifestLeaf))
+            }
         }
         else {
             $candidateManifestPaths.Add("$fullExportPath.manifest.json")
