@@ -221,6 +221,7 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
             'Users', 'UserFullDetails', 'Admins', 'EntraIDGroups', 'DeviceDetails', 'ConditionalAccessPolicies',
             'AuthenticationConfig', 'AuthenticationConfigSummary', 'AuthenticationMethods',
             'AuthenticationSSOApplications', 'LicenseSKUs', 'MfaRegistrationDetails', 'MfaRegistrationSummary',
+            'MfaEnrollmentSummary', 'MfaEnforcementSummary', 'MfaEnforcementGapUsers', 'MfaEnforcementScopeReview',
             'ConditionalAccessPolicySummary', 'EnterpriseApplications', 'EnterpriseApplicationSummary',
             'SecurityDefaultsPolicy', 'GuestSignInSummary', 'PrivilegedAccessSummary', 'DeviceManagementSummary',
             'ExternalIdentityRestrictions', 'GuestAccessConfiguration'

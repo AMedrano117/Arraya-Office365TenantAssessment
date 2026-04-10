@@ -111,4 +111,24 @@ Describe 'Arraya.M365.AssessmentRunner' {
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Improvement Plan JSON' }).Count | Should -Be 1
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Remediation Snippets' }).Count | Should -Be 1
     }
+
+    It 'resolves the run manifest from a Tenant Details workbook path' {
+        $runRoot = Join-Path $TestDrive 'Contoso SE'
+        $supportPath = Join-Path $runRoot 'Support'
+        $null = New-Item -ItemType Directory -Path $supportPath -Force
+
+        $workbookPath = Join-Path $runRoot 'Contoso Ltd - Tenant Details.xlsx'
+        Set-Content -Path $workbookPath -Value 'placeholder' -Encoding UTF8
+
+        $manifestPath = Join-Path $supportPath 'Contoso Ltd-Run.manifest.json'
+        Set-Content -Path $manifestPath -Value '{}' -Encoding UTF8
+
+        $module = Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction Stop | Select-Object -First 1
+        $resolvedManifest = & $module {
+            param($Path)
+            Resolve-AssessmentLatestManifestPath -ExportPath $Path
+        } $workbookPath
+
+        $resolvedManifest | Should -Be (Resolve-Path -Path $manifestPath).Path
+    }
 }

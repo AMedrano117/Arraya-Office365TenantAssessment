@@ -121,9 +121,12 @@ function Resolve-AssessmentLatestManifestPath {
         elseif ($fullExportPath -match '\.xlsx$') {
             $candidateManifestPaths.Add(($fullExportPath -replace '\.xlsx$', '.manifest.json'))
             $leafBaseName = [System.IO.Path]::GetFileNameWithoutExtension($fullExportPath)
-            if ($leafBaseName.EndsWith('-Assess', [System.StringComparison]::OrdinalIgnoreCase)) {
-                $manifestLeaf = '{0}-Run.manifest.json' -f $leafBaseName.Substring(0, $leafBaseName.Length - '-Assess'.Length)
-                $candidateManifestPaths.Add((Join-Path -Path (Join-Path -Path (Split-Path -Path $fullExportPath -Parent) -ChildPath 'Support') -ChildPath $manifestLeaf))
+            foreach ($suffix in @('-Assess', ' - Tenant Details', '-Tenant Details')) {
+                if ($leafBaseName.EndsWith($suffix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $manifestLeaf = '{0}-Run.manifest.json' -f $leafBaseName.Substring(0, $leafBaseName.Length - $suffix.Length)
+                    $candidateManifestPaths.Add((Join-Path -Path (Join-Path -Path (Split-Path -Path $fullExportPath -Parent) -ChildPath 'Support') -ChildPath $manifestLeaf))
+                    break
+                }
             }
         }
         else {

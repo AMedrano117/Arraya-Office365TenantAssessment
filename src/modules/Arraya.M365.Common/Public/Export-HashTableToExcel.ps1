@@ -75,7 +75,9 @@ function Export-HashTableToExcel {
         'Office365GroupsActivityTopGroups',
         'EmployeeExperienceInsightsSummary',
         'InboxRulesExternalForwarding',
-        'ExternalSharingSiteOverrides'
+        'ExternalSharingSiteOverrides',
+        'MfaEnforcementGapUsers',
+        'MfaEnforcementScopeReview'
     )
 
     $excludedWorksheets = @(
@@ -116,7 +118,7 @@ function Export-HashTableToExcel {
         "BestPractices", "BestPracticeFindings", "MigrationReadiness", "SecureScoreActions", "UnmanagedObjects", "OneDriveOwnerMismatches",
 
         # Licensing & Tenant Info
-        "LicenseSKUs", "Domains", "AuthenticationMethods", "AuthenticationSSOApplications", "EnterpriseApplications", "AuthenticationConfig", "ConditionalAccessPolicySummary", "SecurityDefaultsPolicy", "GuestSignInSummary", "GuestAccessConfiguration", "ExternalIdentityRestrictions", "PrivilegedAccessSummary", "Admins",
+        "LicenseSKUs", "Domains", "AuthenticationMethods", "AuthenticationSSOApplications", "EnterpriseApplications", "AuthenticationConfig", "MfaEnrollmentSummary", "MfaEnforcementSummary", "MfaEnforcementGapUsers", "MfaEnforcementScopeReview", "ConditionalAccessPolicySummary", "SecurityDefaultsPolicy", "GuestSignInSummary", "GuestAccessConfiguration", "ExternalIdentityRestrictions", "PrivilegedAccessSummary", "Admins",
 
         # Users
         "Users", "UserFullDetails", "DeviceDetails",
