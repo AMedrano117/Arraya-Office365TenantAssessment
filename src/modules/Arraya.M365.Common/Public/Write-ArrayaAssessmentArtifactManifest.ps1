@@ -26,10 +26,17 @@ function Write-ArrayaAssessmentArtifactManifest {
     }
 
     $baseLeaf = [System.IO.Path]::GetFileNameWithoutExtension($resolvedBasePath)
-    if ($baseLeaf.EndsWith('-Assess', [System.StringComparison]::OrdinalIgnoreCase)) {
-        $baseLeaf = $baseLeaf.Substring(0, $baseLeaf.Length - '-Assess'.Length)
+    foreach ($suffix in @('-Assess', ' - Tenant Details', '-Tenant Details')) {
+        if ($baseLeaf.EndsWith($suffix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $baseLeaf = $baseLeaf.Substring(0, $baseLeaf.Length - $suffix.Length)
+            break
+        }
     }
-    $manifestFileName = if ([string]::IsNullOrWhiteSpace($baseLeaf) -or [string]::Equals($baseLeaf, 'Assess', [System.StringComparison]::OrdinalIgnoreCase)) {
+    $manifestFileName = if (
+        [string]::IsNullOrWhiteSpace($baseLeaf) -or
+        [string]::Equals($baseLeaf, 'Assess', [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($baseLeaf, 'Tenant Details', [System.StringComparison]::OrdinalIgnoreCase)
+    ) {
         'Run.manifest.json'
     }
     else {

@@ -185,6 +185,69 @@ function Convert-ToArrayaStringList {
     )
 }
 
+function Convert-ToImprovementCollectionRows {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$Value,
+        [string[]]$MarkerNames = @()
+    )
+
+    if ($null -eq $Value) {
+        return @()
+    }
+
+    $looksLikeRow = $false
+    if ($MarkerNames.Count -gt 0) {
+        $looksLikeRow = $null -ne (Get-ArrayaObjectValue -Object $Value -Names $MarkerNames)
+    }
+
+    if ($looksLikeRow) {
+        if ($Value -is [System.Collections.IDictionary]) {
+            return [pscustomobject]$Value
+        }
+
+        return $Value
+    }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($item in @($Value.Values)) {
+            if ($null -eq $item) {
+                continue
+            }
+
+            if ($MarkerNames.Count -gt 0 -and $null -eq (Get-ArrayaObjectValue -Object $item -Names $MarkerNames)) {
+                continue
+            }
+
+            if ($item -is [System.Collections.IDictionary]) {
+                [pscustomobject]$item
+            }
+            else {
+                $item
+            }
+        }
+
+        return
+    }
+
+    foreach ($item in (Convert-ArrayaObjectToArray $Value)) {
+        if ($null -eq $item) {
+            continue
+        }
+
+        if ($MarkerNames.Count -gt 0 -and $null -eq (Get-ArrayaObjectValue -Object $item -Names $MarkerNames)) {
+            continue
+        }
+
+        if ($item -is [System.Collections.IDictionary]) {
+            [pscustomobject]$item
+        }
+        else {
+            $item
+        }
+    }
+}
+
 function Convert-ToArrayaDisplayText {
     [CmdletBinding()]
     param(
@@ -1643,7 +1706,6 @@ function Get-CustomerExecutiveSummaryNarrative {
         [Parameter(Mandatory = $false)][object[]]$OwnerGroups = @()
     )
 
-    $findingCount = @($Findings).Count
     $topOwnerGroups = if (@($OwnerGroups).Count -gt 0) {
         @($OwnerGroups | Select-Object -First 3)
     }
@@ -1665,7 +1727,7 @@ function Get-CustomerExecutiveSummaryNarrative {
     }
     $themeText = if ($themeNames.Count -gt 0) { $themeNames -join '; ' } else { 'the highest-risk Microsoft 365 control areas' }
 
-    return "The current review shows the most consistent pressure in $workstreamText. That matters because the leading executive themes of $themeText point to a pattern that is broader than a single isolated misconfiguration and is instead showing up in the same operating areas that already carry the most day-to-day administration load. Use the Overall Findings Summary table for the grouped picture, 4.0 Modern Workplace Recommendations for the action sequence, and 15.10 Full Findings Inventory for the itemized crosswalk."
+    return "The current review shows the highest risk concentration in $workstreamText. The leading themes of $themeText indicate that the tenant is carrying repeated control drift in the same operating areas that already carry the most day-to-day administration load. The tables below focus on the risk pattern, why it matters now, and which leadership decisions would remove the biggest blockers to a cleaner operating baseline."
 }
 
 function Join-ArrayaReadableList {
@@ -1902,6 +1964,294 @@ function New-CustomerConfigurationRow {
     return [pscustomobject]@{
         Signal = $Signal
         State  = $displayState
+    }
+}
+
+function New-CustomerConsultativeSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Title,
+        [Parameter(Mandatory = $false)][object[]]$SnapshotRows = @(),
+        [Parameter(Mandatory = $false)][object[]]$SecondaryRows = @(),
+        [Parameter(Mandatory = $false)][object[]]$TertiaryRows = @(),
+        [Parameter(Mandatory = $false)][string]$Narrative,
+        [Parameter(Mandatory = $false)][string]$RecommendationSupport
+    )
+
+    return [pscustomobject]@{
+        Title                 = $Title
+        SnapshotRows          = @($SnapshotRows)
+        SecondaryRows         = @($SecondaryRows)
+        TertiaryRows          = @($TertiaryRows)
+        Narrative             = $Narrative
+        RecommendationSupport = $RecommendationSupport
+    }
+}
+
+function Convert-ToArrayaCountBreakdownText {
+    [CmdletBinding()]
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    if ($Value -is [string]) {
+        $normalized = Convert-ToArrayaDisplayText -Value $Value -Default ''
+        return $(if ([string]::IsNullOrWhiteSpace($normalized)) { $null } else { $normalized })
+    }
+
+    $rows = New-Object System.Collections.Generic.List[object]
+    if ($Value -is [hashtable] -or $Value -is [System.Collections.Specialized.OrderedDictionary]) {
+        foreach ($entry in $Value.GetEnumerator()) {
+            $rows.Add([pscustomobject]@{
+                Name  = [string]$entry.Key
+                Count = Convert-ArrayaToNumber $entry.Value
+            }) | Out-Null
+        }
+    }
+    elseif ($Value.PSObject -and $Value.PSObject.Properties.Count -gt 0) {
+        foreach ($property in $Value.PSObject.Properties) {
+            $rows.Add([pscustomobject]@{
+                Name  = [string]$property.Name
+                Count = Convert-ArrayaToNumber $property.Value
+            }) | Out-Null
+        }
+    }
+
+    if ($rows.Count -eq 0) {
+        return $null
+    }
+
+    return (
+        @(
+            $rows |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_.Name) } |
+                Sort-Object @{ Expression = { $_.Count }; Descending = $true }, @{ Expression = { $_.Name } } |
+                ForEach-Object { '{0}={1}' -f $_.Name, $(if ($null -eq $_.Count) { 0 } else { $_.Count }) }
+        ) -join '; '
+    )
+}
+
+function Get-CustomerFriendlyMfaMethodName {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [string]$MethodName
+    )
+
+    $rawValue = [string]$MethodName
+    if ([string]::IsNullOrWhiteSpace($rawValue)) {
+        return $null
+    }
+
+    $normalized = ($rawValue -replace '\s+', '').Trim().ToLowerInvariant()
+    switch -Regex ($normalized) {
+        '^(email|emailotp)$' { return 'Email one-time passcode' }
+        '^(sms|mobilephone|alternatemobilephone|voice.*|officephone|phoneappnotificationlesssecure|phone)$' {
+            return $(if ($normalized -match 'voice|officephone') { 'Phone call' } else { 'SMS / phone' })
+        }
+        '^(microsoftauthenticator.*|authenticatorapp|phoneappnotification|passwordlessphonesignin)$' { return 'Microsoft Authenticator' }
+        '^(softwareonetimepasscode|softwareotp)$' { return 'Software one-time passcode' }
+        '^(softwareoath.*|oath.*)$' { return 'Software OATH token' }
+        '^(temporaryaccesspass|tap)$' { return 'Temporary Access Pass' }
+        '^(fido2.*|passkey.*)$' { return 'FIDO2 security key / passkey' }
+        '^(windowshelloforbusiness|windowshello.*)$' { return 'Windows Hello for Business' }
+        default {
+            if ($rawValue -cmatch '[a-z][A-Z]') {
+                return ([regex]::Replace($rawValue, '(?<=[a-z])(?=[A-Z])', ' ')).Trim()
+            }
+
+            return $rawValue.Trim()
+        }
+    }
+}
+
+function Convert-ToCustomerMfaMethodBreakdownText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [string]$Text
+    )
+
+    if ([string]::IsNullOrWhiteSpace([string]$Text)) {
+        return $null
+    }
+
+    $segments = @(
+        [string]$Text -split ';' |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+
+    if ($segments.Count -eq 0) {
+        return $null
+    }
+
+    return (
+        @(
+            foreach ($segment in $segments) {
+                if ($segment -match '^(?<label>[^=]+?)\s*=\s*(?<count>.+)$') {
+                    '{0}={1}' -f (Get-CustomerFriendlyMfaMethodName -MethodName $Matches.label), $Matches.count.Trim()
+                    continue
+                }
+
+                Get-CustomerFriendlyMfaMethodName -MethodName $segment
+            }
+        ) -join '; '
+    )
+}
+
+function Get-CustomerMfaEnrollmentSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]$ExistingSummary,
+        [Parameter(Mandatory = $false)]$MfaSummary
+    )
+
+    $source = if ($ExistingSummary) { $ExistingSummary } else { $MfaSummary }
+    if (-not $source) {
+        return $null
+    }
+
+    $totalUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('TotalUsers', 'UserCount', 'TotalUserCount'))
+    $registeredUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('RegisteredUsers', 'RegisteredUserCount', 'MfaRegisteredUsers'))
+    $notRegisteredUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('NotRegisteredUsers'))
+    $registrationPercent = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('RegistrationPercent', 'RegisteredPercent', 'MfaRegistrationPercent'))
+    if ($null -eq $registrationPercent -and $null -ne $registeredUsers -and $null -ne $totalUsers -and $totalUsers -gt 0) {
+        $registrationPercent = [math]::Round(($registeredUsers / $totalUsers) * 100, 1)
+    }
+
+    return [pscustomobject]@{
+        TotalUsers                        = $totalUsers
+        RegisteredUsers                   = $registeredUsers
+        NotRegisteredUsers                = $(if ($null -ne $notRegisteredUsers) { $notRegisteredUsers } elseif ($null -ne $totalUsers -and $null -ne $registeredUsers) { $totalUsers - $registeredUsers } else { $null })
+        RegistrationPercent               = $registrationPercent
+        RegisteredMethodBreakdown         = Convert-ToCustomerMfaMethodBreakdownText (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('RegisteredMethodBreakdown')) -Default (Convert-ToArrayaCountBreakdownText (Get-ArrayaObjectValue -Object $source -Names @('MethodCounts'))))
+        WeakMethodBreakdown               = Convert-ToCustomerMfaMethodBreakdownText (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('WeakMethodBreakdown')) -Default (Convert-ToArrayaCountBreakdownText (Get-ArrayaObjectValue -Object $source -Names @('WeakMethodCounts'))))
+        StrongMethodBreakdown             = Convert-ToCustomerMfaMethodBreakdownText (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('StrongMethodBreakdown')) -Default (Convert-ToArrayaCountBreakdownText (Get-ArrayaObjectValue -Object $source -Names @('StrongMethodCounts'))))
+        PhishingResistantMethodBreakdown  = Convert-ToCustomerMfaMethodBreakdownText (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('PhishingResistantMethodBreakdown')) -Default (Convert-ToArrayaCountBreakdownText (Get-ArrayaObjectValue -Object $source -Names @('PhishingResistantMethodCounts'))))
+        DefaultMethodBreakdown            = Convert-ToCustomerMfaMethodBreakdownText (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('DefaultMethodBreakdown')) -Default (Convert-ToArrayaCountBreakdownText (Get-ArrayaObjectValue -Object $source -Names @('DefaultMethodCounts'))))
+        UsersWithWeakMethodsOnly          = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('UsersWithWeakMethodsOnly'))
+        UsersWithWeakDefaultMethod        = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('UsersWithWeakDefaultMethod'))
+        UsersWithStrongMethods            = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('UsersWithStrongMethods'))
+        UsersWithPhishingResistantMethods = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('UsersWithPhishingResistantMethods'))
+        CollectionState                   = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('CollectionState')) -Default 'Not validated from the reviewed data'
+    }
+}
+
+function Get-CustomerMfaEnforcementSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]$ExistingSummary,
+        [Parameter(Mandatory = $false)][object[]]$ConditionalAccessPolicies = @(),
+        [Parameter(Mandatory = $false)]$ConditionalAccessSummary,
+        [Parameter(Mandatory = $false)]$SecurityDefaultsPolicy
+    )
+
+    $conditionalAccessSummaryRecord = if ($ConditionalAccessSummary) { Get-ArrayaObjectValue -Object $ConditionalAccessSummary -Names @('Summary') } else { $null }
+    $securityDefaultsRecord = if ($SecurityDefaultsPolicy) { Get-ArrayaObjectValue -Object $SecurityDefaultsPolicy -Names @('Configuration') } else { $null }
+
+    $summaryTotalPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('TotalPolicies'))
+    $summaryEnabledPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('EnabledPolicies'))
+    $summaryReportOnlyPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('ReportOnlyPolicies'))
+    $summaryPoliciesWithExclusions = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('PoliciesWithExclusions'))
+
+    if ($ExistingSummary) {
+        $reviewedPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('ConditionalAccessPoliciesReviewed'))
+        if ($null -ne $summaryTotalPolicies) {
+            $reviewedPolicies = $summaryTotalPolicies
+        }
+        elseif (($null -eq $reviewedPolicies) -and $ConditionalAccessPolicies.Count -gt 0) {
+            $reviewedPolicies = $ConditionalAccessPolicies.Count
+        }
+
+        return [pscustomobject]@{
+            ConditionalAccessPoliciesReviewed   = $reviewedPolicies
+            EnabledConditionalAccessPolicies    = $(if ($null -ne $summaryEnabledPolicies) { $summaryEnabledPolicies } else { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnabledConditionalAccessPolicies')) })
+            ReportOnlyConditionalAccessPolicies = $(if ($null -ne $summaryReportOnlyPolicies) { $summaryReportOnlyPolicies } else { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('ReportOnlyConditionalAccessPolicies')) })
+            PoliciesWithExclusions              = $(if ($null -ne $summaryPoliciesWithExclusions) { $summaryPoliciesWithExclusions } else { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('PoliciesWithExclusions')) })
+            PoliciesRequiringMfa                = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('PoliciesRequiringMfa'))
+            EnabledPoliciesRequiringMfa         = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnabledPoliciesRequiringMfa'))
+            ReportOnlyPoliciesRequiringMfa      = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('ReportOnlyPoliciesRequiringMfa'))
+            EnabledUsersReviewed                = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnabledUsersReviewed'))
+            EnabledMemberUsersReviewed          = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnabledMemberUsersReviewed'))
+            EnabledGuestUsersReviewed           = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnabledGuestUsersReviewed'))
+            UsersCoveredByEnabledMfaPolicies    = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('UsersCoveredByEnabledMfaPolicies'))
+            UserCoveragePercent                 = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('UserCoveragePercent'))
+            MemberUsersCoveredByEnabledMfaPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('MemberUsersCoveredByEnabledMfaPolicies'))
+            MemberUserCoveragePercent           = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('MemberUserCoveragePercent'))
+            GuestUsersCoveredByEnabledMfaPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('GuestUsersCoveredByEnabledMfaPolicies'))
+            GuestUserCoveragePercent            = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('GuestUserCoveragePercent'))
+            GroupTargetedPolicyCount            = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('GroupTargetedPolicyCount'))
+            RoleTargetedPolicyCount             = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('RoleTargetedPolicyCount'))
+            CoverageCalculationNote             = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('CoverageCalculationNote')) -Default 'Not validated from the reviewed data'
+            SecurityDefaultsEnabled             = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('SecurityDefaultsEnabled'))
+            GuestOrExternalCoverage             = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('GuestOrExternalCoverage'))
+            PrivilegedRoleCoverage              = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('PrivilegedRoleCoverage'))
+            RiskBasedCoverage                   = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('RiskBasedCoverage'))
+            CompliantDeviceRequirement          = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('CompliantDeviceRequirement'))
+            EnforcementState                    = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnforcementState')) -Default 'Not validated from the reviewed data'
+            CollectionState                     = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('CollectionState')) -Default 'Not validated from the reviewed data'
+        }
+    }
+
+    $mfaPolicies = @(
+        $ConditionalAccessPolicies |
+            Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('GrantControls_BuiltInControls'))) -match '(?i)mfa' }
+    )
+    $enabledMfaPolicies = @($mfaPolicies | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('State'))).ToLowerInvariant() -eq 'enabled' })
+    $reportOnlyMfaPolicies = @($mfaPolicies | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('State'))) -match '(?i)report' })
+    $securityDefaultsEnabled = $null
+    if ($securityDefaultsRecord) {
+        $securityDefaultsEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $securityDefaultsRecord -Names @('IsEnabled', 'Enabled'))
+    }
+
+    $enforcementState = if ($enabledMfaPolicies.Count -gt 0 -and $securityDefaultsEnabled -eq $true) {
+        'Conditional Access and Security Defaults both enforce MFA; confirm that the overlapping baseline is intentional.'
+    }
+    elseif ($enabledMfaPolicies.Count -gt 0) {
+        'MFA enforcement is active through enabled Conditional Access policies.'
+    }
+    elseif ($securityDefaultsEnabled -eq $true) {
+        'MFA enforcement is active through Security Defaults.'
+    }
+    elseif ($reportOnlyMfaPolicies.Count -gt 0) {
+        'MFA appears staged in report-only Conditional Access, but active enforcement was not clearly detected.'
+    }
+    else {
+        'Active MFA enforcement was not clearly detected in the reviewed policy baseline.'
+    }
+
+    return [pscustomobject]@{
+        ConditionalAccessPoliciesReviewed   = $(if ($null -ne $summaryTotalPolicies) { $summaryTotalPolicies } else { $ConditionalAccessPolicies.Count })
+        EnabledConditionalAccessPolicies    = $summaryEnabledPolicies
+        ReportOnlyConditionalAccessPolicies = $summaryReportOnlyPolicies
+        PoliciesWithExclusions              = $summaryPoliciesWithExclusions
+        PoliciesRequiringMfa                = $mfaPolicies.Count
+        EnabledPoliciesRequiringMfa         = $enabledMfaPolicies.Count
+        ReportOnlyPoliciesRequiringMfa      = $reportOnlyMfaPolicies.Count
+        EnabledUsersReviewed                = $null
+        EnabledMemberUsersReviewed          = $null
+        EnabledGuestUsersReviewed           = $null
+        UsersCoveredByEnabledMfaPolicies    = $null
+        UserCoveragePercent                 = $null
+        MemberUsersCoveredByEnabledMfaPolicies = $null
+        MemberUserCoveragePercent           = $null
+        GuestUsersCoveredByEnabledMfaPolicies = $null
+        GuestUserCoveragePercent            = $null
+        GroupTargetedPolicyCount            = $null
+        RoleTargetedPolicyCount             = $null
+        CoverageCalculationNote             = 'Not validated from the reviewed data'
+        SecurityDefaultsEnabled             = $securityDefaultsEnabled
+        GuestOrExternalCoverage             = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasGuestCoverage'))
+        PrivilegedRoleCoverage              = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasPrivilegedRoleCoverage'))
+        RiskBasedCoverage                   = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasRiskBasedCoverage'))
+        CompliantDeviceRequirement          = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasCompliantDeviceRequirement'))
+        EnforcementState                    = $enforcementState
+        CollectionState                     = 'Derived'
     }
 }
 
@@ -2170,6 +2520,8 @@ function Get-CustomerTechnicalObservations {
     $caSummaryRecord = if ($Signals.ConditionalAccessSummary) { Get-ArrayaObjectValue -Object $Signals.ConditionalAccessSummary -Names @('Summary') } else { $null }
     $authConfig = $Signals.AuthenticationConfig
     $mfaSummary = $Signals.MfaRegistrationSummary
+    $mfaEnrollmentSummaryRecord = Get-CustomerMfaEnrollmentSummary -ExistingSummary $Signals.MfaEnrollmentSummary -MfaSummary $mfaSummary
+    $mfaEnforcementSummaryRecord = Get-CustomerMfaEnforcementSummary -ExistingSummary $Signals.MfaEnforcementSummary -ConditionalAccessPolicies $caPolicies -ConditionalAccessSummary $Signals.ConditionalAccessSummary -SecurityDefaultsPolicy $Signals.SecurityDefaultsPolicy
     $enterpriseApps = Convert-ArrayaObjectToArray $Signals.EnterpriseApplications
     $enterpriseAppSummaryRecord = if ($Signals.EnterpriseApplicationSummary) { Get-ArrayaObjectValue -Object $Signals.EnterpriseApplicationSummary -Names @('Summary') } else { $null }
     $guestSummaryRecord = if ($Signals.GuestSignInSummary) { Get-ArrayaObjectValue -Object $Signals.GuestSignInSummary -Names @('Summary') } else { $null }
@@ -2184,6 +2536,15 @@ function Get-CustomerTechnicalObservations {
     $inactiveGuests90Days = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $guestSummaryRecord -Names @('InactiveGuests90Days'))
     $stalePrivileged90Days = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $privilegedSummaryRecord -Names @('StalePrivilegedAccounts90Days'))
     $mfaPercent = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaSummary -Names @('RegistrationPercent'))
+    if ($null -eq $mfaPercent) {
+        $mfaPercent = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummaryRecord -Names @('RegistrationPercent'))
+    }
+    $usersWithWeakMethodsOnly = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummaryRecord -Names @('UsersWithWeakMethodsOnly'))
+    $usersWithWeakDefaultMethod = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummaryRecord -Names @('UsersWithWeakDefaultMethod'))
+    $usersWithPhishingResistantMethods = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummaryRecord -Names @('UsersWithPhishingResistantMethods'))
+    $enabledMfaPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnforcementSummaryRecord -Names @('EnabledPoliciesRequiringMfa'))
+    $reportOnlyMfaPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnforcementSummaryRecord -Names @('ReportOnlyPoliciesRequiringMfa'))
+    $mfaEnforcementState = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $mfaEnforcementSummaryRecord -Names @('EnforcementState')) -Default ''
     $highPrivilegeApps = @($enterpriseApps | Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('HighPrivilegePermissionCount'))) -gt 0 }).Count
     $policiesWithExclusions = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $caSummaryRecord -Names @('PoliciesWithExclusions'))
     $policiesUsingRiskSignals = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $caSummaryRecord -Names @('PoliciesUsingRiskSignals', 'RiskBasedPolicyCount'))
@@ -2204,7 +2565,9 @@ function Get-CustomerTechnicalObservations {
     if ($caPolicies.Count -gt 0) { $observedIdentity += "$($caPolicies.Count) Conditional Access policy/policies were in scope, including $reportOnlyPolicies in report-only mode" }
     if ($null -ne $inactiveGuests90Days) { $observedIdentity += "$inactiveGuests90Days inactive guest account(s) over 90 days were identified" }
     if ($null -ne $stalePrivileged90Days) { $observedIdentity += "$stalePrivileged90Days privileged account(s) showed stale sign-in activity over 90 days" }
-    if ($null -ne $mfaPercent) { $observedIdentity += "MFA registration was $mfaPercent%" }
+    if ($null -ne $mfaPercent) { $observedIdentity += "MFA enrollment was $mfaPercent%" }
+    if ($null -ne $usersWithWeakMethodsOnly) { $observedIdentity += "$usersWithWeakMethodsOnly registered user(s) relied only on weaker MFA methods" }
+    if ($null -ne $enabledMfaPolicies) { $observedIdentity += "$enabledMfaPolicies enabled Conditional Access policy/policies required MFA" }
     if (-not [string]::IsNullOrWhiteSpace($guestInvitationControl)) { $observedIdentity += "guest invitation control was set to $guestInvitationControl" }
     if ($null -ne $crossTenantPartnerCount) { $observedIdentity += "$crossTenantPartnerCount cross-tenant partner configuration(s) were present" }
     if (-not [string]::IsNullOrWhiteSpace($defaultInboundMfaTrust)) { $observedIdentity += "default inbound MFA trust was set to $defaultInboundMfaTrust" }
@@ -2462,7 +2825,13 @@ function Get-CustomerTechnicalObservations {
                     New-CustomerConfigurationRow -Signal 'Conditional Access policies' -State $caPolicies.Count
                     New-CustomerConfigurationRow -Signal 'Report-only Conditional Access policies' -State $reportOnlyPolicies
                     New-CustomerConfigurationRow -Signal 'Policies with exclusions' -State $policiesWithExclusions
-                    New-CustomerConfigurationRow -Signal 'MFA registration rate' -State $(if ($null -ne $mfaPercent) { "$mfaPercent%" } else { $null })
+                    New-CustomerConfigurationRow -Signal 'MFA enrollment rate' -State $(if ($null -ne $mfaPercent) { "$mfaPercent%" } else { $null })
+                    New-CustomerConfigurationRow -Signal 'Users with weak MFA methods only' -State $usersWithWeakMethodsOnly
+                    New-CustomerConfigurationRow -Signal 'Users with weak default MFA method' -State $usersWithWeakDefaultMethod
+                    New-CustomerConfigurationRow -Signal 'Users with phishing-resistant MFA methods' -State $usersWithPhishingResistantMethods
+                    New-CustomerConfigurationRow -Signal 'Enabled MFA enforcement policies' -State $enabledMfaPolicies
+                    New-CustomerConfigurationRow -Signal 'Report-only MFA enforcement policies' -State $reportOnlyMfaPolicies
+                    New-CustomerConfigurationRow -Signal 'MFA enforcement state' -State $mfaEnforcementState
                     New-CustomerConfigurationRow -Signal 'Inactive guest accounts (>90 days)' -State $inactiveGuests90Days
                     New-CustomerConfigurationRow -Signal 'Guest invitation control' -State $guestInvitationControl
                     New-CustomerConfigurationRow -Signal 'Cross-tenant partner count' -State $crossTenantPartnerCount
@@ -2471,7 +2840,7 @@ function Get-CustomerTechnicalObservations {
                     New-CustomerConfigurationRow -Signal 'Permission-grant policies' -State $(if ($policyNames.Count -gt 0) { ($policyNames | Select-Object -First 2) -join '; ' } else { $null })
                     New-CustomerConfigurationRow -Signal 'Example stale privileged identities' -State $identityExamples
                 )
-                $observation.ObservedNarrative = "Identity stood out because the tenant is carrying $globalAdminCount Global Administrators while also showing $reportOnlyPolicies report-only Conditional Access policies and $policiesWithExclusions policies with exclusions. MFA registration is $mfaPercent%, which means the baseline has started to take shape but is not yet reinforced evenly across the identities carrying the most exposure. Guest invitation control is currently shown as $guestInvitationControl, and cross-tenant partner count is $crossTenantPartnerCount, which means external identity exposure should be reviewed alongside privileged access rather than as a separate track. The stale-admin examples in the table show that some long-lived privileged access remains in place well past what would normally be expected in a tighter operating model."
+                $observation.ObservedNarrative = "Identity stood out because the tenant is carrying $globalAdminCount Global Administrators while also showing $reportOnlyPolicies report-only Conditional Access policies and $policiesWithExclusions policies with exclusions. MFA enrollment is currently $mfaPercent%, but enforcement should be read separately: the reviewed policy baseline shows $enabledMfaPolicies enabled MFA enforcement policies, with $reportOnlyMfaPolicies still in report-only mode. Weak-method usage remains visible in the registration data, which means enrollment quality should be reviewed alongside coverage. Guest invitation control is currently shown as $guestInvitationControl, and cross-tenant partner count is $crossTenantPartnerCount, which means external identity exposure should be reviewed alongside privileged access rather than as a separate track. The stale-admin examples in the table show that some long-lived privileged access remains in place well past what would normally be expected in a tighter operating model."
                 $observation.PositiveNarrative = if (($policiesUsingRiskSignals -gt 0) -or ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $authConfig -Names @('MFAEnabled'))) -eq $true)) { "What is working well is that the tenant already has risk-aware Conditional Access coverage in place, MFA is enabled, and the current source contains enough identity telemetry to target cleanup precisely." } else { "What is working well is that this source still surfaces administrator, guest, and policy telemetry clearly enough to support evidence-based identity cleanup." }
             }
             'Devices & Endpoint Management' {
@@ -2563,6 +2932,282 @@ function Get-CustomerTechnicalObservations {
     }
 
     return @($observations.ToArray())
+}
+
+function Get-CustomerModelLeadershipDecisionText {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$Action)
+
+    switch ([string]$Action.ActionTitle) {
+        'Reduce privileged access and strengthen identity controls' { return 'Approve the reduction of standing privileged access and the move from observation-only identity controls into the supported baseline.' }
+        'Establish accountable ownership for collaboration spaces' { return 'Approve an ownership model for collaboration spaces, including when stale workspaces should be retained, transferred, or retired.' }
+        'Strengthen domain and anti-spoofing controls' { return 'Approve the domain and mail-authentication baseline so verification, SPF, DKIM, and DMARC cleanup can be completed consistently.' }
+        'Improve device compliance and managed endpoint coverage' { return 'Approve the expected endpoint baseline and the exception path for devices that should not retain access while non-compliant.' }
+        'Review external forwarding and mail flow exposure' { return 'Approve the external forwarding and mail-flow standard so exceptions can be formally validated or removed.' }
+        'Reconcile license capacity and tenant governance gaps' { return 'Approve the capacity and governance cleanup path so constrained licensing and governance gaps can be resolved together.' }
+        'Strengthen baseline security and access protections' { return 'Approve the security baseline changes required to close the highest-value protection gaps first.' }
+        default { return 'Approve the operating model, accountable owner, and remediation sequence for this work item.' }
+    }
+}
+
+function Get-CustomerExecutiveDecisionSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]]$ExecutiveThemes,
+        [Parameter(Mandatory = $false)][object[]]$RoadmapActions = @(),
+        [Parameter(Mandatory = $false)][object[]]$OwnerGroups = @()
+    )
+
+    $themeNames = @($ExecutiveThemes | Select-Object -First 3 | ForEach-Object { [string]$_.Theme })
+    $ownerNames = if (@($OwnerGroups).Count -gt 0) {
+        @($OwnerGroups | Select-Object -First 3 | ForEach-Object { [string]$_.Name })
+    }
+    else {
+        @()
+    }
+
+    $riskRows = @(
+        foreach ($theme in @($ExecutiveThemes | Select-Object -First 3)) {
+            [pscustomobject]@{
+                RiskCluster             = [string]$theme.Theme
+                WhatStandsOut           = [string]$theme.WhatThisMeans
+                WhyLeadershipShouldCare = [string]$theme.WhyItMatters
+            }
+        }
+    )
+
+    $decisionRows = @(
+        foreach ($action in @($RoadmapActions | Select-Object -First 3)) {
+            [pscustomobject]@{
+                DecisionFocus        = Convert-ToArrayaDisplayText -Value $action.ActionTitle -Default 'Priority work item'
+                WhatShouldHappenNext = Get-CustomerModelLeadershipDecisionText -Action $action
+                WhyNow               = Convert-ToArrayaDisplayText -Value $action.WhyItMatters -Default 'The current review shows this as one of the highest-value decision points.'
+            }
+        }
+    )
+
+    if ($decisionRows.Count -eq 0) {
+        $decisionRows = @(
+            [pscustomobject]@{
+                DecisionFocus        = 'Priority work item not clearly surfaced'
+                WhatShouldHappenNext = 'Approve the remediation path that best matches the reviewed evidence.'
+                WhyNow               = 'The current review did not include a clear roadmap ordering, so the grouped findings should guide the next approval.'
+            }
+        )
+    }
+
+    $themeText = if ($themeNames.Count -gt 0) { Join-ArrayaReadableList -Items $themeNames } else { 'the highest-risk Microsoft 365 control areas' }
+    $ownerText = if ($ownerNames.Count -gt 0) { Join-ArrayaReadableList -Items $ownerNames } else { 'the tenant overall' }
+
+    return [pscustomobject]@{
+        Narrative    = "The report shows the clearest risk concentration in $ownerText. The leading risk clusters of $themeText indicate repeated control drift rather than a single isolated exception, so the brief below focuses on the decisions that remove the biggest blockers to a cleaner operating baseline."
+        RiskRows     = @($riskRows)
+        DecisionRows = @($decisionRows)
+    }
+}
+
+function Get-CustomerConsultativeSummaries {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object]$Signals,
+        [Parameter(Mandatory = $false)][object[]]$Findings = @(),
+        [Parameter(Mandatory = $false)][object[]]$ExecutiveThemes = @(),
+        [Parameter(Mandatory = $false)][object[]]$RoadmapActions = @(),
+        [Parameter(Mandatory = $false)][object[]]$OwnerGroups = @()
+    )
+
+    $adminRows = Convert-ArrayaObjectToArray $Signals.Admins
+    $userRows = Convert-ArrayaObjectToArray $Signals.Users
+    $guestSummaryRecord = if ($Signals.GuestSignInSummary) { Get-ArrayaObjectValue -Object $Signals.GuestSignInSummary -Names @('Summary') } else { $null }
+    $privilegedSummaryRecord = if ($Signals.PrivilegedAccessSummary) { Get-ArrayaObjectValue -Object $Signals.PrivilegedAccessSummary -Names @('Summary') } else { $null }
+    $mfaSummary = $Signals.MfaRegistrationSummary
+    $caPolicies = Convert-ArrayaObjectToArray $Signals.ConditionalAccessPolicies
+    $mfaEnrollmentSummaryRecord = Get-CustomerMfaEnrollmentSummary -ExistingSummary $Signals.MfaEnrollmentSummary -MfaSummary $mfaSummary
+    $mfaEnforcementSummaryRecord = Get-CustomerMfaEnforcementSummary -ExistingSummary $Signals.MfaEnforcementSummary -ConditionalAccessPolicies $caPolicies -ConditionalAccessSummary $Signals.ConditionalAccessSummary -SecurityDefaultsPolicy $Signals.SecurityDefaultsPolicy
+    $caSummaryRecord = if ($Signals.ConditionalAccessSummary) { Get-ArrayaObjectValue -Object $Signals.ConditionalAccessSummary -Names @('Summary') } else { $null }
+    $recipientRows = Convert-ArrayaObjectToArray $Signals.AllRecipients
+    $mailboxRows = Convert-ArrayaObjectToArray $Signals.AllMailboxes
+    $archiveMailboxRows = Convert-ArrayaObjectToArray $Signals.ArchiveMailboxes
+    $archiveMailboxStatsRows = Convert-ArrayaObjectToArray $Signals.ArchiveMailboxStats
+    $inactiveMailboxRows = Convert-ArrayaObjectToArray $Signals.InactiveMailboxes
+    $inboxRulesExternalForwarding = Convert-ArrayaObjectToArray $Signals.InboxRulesExternalForwarding
+    $inboxRuleForwardingSummaryRecord = if ($Signals.InboxRuleForwardingSummary) { Get-ArrayaObjectValue -Object $Signals.InboxRuleForwardingSummary -Names @('Summary') } else { $null }
+    $forwardingPolicySummaryRecord = if ($Signals.ForwardingPolicySummary) { Get-ArrayaObjectValue -Object $Signals.ForwardingPolicySummary -Names @('Summary') } else { $null }
+    $connectorRows = Convert-ArrayaObjectToArray $Signals.MailFlowConnectors
+    $sharedMailboxGovernanceSummaryRecord = if ($Signals.SharedMailboxGovernanceSummary) { Get-ArrayaObjectValue -Object $Signals.SharedMailboxGovernanceSummary -Names @('Summary') } else { $null }
+    $publicFolderRows = Convert-ArrayaObjectToArray $Signals.PublicFolderDetails
+    $sharePointRows = Convert-ArrayaObjectToArray $Signals.SharePoint
+    $oneDriveRows = Convert-ArrayaObjectToArray $Signals.OneDrive
+    $teamRows = Convert-ArrayaObjectToArray $Signals.AllTeams
+    $unifiedGroupRows = Convert-ArrayaObjectToArray $Signals.UnifiedGroups
+    $externalSharingSummaryRecord = if ($Signals.ExternalSharingSummary) { Get-ArrayaObjectValue -Object $Signals.ExternalSharingSummary -Names @('Summary') } else { $null }
+    $sharePointSharingSummaryRecord = if ($Signals.SharePointSharingSummary) { Get-ArrayaObjectValue -Object $Signals.SharePointSharingSummary -Names @('Summary') } else { $null }
+    $externalExposureFindings = Convert-ArrayaObjectToArray $Signals.ExternalExposureFindings
+    $externalSharingSiteOverrideRows = Convert-ArrayaObjectToArray $Signals.ExternalSharingSiteOverrides
+    $oneDriveOwnerMismatches = Convert-ArrayaObjectToArray $Signals.OneDriveOwnerMismatches
+    $domainRows = Convert-ArrayaObjectToArray $Signals.Domains
+    $licenseRows = Convert-ArrayaObjectToArray $Signals.LicenseSKUs
+    $secureScoreRows = Convert-ArrayaObjectToArray $Signals.SecuritySecureScore
+    $smtpRelaySummary = $Signals.SMTPRelaySummary
+    $tenantInfoSummaryRecord = if ($Signals.TenantInfoSummary) { Get-ArrayaObjectValue -Object $Signals.TenantInfoSummary -Names @('Summary') } else { $null }
+
+    $globalAdminCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $privilegedSummaryRecord -Names @('GlobalAdministratorCount'))
+    if ($null -eq $globalAdminCount) {
+        $globalAdminCount = @($adminRows | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('Role', 'RolesAssigned'))) -match 'global administrator' }).Count
+    }
+    $stalePrivileged90Days = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $privilegedSummaryRecord -Names @('StalePrivilegedAccounts90Days'))
+    $inactiveGuests90Days = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $guestSummaryRecord -Names @('InactiveGuests90Days'))
+    $mfaPercent = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummaryRecord -Names @('RegistrationPercent'))
+    $policiesWithExclusions = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $caSummaryRecord -Names @('PoliciesWithExclusions'))
+    $usersWithWeakMethodsOnly = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummaryRecord -Names @('UsersWithWeakMethodsOnly'))
+    $usersWithWeakDefaultMethod = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummaryRecord -Names @('UsersWithWeakDefaultMethod'))
+    $usersWithPhishingResistantMethods = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummaryRecord -Names @('UsersWithPhishingResistantMethods'))
+    $enabledMfaPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnforcementSummaryRecord -Names @('EnabledPoliciesRequiringMfa'))
+    $reportOnlyMfaPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnforcementSummaryRecord -Names @('ReportOnlyPoliciesRequiringMfa'))
+    $mfaEnforcementState = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $mfaEnforcementSummaryRecord -Names @('EnforcementState')) -Default $null
+
+    $forwardedMailboxCount = @($mailboxRows | Where-Object {
+        $deliverAndForward = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DeliverToMailboxAndForward'))
+        $forwardSmtp = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ForwardingSmtpAddress')) -Default ''
+        $forwardAddress = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ForwardingAddress')) -Default ''
+        $deliverAndForward -or -not [string]::IsNullOrWhiteSpace($forwardSmtp) -or -not [string]::IsNullOrWhiteSpace($forwardAddress)
+    }).Count
+    $externalForwardRuleCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $inboxRuleForwardingSummaryRecord -Names @('ExternalForwardingRuleCount'))
+    if ($null -eq $externalForwardRuleCount) { $externalForwardRuleCount = $inboxRulesExternalForwarding.Count }
+    $policiesAllowingAutoForwarding = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $forwardingPolicySummaryRecord -Names @('PoliciesExplicitlyAllowingAutoForwarding'))
+    $remoteDomainsAllowingAutoForwarding = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $forwardingPolicySummaryRecord -Names @('RemoteDomainsAllowingAutoForwarding'))
+    $sharedMailboxesWithoutOwnerSignal = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $sharedMailboxGovernanceSummaryRecord -Names @('SharedMailboxesWithoutOwnerSignal'))
+    $oversizedSharedMailboxes = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $sharedMailboxGovernanceSummaryRecord -Names @('OversizedSharedMailboxes'))
+    $mailboxesWithHoldSignals = @(
+        $mailboxRows | Where-Object {
+            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('LitigationHoldEnabled'))) -eq $true -or
+            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RetentionHoldEnabled'))) -eq $true -or
+            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DelayHoldApplied'))) -eq $true
+        }
+    ).Count
+    $archiveMailboxesOverFiftyGb = @(
+        $archiveMailboxStatsRows | Where-Object {
+            (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('TotalItemSizeBytes'))) -ge 53687091200
+        }
+    ).Count
+    $recipientRowsForMessaging = if ($recipientRows.Count -gt 0) { $recipientRows } else { $mailboxRows }
+    $recipientBreakdown = Get-CustomerTypeBreakdownText -Rows $recipientRowsForMessaging -PropertyName 'RecipientTypeDetails' -Top 3
+    $domainBreakdown = Get-CustomerRecipientDomainBreakdownText -DomainRows $domainRows -Top 2
+    $smtpAuthUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $smtpRelaySummary -Names @('SMTPAuthUsers'))
+
+    $ownerlessTeams = @($teamRows | Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('OwnerCount'))) -eq 0 }).Count
+    $ownerlessGroups = @($unifiedGroupRows | Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('OwnerCount'))) -eq 0 }).Count
+    $guestHeavyTeams = @($teamRows | Where-Object {
+        $guestCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('GuestCount'))
+        $memberCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('MemberCount'))
+        $null -ne $guestCount -and $null -ne $memberCount -and $memberCount -gt 0 -and (($guestCount / $memberCount) -ge 0.4)
+    }).Count
+    $staleSharePointSites = @($sharePointRows | Where-Object { $lastModified = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastContentModifiedDate')); $lastModified -and $lastModified -lt (Get-Date).AddDays(-180) }).Count
+    $staleOneDrives = @($oneDriveRows | Where-Object { $lastModified = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastContentModifiedDate')); $lastModified -and $lastModified -lt (Get-Date).AddDays(-180) }).Count
+    $tenantSharingCapability = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('TenantSharingCapability')) -Default ''
+    if ([string]::IsNullOrWhiteSpace($tenantSharingCapability)) {
+        $tenantSharingCapability = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $sharePointSharingSummaryRecord -Names @('TenantSharingCapability')) -Default ''
+    }
+    $defaultSharingLinkType = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('DefaultSharingLinkType')) -Default ''
+    if ([string]::IsNullOrWhiteSpace($defaultSharingLinkType)) {
+        $defaultSharingLinkType = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $sharePointSharingSummaryRecord -Names @('DefaultSharingLinkType')) -Default ''
+    }
+    $siteOverrideCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('SiteOverrideCount'))
+    if ($null -eq $siteOverrideCount) { $siteOverrideCount = $externalSharingSiteOverrideRows.Count }
+    $sharingDomainRestrictionMode = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('SharingDomainRestrictionMode')) -Default ''
+
+    $secureScoreLatest = $secureScoreRows | Sort-Object { Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('CreatedDateTime', 'createdDateTime')) } -Descending | Select-Object -First 1
+    $secureScoreCurrent = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $secureScoreLatest -Names @('CurrentScore', 'currentScore'))
+    $secureScoreMax = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $secureScoreLatest -Names @('MaxScore', 'maxScore'))
+    $secureScorePercent = if ($null -ne $secureScoreCurrent -and $null -ne $secureScoreMax -and $secureScoreMax -gt 0) { [math]::Round(($secureScoreCurrent / $secureScoreMax) * 100, 2) } else { $null }
+    $unverifiedDomains = @($domainRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsVerified', 'Verified'))) -eq $false }).Count
+    $dmarcMissingCount = @($domainRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DmarcConfigured'))) -ne $true }).Count
+    $licensePressure = Get-CustomerTopLicensePressureText -LicenseRows $licenseRows -Top 3
+    $dirSyncEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $tenantInfoSummaryRecord -Names @('DirSyncEnabled', 'DirectorySynchronizationEnabled'))
+
+    $inactiveLicensedUsers = @(
+        $userRows |
+            Where-Object {
+                $assignedLicenses = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $_ -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
+                $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
+                $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime'))
+                $assignedLicenses.Count -gt 0 -and (($enabled -eq $false) -or ($lastSignIn -and $lastSignIn -lt (Get-Date).AddDays(-90)))
+            }
+    ).Count
+    $dormantTeams = @(
+        $teamRows | Where-Object {
+            $lastActivity = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastActivityDate'))
+            $lastActivity -and $lastActivity -lt (Get-Date).AddDays(-90)
+        }
+    ).Count
+
+    return [pscustomobject]@{
+        ExecutiveDecisionSummary = Get-CustomerExecutiveDecisionSummary -ExecutiveThemes $ExecutiveThemes -RoadmapActions $RoadmapActions -OwnerGroups $OwnerGroups
+        IdentityConsultativeSummary = (New-CustomerConsultativeSummary -Title 'IdentityConsultativeSummary' -SnapshotRows @(
+            (New-CustomerConfigurationRow -Signal 'Global Administrator count' -State $globalAdminCount),
+            (New-CustomerConfigurationRow -Signal 'Stale privileged accounts (>90 days)' -State $stalePrivileged90Days),
+            (New-CustomerConfigurationRow -Signal 'Inactive guest accounts (>90 days)' -State $inactiveGuests90Days),
+            (New-CustomerConfigurationRow -Signal 'MFA enrollment rate' -State $(if ($null -ne $mfaPercent) { "$mfaPercent%" } else { $null })),
+            (New-CustomerConfigurationRow -Signal 'Registered method mix' -State (Get-ArrayaObjectValue -Object $mfaEnrollmentSummaryRecord -Names @('RegisteredMethodBreakdown'))),
+            (New-CustomerConfigurationRow -Signal 'Users with weak MFA methods only' -State $usersWithWeakMethodsOnly),
+            (New-CustomerConfigurationRow -Signal 'Users with weak default MFA method' -State $usersWithWeakDefaultMethod),
+            (New-CustomerConfigurationRow -Signal 'Users with phishing-resistant MFA methods' -State $usersWithPhishingResistantMethods),
+            (New-CustomerConfigurationRow -Signal 'Conditional Access policies reviewed' -State $caPolicies.Count),
+            (New-CustomerConfigurationRow -Signal 'Enabled MFA enforcement policies' -State $enabledMfaPolicies),
+            (New-CustomerConfigurationRow -Signal 'Report-only MFA enforcement policies' -State $reportOnlyMfaPolicies),
+            (New-CustomerConfigurationRow -Signal 'Policies with exclusions' -State $policiesWithExclusions),
+            (New-CustomerConfigurationRow -Signal 'MFA enforcement state' -State $mfaEnforcementState)
+        ) -Narrative 'Identity risk is clustering around privileged-access hygiene, guest lifecycle, uneven MFA enrollment quality, and policy enforcement that is not yet consistently active across the reviewed baseline.' -RecommendationSupport 'This section supports the identity and access recommendations in 4.0.')
+        MessagingConsultativeSummary = (New-CustomerConsultativeSummary -Title 'MessagingConsultativeSummary' -SnapshotRows @(
+            (New-CustomerConfigurationRow -Signal 'Recipients in scope' -State $(if ($recipientRowsForMessaging.Count -gt 0) { $recipientRowsForMessaging.Count } else { $null })),
+            (New-CustomerConfigurationRow -Signal 'Recipient mix by type' -State $recipientBreakdown),
+            (New-CustomerConfigurationRow -Signal 'Top recipient domains' -State $domainBreakdown),
+            (New-CustomerConfigurationRow -Signal 'Mailboxes with forwarding' -State $forwardedMailboxCount),
+            (New-CustomerConfigurationRow -Signal 'Inbox rules with external forwarding' -State $externalForwardRuleCount),
+            (New-CustomerConfigurationRow -Signal 'Connectors in scope' -State $connectorRows.Count),
+            (New-CustomerConfigurationRow -Signal 'Remote domains allowing auto-forwarding' -State $remoteDomainsAllowingAutoForwarding)
+        ) -SecondaryRows @(
+            (New-CustomerConfigurationRow -Signal 'Shared mailboxes without owner signal' -State $sharedMailboxesWithoutOwnerSignal),
+            (New-CustomerConfigurationRow -Signal 'Oversized shared mailboxes' -State $oversizedSharedMailboxes),
+            (New-CustomerConfigurationRow -Signal 'Inactive mailboxes' -State $inactiveMailboxRows.Count),
+            (New-CustomerConfigurationRow -Signal 'Mailboxes with hold signals' -State $mailboxesWithHoldSignals),
+            (New-CustomerConfigurationRow -Signal 'Archive-enabled mailboxes' -State $archiveMailboxRows.Count),
+            (New-CustomerConfigurationRow -Signal 'Archive mailboxes over 50 GB' -State $archiveMailboxesOverFiftyGb)
+        ) -TertiaryRows @(
+            (New-CustomerConfigurationRow -Signal 'Outbound policies allowing auto-forwarding' -State $policiesAllowingAutoForwarding),
+            (New-CustomerConfigurationRow -Signal 'Remote domains allowing auto-forwarding' -State $remoteDomainsAllowingAutoForwarding),
+            (New-CustomerConfigurationRow -Signal 'SMTP-authenticated accounts' -State $smtpAuthUsers),
+            (New-CustomerConfigurationRow -Signal 'Public folder objects' -State $publicFolderRows.Count),
+            (New-CustomerConfigurationRow -Signal 'External forwarding exposure' -State ("{0} inbox rule(s); {1} mailbox(es) with forwarding" -f $(if ($null -eq $externalForwardRuleCount) { 0 } else { $externalForwardRuleCount }), $forwardedMailboxCount))
+        ) -Narrative 'Messaging risk is most visible in forwarding pathways, long-lived shared workloads, and retained legacy transport objects rather than raw mailbox count alone.' -RecommendationSupport 'This section supports the messaging and anti-spoofing recommendations in 4.0.')
+        CollaborationConsultativeSummary = (New-CustomerConsultativeSummary -Title 'CollaborationConsultativeSummary' -SnapshotRows @(
+            (New-CustomerConfigurationRow -Signal 'Ownerless Teams' -State $ownerlessTeams),
+            (New-CustomerConfigurationRow -Signal 'Ownerless Microsoft 365 groups' -State $ownerlessGroups),
+            (New-CustomerConfigurationRow -Signal 'Stale SharePoint sites (>180 days)' -State $staleSharePointSites),
+            (New-CustomerConfigurationRow -Signal 'Stale OneDrive locations (>180 days)' -State $staleOneDrives),
+            (New-CustomerConfigurationRow -Signal 'Guest-heavy Teams' -State $guestHeavyTeams),
+            (New-CustomerConfigurationRow -Signal 'Tenant external sharing posture' -State $tenantSharingCapability),
+            (New-CustomerConfigurationRow -Signal 'Default sharing link type' -State $defaultSharingLinkType),
+            (New-CustomerConfigurationRow -Signal 'Site-level sharing overrides' -State $siteOverrideCount),
+            (New-CustomerConfigurationRow -Signal 'External exposure review rows' -State $externalExposureFindings.Count)
+        ) -Narrative 'Collaboration risk is clustering where broad sharing posture, stale content locations, and weak ownership signals overlap.' -RecommendationSupport 'This section supports the collaboration ownership, lifecycle, and external-sharing recommendations in 4.0.')
+        GovernanceConsultativeSummary = (New-CustomerConsultativeSummary -Title 'GovernanceConsultativeSummary' -SnapshotRows @(
+            (New-CustomerConfigurationRow -Signal 'Microsoft Secure Score' -State $(if ($null -ne $secureScorePercent) { "$secureScorePercent% ($secureScoreCurrent/$secureScoreMax)" } else { $null })),
+            (New-CustomerConfigurationRow -Signal 'Unverified domains' -State $unverifiedDomains),
+            (New-CustomerConfigurationRow -Signal 'Domains without DMARC' -State $dmarcMissingCount),
+            (New-CustomerConfigurationRow -Signal 'License capacity pressure' -State $licensePressure),
+            (New-CustomerConfigurationRow -Signal 'SMTP-authenticated accounts' -State $smtpAuthUsers),
+            (New-CustomerConfigurationRow -Signal 'Directory synchronization' -State $(if ($null -eq $dirSyncEnabled) { $null } elseif ($dirSyncEnabled) { 'Enabled' } else { 'Disabled' }))
+        ) -Narrative 'Governance pressure is most visible where domain trust controls, licensing headroom, and baseline security posture are drifting together.' -RecommendationSupport 'This section supports the governance, domain, and security-baseline recommendations in 4.0.')
+        LifecycleConsultativeSummary = (New-CustomerConsultativeSummary -Title 'LifecycleConsultativeSummary' -SnapshotRows @(
+            (New-CustomerConfigurationRow -Signal 'Inactive guest accounts (>90 days)' -State $inactiveGuests90Days),
+            (New-CustomerConfigurationRow -Signal 'Stale privileged accounts (>90 days)' -State $stalePrivileged90Days),
+            (New-CustomerConfigurationRow -Signal 'Inactive or disabled licensed users' -State $inactiveLicensedUsers),
+            (New-CustomerConfigurationRow -Signal 'Stale collaboration assets' -State ("{0} SharePoint site(s); {1} OneDrive location(s); {2} Team(s)" -f $staleSharePointSites, $staleOneDrives, $dormantTeams)),
+            (New-CustomerConfigurationRow -Signal 'OneDrive ownership mismatches' -State $oneDriveOwnerMismatches.Count),
+            (New-CustomerConfigurationRow -Signal 'Shared mailboxes without owner signal' -State $sharedMailboxesWithoutOwnerSignal)
+        ) -Narrative 'Lifecycle drift is showing up across identities, collaboration assets, and shared workloads, which makes cleanup slower and increases the chance that stale access or stale data remains in place.' -RecommendationSupport 'This section supports the lifecycle and ownership-governance recommendations in 4.0.')
+    }
 }
 
 function Get-CondensedWorkstreamSignalText {
@@ -2719,35 +3364,22 @@ function Get-CustomerSourceSummaryRows {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)]$SourceModel)
 
-    $topWorkstreams = @(
-        $SourceModel.OwnerGroups |
-            Select-Object -First 3 |
-            ForEach-Object { Convert-ToArrayaDisplayText -Value $_.Name -Default '' } |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    )
-    $topWorkstreamText = if ($topWorkstreams.Count -gt 0) {
-        Join-ArrayaReadableList -Items $topWorkstreams
-    }
-    else {
-        'Not surfaced in current source'
-    }
-
     return @(
         [pscustomobject]@{
             Signal = 'Scope reviewed'
             State  = 'Identity, messaging, collaboration, endpoint, security, and governance signals'
         },
         [pscustomobject]@{
-            Signal = 'Open findings in this source'
-            State  = ('{0} assessment item(s) still requiring remediation, validation, or an explicit accept/retain decision' -f @($SourceModel.Findings).Count)
+            Signal = 'How to read this report'
+            State  = 'Use 3.0 Executive Summary for the risk brief, 4.0 Modern Workplace Recommendations for the action sequence, and the later sections for the supporting evidence.'
         },
         [pscustomobject]@{
-            Signal = 'Where concentration is highest'
-            State  = $topWorkstreamText
+            Signal = 'What the tables show'
+            State  = 'Each section starts with current-state evidence so the later recommendations can be traced back to the observed tenant condition.'
         },
         [pscustomobject]@{
-            Signal = 'Where the counts are explained'
-            State  = 'Use the Overall Findings Summary and Findings Legend tables near the front of the report for context.'
+            Signal = 'Where the action matrix appears'
+            State  = '4.0 Modern Workplace Recommendations'
         },
         [pscustomobject]@{
             Signal = 'Where the full itemized list appears'
@@ -2760,7 +3392,74 @@ function Get-CustomerSourceSummaryText {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)]$SourceModel)
 
-    return 'This source was reviewed across Microsoft 365 identity, messaging, collaboration, endpoint, security, and governance signals. The tables below show where findings cluster in this source, how to read the count and severity labels, and where to find the full itemized list later in the report.'
+    return 'This report starts with an orientation snapshot of what was reviewed and where the detailed evidence appears later in the document.'
+}
+
+function Get-ArrayaCollectorScriptVersionInfo {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$CollectorScriptPath = (Join-Path -Path $PSScriptRoot -ChildPath 'Get-FullTenantReportDetails.ps1'),
+        [Parameter(Mandatory = $false)]
+        [int]$MajorVersion = 3,
+        [Parameter(Mandatory = $false)]
+        [int]$FallbackMinorVersion = 42
+    )
+
+    $minorVersion = $FallbackMinorVersion
+    $source = 'Fallback'
+
+    try {
+        $resolvedScriptPath = (Resolve-Path -Path $CollectorScriptPath -ErrorAction Stop).Path
+        $gitCommand = Get-Command -Name 'git' -ErrorAction SilentlyContinue
+        if ($gitCommand) {
+            $scriptDirectory = Split-Path -Path $resolvedScriptPath -Parent
+            $gitRoot = (& $gitCommand.Source -C $scriptDirectory rev-parse --show-toplevel 2>$null | Select-Object -First 1)
+            if (-not [string]::IsNullOrWhiteSpace($gitRoot)) {
+                $relativePath = $resolvedScriptPath.Substring($gitRoot.Length).TrimStart([char[]]@('\', '/'))
+                $revisionCountRaw = (& $gitCommand.Source -C $gitRoot rev-list --count HEAD -- $relativePath 2>$null | Select-Object -First 1)
+                if ($revisionCountRaw -match '^\d+$') {
+                    $minorVersion = [int]$revisionCountRaw
+                    $source = 'Git history'
+
+                    & $gitCommand.Source -C $gitRoot diff --quiet -- $relativePath 2>$null
+                    if ($LASTEXITCODE -eq 1) {
+                        $minorVersion++
+                        $source = 'Git history + working tree'
+                    }
+                }
+            }
+        }
+    }
+    catch {
+        $minorVersion = $FallbackMinorVersion
+        $source = 'Fallback'
+    }
+
+    return [pscustomobject]@{
+        MajorVersion = $MajorVersion
+        MinorVersion = $minorVersion
+        Label        = ('{0}.{1}' -f $MajorVersion, $minorVersion)
+        Source       = $source
+    }
+}
+
+function Resolve-ArrayaAssessmentVersionLabel {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        $SnapshotContext
+    )
+
+    if ($null -ne $SnapshotContext -and $SnapshotContext.PSObject.Properties.Name -contains 'Snapshot') {
+        $metadata = Get-ArrayaObjectValue -Object $SnapshotContext.Snapshot -Names @('Metadata')
+        $metadataVersion = [string](Get-ArrayaObjectValue -Object $metadata -Names @('AssessmentVersion'))
+        if (-not [string]::IsNullOrWhiteSpace($metadataVersion)) {
+            return $metadataVersion.Trim()
+        }
+    }
+
+    return (Get-ArrayaCollectorScriptVersionInfo).Label
 }
 
 function New-CustomerReportSourceModel {
@@ -2773,7 +3472,9 @@ function New-CustomerReportSourceModel {
         [Parameter(Mandatory = $true)][string]$SourceLabel,
         [Parameter(Mandatory = $true)][object[]]$Findings,
         [Parameter(Mandatory = $false)][object[]]$WorkstreamSummaries = @(),
-        [Parameter(Mandatory = $false)][object[]]$TechnicalObservations = @()
+        [Parameter(Mandatory = $false)][object[]]$TechnicalObservations = @(),
+        [Parameter(Mandatory = $false)]$ConsultativeSummaries = $null,
+        [Parameter(Mandatory = $false)][string]$AssessmentVersion
     )
 
     $severityCounts = @($Findings | Group-Object Severity | Sort-Object Name)
@@ -2782,6 +3483,8 @@ function New-CustomerReportSourceModel {
     $roadmapActions = Get-CustomerRoadmapActions -Findings $Findings -MaxPerPhase 5
     $technicalObservations = if ($PSBoundParameters.ContainsKey('TechnicalObservations') -and @($TechnicalObservations).Count -gt 0) { @($TechnicalObservations) } else { @() }
     $executiveNarrative = Get-CustomerExecutiveSummaryNarrative -Findings $Findings -ExecutiveThemes $executiveThemes -OwnerGroups $ownerGroups
+    $consultativeSummaries = if ($null -ne $ConsultativeSummaries) { $ConsultativeSummaries } else { [pscustomobject]@{} }
+    $resolvedAssessmentVersion = if ([string]::IsNullOrWhiteSpace($AssessmentVersion)) { (Resolve-ArrayaAssessmentVersionLabel) } else { $AssessmentVersion.Trim() }
 
     $sourceModel = [pscustomobject]@{
         TenantName          = $TenantName
@@ -2789,6 +3492,7 @@ function New-CustomerReportSourceModel {
         SourceInputPath     = $SourceInputPath
         SourceType          = $SourceType
         SourceLabel         = $SourceLabel
+        AssessmentVersion   = $resolvedAssessmentVersion
         Findings            = @($Findings)
         WorkstreamSummaries = @($WorkstreamSummaries)
         SeverityCounts      = $severityCounts
@@ -2802,6 +3506,12 @@ function New-CustomerReportSourceModel {
     $sourceModel | Add-Member -NotePropertyName SummaryText -NotePropertyValue (Get-CustomerSourceSummaryText -SourceModel $sourceModel)
     $sourceModel | Add-Member -NotePropertyName SummaryRows -NotePropertyValue (Get-CustomerSourceSummaryRows -SourceModel $sourceModel)
     $sourceModel | Add-Member -NotePropertyName FindingsLegendRows -NotePropertyValue (Get-CustomerFindingsLegendRows)
+    $sourceModel | Add-Member -NotePropertyName ExecutiveDecisionSummary -NotePropertyValue $(if ($consultativeSummaries.PSObject.Properties.Name -contains 'ExecutiveDecisionSummary') { $consultativeSummaries.ExecutiveDecisionSummary } else { Get-CustomerExecutiveDecisionSummary -ExecutiveThemes $executiveThemes -RoadmapActions $roadmapActions -OwnerGroups $ownerGroups })
+    $sourceModel | Add-Member -NotePropertyName IdentityConsultativeSummary -NotePropertyValue $consultativeSummaries.IdentityConsultativeSummary
+    $sourceModel | Add-Member -NotePropertyName MessagingConsultativeSummary -NotePropertyValue $consultativeSummaries.MessagingConsultativeSummary
+    $sourceModel | Add-Member -NotePropertyName CollaborationConsultativeSummary -NotePropertyValue $consultativeSummaries.CollaborationConsultativeSummary
+    $sourceModel | Add-Member -NotePropertyName GovernanceConsultativeSummary -NotePropertyValue $consultativeSummaries.GovernanceConsultativeSummary
+    $sourceModel | Add-Member -NotePropertyName LifecycleConsultativeSummary -NotePropertyValue $consultativeSummaries.LifecycleConsultativeSummary
     return $sourceModel
 }
 
@@ -3557,6 +4267,7 @@ $AssessmentJsonPath = $snapshotContext.Path
 $tenantData = $snapshotContext.LegacyData
 $snapshotDerived = $snapshotContext.Derived
 $snapshotDiagnostics = $snapshotContext.Diagnostics
+$assessmentVersionLabel = Resolve-ArrayaAssessmentVersionLabel -SnapshotContext $snapshotContext
 
 $outputContext = Resolve-ArrayaSnapshotOutputContext -PrimaryInputPath $AssessmentJsonPath -OutputFolder $OutputFolder -OutputPrefix $OutputPrefix
 $OutputFolder = $outputContext.OutputFolder
@@ -3636,6 +4347,18 @@ $smtpRelaySummary = Get-ArrayaObjectValue -Object $tenantData -Names @('SMTPRela
 $smtpRelayConfig = Get-ArrayaObjectValue -Object $tenantData -Names @('SMTPRelayConfig')
 $authConfig = Get-ArrayaObjectValue -Object $tenantData -Names @('AuthenticationConfig')
 $mfaSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('MfaRegistrationSummary', 'MFARegistrationSummary', 'MfaRegistration', 'MFARegistration')
+$mfaEnrollmentSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('MfaEnrollmentSummary')
+$mfaEnforcementSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('MfaEnforcementSummary')
+$mfaEnforcementGapUsers = @(
+    Convert-ToImprovementCollectionRows `
+        -Value (Get-ArrayaObjectValue -Object $tenantData -Names @('MfaEnforcementGapUsers')) `
+        -MarkerNames @('DisplayName', 'UserPrincipalName', 'GapCategory')
+)
+$mfaEnforcementScopeReview = @(
+    Convert-ToImprovementCollectionRows `
+        -Value (Get-ArrayaObjectValue -Object $tenantData -Names @('MfaEnforcementScopeReview')) `
+        -MarkerNames @('PolicyName', 'ScopeType', 'DisplayName')
+)
 $ownershipSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('OwnershipGovernanceSummary')
 $unmanagedObjects = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $snapshotDerived -Names @('UnmanagedObjects'))
 $oneDriveOwnerMismatches = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $snapshotDerived -Names @('OneDriveOwnerMismatches'))
@@ -3646,6 +4369,8 @@ if (-not $passwordLifecycleSummary) {
     $passwordLifecycleSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('PasswordLifecycleSummary')
 }
 $mfaDerivedSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('MfaRegistrationSummary')
+$mfaEnrollmentDerivedSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('MfaEnrollmentSummary')
+$mfaEnforcementDerivedSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('MfaEnforcementSummary')
 $conditionalAccessSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('ConditionalAccessPolicySummary')
 $securityDefaultsPolicy = Get-ArrayaObjectValue -Object $tenantData -Names @('SecurityDefaultsPolicy')
 $enterpriseApplications = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('EnterpriseApplications', 'AuthenticationSSOApplications'))
@@ -3669,6 +4394,19 @@ $externalIdentityRestrictions = Get-ArrayaObjectValue -Object $tenantData -Names
 $guestAccessConfiguration = Get-ArrayaObjectValue -Object $tenantData -Names @('GuestAccessConfiguration')
 $retentionPolicyRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('RetentionPolicies', 'CompliancePolicies'))
 $dlpPolicyRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('DlpPolicies'))
+
+if (-not $mfaEnrollmentSummary) {
+    $mfaEnrollmentSummary = $mfaEnrollmentDerivedSummary
+}
+if (-not $mfaEnforcementSummary) {
+    $mfaEnforcementSummary = $mfaEnforcementDerivedSummary
+}
+if (-not $mfaSummary) {
+    $mfaSummary = $mfaDerivedSummary
+}
+
+$mfaEnrollmentSummary = Get-CustomerMfaEnrollmentSummary -ExistingSummary $mfaEnrollmentSummary -MfaSummary $mfaSummary
+$mfaEnforcementSummary = Get-CustomerMfaEnforcementSummary -ExistingSummary $mfaEnforcementSummary -ConditionalAccessPolicies $caPolicies -ConditionalAccessSummary $conditionalAccessSummary -SecurityDefaultsPolicy $securityDefaultsPolicy
 
 if ($retentionPolicyRows.Count -eq 0 -and $mailboxRows.Count -gt 0) {
     $retentionPolicyRows = @(
@@ -3757,18 +4495,36 @@ if (-not (Test-DerivedCoverage -Tags @('conditional access', 'mfa') -DerivedFind
 }
 
 if (-not (Test-DerivedCoverage -Tags @('mfa registration') -DerivedFindings $derivedFindings)) {
-    $registeredUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaSummary -Names @('RegisteredUsers', 'RegisteredUserCount', 'MfaRegisteredUsers'))
-    $totalUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaSummary -Names @('TotalUsers', 'UserCount', 'TotalUserCount'))
-    $registrationPct = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaSummary -Names @('RegistrationPercent', 'RegisteredPercent', 'MfaRegistrationPercent'))
+    $registeredUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummary -Names @('RegisteredUsers', 'RegisteredUserCount', 'MfaRegisteredUsers'))
+    $totalUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummary -Names @('TotalUsers', 'UserCount', 'TotalUserCount'))
+    $registrationPct = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummary -Names @('RegistrationPercent', 'RegisteredPercent', 'MfaRegistrationPercent'))
     if ($null -eq $registrationPct -and $null -ne $registeredUsers -and $null -ne $totalUsers -and $totalUsers -gt 0) {
         $registrationPct = [math]::Round(($registeredUsers / $totalUsers) * 100, 2)
     }
     if ($null -ne $registrationPct) {
         if ($registrationPct -lt 70) {
-            Add-HeuristicFinding -Store $findingStore -RuleId 'MFA-001' -Area 'Identity Governance' -Category 'Identity Governance' -Severity 'High' -Finding 'MFA registration appears low.' -Recommendation 'Run a registration campaign, validate methods, and enforce MFA through Conditional Access.' -CurrentValue "$registrationPct%" -TargetValue '>= 90%' -RelatedWorksheet 'MfaRegistrationSummary' -RelatedSection 'MFA Registration'
+            Add-HeuristicFinding -Store $findingStore -RuleId 'MFA-001' -Area 'Identity Governance' -Category 'Identity Governance' -Severity 'High' -Finding 'MFA enrollment appears low.' -Recommendation 'Drive registration completion, reduce weak-method reliance, and then confirm enforcement through Conditional Access.' -CurrentValue "$registrationPct%" -TargetValue '>= 90%' -RelatedWorksheet 'MfaEnrollmentSummary' -RelatedSection 'MFA Enrollment'
         } elseif ($registrationPct -lt 90) {
-            Add-HeuristicFinding -Store $findingStore -RuleId 'MFA-001' -Area 'Identity Governance' -Category 'Identity Governance' -Severity 'Medium' -Finding 'MFA registration is below the target adoption threshold.' -Recommendation 'Drive remaining users through registration completion and verify policy scope gaps.' -CurrentValue "$registrationPct%" -TargetValue '>= 90%' -RelatedWorksheet 'MfaRegistrationSummary' -RelatedSection 'MFA Registration'
+            Add-HeuristicFinding -Store $findingStore -RuleId 'MFA-001' -Area 'Identity Governance' -Category 'Identity Governance' -Severity 'Medium' -Finding 'MFA enrollment is below the target adoption threshold.' -Recommendation 'Drive remaining users through registration completion and verify which methods they are using before broad enforcement.' -CurrentValue "$registrationPct%" -TargetValue '>= 90%' -RelatedWorksheet 'MfaEnrollmentSummary' -RelatedSection 'MFA Enrollment'
         }
+    }
+}
+
+if (-not (Test-DerivedCoverage -Tags @('mfa method', 'weak method') -DerivedFindings $derivedFindings)) {
+    $weakMethodOnlyUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummary -Names @('UsersWithWeakMethodsOnly'))
+    $weakDefaultMethodUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummary -Names @('UsersWithWeakDefaultMethod'))
+    $weakMethodBreakdown = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $mfaEnrollmentSummary -Names @('WeakMethodBreakdown')) -Default ''
+    if (($null -ne $weakMethodOnlyUsers -and $weakMethodOnlyUsers -gt 0) -or ($null -ne $weakDefaultMethodUsers -and $weakDefaultMethodUsers -gt 0)) {
+        Add-HeuristicFinding -Store $findingStore -RuleId 'MFA-002' -Area 'Identity Governance' -Category 'Identity Governance' -Severity 'Medium' -Finding 'MFA enrollment still relies on weaker methods for part of the tenant.' -Recommendation 'Move users from SMS, voice, and email-based MFA toward stronger app-based or phishing-resistant methods, with exceptions documented explicitly.' -CurrentValue ("{0} user(s) have only weak methods; {1} user(s) default to weak methods{2}" -f $(if ($null -eq $weakMethodOnlyUsers) { 0 } else { $weakMethodOnlyUsers }), $(if ($null -eq $weakDefaultMethodUsers) { 0 } else { $weakDefaultMethodUsers }), $(if ([string]::IsNullOrWhiteSpace($weakMethodBreakdown)) { '' } else { "; Weak methods observed: $weakMethodBreakdown" })) -TargetValue 'Registered users rely on stronger MFA methods, with weak methods limited to approved exceptions' -RelatedWorksheet 'MfaEnrollmentSummary' -RelatedSection 'MFA Enrollment'
+    }
+}
+
+if (-not (Test-DerivedCoverage -Tags @('mfa enforcement') -DerivedFindings $derivedFindings)) {
+    $enabledMfaPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnforcementSummary -Names @('EnabledPoliciesRequiringMfa'))
+    $reportOnlyMfaPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnforcementSummary -Names @('ReportOnlyPoliciesRequiringMfa'))
+    $securityDefaultsEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $mfaEnforcementSummary -Names @('SecurityDefaultsEnabled'))
+    if ((($null -eq $enabledMfaPolicies) -or ($enabledMfaPolicies -eq 0)) -and ($securityDefaultsEnabled -ne $true)) {
+        Add-HeuristicFinding -Store $findingStore -RuleId 'MFA-003' -Area 'Conditional Access' -Category 'Conditional Access Quality' -Severity 'High' -Finding 'Active MFA enforcement was not clearly detected.' -Recommendation 'Move validated MFA coverage into enabled Conditional Access policies or confirm that Security Defaults is the intended enforcement model.' -CurrentValue ("Enabled MFA enforcement policies={0}; report-only MFA policies={1}; Security Defaults={2}" -f $(if ($null -eq $enabledMfaPolicies) { 0 } else { $enabledMfaPolicies }), $(if ($null -eq $reportOnlyMfaPolicies) { 0 } else { $reportOnlyMfaPolicies }), $(if ($securityDefaultsEnabled -eq $true) { 'Enabled' } elseif ($securityDefaultsEnabled -eq $false) { 'Disabled' } else { 'Not validated' })) -TargetValue 'MFA enforcement active for the intended population through one documented baseline model' -RelatedWorksheet 'MfaEnforcementSummary' -RelatedSection 'MFA Enforcement'
     }
 }
 
@@ -4107,19 +4863,19 @@ if ($securityDefaultsEnabled -eq $false -and $caSummaryRecord) {
     $policiesWithExclusions = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $caSummaryRecord -Names @('PoliciesWithExclusions'))
 
     if ($hasGuestCoverage -eq $false) {
-        Add-HeuristicFinding -Store $findingStore -RuleId 'CA-008' -Area 'Conditional Access' -Category 'Conditional Access Quality' -Severity 'Medium' -Finding 'Conditional Access summary does not show guest or external-user coverage.' -Recommendation 'Validate guest/external-user policy coverage now that Security Defaults are not the fallback protection model.' -CurrentValue 'Guest/external-user coverage not detected in summary' -TargetValue 'Guest/external-user coverage documented and enabled' -Source 'Summary/ConditionalAccess' -RelatedWorksheet 'ConditionalAccessPolicySummary' -RelatedSection 'Conditional Access'
+        Add-HeuristicFinding -Store $findingStore -RuleId 'CA-008' -Area 'Conditional Access' -Category 'Conditional Access Quality' -Severity 'Medium' -Finding 'Conditional Access summary does not show guest or external-user coverage.' -Recommendation 'Add or validate guest and external-user Conditional Access coverage.' -CurrentValue 'Guest/external-user coverage not detected in summary' -TargetValue 'Guest/external-user coverage documented and enabled' -Source 'Summary/ConditionalAccess' -RelatedWorksheet 'ConditionalAccessPolicySummary' -RelatedSection 'Conditional Access'
     }
     if ($hasPrivilegedCoverage -eq $false) {
-        Add-HeuristicFinding -Store $findingStore -RuleId 'CA-009' -Area 'Conditional Access' -Category 'Conditional Access Quality' -Severity 'Medium' -Finding 'Conditional Access summary does not show privileged-role coverage.' -Recommendation 'Add or validate dedicated privileged-role Conditional Access protection for administrative identities.' -CurrentValue 'Privileged-role coverage not detected in summary' -TargetValue 'Privileged-role coverage documented and enabled' -Source 'Summary/ConditionalAccess' -RelatedWorksheet 'ConditionalAccessPolicySummary' -RelatedSection 'Conditional Access'
+        Add-HeuristicFinding -Store $findingStore -RuleId 'CA-009' -Area 'Conditional Access' -Category 'Conditional Access Quality' -Severity 'Medium' -Finding 'Conditional Access summary does not show privileged-role coverage.' -Recommendation 'Add or validate privileged-role Conditional Access protection for administrative identities.' -CurrentValue 'Privileged-role coverage not detected in summary' -TargetValue 'Privileged-role coverage documented and enabled' -Source 'Summary/ConditionalAccess' -RelatedWorksheet 'ConditionalAccessPolicySummary' -RelatedSection 'Conditional Access'
     }
     if ($hasCompliantDeviceRequirement -eq $false) {
-        Add-HeuristicFinding -Store $findingStore -RuleId 'CA-010' -Area 'Conditional Access' -Category 'Conditional Access Quality' -Severity 'Low' -Finding 'Conditional Access summary does not show a compliant-device requirement.' -Recommendation 'Review whether device-compliance requirements should be part of the access-control baseline for managed access scenarios.' -CurrentValue 'Compliant-device requirement not detected in summary' -TargetValue 'Compliant-device requirement reviewed and documented' -Source 'Summary/ConditionalAccess' -RelatedWorksheet 'ConditionalAccessPolicySummary' -RelatedSection 'Conditional Access'
+        Add-HeuristicFinding -Store $findingStore -RuleId 'CA-010' -Area 'Conditional Access' -Category 'Conditional Access Quality' -Severity 'Low' -Finding 'Conditional Access summary does not show a compliant-device requirement.' -Recommendation 'Decide whether managed-access scenarios should require compliant devices.' -CurrentValue 'Compliant-device requirement not detected in summary' -TargetValue 'Compliant-device requirement reviewed and documented' -Source 'Summary/ConditionalAccess' -RelatedWorksheet 'ConditionalAccessPolicySummary' -RelatedSection 'Conditional Access'
     }
     if ($hasRiskCoverage -eq $false) {
-        Add-HeuristicFinding -Store $findingStore -RuleId 'CA-011' -Area 'Conditional Access' -Category 'Conditional Access Quality' -Severity 'Low' -Finding 'Conditional Access summary does not show risk-based controls.' -Recommendation 'Review sign-in risk and user risk controls for higher-risk access scenarios.' -CurrentValue 'Risk-based Conditional Access not detected in summary' -TargetValue 'Risk-based Conditional Access reviewed and documented' -Source 'Summary/ConditionalAccess' -RelatedWorksheet 'ConditionalAccessPolicySummary' -RelatedSection 'Conditional Access'
+        Add-HeuristicFinding -Store $findingStore -RuleId 'CA-011' -Area 'Conditional Access' -Category 'Conditional Access Quality' -Severity 'Low' -Finding 'Conditional Access summary does not show risk-based controls.' -Recommendation 'Review whether sign-in and user-risk controls belong in the baseline access model.' -CurrentValue 'Risk-based Conditional Access not detected in summary' -TargetValue 'Risk-based Conditional Access reviewed and documented' -Source 'Summary/ConditionalAccess' -RelatedWorksheet 'ConditionalAccessPolicySummary' -RelatedSection 'Conditional Access'
     }
     if ($null -ne $policiesWithExclusions -and $policiesWithExclusions -ge 5) {
-        Add-HeuristicFinding -Store $findingStore -RuleId 'CA-012' -Area 'Conditional Access' -Category 'Conditional Access Quality' -Severity 'Medium' -Finding 'Conditional Access summary shows a higher number of policies with exclusions.' -Recommendation 'Review exclusion sprawl and reduce broad bypass patterns where they are not required for emergency access or documented exceptions.' -CurrentValue "$policiesWithExclusions policy/policies with exclusions" -TargetValue 'Exclusions minimized and documented' -Source 'Summary/ConditionalAccess' -RelatedWorksheet 'ConditionalAccessPolicySummary' -RelatedSection 'Conditional Access'
+        Add-HeuristicFinding -Store $findingStore -RuleId 'CA-012' -Area 'Conditional Access' -Category 'Conditional Access Quality' -Severity 'Medium' -Finding 'Conditional Access summary shows a higher number of policies with exclusions.' -Recommendation 'Review exclusion sprawl and remove broad bypass patterns that are no longer required.' -CurrentValue "$policiesWithExclusions policy/policies with exclusions" -TargetValue 'Exclusions minimized and documented' -Source 'Summary/ConditionalAccess' -RelatedWorksheet 'ConditionalAccessPolicySummary' -RelatedSection 'Conditional Access'
     }
 }
 
@@ -4131,7 +4887,7 @@ if ($null -ne $externalForwardRuleCount -and $externalForwardRuleCount -gt 0) {
     if (-not [string]::IsNullOrWhiteSpace($forwardingPolicyEvidence)) {
         $ex006CurrentValue = "$ex006CurrentValue; $forwardingPolicyEvidence"
     }
-    Add-HeuristicFinding -Store $findingStore -RuleId 'EX-006' -Area 'Exchange Hygiene' -Category 'Exchange Hygiene' -Severity 'High' -Finding 'Inbox rules with external forwarding targets were detected.' -Recommendation 'Review inbox-rule forwarding behavior, confirm business justification, and compare the rule list against the tenant outbound auto-forwarding posture and remote-domain settings. Remove or formally approve external forwarding paths that must remain, and document that the policy context is tenant-level rather than a per-rule authorization verdict.' -CurrentValue $ex006CurrentValue -TargetValue 'All external inbox-rule forwarding paths reviewed and either approved or removed, with tenant forwarding policy aligned to the approved baseline' -Source 'Summary/InboxRules' -RelatedWorksheet 'InboxRulesExternalForwarding' -RelatedSection 'Inbox Rules' -WhyFlagged 'The assessment found inbox rules that forward to domains outside the tenant accepted-domain list, and it also inspected tenant-level outbound auto-forwarding posture and remote-domain settings to show whether external forwarding appears broadly permitted.' -ExampleAction 'Example: export the external inbox-rule list, review the target domains against approved forwarding use cases, and compare the result to hosted outbound spam filter auto-forwarding modes plus remote domains where AutoForwardEnabled is still true.'
+    Add-HeuristicFinding -Store $findingStore -RuleId 'EX-006' -Area 'Exchange Hygiene' -Category 'Exchange Hygiene' -Severity 'High' -Finding 'Inbox rules with external forwarding targets were detected.' -Recommendation 'Review external inbox-rule forwarding, confirm approved use cases, and remove or document exceptions that must remain.' -CurrentValue $ex006CurrentValue -TargetValue 'All external inbox-rule forwarding paths reviewed and either approved or removed, with tenant forwarding policy aligned to the approved baseline' -Source 'Summary/InboxRules' -RelatedWorksheet 'InboxRulesExternalForwarding' -RelatedSection 'Inbox Rules' -WhyFlagged 'External forwarding rules were detected, and the tenant forwarding settings show that at least some forwarding paths may still be permitted.' -ExampleAction 'Example: export the external inbox-rule list, review the target domains against approved forwarding use cases, and compare the result to the tenant forwarding baseline.'
 }
 
 $sharedMailboxSummaryRecord = if ($sharedMailboxGovernanceSummary) { Get-ArrayaObjectValue -Object $sharedMailboxGovernanceSummary -Names @('Summary') } else { $null }
@@ -4168,13 +4924,13 @@ $defaultOutboundMfaTrust = [string](Get-ArrayaObjectValue -Object $externalIdent
 $hasCrossTenantAccessPolicy = [string](Get-ArrayaObjectValue -Object $externalIdentityRestrictionsRecord -Names @('HasCrossTenantAccessPolicy'))
 $guestCoverageSummary = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $guestAccessConfigurationRecord -Names @('ConditionalAccessGuestCoverage'))
 if ($tenantSharingCapability -match 'ExternalUserAndGuestSharing|ExternalUserSharingOnly') {
-    Add-HeuristicFinding -Store $findingStore -RuleId 'COL-005' -Area 'SharePoint / OneDrive Governance' -Category 'SharePoint / OneDrive Governance' -Severity 'Medium' -Finding 'SharePoint sharing is configured to allow external sharing at the tenant level.' -Recommendation 'Validate whether tenant-wide external sharing and default link settings match the intended collaboration governance model.' -CurrentValue "SharingCapability=$tenantSharingCapability; OneDriveSharingCapability=$oneDriveSharingCapability; DefaultSharingLinkType=$defaultSharingLinkType; SharingDomainRestrictionMode=$sharingDomainRestrictionMode; RequireInvitedUserMatch=$requireInvitedUserMatch; PreventExternalUsersFromResharing=$preventExternalUsersFromResharing" -TargetValue 'Tenant sharing posture documented and aligned to policy' -Source 'Summary/SharePointSharing' -RelatedWorksheet 'SharePointSharingSummary' -RelatedSection 'Sharing'
+    Add-HeuristicFinding -Store $findingStore -RuleId 'COL-005' -Area 'SharePoint / OneDrive Governance' -Category 'SharePoint / OneDrive Governance' -Severity 'Medium' -Finding 'SharePoint sharing is configured to allow external sharing at the tenant level.' -Recommendation 'Confirm that tenant-wide sharing settings still match the intended external collaboration model.' -CurrentValue "SharingCapability=$tenantSharingCapability; OneDriveSharingCapability=$oneDriveSharingCapability; DefaultSharingLinkType=$defaultSharingLinkType; SharingDomainRestrictionMode=$sharingDomainRestrictionMode; RequireInvitedUserMatch=$requireInvitedUserMatch; PreventExternalUsersFromResharing=$preventExternalUsersFromResharing" -TargetValue 'Tenant sharing posture documented and aligned to policy' -Source 'Summary/SharePointSharing' -RelatedWorksheet 'SharePointSharingSummary' -RelatedSection 'Sharing'
 }
 if ($defaultSharingLinkType -match 'AnonymousAccess') {
-    Add-HeuristicFinding -Store $findingStore -RuleId 'COL-006' -Area 'SharePoint / OneDrive Governance' -Category 'SharePoint / OneDrive Governance' -Severity 'Medium' -Finding 'Anonymous links appear to remain the default sharing link type.' -Recommendation 'Review anonymous link defaults, external sharing use cases, and whether named-user links should be the default posture.' -CurrentValue "DefaultSharingLinkType=$defaultSharingLinkType; AnonymousLinkExpirationInDays=$anonymousLinkExpirationDays; RequireInvitedUserMatch=$requireInvitedUserMatch" -TargetValue 'Default sharing link type aligned to policy' -Source 'Summary/SharePointSharing' -RelatedWorksheet 'SharePointSharingSummary' -RelatedSection 'Sharing'
+    Add-HeuristicFinding -Store $findingStore -RuleId 'COL-006' -Area 'SharePoint / OneDrive Governance' -Category 'SharePoint / OneDrive Governance' -Severity 'Medium' -Finding 'Anonymous links appear to remain the default sharing link type.' -Recommendation 'Review default link behavior and decide whether named-user links should be the baseline.' -CurrentValue "DefaultSharingLinkType=$defaultSharingLinkType; AnonymousLinkExpirationInDays=$anonymousLinkExpirationDays; RequireInvitedUserMatch=$requireInvitedUserMatch" -TargetValue 'Default sharing link type aligned to policy' -Source 'Summary/SharePointSharing' -RelatedWorksheet 'SharePointSharingSummary' -RelatedSection 'Sharing'
 }
 if ($tenantSharingCapability -match 'ExternalUserAndGuestSharing|ExternalUserSharingOnly' -and $guestCoverageSummary -eq $false) {
-    Add-HeuristicFinding -Store $findingStore -RuleId 'CA-013' -Area 'Conditional Access' -Category 'Conditional Access Quality' -Severity 'High' -Finding 'External sharing is enabled, but the review does not show guest Conditional Access coverage.' -Recommendation 'Review guest and external-user Conditional Access coverage so external collaboration is protected by the same access-control baseline expected for the tenant.' -CurrentValue "SharingCapability=$tenantSharingCapability; ConditionalAccessGuestCoverage=$guestCoverageSummary" -TargetValue 'Guest and external-user access covered by documented Conditional Access policy' -Source 'Summary/ExternalExposure' -RelatedWorksheet 'ExternalExposureFindings' -RelatedSection 'External Exposure Review'
+    Add-HeuristicFinding -Store $findingStore -RuleId 'CA-013' -Area 'Conditional Access' -Category 'Conditional Access Quality' -Severity 'High' -Finding 'External sharing is enabled, but the review does not show guest Conditional Access coverage.' -Recommendation 'Add or validate guest and external-user Conditional Access coverage for externally shared workloads.' -CurrentValue "SharingCapability=$tenantSharingCapability; ConditionalAccessGuestCoverage=$guestCoverageSummary" -TargetValue 'Guest and external-user access covered by documented Conditional Access policy' -Source 'Summary/ExternalExposure' -RelatedWorksheet 'ExternalExposureFindings' -RelatedSection 'External Exposure Review'
 }
 if ($externalExposureFindings.Count -gt 0) {
     $staleExternallyExposedAssets = @($externalExposureFindings | Where-Object { [string]$_.ExposureCategory -eq 'Stale externally shared content' })
@@ -4182,7 +4938,7 @@ if ($externalExposureFindings.Count -gt 0) {
     $trustReviewRows = @($externalExposureFindings | Where-Object { [string]$_.ExposureCategory -eq 'Cross-tenant trust posture review' -or [string]$_.ExposureCategory -eq 'Guest invitation posture review' })
 
     if ($staleExternallyExposedAssets.Count -gt 0 -or $mismatchedExternallyExposedAssets.Count -gt 0) {
-        Add-HeuristicFinding -Store $findingStore -RuleId 'COL-007' -Area 'SharePoint / OneDrive Governance' -Category 'SharePoint / OneDrive Governance' -Severity 'High' -Finding 'Externally exposed SharePoint or OneDrive locations now show stale activity or ownership drift.' -Recommendation 'Review externally exposed stale sites and OneDrives, confirm whether sharing is still required, and close ownership or lifecycle gaps before those locations remain externally accessible by default.' -CurrentValue "$($staleExternallyExposedAssets.Count) stale externally exposed location(s); $($mismatchedExternallyExposedAssets.Count) externally exposed ownership mismatch(es)" -TargetValue 'Externally exposed stale or mismatched collaboration locations reviewed and governed' -Source 'Summary/ExternalExposure' -RelatedWorksheet 'ExternalExposureFindings' -RelatedSection 'External Exposure Review'
+        Add-HeuristicFinding -Store $findingStore -RuleId 'COL-007' -Area 'SharePoint / OneDrive Governance' -Category 'SharePoint / OneDrive Governance' -Severity 'High' -Finding 'Externally exposed SharePoint or OneDrive locations now show stale activity or ownership drift.' -Recommendation 'Review stale externally exposed sites and OneDrives, then close ownership or lifecycle gaps before access remains open by default.' -CurrentValue "$($staleExternallyExposedAssets.Count) stale externally exposed location(s); $($mismatchedExternallyExposedAssets.Count) externally exposed ownership mismatch(es)" -TargetValue 'Externally exposed stale or mismatched collaboration locations reviewed and governed' -Source 'Summary/ExternalExposure' -RelatedWorksheet 'ExternalExposureFindings' -RelatedSection 'External Exposure Review'
     }
 
     $guestHeavyOrDormantRows = @(
@@ -4191,11 +4947,11 @@ if ($externalExposureFindings.Count -gt 0) {
         }
     )
     if ($guestHeavyOrDormantRows.Count -gt 0) {
-        Add-HeuristicFinding -Store $findingStore -RuleId 'TM-008' -Area 'Teams / M365 Groups Governance' -Category 'Teams / M365 Groups Governance' -Severity 'Medium' -Finding 'Externally relevant Teams or groups show guest-heavy, dormant, or ownerless patterns.' -Recommendation 'Review guest-enabled Teams and Microsoft 365 groups that are dormant, guest-heavy, or lacking ownership so external collaboration remains tied to an accountable business purpose.' -CurrentValue "$($guestHeavyOrDormantRows.Count) externally relevant Team/group exposure row(s)" -TargetValue 'Guest-enabled Teams and groups reviewed, owned, and governed' -Source 'Summary/ExternalExposure' -RelatedWorksheet 'ExternalExposureFindings' -RelatedSection 'External Exposure Review'
+        Add-HeuristicFinding -Store $findingStore -RuleId 'TM-008' -Area 'Teams / M365 Groups Governance' -Category 'Teams / M365 Groups Governance' -Severity 'Medium' -Finding 'Externally relevant Teams or groups show guest-heavy, dormant, or ownerless patterns.' -Recommendation 'Review guest-enabled Teams and Microsoft 365 groups that are dormant, guest-heavy, or ownerless.' -CurrentValue "$($guestHeavyOrDormantRows.Count) externally relevant Team/group exposure row(s)" -TargetValue 'Guest-enabled Teams and groups reviewed, owned, and governed' -Source 'Summary/ExternalExposure' -RelatedWorksheet 'ExternalExposureFindings' -RelatedSection 'External Exposure Review'
     }
 
     if ($trustReviewRows.Count -gt 0) {
-        Add-HeuristicFinding -Store $findingStore -RuleId 'ID-008' -Area 'Identity Governance' -Category 'Identity Governance' -Severity 'Medium' -Finding 'External invitation or cross-tenant trust posture should be reviewed against the intended external-access baseline.' -Recommendation 'Review guest invitation controls, cross-tenant partner trust, and default trust settings so external access remains aligned to documented collaboration requirements.' -CurrentValue "$($trustReviewRows.Count) external identity / trust review row(s); AllowInvitesFrom=$allowInvitesFrom; DefaultInboundMfaTrust=$defaultInboundMfaTrust; DefaultOutboundMfaTrust=$defaultOutboundMfaTrust" -TargetValue 'External invitation and cross-tenant trust posture documented and aligned to policy' -Source 'Summary/ExternalExposure' -RelatedWorksheet 'ExternalExposureFindings' -RelatedSection 'External Exposure Review'
+        Add-HeuristicFinding -Store $findingStore -RuleId 'ID-008' -Area 'Identity Governance' -Category 'Identity Governance' -Severity 'Medium' -Finding 'External invitation or cross-tenant trust posture should be reviewed against the intended external-access baseline.' -Recommendation 'Review guest invitation controls and cross-tenant trust settings against the approved external-access baseline.' -CurrentValue "$($trustReviewRows.Count) external identity / trust review row(s); AllowInvitesFrom=$allowInvitesFrom; DefaultInboundMfaTrust=$defaultInboundMfaTrust; DefaultOutboundMfaTrust=$defaultOutboundMfaTrust" -TargetValue 'External invitation and cross-tenant trust posture documented and aligned to policy' -Source 'Summary/ExternalExposure' -RelatedWorksheet 'ExternalExposureFindings' -RelatedSection 'External Exposure Review'
     }
 }
 
@@ -4292,6 +5048,10 @@ $customerAssessmentSignals = [pscustomobject]@{
     ConditionalAccessSummary   = $conditionalAccessSummary
     AuthenticationConfig       = $authConfig
     MfaRegistrationSummary     = $mfaSummary
+    MfaEnrollmentSummary       = $mfaEnrollmentSummary
+    MfaEnforcementSummary      = $mfaEnforcementSummary
+    MfaEnforcementGapUsers     = $mfaEnforcementGapUsers
+    MfaEnforcementScopeReview  = $mfaEnforcementScopeReview
     EnterpriseApplications     = $enterpriseApplications
     EnterpriseApplicationSummary = $enterpriseApplicationSummary
     GuestSignInSummary         = $guestSignInSummary
@@ -4344,6 +5104,7 @@ $customerAssessmentSignals = [pscustomobject]@{
     Users                      = $userRows
 }
 $technicalObservations = Get-CustomerTechnicalObservations -Signals $customerAssessmentSignals -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries
+$consultativeSummaries = Get-CustomerConsultativeSummaries -Signals $customerAssessmentSignals -Findings $sortedFindings -ExecutiveThemes (Get-CustomerExecutiveThemes -Findings $sortedFindings -Count 5) -RoadmapActions (Get-CustomerRoadmapActions -Findings $sortedFindings -MaxPerPhase 5) -OwnerGroups @($sortedFindings | Group-Object OwnerTeam | Sort-Object Count -Descending)
 
 $supportFolder = Join-Path -Path $OutputFolder -ChildPath 'Support'
 if (-not (Test-Path -Path $supportFolder)) {
@@ -4374,6 +5135,7 @@ if ($IncludeLegacyArtifacts) {
 
 $payload = [PSCustomObject]@{
     GeneratedAt = $generatedAt.ToString('o')
+    AssessmentVersion = $assessmentVersionLabel
     SourceFile  = (Resolve-Path -Path $AssessmentJsonPath).Path
     Thresholds  = [PSCustomObject]@{
         StaleDeviceDays = $StaleDeviceDays
@@ -4383,6 +5145,7 @@ $payload = [PSCustomObject]@{
     WorkstreamSummaries = $sortedWorkstreamSummaries
     Findings           = $sortedFindings
     TechnicalObservations = $technicalObservations
+    ConsultativeSummaries = $consultativeSummaries
     ExternalExposureFindings = $externalExposureFindings
 }
 
@@ -4429,7 +5192,7 @@ if ($IncludeLegacyArtifacts) {
     Set-Content -Path $mdOutPath -Value ($summaryLines -join [Environment]::NewLine) -Encoding UTF8
 }
 
-$customerSourceModel = New-CustomerReportSourceModel -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -SourceInputPath $AssessmentJsonPath -SourceType 'Snapshot' -SourceLabel ([System.IO.Path]::GetFileNameWithoutExtension($AssessmentJsonPath)) -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TechnicalObservations $technicalObservations
+$customerSourceModel = New-CustomerReportSourceModel -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -SourceInputPath $AssessmentJsonPath -SourceType 'Snapshot' -SourceLabel ([System.IO.Path]::GetFileNameWithoutExtension($AssessmentJsonPath)) -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TechnicalObservations $technicalObservations -ConsultativeSummaries $consultativeSummaries -AssessmentVersion $assessmentVersionLabel
 $customerAssessmentTemplatePath = Get-CustomerAssessmentTemplatePath
 $customerAssessmentBlocks = New-CustomerAssessmentDocumentBlocks -SourceModel $customerSourceModel -Signals $customerAssessmentSignals -GeneratedAt $generatedAt
 Write-CustomerAssessmentDocxFromModel -TemplatePath $customerAssessmentTemplatePath -OutputPath $customerAssessmentReportOutPath -TenantName $tenantName -GeneratedAt $generatedAt -Blocks $customerAssessmentBlocks
@@ -4461,6 +5224,18 @@ Get-MgIdentityConditionalAccessPolicy |
 Connect-MgGraph -Scopes 'Reports.Read.All'
 Get-MgReportAuthenticationMethodUserRegistrationDetail -All |
     Select-Object UserPrincipalName, IsMfaRegistered
+'@
+    'MFA-002' = @'
+# MFA method quality review
+Connect-MgGraph -Scopes 'Reports.Read.All'
+Get-MgReportAuthenticationMethodUserRegistrationDetail -All |
+    Select-Object UserPrincipalName, DefaultMfaMethod, MethodsRegistered
+'@
+    'MFA-003' = @'
+# MFA enforcement review
+Connect-MgGraph -Scopes 'Policy.Read.All'
+Get-MgIdentityConditionalAccessPolicy |
+    Select-Object DisplayName, State, @{N='GrantControls';E={$_.GrantControls.BuiltInControls -join ','}}
 '@
     'ADMIN-001' = @'
 # Global Administrator review

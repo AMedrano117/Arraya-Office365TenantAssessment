@@ -99,6 +99,24 @@ Describe 'Arraya.M365.Common' {
         Test-Path (Join-Path $expectedDirectory 'Tenant Discovery Report-SolutionsEngineer Error Reporting') | Should -BeFalse
     }
 
+    It 'writes a tenant-prefixed run manifest when the workbook uses the Tenant Details suffix' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        $baseExportPath = Join-Path $TestDrive 'Contoso Ltd - Tenant Details.xlsx'
+        Set-Content -Path $baseExportPath -Value 'placeholder' -Encoding UTF8
+
+        $manifestPath = Write-ArrayaAssessmentArtifactManifest `
+            -BaseExportPath $baseExportPath `
+            -Artifacts @{ Workbook = $baseExportPath } `
+            -OutputProfileLabel 'SolutionsEngineer' `
+            -ReportingMode 'Operator' `
+            -CollectionOnly $false `
+            -ExportOnly $false
+
+        Split-Path -Path $manifestPath -Leaf | Should -Be 'Contoso Ltd-Run.manifest.json'
+        Test-Path -Path $manifestPath | Should -BeTrue
+    }
+
     It 'calculates shared snapshot metrics for improvement and comparison workflows' {
         Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
 
@@ -326,6 +344,7 @@ Describe 'Arraya.M365.Common' {
             ExternalIdentityRestrictions = @{
                 Summary = [pscustomobject]@{
                     AllowInvitesFrom        = 'adminsAndGuestInviters'
+                    GuestUserRoleLabel      = 'Guest users have limited access to directory objects (default)'
                     CrossTenantPartnerCount = 2
                     DefaultInboundMfaTrust  = $true
                 }
@@ -333,9 +352,48 @@ Describe 'Arraya.M365.Common' {
             GuestAccessConfiguration = @{
                 Summary = [pscustomobject]@{
                     GuestInvitationControl       = 'adminsAndGuestInviters'
+                    GuestUserRoleLabel           = 'Guest users have limited access to directory objects (default)'
                     ConditionalAccessGuestCoverage = $true
                 }
             }
+            MfaEnrollmentSummary = [pscustomobject]@{
+                RegistrationPercent        = 55
+                RegisteredMethodBreakdown = 'Microsoft Authenticator=4; SMS / phone=3'
+                WeakMethodBreakdown       = 'SMS / phone=3'
+                UsersWithWeakMethodsOnly  = 2
+            }
+            MfaEnforcementSummary = [pscustomobject]@{
+                EnabledPoliciesRequiringMfa    = 2
+                UserCoveragePercent            = 78.5
+                UsersCoveredByEnabledMfaPolicies = 11
+                ReportOnlyPoliciesRequiringMfa = 1
+                EnforcementState               = 'MFA enforcement is active through enabled Conditional Access policies.'
+            }
+            MfaEnforcementGapUsers = @(
+                [pscustomobject]@{
+                    DisplayName        = 'Uncovered Member'
+                    UserPrincipalName  = 'uncovered.member@contoso.com'
+                    UserType           = 'Member'
+                    DirectoryObjectId  = 'user-001'
+                    GapCategory        = 'Outside enabled MFA CA include scope'
+                    GapReason          = 'User is outside the include scope of all enabled Conditional Access policies that currently require MFA.'
+                    RelatedPolicies    = ''
+                    AccountEnabled     = $true
+                    LastSignInDateTime = '2026-01-01T00:00:00Z'
+                }
+            )
+            MfaEnforcementScopeReview = @(
+                [pscustomobject]@{
+                    PolicyName          = 'Baseline MFA'
+                    ScopeType           = 'Exclude'
+                    ObjectType          = 'Group'
+                    DisplayName         = 'Break Glass Exclusions'
+                    Identifier          = 'group-001'
+                    AffectedEnabledUsers = 2
+                    DirectoryMemberCount = 2
+                    Notes               = 'Members of this group are excluded from the enabled MFA enforcement policy scope.'
+                }
+            )
         }
 
         $snapshot = Convert-ArrayaLegacyTenantStatsToSnapshot -TenantStatsHash $legacyTenantStats
@@ -346,7 +404,17 @@ Describe 'Arraya.M365.Common' {
         $snapshot.Data.Tenant.ExternalSharingSiteOverrides.Count | Should -Be 1
         $snapshot.Data.Tenant.ExternalExposureFindings.Count | Should -Be 1
         $snapshot.Data.Identity.ExternalIdentityRestrictions.Summary.AllowInvitesFrom | Should -Be 'adminsAndGuestInviters'
+        $snapshot.Data.Identity.ExternalIdentityRestrictions.Summary.GuestUserRoleLabel | Should -Be 'Guest users have limited access to directory objects (default)'
         $snapshot.Data.Identity.GuestAccessConfiguration.Summary.GuestInvitationControl | Should -Be 'adminsAndGuestInviters'
+        $snapshot.Data.Identity.GuestAccessConfiguration.Summary.GuestUserRoleLabel | Should -Be 'Guest users have limited access to directory objects (default)'
+        $snapshot.Data.Identity.MfaEnrollmentSummary.UsersWithWeakMethodsOnly | Should -Be 2
+        $snapshot.Data.Identity.MfaEnforcementSummary.EnabledPoliciesRequiringMfa | Should -Be 2
+        $snapshot.Data.Identity.MfaEnforcementSummary.UsersCoveredByEnabledMfaPolicies | Should -Be 11
+        $snapshot.Data.Identity.MfaEnforcementSummary.UserCoveragePercent | Should -Be 78.5
+        $snapshot.Data.Identity.MfaEnforcementGapUsers.Count | Should -Be 1
+        $snapshot.Data.Identity.MfaEnforcementGapUsers[0].GapCategory | Should -Be 'Outside enabled MFA CA include scope'
+        $snapshot.Data.Identity.MfaEnforcementScopeReview.Count | Should -Be 1
+        $snapshot.Data.Identity.MfaEnforcementScopeReview[0].DisplayName | Should -Be 'Break Glass Exclusions'
     }
 
     It 'exports the external exposure worksheets in stable order' {
@@ -389,6 +457,31 @@ Describe 'Arraya.M365.Common' {
                     DefaultSharingLinkType  = 'AnonymousAccess'
                 }
             }
+            MfaEnrollmentSummary = [pscustomobject]@{
+                RegistrationPercent = 72
+            }
+            MfaEnforcementSummary = [pscustomobject]@{
+                EnabledPoliciesRequiringMfa = 1
+            }
+            MfaEnforcementGapUsers = @(
+                [pscustomobject]@{
+                    UserPrincipalName = 'uncovered.member@contoso.com'
+                    GapCategory       = 'Outside enabled MFA CA include scope'
+                }
+            )
+            MfaEnforcementScopeReview = @(
+                [pscustomobject]@{
+                    PolicyName  = 'Baseline MFA'
+                    ScopeType   = 'Exclude'
+                    ObjectType  = 'Group'
+                    DisplayName = 'Break Glass Exclusions'
+                }
+            )
+            ConditionalAccessPolicySummary = @{
+                Summary = [pscustomobject]@{
+                    EnabledPolicies = 2
+                }
+            }
             ExternalSharingSummary = @{
                 Summary = [pscustomobject]@{
                     SharingDomainRestrictionMode = 'allowList'
@@ -415,10 +508,19 @@ Describe 'Arraya.M365.Common' {
         $worksheetNames = @(Get-ExcelSheetInfo -Path $exportPath | Select-Object -ExpandProperty Name)
         ($worksheetNames -contains 'GuestAccessConfiguration') | Should -BeTrue
         ($worksheetNames -contains 'ExternalIdentityRestrictions') | Should -BeTrue
+        ($worksheetNames -contains 'MfaEnrollmentSummary') | Should -BeTrue
+        ($worksheetNames -contains 'MfaEnforcementSummary') | Should -BeTrue
+        ($worksheetNames -contains 'MfaEnforcementGapUsers') | Should -BeTrue
+        ($worksheetNames -contains 'MfaEnforcementScopeReview') | Should -BeTrue
         ($worksheetNames -contains 'ExternalSharingSummary') | Should -BeTrue
         ($worksheetNames -contains 'ExternalSharingSiteOverrides') | Should -BeTrue
         ($worksheetNames -contains 'ExternalExposureFindings') | Should -BeTrue
         $worksheetNames.IndexOf('GuestSignInSummary') | Should -BeLessThan $worksheetNames.IndexOf('GuestAccessConfiguration')
+        $worksheetNames.IndexOf('AuthenticationConfig') | Should -BeLessThan $worksheetNames.IndexOf('MfaEnrollmentSummary')
+        $worksheetNames.IndexOf('MfaEnrollmentSummary') | Should -BeLessThan $worksheetNames.IndexOf('MfaEnforcementSummary')
+        $worksheetNames.IndexOf('MfaEnforcementSummary') | Should -BeLessThan $worksheetNames.IndexOf('MfaEnforcementGapUsers')
+        $worksheetNames.IndexOf('MfaEnforcementGapUsers') | Should -BeLessThan $worksheetNames.IndexOf('MfaEnforcementScopeReview')
+        $worksheetNames.IndexOf('MfaEnforcementScopeReview') | Should -BeLessThan $worksheetNames.IndexOf('ConditionalAccessPolicySummary')
         $worksheetNames.IndexOf('GuestAccessConfiguration') | Should -BeLessThan $worksheetNames.IndexOf('ExternalIdentityRestrictions')
         $worksheetNames.IndexOf('SharePointSharingSummary') | Should -BeLessThan $worksheetNames.IndexOf('ExternalSharingSummary')
         $worksheetNames.IndexOf('ExternalSharingSummary') | Should -BeLessThan $worksheetNames.IndexOf('ExternalSharingSiteOverrides')

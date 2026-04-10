@@ -58,12 +58,19 @@ function Invoke-M365TenantAssessmentExportPipeline {
             return $null
         }
 
-        if ($baseName.EndsWith('-Assess', [System.StringComparison]::OrdinalIgnoreCase)) {
-            $baseName = $baseName.Substring(0, $baseName.Length - '-Assess'.Length)
+        foreach ($suffix in @('-Assess', ' - Tenant Details', '-Tenant Details')) {
+            if ($baseName.EndsWith($suffix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $baseName = $baseName.Substring(0, $baseName.Length - $suffix.Length)
+                break
+            }
         }
 
         $baseName = ($baseName -replace '\s+', ' ').Trim()
-        if ([string]::IsNullOrWhiteSpace($baseName) -or [string]::Equals($baseName, 'Assess', [System.StringComparison]::OrdinalIgnoreCase)) {
+        if (
+            [string]::IsNullOrWhiteSpace($baseName) -or
+            [string]::Equals($baseName, 'Assess', [System.StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals($baseName, 'Tenant Details', [System.StringComparison]::OrdinalIgnoreCase)
+        ) {
             return $null
         }
 
