@@ -721,10 +721,12 @@ function Get-ArrayaGraphResource {
         [Parameter(Mandatory = $false)]
         [hashtable]$Headers,
         [Parameter(Mandatory = $false)]
-        [int]$MaxRetries = 5
+        [int]$MaxRetries = 5,
+        [Parameter(Mandatory = $false)]
+        [switch]$SuppressProgress
     )
 
-    return Office365Custom\Get-GraphData -Uri $Uri -PageSize $PageSize -Activity $Activity -UseRestMethod:$PreferRest -MaxRetries $MaxRetries
+    return Office365Custom\Get-GraphData -Uri $Uri -PageSize $PageSize -Activity $Activity -UseRestMethod:$PreferRest -MaxRetries $MaxRetries -SuppressProgress:$SuppressProgress
 }
 
 function Export-ArrayaGraphReportCsv {
@@ -813,11 +815,13 @@ function Get-ArrayaGraphAdminReportSettings {
         [Parameter(Mandatory = $false)]
         [hashtable]$Headers,
         [Parameter(Mandatory = $false)]
-        [switch]$PreferRest
+        [switch]$PreferRest,
+        [Parameter(Mandatory = $false)]
+        [switch]$SuppressProgress
     )
 
     try {
-        $response = Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/admin/reportSettings' -Activity 'Admin report settings' -PreferRest:$PreferRest -Headers $Headers
+        $response = Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/admin/reportSettings' -Activity 'Admin report settings' -PreferRest:$PreferRest -Headers $Headers -SuppressProgress:$SuppressProgress
     }
     catch {
         return [PSCustomObject]@{
@@ -1399,6 +1403,122 @@ function Test-AssessmentGuestUserRecord {
     )
 }
 
+function Test-AssessmentMeaningfulNestedValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Value
+    )
+
+    if ($null -eq $Value) {
+        return $false
+    }
+
+    if ($Value -is [string]) {
+        $textValue = $Value.Trim()
+        if ([string]::IsNullOrWhiteSpace($textValue) -or $textValue -in @('null', '{}', '[]')) {
+            return $false
+        }
+
+        if (
+            ($textValue.StartsWith('{') -and $textValue.EndsWith('}')) -or
+            ($textValue.StartsWith('[') -and $textValue.EndsWith(']'))
+        ) {
+            try {
+                return (Test-AssessmentMeaningfulNestedValue -Value ($textValue | ConvertFrom-Json -Depth 10))
+            }
+            catch {
+                return $true
+            }
+        }
+
+        return $true
+    }
+
+    if ($Value -is [bool] -or $Value -is [ValueType]) {
+        return $true
+    }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($entry in $Value.GetEnumerator()) {
+            if (Test-AssessmentMeaningfulNestedValue -Value $entry.Value) {
+                return $true
+            }
+        }
+
+        return $false
+    }
+
+    if (($Value -is [System.Collections.IEnumerable]) -and -not ($Value -is [string])) {
+        foreach ($item in @($Value)) {
+            if (Test-AssessmentMeaningfulNestedValue -Value $item) {
+                return $true
+            }
+        }
+
+        return $false
+    }
+
+    $propertyBag = @($Value.PSObject.Properties | Where-Object { $_.MemberType -like '*Property' })
+    if ($propertyBag.Count -gt 0) {
+        foreach ($property in $propertyBag) {
+            if (Test-AssessmentMeaningfulNestedValue -Value $property.Value) {
+                return $true
+            }
+        }
+
+        return $false
+    }
+
+    return $true
+}
+
+function Convert-AssessmentConditionalAccessNestedValueToText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Value
+    )
+
+    if (-not (Test-AssessmentMeaningfulNestedValue -Value $Value)) {
+        return ''
+    }
+
+    return [string](Convert-ToAssessmentDisplayText -Value $Value -Default '')
+}
+
+function Test-AssessmentConditionalAccessRequiresMfa {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Policy
+    )
+
+    if ($null -eq $Policy) {
+        return $false
+    }
+
+    $grantControls = Get-ArrayaObjectValue -Object $Policy -Names @('GrantControls')
+    $builtInControls = Convert-ToAssessmentStringArray -Value (Get-ArrayaObjectValue -Object $Policy -Names @('GrantControls_BuiltInControls'))
+    if ($builtInControls.Count -eq 0 -and $grantControls) {
+        $builtInControls = Convert-ToAssessmentStringArray -Value (Get-ArrayaObjectValue -Object $grantControls -Names @('BuiltInControls'))
+    }
+
+    if (@($builtInControls | Where-Object { $_ -match '^(?i)mfa$' }).Count -gt 0) {
+        return $true
+    }
+
+    $authenticationStrength = Get-ArrayaObjectValue -Object $Policy -Names @('GrantControls_AuthenticationStrength', 'AuthenticationStrength')
+    if ($null -eq $authenticationStrength -and $grantControls) {
+        $authenticationStrength = Get-ArrayaObjectValue -Object $grantControls -Names @('AuthenticationStrength')
+    }
+
+    return (Test-AssessmentMeaningfulNestedValue -Value $authenticationStrength)
+}
+
 function Convert-ToAssessmentBoolean {
     [CmdletBinding()]
     param(
@@ -1844,8 +1964,10 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
         $excludedGroups = Convert-ToAssessmentStringArray -Value (Get-ArrayaObjectValue -Object $policy -Names @('ExcludedGroups'))
         $includedRoles = Convert-ToAssessmentStringArray -Value (Get-ArrayaObjectValue -Object $policy -Names @('IncludedRoles'))
         $excludedRoles = Convert-ToAssessmentStringArray -Value (Get-ArrayaObjectValue -Object $policy -Names @('ExcludedRoles'))
-        $includeGuestsOrExternal = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $policy -Names @('IncludeGuestsOrExternalUsers')) -Default ''
-        $excludeGuestsOrExternal = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $policy -Names @('ExcludeGuestsOrExternalUsers')) -Default ''
+        $includeGuestsOrExternalValue = Get-ArrayaObjectValue -Object $policy -Names @('IncludeGuestsOrExternalUsers')
+        $excludeGuestsOrExternalValue = Get-ArrayaObjectValue -Object $policy -Names @('ExcludeGuestsOrExternalUsers')
+        $includeGuestsOrExternalConfigured = Test-AssessmentMeaningfulNestedValue -Value $includeGuestsOrExternalValue
+        $excludeGuestsOrExternalConfigured = Test-AssessmentMeaningfulNestedValue -Value $excludeGuestsOrExternalValue
 
         $policyTargetedUserIds = @{}
         $hasIncludeScope = $false
@@ -1894,7 +2016,7 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
         }
 
         if (
-            (-not [string]::IsNullOrWhiteSpace($includeGuestsOrExternal) -and $includeGuestsOrExternal -notin @('[]', '{}')) -or
+            $includeGuestsOrExternalConfigured -or
             @($includedUsers | Where-Object { $_ -match '(?i)guest|external' }).Count -gt 0
         ) {
             Add-AssessmentUserIdsToSet -Set $policyTargetedUserIds -UserIds @($enabledGuestUserIdSet.Keys)
@@ -1953,7 +2075,7 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
         }
 
         if (
-            (-not [string]::IsNullOrWhiteSpace($excludeGuestsOrExternal) -and $excludeGuestsOrExternal -notin @('[]', '{}')) -or
+            $excludeGuestsOrExternalConfigured -or
             @($excludedUsers | Where-Object { $_ -match '(?i)guest|external' }).Count -gt 0
         ) {
             foreach ($guestUserId in @($enabledGuestUserIdSet.Keys)) {
@@ -1975,7 +2097,7 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
     $coverageSummary.MemberUserCoveragePercent = if ($enabledMemberUsers.Count -gt 0) { [math]::Round(($coveredMemberUsers.Count / $enabledMemberUsers.Count) * 100, 1) } else { $null }
     $coverageSummary.GuestUsersCoveredByEnabledMfaPolicies = $coveredGuestUsers.Count
     $coverageSummary.GuestUserCoveragePercent = if ($enabledGuestUsers.Count -gt 0) { [math]::Round(($coveredGuestUsers.Count / $enabledGuestUsers.Count) * 100, 1) } else { $null }
-    $coverageSummary.CoverageCalculationNote = 'Estimate is based on enabled reviewed users and enabled Conditional Access policies that require MFA, expanded across direct users, targeted groups, targeted roles, and guest/external-user scope where supported.'
+    $coverageSummary.CoverageCalculationNote = 'Estimate is based on enabled reviewed users and enabled Conditional Access policies that require MFA, whether through built-in MFA or authentication strength, expanded across direct users, targeted groups, targeted roles, and guest/external-user scope where supported.'
 
     if ($IncludeDetails) {
         $uncoveredUserIds = @(
@@ -1987,7 +2109,17 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
             $userRecord = if ($enabledUserRecordLookup.ContainsKey($uncoveredUserId)) { $enabledUserRecordLookup[$uncoveredUserId] } else { $null }
             $displayName = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $userRecord -Names @('DisplayName')) -Default 'Unnamed user'
             $userPrincipalName = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $userRecord -Names @('UserPrincipalName')) -Default $uncoveredUserId
-            $userType = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $userRecord -Names @('UserType')) -Default $(if ($enabledGuestUserIdSet.ContainsKey($uncoveredUserId)) { 'Guest' } else { 'Member' })
+            $isGuestUser = $enabledGuestUserIdSet.ContainsKey($uncoveredUserId)
+            $reportedUserType = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $userRecord -Names @('UserType')) -Default ''
+            $userType = if ($isGuestUser) {
+                'Guest'
+            }
+            elseif ([string]::IsNullOrWhiteSpace($reportedUserType)) {
+                'Member'
+            }
+            else {
+                $reportedUserType
+            }
             $relatedPolicies = if ($userExclusionPolicyLookup.ContainsKey($uncoveredUserId)) { @($userExclusionPolicyLookup[$uncoveredUserId]) -join '; ' } else { '' }
             $gapReason = if ($userExclusionReasonLookup.ContainsKey($uncoveredUserId)) {
                 @($userExclusionReasonLookup[$uncoveredUserId]) -join '; '
@@ -2148,7 +2280,7 @@ function Test-AssessmentPermissionPreflight {
     }
     else {
         try {
-            $organizationRecord = @(Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/organization?$select=id' -Activity 'Permission preflight: organization id resolution' -PreferRest:$false) | Select-Object -First 1
+            $organizationRecord = @(Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/organization?$select=id' -Activity 'Permission preflight: organization id resolution' -PreferRest:$false -SuppressProgress) | Select-Object -First 1
             if ($organizationRecord -and $organizationRecord.PSObject.Properties['id']) {
                 $resolvedTenantId = [string]$organizationRecord.id
             }
@@ -2223,7 +2355,7 @@ function Test-AssessmentPermissionPreflight {
             return
         }
 
-        Get-ArrayaGraphResource -Uri $Uri -Activity ("Permission preflight: {0}" -f $Uri) | Out-Null
+        Get-ArrayaGraphResource -Uri $Uri -Activity ("Permission preflight: {0}" -f $Uri) -SuppressProgress | Out-Null
     }
 
     $invokeGraphProbe = {
@@ -2269,13 +2401,13 @@ function Test-AssessmentPermissionPreflight {
         Area            = 'Graph'
         PermissionNames = @('Organization.Read.All')
         NeededFor       = 'tenant organization metadata and tenant naming'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/organization?$select=id,displayName,onPremisesSyncEnabled' -Activity 'Permission preflight: Organization.Read.All' | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/organization?$select=id,displayName,onPremisesSyncEnabled' -Activity 'Permission preflight: Organization.Read.All' -SuppressProgress | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('User.Read.All')
         NeededFor       = 'user inventory, guest review, and sign-in hygiene analysis'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/users?$top=1&$select=id,userType,accountEnabled' -Activity 'Permission preflight: User.Read.All' | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/users?$top=1&$select=id,userType,accountEnabled' -Activity 'Permission preflight: User.Read.All' -SuppressProgress | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
@@ -2287,16 +2419,16 @@ function Test-AssessmentPermissionPreflight {
         Area            = 'Graph'
         PermissionNames = @('Group.Read.All')
         NeededFor       = 'Entra groups, collaboration ownership, and Microsoft 365 group inventory'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/groups?$top=1&$select=id,displayName' -Activity 'Permission preflight: Group.Read.All' | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/groups?$top=1&$select=id,displayName' -Activity 'Permission preflight: Group.Read.All' -SuppressProgress | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('GroupMember.Read.All')
         NeededFor       = 'group member and owner review used by ownership and collaboration findings'
         Probe           = {
-            $firstGroup = @(Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/groups?$top=1&$select=id' -Activity 'Permission preflight: group lookup for GroupMember.Read.All') | Select-Object -First 1
+            $firstGroup = @(Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/groups?$top=1&$select=id' -Activity 'Permission preflight: group lookup for GroupMember.Read.All' -SuppressProgress) | Select-Object -First 1
             if ($firstGroup -and $firstGroup.PSObject.Properties['id'] -and -not [string]::IsNullOrWhiteSpace([string]$firstGroup.id)) {
-                Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/groups/{0}/members?$top=1&$select=id" -f $firstGroup.id) -Activity 'Permission preflight: GroupMember.Read.All' | Out-Null
+                Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/groups/{0}/members?$top=1&$select=id" -f $firstGroup.id) -Activity 'Permission preflight: GroupMember.Read.All' -SuppressProgress | Out-Null
             }
         }
     }) | Out-Null
@@ -2317,19 +2449,19 @@ function Test-AssessmentPermissionPreflight {
         Area            = 'Graph'
         PermissionNames = @('Domain.Read.All')
         NeededFor       = 'accepted domain inventory and DNS posture review'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/domains?$top=1&$select=id,isVerified' -Activity 'Permission preflight: Domain.Read.All' | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/domains?$top=1&$select=id,isVerified' -Activity 'Permission preflight: Domain.Read.All' -SuppressProgress | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('Device.Read.All')
         NeededFor       = 'device inventory and compliance posture review'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/devices?$top=1&$select=id,displayName' -Activity 'Permission preflight: Device.Read.All' | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/devices?$top=1&$select=id,displayName' -Activity 'Permission preflight: Device.Read.All' -SuppressProgress | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('Policy.Read.All')
         NeededFor       = 'Conditional Access, guest invitation, and authentication policy review'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/policies/authorizationPolicy?$select=id,allowInvitesFrom,allowedToUseSSPR' -Activity 'Permission preflight: Policy.Read.All' | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/policies/authorizationPolicy?$select=id,allowInvitesFrom,allowedToUseSSPR' -Activity 'Permission preflight: Policy.Read.All' -SuppressProgress | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
@@ -2337,7 +2469,7 @@ function Test-AssessmentPermissionPreflight {
         NeededFor       = 'cross-tenant partner visibility and external access posture review'
         Probe           = {
             if (-not [string]::IsNullOrWhiteSpace($resolvedTenantId)) {
-                Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/tenantRelationships/findTenantInformationByTenantId(tenantId='{0}')" -f $resolvedTenantId) -Activity 'Permission preflight: CrossTenantInformation.ReadBasic.All' | Out-Null
+                Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/tenantRelationships/findTenantInformationByTenantId(tenantId='{0}')" -f $resolvedTenantId) -Activity 'Permission preflight: CrossTenantInformation.ReadBasic.All' -SuppressProgress | Out-Null
             }
         }
     }) | Out-Null
@@ -2345,13 +2477,13 @@ function Test-AssessmentPermissionPreflight {
         Area            = 'Graph'
         PermissionNames = @('Application.Read.All')
         NeededFor       = 'enterprise application and permission posture review'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/servicePrincipals?$top=1&$select=id,displayName' -Activity 'Permission preflight: Application.Read.All' | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/servicePrincipals?$top=1&$select=id,displayName' -Activity 'Permission preflight: Application.Read.All' -SuppressProgress | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('Sites.Read.All')
         NeededFor       = 'SharePoint and OneDrive site inventory'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/sites/root?$select=id,webUrl' -Activity 'Permission preflight: Sites.Read.All' | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/sites/root?$select=id,webUrl' -Activity 'Permission preflight: Sites.Read.All' -SuppressProgress | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
@@ -2363,14 +2495,14 @@ function Test-AssessmentPermissionPreflight {
         Area            = 'Graph'
         PermissionNames = @('OnPremDirectorySynchronization.Read.All')
         NeededFor       = 'directory synchronization and password lifecycle review'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/directory/onPremisesSynchronization' -Activity 'Permission preflight: OnPremDirectorySynchronization.Read.All' | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/directory/onPremisesSynchronization' -Activity 'Permission preflight: OnPremDirectorySynchronization.Read.All' -SuppressProgress | Out-Null }
         IsBlocking      = $false
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('SecurityEvents.Read.All')
         NeededFor       = 'Microsoft Secure Score collection'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/security/secureScores?$top=1' -Activity 'Permission preflight: SecurityEvents.Read.All' | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/security/secureScores?$top=1' -Activity 'Permission preflight: SecurityEvents.Read.All' -SuppressProgress | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
@@ -2383,7 +2515,7 @@ function Test-AssessmentPermissionPreflight {
         PermissionNames = @('ReportSettings.Read.All')
         NeededFor       = 'report-settings validation for activity reporting'
         Probe           = {
-            $adminReportSettings = Get-ArrayaGraphAdminReportSettings -Headers $global:GraphHeaders
+            $adminReportSettings = Get-ArrayaGraphAdminReportSettings -Headers $global:GraphHeaders -SuppressProgress
             if (-not $adminReportSettings -or -not $adminReportSettings.Available) {
                 $reportSettingsError = if ($adminReportSettings -and $adminReportSettings.PSObject.Properties['ErrorMessage'] -and -not [string]::IsNullOrWhiteSpace([string]$adminReportSettings.ErrorMessage)) {
                     [string]$adminReportSettings.ErrorMessage
@@ -2413,7 +2545,7 @@ function Test-AssessmentPermissionPreflight {
                     $teamProbeResponse = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/teams?$top=1&$select=id,displayName' -ProgressAction SilentlyContinue -ErrorAction Stop
                 }
                 else {
-                    $teamProbeResponse = Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/teams?$top=1&$select=id,displayName' -Activity 'Permission preflight: Team.ReadBasic.All'
+                    $teamProbeResponse = Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/teams?$top=1&$select=id,displayName' -Activity 'Permission preflight: Team.ReadBasic.All' -SuppressProgress
                 }
 
                 $firstTeamId = $null
@@ -2442,14 +2574,6 @@ function Test-AssessmentPermissionPreflight {
         }) | Out-Null
     }
 
-    foreach ($graphCheck in $graphChecks) {
-        $isBlocking = $true
-        if ($graphCheck.PSObject.Properties['IsBlocking']) {
-            $isBlocking = [bool]$graphCheck.IsBlocking
-        }
-        & $invokeGraphProbe $graphCheck.Area $graphCheck.PermissionNames $graphCheck.NeededFor $graphCheck.Probe $isBlocking
-    }
-
     $exchangeChecks = New-Object System.Collections.Generic.List[object]
     $exchangeChecks.Add([pscustomobject]@{
         Requirement = 'Exchange mailbox read access'
@@ -2467,41 +2591,73 @@ function Test-AssessmentPermissionPreflight {
         }) | Out-Null
     }
 
-    foreach ($exchangeCheck in $exchangeChecks) {
-        try {
-            & $exchangeCheck.Probe
-        }
-        catch {
-            & $addFailure 'Exchange Online' $exchangeCheck.Requirement $exchangeCheck.NeededFor $exchangeCheck.Guidance
-        }
+    $preflightProgressId = 91
+    $preflightProgressIndex = 0
+    $preflightProgressTotal = $graphChecks.Count + $exchangeChecks.Count + $(if ($script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies) { 1 } else { 0 })
+
+    $updatePreflightProgress = {
+        param(
+            [string]$Area,
+            [string]$Requirement,
+            [ref]$ProgressIndex
+        )
+
+        $ProgressIndex.Value++
+        Write-ProgressHelper -Total ([Math]::Max($preflightProgressTotal, 1)) -Id $preflightProgressId -Index $ProgressIndex.Value -Activity 'Permission preflight' -Operation ("{0}: {1}" -f $Area, $Requirement)
     }
 
-    if ($script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies) {
-        try {
-            if (-not (Ensure-PurviewComplianceSession)) {
-                $purviewFailure = if (-not (Get-Command -Name 'Connect-IPPSSession' -ErrorAction SilentlyContinue)) {
-                    'Connect-IPPSSession is unavailable in the current session.'
-                }
-                elseif (-not [string]::IsNullOrWhiteSpace($ClientSecret)) {
-                    'Client secret authentication is not supported for Purview compliance PowerShell in this workflow.'
+    try {
+        foreach ($graphCheck in $graphChecks) {
+            $isBlocking = $true
+            if ($graphCheck.PSObject.Properties['IsBlocking']) {
+                $isBlocking = [bool]$graphCheck.IsBlocking
+            }
+
+            & $updatePreflightProgress $graphCheck.Area (($graphCheck.PermissionNames -join ' or ')) ([ref]$preflightProgressIndex)
+            & $invokeGraphProbe $graphCheck.Area $graphCheck.PermissionNames $graphCheck.NeededFor $graphCheck.Probe $isBlocking
+        }
+
+        foreach ($exchangeCheck in $exchangeChecks) {
+            & $updatePreflightProgress 'Exchange Online' $exchangeCheck.Requirement ([ref]$preflightProgressIndex)
+            try {
+                & $exchangeCheck.Probe
+            }
+            catch {
+                & $addFailure 'Exchange Online' $exchangeCheck.Requirement $exchangeCheck.NeededFor $exchangeCheck.Guidance
+            }
+        }
+
+        if ($script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies) {
+            & $updatePreflightProgress 'Purview' 'Retention and DLP policy access' ([ref]$preflightProgressIndex)
+            try {
+                if (-not (Ensure-PurviewComplianceSession)) {
+                    $purviewFailure = if (-not (Get-Command -Name 'Connect-IPPSSession' -ErrorAction SilentlyContinue)) {
+                        'Connect-IPPSSession is unavailable in the current session.'
+                    }
+                    elseif (-not [string]::IsNullOrWhiteSpace($ClientSecret)) {
+                        'Client secret authentication is not supported for Purview compliance PowerShell in this workflow.'
+                    }
+                    else {
+                        'Purview compliance PowerShell session could not be established.'
+                    }
+
+                    & $addFailure 'Purview' 'Retention and DLP policy access' 'retention and DLP policy collection' $purviewFailure
                 }
                 else {
-                    'Purview compliance PowerShell session could not be established.'
-                }
-
-                & $addFailure 'Purview' 'Retention and DLP policy access' 'retention and DLP policy collection' $purviewFailure
-            }
-            else {
-                foreach ($requiredPurviewCommand in @('Get-RetentionCompliancePolicy', 'Get-DlpCompliancePolicy')) {
-                    if (-not (Get-Command -Name $requiredPurviewCommand -ErrorAction SilentlyContinue)) {
-                        & $addFailure 'Purview' $requiredPurviewCommand 'retention and DLP policy collection' 'The required compliance cmdlet was not available after establishing the Purview session.'
+                    foreach ($requiredPurviewCommand in @('Get-RetentionCompliancePolicy', 'Get-DlpCompliancePolicy')) {
+                        if (-not (Get-Command -Name $requiredPurviewCommand -ErrorAction SilentlyContinue)) {
+                            & $addFailure 'Purview' $requiredPurviewCommand 'retention and DLP policy collection' 'The required compliance cmdlet was not available after establishing the Purview session.'
+                        }
                     }
                 }
             }
+            catch {
+                & $addFailure 'Purview' 'Retention and DLP policy access' 'retention and DLP policy collection' $_.Exception.Message
+            }
         }
-        catch {
-            & $addFailure 'Purview' 'Retention and DLP policy access' 'retention and DLP policy collection' $_.Exception.Message
-        }
+    }
+    finally {
+        Write-ProgressHelper -Total ([Math]::Max($preflightProgressTotal, 1)) -Id $preflightProgressId -Activity 'Permission preflight' -Completed
     }
 
     if ($permissionFailures.Count -gt 0) {
@@ -6946,6 +7102,7 @@ function Get-ConditionalAccessPoliciesReport {
 
             $includeGuestsOrExternalUsers = $null
             $excludeGuestsOrExternalUsers = $null
+            $authenticationStrength = $null
             if ($policy.Conditions.Users) {
                 if ($policy.Conditions.Users.PSObject.Properties['IncludeGuestsOrExternalUsers']) {
                     $includeGuestsOrExternalUsers = $policy.Conditions.Users.IncludeGuestsOrExternalUsers
@@ -6953,6 +7110,9 @@ function Get-ConditionalAccessPoliciesReport {
                 if ($policy.Conditions.Users.PSObject.Properties['ExcludeGuestsOrExternalUsers']) {
                     $excludeGuestsOrExternalUsers = $policy.Conditions.Users.ExcludeGuestsOrExternalUsers
                 }
+            }
+            if ($policy.GrantControls -and $policy.GrantControls.PSObject.Properties['AuthenticationStrength']) {
+                $authenticationStrength = $policy.GrantControls.AuthenticationStrength
             }
 
             $clientAppTypes = @($policy.Conditions.ClientAppTypes)
@@ -6969,6 +7129,13 @@ function Get-ConditionalAccessPoliciesReport {
             $excludeApps = @($policy.Conditions.Applications.ExcludeApplications)
             $signInRiskInclude = @($policy.Conditions.SignInRiskLevels.IncludeLevels)
             $servicePrincipalRiskInclude = @($policy.Conditions.ServicePrincipalRiskLevels.IncludeLevels)
+            $hasMeaningfulGuestInclude = Test-AssessmentMeaningfulNestedValue -Value $includeGuestsOrExternalUsers
+            $hasMeaningfulGuestExclude = Test-AssessmentMeaningfulNestedValue -Value $excludeGuestsOrExternalUsers
+            $hasMeaningfulAuthenticationStrength = Test-AssessmentMeaningfulNestedValue -Value $authenticationStrength
+            $requiresMfaEnforcement = (
+                @($grantControlsBuiltIn | Where-Object { $_ -match '^(?i)mfa$' }).Count -gt 0 -or
+                $hasMeaningfulAuthenticationStrength
+            )
 
             $hasExclusions = (
                 $excludeUsers.Count -gt 0 -or
@@ -6976,10 +7143,10 @@ function Get-ConditionalAccessPoliciesReport {
                 $excludeRoles.Count -gt 0 -or
                 $excludeLocations.Count -gt 0 -or
                 $excludeApps.Count -gt 0 -or
-                ($null -ne $excludeGuestsOrExternalUsers)
+                $hasMeaningfulGuestExclude
             )
             $targetsGuestsOrExternal = (
-                ($null -ne $includeGuestsOrExternalUsers) -or
+                $hasMeaningfulGuestInclude -or
                 (($includeUsers -join ',') -match 'guest|external')
             )
             $targetsPrivilegedRoles = ($includeRoles.Count -gt 0 -or $excludeRoles.Count -gt 0)
@@ -7058,8 +7225,11 @@ function Get-ConditionalAccessPoliciesReport {
                 # Top-level DeviceStates
                 DeviceStates_IncludeDeviceStates = $(if ($policy.Conditions.DeviceStates) { $policy.Conditions.DeviceStates.IncludeDeviceStates -join ',' } else { '' })
                 DeviceStates_ExcludeDeviceStates = $(if ($policy.Conditions.DeviceStates) { $policy.Conditions.DeviceStates.ExcludeDeviceStates -join ',' } else { '' })
-                IncludeGuestsOrExternalUsers = $(if ($null -ne $includeGuestsOrExternalUsers) { ($includeGuestsOrExternalUsers | ConvertTo-Json -Compress -Depth 5) } else { '' })
-                ExcludeGuestsOrExternalUsers = $(if ($null -ne $excludeGuestsOrExternalUsers) { ($excludeGuestsOrExternalUsers | ConvertTo-Json -Compress -Depth 5) } else { '' })
+                IncludeGuestsOrExternalUsers = (Convert-AssessmentConditionalAccessNestedValueToText -Value $includeGuestsOrExternalUsers)
+                ExcludeGuestsOrExternalUsers = (Convert-AssessmentConditionalAccessNestedValueToText -Value $excludeGuestsOrExternalUsers)
+                GrantControls_AuthenticationStrength = (Convert-AssessmentConditionalAccessNestedValueToText -Value $authenticationStrength)
+                UsesAuthenticationStrengthForMfa = [bool]$hasMeaningfulAuthenticationStrength
+                RequiresMfaEnforcement = [bool]$requiresMfaEnforcement
                 IsReportOnly                = (($policy.State -as [string]) -match 'report')
                 HasExclusions               = [bool]$hasExclusions
                 TargetsGuestsOrExternalUsers = [bool]$targetsGuestsOrExternal
@@ -7085,6 +7255,8 @@ function Get-ConditionalAccessPoliciesReport {
                 State                       = $policy.State
                 IsEnabled                   = ([string]$policy.State).ToLowerInvariant() -eq 'enabled'
                 IsReportOnly                = (($policy.State -as [string]) -match 'report')
+                RequiresMfaEnforcement      = [bool]$requiresMfaEnforcement
+                UsesAuthenticationStrengthForMfa = [bool]$hasMeaningfulAuthenticationStrength
                 HasExclusions               = [bool]$hasExclusions
                 TargetsGuestsOrExternalUsers = [bool]$targetsGuestsOrExternal
                 TargetsPrivilegedRoles      = [bool]$targetsPrivilegedRoles
@@ -7505,7 +7677,7 @@ function Get-AuthenticationConfiguration {
         # Check Conditional Access policies for MFA requirements
         if ($script:tenantStatsHash["ConditionalAccessPolicies"]) {
             $mfaPolicies = $script:tenantStatsHash["ConditionalAccessPolicies"].Values | 
-                Where-Object {$_.GrantControls_BuiltInControls -match "(?i)mfa"}
+                Where-Object { Test-AssessmentConditionalAccessRequiresMfa -Policy $_ }
             
             if ($mfaPolicies) {
                 $authMethodsPolicy.MFAEnabled = $true
@@ -8682,7 +8854,7 @@ function Get-MfaRegistrationDetails {
 
         $mfaPolicies = @(
             $conditionalAccessPolicies |
-                Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('GrantControls_BuiltInControls'))) -match '(?i)mfa' }
+                Where-Object { Test-AssessmentConditionalAccessRequiresMfa -Policy $_ }
         )
         $enabledMfaPolicies = @($mfaPolicies | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('State'))).ToLowerInvariant() -eq 'enabled' })
         $reportOnlyMfaPolicies = @($mfaPolicies | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('State'))) -match '(?i)report' })

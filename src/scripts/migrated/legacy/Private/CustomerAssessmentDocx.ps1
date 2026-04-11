@@ -2339,10 +2339,15 @@ function New-CustomerAssessmentDocumentBlocks {
         (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('GapCategory')) -Default '').ToLowerInvariant() -eq 'outside enabled mfa ca include scope'
     }).Count
     $mfaUncoveredMemberCount = @($mfaGapRowsSorted | Where-Object {
-        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default '').ToLowerInvariant() -eq 'member'
+        $userTypeText = (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default '').ToLowerInvariant()
+        $userPrincipalName = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserPrincipalName')) -Default ''
+        $isGuestIdentity = ($userTypeText -eq 'guest' -or $userPrincipalName -like '*#EXT#*')
+        -not $isGuestIdentity
     }).Count
     $mfaUncoveredGuestCount = @($mfaGapRowsSorted | Where-Object {
-        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default '').ToLowerInvariant() -eq 'guest'
+        $userTypeText = (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default '').ToLowerInvariant()
+        $userPrincipalName = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserPrincipalName')) -Default ''
+        ($userTypeText -eq 'guest' -or $userPrincipalName -like '*#EXT#*')
     }).Count
     $mfaGapSummaryRows = if ($mfaGapRowsSorted.Count -gt 0) {
         @(
@@ -2364,11 +2369,14 @@ function New-CustomerAssessmentDocumentBlocks {
                     if ([string]::IsNullOrWhiteSpace($relatedPolicyText) -or $relatedPolicyText -eq 'Not validated from the reviewed data') {
                         $relatedPolicyText = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('GapReason')) -Default 'Not validated from the reviewed data'
                     }
+                    $userPrincipalName = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserPrincipalName')) -Default 'Not validated from the reviewed data'
+                    $userTypeText = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default ''
+                    $displayUserType = if ($userTypeText.ToLowerInvariant() -eq 'guest' -or $userPrincipalName -like '*#EXT#*') { 'Guest' } else { $(if ([string]::IsNullOrWhiteSpace($userTypeText)) { 'Member' } else { $userTypeText }) }
 
                     New-CustomerWordTableRow -Cells @(
                         (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName')) -Default 'Unnamed user'),
-                        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserPrincipalName')) -Default 'Not validated from the reviewed data'),
-                        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default 'Not validated from the reviewed data'),
+                        $userPrincipalName,
+                        $displayUserType,
                         (Get-CustomerMfaGapCategoryLabel -Value (Get-ArrayaObjectValue -Object $_ -Names @('GapCategory'))),
                         $relatedPolicyText
                     )
