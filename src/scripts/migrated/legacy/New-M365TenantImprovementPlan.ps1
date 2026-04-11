@@ -2142,6 +2142,113 @@ function Get-CustomerMfaEnrollmentSummary {
     }
 }
 
+function Test-ArrayaMeaningfulNestedValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Value
+    )
+
+    if ($null -eq $Value) {
+        return $false
+    }
+
+    if ($Value -is [string]) {
+        $textValue = $Value.Trim()
+        if ([string]::IsNullOrWhiteSpace($textValue) -or $textValue -in @('null', '{}', '[]')) {
+            return $false
+        }
+
+        if (
+            ($textValue.StartsWith('{') -and $textValue.EndsWith('}')) -or
+            ($textValue.StartsWith('[') -and $textValue.EndsWith(']'))
+        ) {
+            try {
+                return (Test-ArrayaMeaningfulNestedValue -Value ($textValue | ConvertFrom-Json -Depth 10))
+            }
+            catch {
+                return $true
+            }
+        }
+
+        return $true
+    }
+
+    if ($Value -is [bool] -or $Value -is [ValueType]) {
+        return $true
+    }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($entry in $Value.GetEnumerator()) {
+            if (Test-ArrayaMeaningfulNestedValue -Value $entry.Value) {
+                return $true
+            }
+        }
+
+        return $false
+    }
+
+    if (($Value -is [System.Collections.IEnumerable]) -and -not ($Value -is [string])) {
+        foreach ($item in @($Value)) {
+            if (Test-ArrayaMeaningfulNestedValue -Value $item) {
+                return $true
+            }
+        }
+
+        return $false
+    }
+
+    $propertyBag = @($Value.PSObject.Properties | Where-Object { $_.MemberType -like '*Property' })
+    if ($propertyBag.Count -gt 0) {
+        foreach ($property in $propertyBag) {
+            if (Test-ArrayaMeaningfulNestedValue -Value $property.Value) {
+                return $true
+            }
+        }
+
+        return $false
+    }
+
+    return $true
+}
+
+function Test-ArrayaConditionalAccessRequiresMfa {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Policy
+    )
+
+    if ($null -eq $Policy) {
+        return $false
+    }
+
+    $builtInControls = @()
+    $builtInControlValue = Get-ArrayaObjectValue -Object $Policy -Names @('GrantControls_BuiltInControls')
+    if ($builtInControlValue -is [string]) {
+        $builtInControls = @(
+            $builtInControlValue -split ',' |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+    }
+    elseif (($builtInControlValue -is [System.Collections.IEnumerable]) -and -not ($builtInControlValue -is [string])) {
+        $builtInControls = @(
+            @($builtInControlValue) |
+                ForEach-Object { [string]$_ } |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+    }
+    if (@($builtInControls | Where-Object { $_ -match '^(?i)mfa$' }).Count -gt 0) {
+        return $true
+    }
+
+    return (Test-ArrayaMeaningfulNestedValue -Value (Get-ArrayaObjectValue -Object $Policy -Names @('GrantControls_AuthenticationStrength', 'AuthenticationStrength')))
+}
+
 function Get-CustomerMfaEnforcementSummary {
     [CmdletBinding()]
     param(
@@ -2158,6 +2265,12 @@ function Get-CustomerMfaEnforcementSummary {
     $summaryEnabledPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('EnabledPolicies'))
     $summaryReportOnlyPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('ReportOnlyPolicies'))
     $summaryPoliciesWithExclusions = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('PoliciesWithExclusions'))
+    $calculatedMfaPolicies = @(
+        $ConditionalAccessPolicies |
+            Where-Object { Test-ArrayaConditionalAccessRequiresMfa -Policy $_ }
+    )
+    $calculatedEnabledMfaPolicies = @($calculatedMfaPolicies | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('State'))).ToLowerInvariant() -eq 'enabled' })
+    $calculatedReportOnlyMfaPolicies = @($calculatedMfaPolicies | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('State'))) -match '(?i)report' })
 
     if ($ExistingSummary) {
         $reviewedPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('ConditionalAccessPoliciesReviewed'))
@@ -2173,9 +2286,9 @@ function Get-CustomerMfaEnforcementSummary {
             EnabledConditionalAccessPolicies    = $(if ($null -ne $summaryEnabledPolicies) { $summaryEnabledPolicies } else { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnabledConditionalAccessPolicies')) })
             ReportOnlyConditionalAccessPolicies = $(if ($null -ne $summaryReportOnlyPolicies) { $summaryReportOnlyPolicies } else { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('ReportOnlyConditionalAccessPolicies')) })
             PoliciesWithExclusions              = $(if ($null -ne $summaryPoliciesWithExclusions) { $summaryPoliciesWithExclusions } else { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('PoliciesWithExclusions')) })
-            PoliciesRequiringMfa                = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('PoliciesRequiringMfa'))
-            EnabledPoliciesRequiringMfa         = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnabledPoliciesRequiringMfa'))
-            ReportOnlyPoliciesRequiringMfa      = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('ReportOnlyPoliciesRequiringMfa'))
+            PoliciesRequiringMfa                = $(if ($calculatedMfaPolicies.Count -gt 0) { $calculatedMfaPolicies.Count } else { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('PoliciesRequiringMfa')) })
+            EnabledPoliciesRequiringMfa         = $(if ($calculatedEnabledMfaPolicies.Count -gt 0) { $calculatedEnabledMfaPolicies.Count } else { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnabledPoliciesRequiringMfa')) })
+            ReportOnlyPoliciesRequiringMfa      = $(if ($calculatedReportOnlyMfaPolicies.Count -gt 0) { $calculatedReportOnlyMfaPolicies.Count } else { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('ReportOnlyPoliciesRequiringMfa')) })
             EnabledUsersReviewed                = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnabledUsersReviewed'))
             EnabledMemberUsersReviewed          = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnabledMemberUsersReviewed'))
             EnabledGuestUsersReviewed           = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnabledGuestUsersReviewed'))
@@ -2198,12 +2311,9 @@ function Get-CustomerMfaEnforcementSummary {
         }
     }
 
-    $mfaPolicies = @(
-        $ConditionalAccessPolicies |
-            Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('GrantControls_BuiltInControls'))) -match '(?i)mfa' }
-    )
-    $enabledMfaPolicies = @($mfaPolicies | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('State'))).ToLowerInvariant() -eq 'enabled' })
-    $reportOnlyMfaPolicies = @($mfaPolicies | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('State'))) -match '(?i)report' })
+    $mfaPolicies = @($calculatedMfaPolicies)
+    $enabledMfaPolicies = @($calculatedEnabledMfaPolicies)
+    $reportOnlyMfaPolicies = @($calculatedReportOnlyMfaPolicies)
     $securityDefaultsEnabled = $null
     if ($securityDefaultsRecord) {
         $securityDefaultsEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $securityDefaultsRecord -Names @('IsEnabled', 'Enabled'))

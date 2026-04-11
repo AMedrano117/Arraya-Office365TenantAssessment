@@ -83,6 +83,9 @@ function Get-GraphData {
         [switch]$UseRestMethod,
 
         [Parameter(Mandatory = $false)]
+        [switch]$SuppressProgress,
+
+        [Parameter(Mandatory = $false)]
         [string]$AccessToken,
 
         [Parameter(Mandatory = $false)]
@@ -114,7 +117,7 @@ function Get-GraphData {
 
         # Build query URI with pagination
         $QueryUri = $Uri
-        if ($PageSize -and $QueryUri -notmatch "\`$top=") {
+        if ($PageSize -and $QueryUri -notmatch '(?i)(?:[?&])\$top=') {
             $separator = if ($QueryUri.Contains('?')) { '&' } else { '?' }
             $QueryUri += "${separator}`$top=$PageSize"
         }
@@ -247,7 +250,9 @@ function Get-GraphData {
                 if ($PSBoundParameters.ContainsKey('ParentId')) {
                     $progressParams.ParentId = $ParentId
                 }
-                Write-ProgressHelper @progressParams
+                if (-not $SuppressProgress) {
+                    Write-ProgressHelper @progressParams
+                }
 
                 # Check for next page
                 $NextLink = $null
@@ -268,7 +273,9 @@ function Get-GraphData {
             } while ($MorePages)
         }
         finally {
-            Write-ProgressHelper -Total 1 -Activity $Activity -Id $Id -Completed
+            if (-not $SuppressProgress) {
+                Write-ProgressHelper -Total 1 -Activity $Activity -Id $Id -Completed
+            }
         }
     }
 
