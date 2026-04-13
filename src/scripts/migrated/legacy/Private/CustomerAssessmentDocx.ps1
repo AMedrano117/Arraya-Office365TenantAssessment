@@ -1393,6 +1393,7 @@ function New-CustomerAssessmentDocumentBlocks {
     $sourceSummaryRows = @($SourceModel.SummaryRows)
     $findingsLegendRows = @($SourceModel.FindingsLegendRows)
     $executiveDecisionSummary = $SourceModel.ExecutiveDecisionSummary
+    $guestMfaExperienceSummary = $SourceModel.GuestMfaExperienceSummary
     $identityConsultativeSummary = $SourceModel.IdentityConsultativeSummary
     $messagingConsultativeSummary = $SourceModel.MessagingConsultativeSummary
     $collaborationConsultativeSummary = $SourceModel.CollaborationConsultativeSummary
@@ -1501,7 +1502,18 @@ function New-CustomerAssessmentDocumentBlocks {
     $applicationSummaryRecord = if ($Signals.EnterpriseApplicationSummary) { Get-ArrayaObjectValue -Object $Signals.EnterpriseApplicationSummary -Names @('Summary') } else { $null }
     $totalEnterpriseApps = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $applicationSummaryRecord -Names @('TotalEnterpriseApplications', 'EnterpriseApplicationCount'))
     $highPrivilegeApps = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $applicationSummaryRecord -Names @('ApplicationsWithHighPrivilege', 'HighPrivilegeApplicationCount'))
-    if ($null -eq $totalEnterpriseApps) { $totalEnterpriseApps = $enterpriseApplications.Count }
+    $ssoEnabledApps = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $applicationSummaryRecord -Names @('SsoEnabledApplications', 'SsoEnabledApplicationCount'))
+    if ($null -eq $totalEnterpriseApps -or (($totalEnterpriseApps -eq 0) -and ($enterpriseApplications.Count -gt 0))) { $totalEnterpriseApps = $enterpriseApplications.Count }
+    if ($null -eq $ssoEnabledApps) {
+        $ssoEnabledApps = @(
+            $enterpriseApplications |
+                Where-Object {
+                    $preferredSingleSignOnMode = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('SSOMode', 'PreferredSingleSignOnMode')) -Default ''
+                    $explicitSsoEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('SsoEnabled'))
+                    ($explicitSsoEnabled -eq $true) -or (-not [string]::IsNullOrWhiteSpace($preferredSingleSignOnMode) -and $preferredSingleSignOnMode -ne 'notSupported')
+                }
+        ).Count
+    }
     $applicationInventoryValidated = ($null -ne $applicationSummaryRecord) -or ($enterpriseApplications.Count -gt 0)
     $applicationInventoryClearlyEmpty = $applicationInventoryValidated -and ($enterpriseApplications.Count -eq 0) -and ($totalEnterpriseApps -eq 0)
 
@@ -1724,6 +1736,10 @@ function New-CustomerAssessmentDocumentBlocks {
     $sharingDomainRestrictionModeText = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('SharingDomainRestrictionMode')) -Default 'Not validated from the reviewed data'
     $sharingDomainRestrictionModeText = Convert-ToCustomerSharingRestrictionModeLabel -Value $sharingDomainRestrictionModeText
     $siteOverrideCountText = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $externalSharingSummaryRecord -Names @('SiteOverrideCount')) -Default $(if ($externalSharingSiteOverrides.Count -gt 0) { $externalSharingSiteOverrides.Count } else { 'Not validated from the reviewed data' })
+    $guestMfaWhyThisMattersText = Convert-ToCustomerAssessmentNarrativeText -Text (Get-ArrayaObjectValue -Object $guestMfaExperienceSummary -Names @('WhyThisMatters'))
+    $guestMfaCurrentStateSummaryText = Convert-ToCustomerAssessmentNarrativeText -Text (Get-ArrayaObjectValue -Object $guestMfaExperienceSummary -Names @('CurrentStateSummary'))
+    $guestMfaUserExperienceText = Convert-ToCustomerAssessmentNarrativeText -Text (Get-ArrayaObjectValue -Object $guestMfaExperienceSummary -Names @('UserExperience'))
+    $guestMfaDesiredStateText = Convert-ToCustomerAssessmentNarrativeText -Text (Get-ArrayaObjectValue -Object $guestMfaExperienceSummary -Names @('DesiredState'))
     $largestDomainsByRecipients = @(
         $domainRows |
             Sort-Object { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('TotalDomainRecipients')) } -Descending |
@@ -1776,6 +1792,14 @@ function New-CustomerAssessmentDocumentBlocks {
                 (Convert-ToCustomerAssessmentDisplayText -Value ([string]$action.FirstValidationStep) -Default 'Validate the current state behind this work item before scheduling remediation.'),
                 (Convert-ToCustomerAssessmentDisplayText -Value ([string]$action.SuccessCheck) -Default 'The agreed target state should be validated in the relevant detailed section.'),
                 (New-CustomerWordBlankCell)
+            )
+        }
+    )
+    $recommendationImpactRows = @(
+        foreach ($action in @($roadmapActions)) {
+            New-CustomerWordTableRow -Cells @(
+                (Convert-ToCustomerAssessmentDisplayText -Value ([string]$action.ActionTitle) -Default 'Priority work item'),
+                (Convert-ToCustomerAssessmentNarrativeText -Text ([string]$action.UserImpactExperience))
             )
         }
     )
@@ -1835,19 +1859,43 @@ function New-CustomerAssessmentDocumentBlocks {
         @(
             foreach ($enterpriseApplication in @($enterpriseApplications | Select-Object -First 8)) {
                 $displayName = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('DisplayName')) -Default 'Unnamed application'
-                $apiPermissions = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('HighPrivilegePermissions', 'ApiPermissions', 'Permissions')) -Default 'Not validated from the reviewed data'
+                $preferredSingleSignOnMode = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('SSOMode', 'PreferredSingleSignOnMode')) -Default 'Not detected'
+                $ssoEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('SsoEnabled'))
+                if ($ssoEnabled -ne $true -and $preferredSingleSignOnMode -ne 'Not detected' -and $preferredSingleSignOnMode -ne 'notSupported') {
+                    $ssoEnabled = $true
+                }
+                $ssoEnabledText = Convert-ToCustomerAssessmentBooleanLabel -Value $ssoEnabled -TrueText 'Enabled' -FalseText 'Not detected' -Default 'Not validated from the reviewed data'
+                $effectiveSsoMode = if ($ssoEnabled -eq $true -and $preferredSingleSignOnMode -ne 'Not detected') { $preferredSingleSignOnMode } elseif ($ssoEnabled -eq $true) { 'Configured' } else { 'Not detected' }
                 $highPrivilegeCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('HighPrivilegePermissionCount'))
                 $delegatedCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('DelegatedPermissionGrantCount'))
-                $observation = if ($null -ne $highPrivilegeCount -and $highPrivilegeCount -gt 0) { 'The review surfaced high-privilege permissions on this application.' } elseif ($null -ne $delegatedCount -and $delegatedCount -gt 0) { 'Delegated permission grants were surfaced in the current review.' } else { 'Detailed usage telemetry was not validated from the reviewed data.' }
-                New-CustomerWordTableRow -Cells @($displayName, $apiPermissions, $observation)
+                $applicationPermissionCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('ApplicationPermissionCount'))
+                $appRoleAssignmentRequired = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('AppRoleAssignmentRequired'))
+
+                $observationParts = New-Object System.Collections.Generic.List[string]
+                if ($ssoEnabled -eq $true) {
+                    $observationParts.Add(("SSO is configured{0}." -f $(if ($effectiveSsoMode -ne 'Configured') { " via $effectiveSsoMode" } else { '' }))) | Out-Null
+                }
+                if ($null -ne $highPrivilegeCount -and $highPrivilegeCount -gt 0) {
+                    $observationParts.Add('High-privilege permissions were surfaced in the reviewed data.') | Out-Null
+                } elseif (($null -ne $applicationPermissionCount -and $applicationPermissionCount -gt 0) -or ($null -ne $delegatedCount -and $delegatedCount -gt 0)) {
+                    $observationParts.Add('Permission grants were surfaced in the reviewed data.') | Out-Null
+                }
+                if ($appRoleAssignmentRequired -eq $true) {
+                    $observationParts.Add('User assignment is required before access is granted.') | Out-Null
+                }
+                if ($observationParts.Count -eq 0) {
+                    $observationParts.Add('Base application inventory was surfaced, but deeper permission usage was not validated from the reviewed data.') | Out-Null
+                }
+
+                New-CustomerWordTableRow -Cells @($displayName, $ssoEnabledText, $effectiveSsoMode, ($observationParts -join ' '))
             }
         )
     }
     elseif ($applicationInventoryClearlyEmpty) {
-        @((New-CustomerWordTableRow -Cells @('No enterprise applications surfaced in the reviewed data', 'No application permissions were surfaced in the reviewed data', 'Treat this as a current-state result and validate it if the tenant expects third-party or line-of-business applications.')))
+        @((New-CustomerWordTableRow -Cells @('No enterprise applications surfaced in the reviewed data', 'Not detected', 'Not detected', 'Treat this as a current-state result and validate it if the tenant expects third-party or line-of-business applications.')))
     }
     else {
-        @((New-CustomerWordTableRow -Cells @('Enterprise application inventory not validated', 'Validation note', 'The current review did not surface a usable enterprise application inventory, so this section should not be read as proof that no enterprise applications exist.')))
+        @((New-CustomerWordTableRow -Cells @('Enterprise application inventory not validated', 'Validation note', 'Validation note', 'The current review did not surface a usable enterprise application inventory, so this section should not be read as proof that no enterprise applications exist.')))
     }
     $globalAdminTableRows = if ($gaRows.Count -gt 0) {
         @(
@@ -2211,7 +2259,9 @@ function New-CustomerAssessmentDocumentBlocks {
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '4.0 Modern Workplace Recommendations' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This action matrix is the main execution view for the report. Use it to sequence the work, then use the section pages and 15.10 Full Findings Inventory to validate the supporting evidence.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Recommendation', 'Priority / Impact', 'First Validation Step', 'Success Check', 'Level of Effort') -Rows $recommendationRows)) | Out-Null
+    $blocks.Add((New-CustomerWordTableBlock -Headers @('Recommendation', 'Priority / Impact', 'First Step', 'Success Check', 'Level of Effort') -Rows $recommendationRows)) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'User Impact / Expected Experience' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordTableBlock -Headers @('Recommendation', 'User Impact / Expected Experience') -Rows $recommendationImpactRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Level of Effort is intentionally left blank where the current source does not support a reliable time or complexity estimate. That field can be completed during delivery planning once the team confirms ownership, dependencies, and remediation scope.' -Style 'Normal')) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.0 Entra ID Review: User and Device Inventory' -Style 'Heading1')) | Out-Null
@@ -2238,20 +2288,22 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'External Access Snapshot' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Configuration Signal', 'Current State') -Rows $externalAccessSnapshotTableRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("The guest access review showed that external collaboration is active enough to require ongoing governance rather than periodic cleanup. Inactive guest accounts and externally permissive sharing signals rarely create visible pain day to day, but they expand the tenant surface area if ownership decisions are delayed. The current guest invitation control is shown as {0}, and the tenant currently has {1} configured cross-tenant partner relationship(s) in the reviewed data." -f $guestInvitationControlText, $crossTenantPartnerCountText) -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ("This matters because guest access combines identity risk with collaboration exposure. Once guest lifecycle, sharing defaults, and sponsor accountability drift at the same time, it becomes harder to validate which external access is still justified. Default inbound MFA trust is currently shown as {0}, which means cross-tenant trust decisions should be reviewed alongside guest invitation settings rather than as a separate design concern." -f $defaultInboundMfaTrustText) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaWhyThisMattersText)) { $guestMfaWhyThisMattersText } else { ("This matters because guest access combines identity risk with collaboration exposure. Once guest lifecycle, sharing defaults, and sponsor accountability drift at the same time, it becomes harder to validate which external access is still justified. Default inbound MFA trust is currently shown as {0}, which means cross-tenant trust decisions should be reviewed alongside guest invitation settings rather than as a separate design concern." -f $defaultInboundMfaTrustText) })) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaCurrentStateSummaryText)) { $guestMfaCurrentStateSummaryText } else { ("Default inbound MFA trust is currently shown as {0}, so guest MFA design should be reviewed alongside guest invitation settings rather than as a separate design concern." -f $defaultInboundMfaTrustText) })) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaUserExperienceText)) { $guestMfaUserExperienceText } else { 'When guest MFA is enforced, the desired experience is to require strong authentication and trust the guest home-tenant MFA where that design is supported and approved.' })) -Style 'Normal')) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.4 Entra Applications and Access Review' -Style 'Heading2')) | Out-Null
     if ($applicationInventoryClearlyEmpty) {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'The application review looked for enterprise application inventory, consent-related controls, and elevated permission signals. In the reviewed data, no enterprise applications were surfaced. That should be read as the current reported result for this source, with a follow-up validation only if the tenant expects line-of-business or third-party enterprise applications to appear here.' -Style 'Normal')) | Out-Null
     }
     elseif ($applicationInventoryValidated) {
-        $blocks.Add((New-CustomerWordParagraphBlock -Text ("The application review looked at enterprise application inventory, consent-related controls, and the degree to which privileged permissions are visible in the current tenant data. The reviewed source surfaced {0} enterprise application(s){1}." -f $(if ($null -ne $totalEnterpriseApps) { $totalEnterpriseApps } else { 'an unconfirmed number of' }), $(if ($null -ne $highPrivilegeApps) { ", including $highPrivilegeApps application(s) with elevated permissions" } else { '' })) -Style 'Normal')) | Out-Null
+        $blocks.Add((New-CustomerWordParagraphBlock -Text ("The application review looked at enterprise application inventory, sign-in posture, and the degree to which privileged permissions are visible in the current tenant data. The reviewed source surfaced {0} enterprise application(s){1}{2}." -f $(if ($null -ne $totalEnterpriseApps) { $totalEnterpriseApps } else { 'an unconfirmed number of' }), $(if ($null -ne $ssoEnabledApps) { ", including $ssoEnabledApps with SSO enabled" } else { '' }), $(if ($null -ne $highPrivilegeApps) { " and $highPrivilegeApps with elevated permissions" } else { '' })) -Style 'Normal')) | Out-Null
     }
     else {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'The current review did not surface a usable enterprise application inventory. Validation note: this section should be treated as incomplete rather than as proof that no enterprise applications exist in the tenant.' -Style 'Normal')) | Out-Null
     }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Application Inventory' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('DisplayName', 'API Permissions', 'Observation') -Rows $applicationInventoryRows)) | Out-Null
+    $blocks.Add((New-CustomerWordTableBlock -Headers @('Application', 'SSO Enabled', 'SSO Mode', 'Observation') -Rows $applicationInventoryRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Application Sign-In Activity and Security Analysis' -Style 'Heading3')) | Out-Null
     if ($applicationInventoryClearlyEmpty) {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'Because the current review did not surface enterprise application objects, this section does not point to a present app-governance concentration on its own. The next decision here is simply whether the observed zero-app result matches the tenant operating model or whether the inventory should be validated again.' -Style 'Normal')) | Out-Null
@@ -2408,7 +2460,7 @@ function New-CustomerAssessmentDocumentBlocks {
         @((New-CustomerWordTableRow -Cells @('Not validated from the reviewed data', 'Not validated from the reviewed data', 'Not validated from the reviewed data', 'Not validated from the reviewed data', 'Not validated from the reviewed data')))
     }
 
-    $blocks.Add((New-CustomerWordParagraphBlock -Text '6.0 Modernizing Authentication: Conditional Access and MFA Coverage' -Style 'Heading1')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '6.0 Authentication Methods, MFA Enrollment, and MFA Enforcement' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This section separates MFA enrollment from MFA enforcement. Enrollment shows which authentication methods users have registered and whether weaker methods remain in use. Enforcement shows whether active access controls are actually requiring MFA during sign-in.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'MFA Enrollment' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Configuration Signal', 'Current State') -Rows @(
@@ -2449,6 +2501,8 @@ function New-CustomerAssessmentDocumentBlocks {
         @('Coverage calculation note', $mfaCoverageCalculationNoteText)
     ))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("Enforcement shows whether users are actually being required to perform MFA, not just whether they have registered methods. In this review, the policy baseline shows {0} enabled Conditional Access policy/policies that require MFA and {1} still in report-only mode. Based on the reviewed enabled-user inventory, those enabled MFA policies appear to cover {2} of {3} enabled reviewed user(s), or {4}. Report-only policies do not count as enforced coverage. Detailed uncovered-user and policy-scope review rows are available in the workbook tabs MfaEnforcementGapUsers and MfaEnforcementScopeReview." -f $(if ($null -eq $enabledMfaEnforcementPolicies) { 'an unconfirmed number of' } else { $enabledMfaEnforcementPolicies }), $(if ($null -eq $reportOnlyMfaEnforcementPolicies) { 'an unconfirmed number of policies' } else { $reportOnlyMfaEnforcementPolicies }), $(if ($null -eq $mfaUsersCoveredByEnabledPolicies) { 'an unconfirmed number' } else { $mfaUsersCoveredByEnabledPolicies }), $(if ($null -eq $mfaEnabledUsersReviewed) { 'an unconfirmed number' } else { $mfaEnabledUsersReviewed }), $(if ($null -eq $mfaUserCoveragePercent) { 'an unconfirmed percentage' } else { "$mfaUserCoveragePercent%" })) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaUserExperienceText)) { $guestMfaUserExperienceText } else { 'Guest-user experience should be reviewed separately from enrollment counts because strong guest authentication can often rely on the guest home-tenant MFA rather than a separate registration in this tenant.' })) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaDesiredStateText)) { $guestMfaDesiredStateText } else { 'The desired baseline is strong guest authentication with trusted home-tenant MFA where supported and approved, not a blanket requirement for every guest to register separately in the resource tenant.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'MFA Enforcement Gap Summary' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Coverage Gap Signal', 'Current State') -Rows $mfaGapSummaryRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("Of the {0} enabled reviewed user(s) not currently covered by active MFA enforcement, {1} appear explicitly excluded while {2} fall outside the active include scope. The table below highlights the first {3} uncovered identities so the team can see whether the current gap is being driven by exclusions, narrow targeting, or both." -f $(if ($null -eq $mfaUsersNotCoveredByEnabledPolicies) { 'unconfirmed' } else { $mfaUsersNotCoveredByEnabledPolicies }), $mfaExcludedUserCount, $mfaOutsideIncludeUserCount, [math]::Min($mfaGapRowsSorted.Count, 15)) -Style 'Normal')) | Out-Null

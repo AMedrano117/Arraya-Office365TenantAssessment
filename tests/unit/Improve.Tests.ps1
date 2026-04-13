@@ -129,17 +129,24 @@ Describe 'Improve workflow' {
                     }
                     EnterpriseApplications = @{
                         '001-HighPrivApp' = [pscustomobject]@{
-                            DisplayName                  = 'High Priv App'
-                            HighPrivilegePermissionCount = 2
-                            HighPrivilegePermissions     = 'Application.ReadWrite.All,Directory.ReadWrite.All'
-                            ApplicationPermissionCount   = 1
+                            AppId                        = '11111111-1111-1111-1111-111111111111'
+                            ServicePrincipalId           = '22222222-2222-2222-2222-222222222222'
+                            DisplayName                   = 'High Priv App'
+                            SsoEnabled                    = $true
+                            PreferredSingleSignOnMode     = 'saml'
+                            SSOMode                       = 'saml'
+                            HighPrivilegePermissionCount  = 2
+                            HighPrivilegePermissions      = 'Application.ReadWrite.All,Directory.ReadWrite.All'
+                            ApplicationPermissionCount    = 1
                             DelegatedPermissionGrantCount = 1
+                            AppRoleAssignmentRequired     = $true
                         }
                     }
                     EnterpriseApplicationSummary = @{
                         Summary = [pscustomobject]@{
                             TotalEnterpriseApplications   = 1
                             ApplicationsWithHighPrivilege = 1
+                            SsoEnabledApplications        = 1
                         }
                     }
                     GuestSignInSummary = @{
@@ -149,9 +156,11 @@ Describe 'Improve workflow' {
                     }
                     ExternalIdentityRestrictions = @{
                         Summary = [pscustomobject]@{
-                            AllowInvitesFrom        = 'adminsAndGuestInviters'
-                            CrossTenantPartnerCount = 2
-                            DefaultInboundMfaTrust  = $true
+                            AllowInvitesFrom           = 'adminsAndGuestInviters'
+                            CrossTenantPartnerCount    = 2
+                            HasCrossTenantAccessPolicy = $true
+                            DefaultInboundMfaTrust     = $true
+                            DefaultOutboundMfaTrust    = 'Not configured'
                         }
                     }
                     GuestAccessConfiguration = @{
@@ -614,7 +623,7 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'Device Registration and Compliance Gaps'
         $customerReportDocument | Should -Match '5\.3 Entra Guest Access Configuration'
         $customerReportDocument | Should -Match '5\.4 Entra Applications and Access Review'
-        $customerReportDocument | Should -Match '6\.0 Modernizing Authentication: Conditional Access and MFA Coverage'
+        $customerReportDocument | Should -Match '6\.0 Authentication Methods, MFA Enrollment, and MFA Enforcement'
         $customerReportDocument | Should -Match 'MFA Enrollment'
         $customerReportDocument | Should -Match 'MFA Enforcement'
         $customerReportDocument | Should -Match 'Software one-time passcode'
@@ -687,7 +696,7 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'Why It Is Relevant'
         $customerReportDocument | Should -Match 'Recommendation'
         $customerReportDocument | Should -Match 'Priority / Impact'
-        $customerReportDocument | Should -Match 'First Validation Step'
+        $customerReportDocument | Should -Match 'First Step'
         $customerReportDocument | Should -Match 'Success Check'
         $customerReportDocument | Should -Match 'Level of Effort'
         $customerReportDocument | Should -Match 'Messaging Snapshot At A Glance'
@@ -729,7 +738,9 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match '### Findings Legend'
         $customerReportMarkdown | Should -Match '#### Leadership Decision Brief'
         $customerReportMarkdown | Should -Match '## 4\.0 Modern Workplace Recommendations'
-        $customerReportMarkdown | Should -Match '\| Recommendation \| Priority / Impact \| First Validation Step \| Success Check \| Level of Effort \|'
+        $customerReportMarkdown | Should -Match '\| Recommendation \| Priority / Impact \| First Step \| Success Check \| Level of Effort \|'
+        $customerReportMarkdown | Should -Match '### User Impact / Expected Experience'
+        $customerReportMarkdown | Should -Match '\| Recommendation \| User Impact / Expected Experience \|'
         $customerReportMarkdown | Should -Match '\| Workstream \| Severity / Impact \| Open Findings \| What Stands Out \|'
         $customerReportMarkdown | Should -Match '\| Term \| What It Means In This Report \|'
         $customerReportMarkdown | Should -Match '### Risk Clusters'
@@ -738,7 +749,9 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match '\| Guest invitation control \|'
         $customerReportMarkdown | Should -Match '\| Cross-tenant partner count \|'
         $customerReportMarkdown | Should -Match 'Admins and approved guest inviters can invite guests'
-        $customerReportMarkdown | Should -Match '## 6\.0 Modernizing Authentication: Conditional Access and MFA Coverage'
+        $customerReportMarkdown | Should -Match 'Guest MFA enforcement matters because guest identities are external accounts with access into this tenant''s resources'
+        $customerReportMarkdown | Should -Match 'home tenant instead of registering separately in this tenant'
+        $customerReportMarkdown | Should -Match '## 6\.0 Authentication Methods, MFA Enrollment, and MFA Enforcement'
         $customerReportMarkdown | Should -Match '### MFA Enrollment'
         $customerReportMarkdown | Should -Match '### MFA Enforcement'
         $customerReportMarkdown | Should -Match 'Software one-time passcode'
@@ -757,8 +770,15 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match '\| Display Name \| User Principal Name \| User Type \| Gap Category \| Related Policy / Scope \|'
         $customerReportMarkdown | Should -Match 'Uncovered Member'
         $customerReportMarkdown | Should -Match 'Outside include scope'
+        $customerReportMarkdown | Should -Match 'The desired baseline is to require strong guest authentication and trust the guest home-tenant MFA where supported and approved'
         $customerReportMarkdown | Should -Match '#### Enabled MFA Policy Scope Review'
         $customerReportMarkdown | Should -Match 'Break Glass Exclusions'
+        $customerReportMarkdown | Should -Match 'Confirm the target identity protection baseline and decide which privileged, guest, and core user populations should be brought under it first'
+        $customerReportMarkdown | Should -Match 'Privileged and external access follow one approved protection model, with only documented exceptions remaining'
+        $customerReportMarkdown | Should -Match '### Application Inventory'
+        $customerReportMarkdown | Should -Match '\| Application \| SSO Enabled \| SSO Mode \| Observation \|'
+        $customerReportMarkdown | Should -Match '\| High Priv App \| Enabled \| saml \|'
+        $customerReportMarkdown | Should -Match 'SSO is configured via saml'
         $customerReportMarkdown | Should -Match '\| Users with weak MFA methods only \|'
         $customerReportMarkdown | Should -Match '\| Enabled MFA enforcement policies \|'
         $customerReportMarkdown | Should -Match 'MfaEnforcementGapUsers'
@@ -788,6 +808,7 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Not -Match 'Primary Owner'
         $customerReportMarkdown | Should -Not -Match 'Action:'
         $customerReportMarkdown | Should -Not -Match 'Recommended Next Steps'
+        $customerReportMarkdown | Should -Not -Match 'must register separately in this tenant'
 
         $engineerPack = Get-Content -Raw $result.EngineerActionPackPath
         $engineerPack | Should -Match '## Engineering Summary'
