@@ -138,4 +138,16 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
             $script:collectorSource | Should -Match $escapedPattern
         }
     }
+
+    It 'builds a lightweight enterprise application inventory and SSO subset for non-minimum profiles' {
+        $script:collectorSource | Should -Match 'function Test-AssessmentAppUsesSso'
+        $script:collectorSource | Should -Match 'function Add-AssessmentEnterpriseApplicationRecord'
+        $script:collectorSource | Should -Match 'PreferredSingleSignOnMode'
+        $script:collectorSource | Should -Match 'SsoEnabled'
+        $script:collectorSource | Should -Match 'SSOMode'
+        $script:collectorSource | Should -Match 'SsoEnabledApplications'
+        $script:collectorSource | Should -Match 'Get-ArrayaGraphResource .*servicePrincipals'
+        $script:collectorSource | Should -Match 'Checking Enterprise Applications for SSO'
+        $script:collectorSource | Should -Match 'AuthenticationSSOApplications'
+    }
 }

@@ -7589,6 +7589,164 @@ function Get-AuthenticationConfiguration {
             $TargetObject | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
         }
 
+        function Test-AssessmentAppUsesSso {
+            param(
+                [Parameter(Mandatory = $false)]
+                $ServicePrincipal
+            )
+
+            $preferredSingleSignOnMode = $null
+            if ($null -ne $ServicePrincipal) {
+                if ($ServicePrincipal.PSObject.Properties['preferredSingleSignOnMode']) {
+                    $preferredSingleSignOnMode = [string]$ServicePrincipal.preferredSingleSignOnMode
+                } elseif ($ServicePrincipal.PSObject.Properties['PreferredSingleSignOnMode']) {
+                    $preferredSingleSignOnMode = [string]$ServicePrincipal.PreferredSingleSignOnMode
+                }
+            }
+
+            return (-not [string]::IsNullOrWhiteSpace($preferredSingleSignOnMode) -and $preferredSingleSignOnMode -ne 'notSupported')
+        }
+
+        function Get-AssessmentEnterpriseApplicationStorageKey {
+            param(
+                [Parameter(Mandatory = $true)]
+                [int]$Index,
+                [Parameter(Mandatory = $false)]
+                [string]$DisplayName,
+                [Parameter(Mandatory = $false)]
+                [string]$AppId,
+                [Parameter(Mandatory = $false)]
+                [string]$ServicePrincipalId
+            )
+
+            $safeName = if ([string]::IsNullOrWhiteSpace($DisplayName)) {
+                'UnnamedApplication'
+            } else {
+                ($DisplayName -replace '[^a-zA-Z0-9._-]', '_')
+            }
+
+            $identifierSource = @($ServicePrincipalId, $AppId, [string]$Index) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1
+            $safeIdentifier = ($identifierSource -replace '[^a-zA-Z0-9._-]', '_')
+            "{0:D3}-{1}-{2}" -f $Index, $safeName, $safeIdentifier
+        }
+
+        $enterpriseApplicationKeyById = @{}
+        $enterpriseApplicationSequence = 0
+
+        function Add-AssessmentEnterpriseApplicationRecord {
+            param(
+                [Parameter(Mandatory = $true)]
+                $ServicePrincipal,
+                [Parameter(Mandatory = $false)]
+                [hashtable]$AdditionalProperties = @{}
+            )
+
+            $servicePrincipalId = if ($ServicePrincipal.PSObject.Properties['id']) {
+                [string]$ServicePrincipal.id
+            } elseif ($ServicePrincipal.PSObject.Properties['Id']) {
+                [string]$ServicePrincipal.Id
+            } else {
+                $null
+            }
+
+            if ([string]::IsNullOrWhiteSpace($servicePrincipalId)) {
+                return
+            }
+
+            $displayName = if ($ServicePrincipal.PSObject.Properties['displayName']) {
+                [string]$ServicePrincipal.displayName
+            } elseif ($ServicePrincipal.PSObject.Properties['DisplayName']) {
+                [string]$ServicePrincipal.DisplayName
+            } else {
+                $null
+            }
+
+            $appId = if ($ServicePrincipal.PSObject.Properties['appId']) {
+                [string]$ServicePrincipal.appId
+            } elseif ($ServicePrincipal.PSObject.Properties['AppId']) {
+                [string]$ServicePrincipal.AppId
+            } else {
+                $null
+            }
+
+            $preferredSingleSignOnMode = if ($ServicePrincipal.PSObject.Properties['preferredSingleSignOnMode']) {
+                [string]$ServicePrincipal.preferredSingleSignOnMode
+            } elseif ($ServicePrincipal.PSObject.Properties['PreferredSingleSignOnMode']) {
+                [string]$ServicePrincipal.PreferredSingleSignOnMode
+            } else {
+                $null
+            }
+
+            $storageKey = $null
+            if ($enterpriseApplicationKeyById.ContainsKey($servicePrincipalId)) {
+                $storageKey = $enterpriseApplicationKeyById[$servicePrincipalId]
+            } else {
+                $enterpriseApplicationSequence++
+                $storageKey = Get-AssessmentEnterpriseApplicationStorageKey -Index $enterpriseApplicationSequence -DisplayName $displayName -AppId $appId -ServicePrincipalId $servicePrincipalId
+                $enterpriseApplicationKeyById[$servicePrincipalId] = $storageKey
+            }
+
+            $ssoEnabled = Test-AssessmentAppUsesSso -ServicePrincipal $ServicePrincipal
+            $existingRecord = if ($script:tenantStatsHash["EnterpriseApplications"].ContainsKey($storageKey)) {
+                $script:tenantStatsHash["EnterpriseApplications"][$storageKey]
+            } else {
+                $null
+            }
+
+            $mergedProperties = [ordered]@{
+                DisplayName                   = $displayName
+                AppId                         = $appId
+                ServicePrincipalId            = $servicePrincipalId
+                ServicePrincipalType          = $(if ($ServicePrincipal.PSObject.Properties['servicePrincipalType']) { $ServicePrincipal.servicePrincipalType } elseif ($ServicePrincipal.PSObject.Properties['ServicePrincipalType']) { $ServicePrincipal.ServicePrincipalType } else { $null })
+                AccountEnabled                = $(if ($ServicePrincipal.PSObject.Properties['accountEnabled']) { $ServicePrincipal.accountEnabled } elseif ($ServicePrincipal.PSObject.Properties['AccountEnabled']) { $ServicePrincipal.AccountEnabled } else { $null })
+                PreferredSingleSignOnMode     = $preferredSingleSignOnMode
+                SsoEnabled                    = $ssoEnabled
+                SSOMode                       = $(if ($ssoEnabled) { $preferredSingleSignOnMode } else { $null })
+                AppRoleAssignmentRequired     = $(if ($ServicePrincipal.PSObject.Properties['appRoleAssignmentRequired']) { $ServicePrincipal.appRoleAssignmentRequired } elseif ($ServicePrincipal.PSObject.Properties['AppRoleAssignmentRequired']) { $ServicePrincipal.AppRoleAssignmentRequired } else { $null })
+                Tags                          = $(if ($ServicePrincipal.PSObject.Properties['tags']) { @($ServicePrincipal.tags) -join ',' } elseif ($ServicePrincipal.PSObject.Properties['Tags']) { @($ServicePrincipal.Tags) -join ',' } else { $null })
+                DelegatedPermissionScopes     = ''
+                DelegatedPermissionGrantCount = 0
+                ApplicationPermissions        = ''
+                ApplicationPermissionCount    = 0
+                HighPrivilegePermissionCount  = 0
+                HighPrivilegePermissions      = ''
+            }
+
+            if ($null -ne $existingRecord) {
+                foreach ($property in @($existingRecord.PSObject.Properties)) {
+                    if (-not $mergedProperties.Contains($property.Name)) {
+                        $mergedProperties[$property.Name] = $property.Value
+                    } elseif ($null -eq $mergedProperties[$property.Name] -or [string]::IsNullOrWhiteSpace([string]$mergedProperties[$property.Name])) {
+                        $mergedProperties[$property.Name] = $property.Value
+                    }
+                }
+            }
+
+            foreach ($key in @($AdditionalProperties.Keys)) {
+                $mergedProperties[$key] = $AdditionalProperties[$key]
+            }
+
+            $script:tenantStatsHash["EnterpriseApplications"][$storageKey] = [pscustomobject]$mergedProperties
+        }
+
+        $servicePrincipals = @()
+        if ($collectSsoAppDetails -or $collectExtendedIdentityTierB) {
+            try {
+                $servicePrincipals = @(
+                    Get-ArrayaGraphResource `
+                        -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=id,displayName,appId,servicePrincipalType,accountEnabled,preferredSingleSignOnMode,tags,appRoleAssignmentRequired&`$top=250" `
+                        -Activity 'Enterprise applications inventory' `
+                        -Headers $global:GraphHeaders
+                )
+            } catch {
+                Write-Log -Type WARNING -Message "[Get-AuthenticationConfiguration] Unable to retrieve base enterprise application inventory: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+            }
+        }
+
+        foreach ($servicePrincipal in @($servicePrincipals)) {
+            Add-AssessmentEnterpriseApplicationRecord -ServicePrincipal $servicePrincipal
+        }
+        
         # Get authentication methods policy
         $authMethodsPolicy = [PSCustomObject]@{
             MFAEnabled = $false
@@ -7620,16 +7778,29 @@ function Get-AuthenticationConfiguration {
                 Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] Checking Enterprise Applications for SSO" -ExportFileLocation $ExportDetails
 
                 $ssoAppDetails = New-Object System.Collections.Generic.List[object]
-                foreach ($app in (Get-MgServicePrincipal -All -Filter "tags/any(t:t eq 'WindowsAzureActiveDirectoryIntegratedApp')" -ProgressAction SilentlyContinue -ErrorAction SilentlyContinue)) {
-                    if ($null -eq $app.PreferredSingleSignOnMode -or $app.PreferredSingleSignOnMode -eq "notSupported") {
+                foreach ($app in @($servicePrincipals | Where-Object { Test-AssessmentAppUsesSso -ServicePrincipal $_ })) {
+                    $preferredSingleSignOnMode = if ($app.PSObject.Properties['preferredSingleSignOnMode']) {
+                        [string]$app.preferredSingleSignOnMode
+                    } elseif ($app.PSObject.Properties['PreferredSingleSignOnMode']) {
+                        [string]$app.PreferredSingleSignOnMode
+                    } else {
+                        $null
+                    }
+
+                    if ([string]::IsNullOrWhiteSpace($preferredSingleSignOnMode)) {
                         continue
                     }
+
                     $ssoAppDetails.Add([PSCustomObject]@{
-                        DisplayName = $app.DisplayName
-                        AppId = $app.AppId
-                        SSOMode = $app.PreferredSingleSignOnMode
-                        ServicePrincipalType = $app.ServicePrincipalType
-                        AccountEnabled = $app.AccountEnabled
+                        DisplayName = $(if ($app.PSObject.Properties['displayName']) { $app.displayName } else { $app.DisplayName })
+                        AppId = $(if ($app.PSObject.Properties['appId']) { $app.appId } else { $app.AppId })
+                        ServicePrincipalId = $(if ($app.PSObject.Properties['id']) { $app.id } else { $app.Id })
+                        SSOMode = $preferredSingleSignOnMode
+                        PreferredSingleSignOnMode = $preferredSingleSignOnMode
+                        SsoEnabled = $true
+                        ServicePrincipalType = $(if ($app.PSObject.Properties['servicePrincipalType']) { $app.servicePrincipalType } else { $app.ServicePrincipalType })
+                        AccountEnabled = $(if ($app.PSObject.Properties['accountEnabled']) { $app.accountEnabled } else { $app.AccountEnabled })
+                        AppRoleAssignmentRequired = $(if ($app.PSObject.Properties['appRoleAssignmentRequired']) { $app.appRoleAssignmentRequired } else { $app.AppRoleAssignmentRequired })
                     })
                 }
 
@@ -7816,14 +7987,10 @@ function Get-AuthenticationConfiguration {
                     'Sites.ReadWrite.All', 'Exchange.ManageAsApp', 'Policy.ReadWrite.ConditionalAccess',
                     'DeviceManagementManagedDevices.ReadWrite.All', 'DeviceManagementConfiguration.ReadWrite.All'
                 )
-                $servicePrincipals = @(Get-ArrayaGraphResource -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=id,displayName,appId,servicePrincipalType,accountEnabled,preferredSingleSignOnMode,tags,appRoleAssignmentRequired&`$top=250" -Activity 'Enterprise applications inventory' -Headers $global:GraphHeaders)
-                $enterpriseAppIndex = 0
-                $highPrivilegeAppCount = 0
                 foreach ($servicePrincipal in $servicePrincipals) {
                     if ($null -eq $servicePrincipal -or [string]::IsNullOrWhiteSpace([string]$servicePrincipal.Id)) {
                         continue
                     }
-                    $enterpriseAppIndex++
                     $spId = [string]$servicePrincipal.Id
                     $delegatedGrants = @()
                     $applicationPermissionValues = @()
@@ -7880,19 +8047,7 @@ function Get-AuthenticationConfiguration {
                     $highPrivilegeMatches = @(
                         $highPrivilegePatterns | Where-Object { $combinedPermissionText -match [regex]::Escape($_) }
                     )
-                    if ($highPrivilegeMatches.Count -gt 0) {
-                        $highPrivilegeAppCount++
-                    }
-
-                    $script:tenantStatsHash["EnterpriseApplications"][("{0:D3}-{1}" -f $enterpriseAppIndex, ($servicePrincipal.DisplayName -replace '[^a-zA-Z0-9._-]', '_'))] = [PSCustomObject]@{
-                        DisplayName                     = $servicePrincipal.DisplayName
-                        AppId                           = $servicePrincipal.AppId
-                        ServicePrincipalId              = $spId
-                        ServicePrincipalType            = $servicePrincipal.ServicePrincipalType
-                        AccountEnabled                  = $servicePrincipal.AccountEnabled
-                        PreferredSingleSignOnMode       = $servicePrincipal.PreferredSingleSignOnMode
-                        AppRoleAssignmentRequired       = $servicePrincipal.AppRoleAssignmentRequired
-                        Tags                            = @($servicePrincipal.Tags) -join ','
+                    Add-AssessmentEnterpriseApplicationRecord -ServicePrincipal $servicePrincipal -AdditionalProperties @{
                         DelegatedPermissionScopes       = $flattenedDelegatedScopes -join ','
                         DelegatedPermissionGrantCount   = @($delegatedGrants).Count
                         ApplicationPermissions          = $applicationPermissionValues -join ','
@@ -7901,16 +8056,18 @@ function Get-AuthenticationConfiguration {
                         HighPrivilegePermissions        = $highPrivilegeMatches -join ','
                     }
                 }
-
-                $script:tenantStatsHash["EnterpriseApplicationSummary"]["Summary"] = [PSCustomObject]@{
-                    TotalEnterpriseApplications       = $script:tenantStatsHash["EnterpriseApplications"].Count
-                    ApplicationsWithHighPrivilege     = $highPrivilegeAppCount
-                    ApplicationsWithDelegatedGrants   = @($script:tenantStatsHash["EnterpriseApplications"].Values | Where-Object { $_.DelegatedPermissionGrantCount -gt 0 }).Count
-                    ApplicationsWithApplicationPerms  = @($script:tenantStatsHash["EnterpriseApplications"].Values | Where-Object { $_.ApplicationPermissionCount -gt 0 }).Count
-                }
             } catch {
                 Write-Log -Type WARNING -Message "[Get-AuthenticationConfiguration] Unable to collect enterprise application permission posture: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
             }
+        }
+
+        $enterpriseApplicationRows = @($script:tenantStatsHash["EnterpriseApplications"].Values)
+        $script:tenantStatsHash["EnterpriseApplicationSummary"]["Summary"] = [PSCustomObject]@{
+            TotalEnterpriseApplications      = $enterpriseApplicationRows.Count
+            ApplicationsWithHighPrivilege    = @($enterpriseApplicationRows | Where-Object { (Convert-ArrayaToNumber $_.HighPrivilegePermissionCount) -gt 0 }).Count
+            ApplicationsWithDelegatedGrants  = @($enterpriseApplicationRows | Where-Object { (Convert-ArrayaToNumber $_.DelegatedPermissionGrantCount) -gt 0 }).Count
+            ApplicationsWithApplicationPerms = @($enterpriseApplicationRows | Where-Object { (Convert-ArrayaToNumber $_.ApplicationPermissionCount) -gt 0 }).Count
+            SsoEnabledApplications           = @($enterpriseApplicationRows | Where-Object { (Convert-ToAssessmentBoolean $_.SsoEnabled) -eq $true }).Count
         }
         
         $normalizedAuthenticationConfig = [pscustomobject]@{

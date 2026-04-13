@@ -1593,44 +1593,254 @@ function Get-CustomerActionFirstValidationStep {
         [Parameter(Mandatory = $false)][string[]]$Areas = @()
     )
 
-    $referenceSection = Get-CustomerActionReferenceSection -LeadFinding $LeadFinding
-    $findingLead = Convert-ToArrayaSentenceFragment -Text (Get-ArrayaLeadSentence -Text $LeadFinding.Finding)
-    $areaText = Join-ArrayaReadableList -Items @(
-        $Areas |
-            ForEach-Object { Convert-ToArrayaDisplayText -Value $_ -Default '' } |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    )
-
-    if (-not [string]::IsNullOrWhiteSpace($referenceSection) -and -not [string]::IsNullOrWhiteSpace($findingLead)) {
-        return "Start in the $referenceSection detailed section and validate whether $findingLead."
+    $themeProfile = Get-CustomerThemeProfile -Finding $LeadFinding
+    switch ([string]$themeProfile.ActionTitle) {
+        'Reduce privileged access and strengthen identity controls' {
+            return 'Confirm the target identity protection baseline and decide which privileged, guest, and core user populations should be brought under it first.'
+        }
+        'Establish accountable ownership for collaboration spaces' {
+            return 'Confirm which collaboration spaces need an owner, steward, transfer, or retirement decision first.'
+        }
+        'Strengthen domain and anti-spoofing controls' {
+            return 'Confirm the approved domain trust and mail-authentication baseline before cleanup begins.'
+        }
+        'Improve device compliance and managed endpoint coverage' {
+            return 'Confirm which devices are expected to retain access and which endpoint exceptions are still justified.'
+        }
+        'Review external forwarding and mail flow exposure' {
+            return 'Confirm which forwarding and mail-flow patterns are approved business exceptions and which should be removed.'
+        }
+        'Reconcile license capacity and tenant governance gaps' {
+            return 'Confirm the target licensing, governance, and external-access baseline before cleanup work begins.'
+        }
+        'Strengthen baseline security and access protections' {
+            return 'Confirm the target protection baseline and sequence the first rollout wave around the highest-value control gaps.'
+        }
+        default {
+            return 'Confirm the desired operating baseline, scope, and exception path before detailed remediation begins.'
+        }
     }
-
-    if (-not [string]::IsNullOrWhiteSpace($referenceSection)) {
-        return "Start in the $referenceSection detailed section and confirm the current state still matches the reviewed evidence."
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($areaText) -and -not [string]::IsNullOrWhiteSpace($findingLead)) {
-        return "Validate the current state across $areaText, starting with whether $findingLead."
-    }
-
-    return 'Validate the current state behind this work item before scheduling remediation.'
 }
 
 function Get-CustomerActionSuccessCheck {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)]$LeadFinding)
 
-    $targetValue = Convert-ToArrayaDisplayText -Value $LeadFinding.TargetValue -Default ''
-    if (-not [string]::IsNullOrWhiteSpace($targetValue) -and $targetValue -ne 'N/A') {
-        return $targetValue
+    $themeProfile = Get-CustomerThemeProfile -Finding $LeadFinding
+    switch ([string]$themeProfile.ActionTitle) {
+        'Reduce privileged access and strengthen identity controls' {
+            return 'Privileged and external access follow one approved protection model, with only documented exceptions remaining.'
+        }
+        'Establish accountable ownership for collaboration spaces' {
+            return 'Each in-scope collaboration space has an accountable owner or a documented lifecycle decision.'
+        }
+        'Strengthen domain and anti-spoofing controls' {
+            return 'Required domains and mail-authentication controls align to the approved baseline.'
+        }
+        'Improve device compliance and managed endpoint coverage' {
+            return 'Protected access is limited to approved device states, with documented exceptions only.'
+        }
+        'Review external forwarding and mail flow exposure' {
+            return 'Only approved forwarding and mail-flow exceptions remain, and they are documented.'
+        }
+        'Reconcile license capacity and tenant governance gaps' {
+            return 'Capacity, ownership, and governance decisions are aligned to the approved operating baseline.'
+        }
+        'Strengthen baseline security and access protections' {
+            return 'The agreed protection baseline is active for the intended population and no longer relies on broad temporary exceptions.'
+        }
+        default {
+            return 'The agreed baseline is in place, validated, and supported by documented exceptions only.'
+        }
+    }
+}
+
+function Get-CustomerGuestMfaExperienceSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]$ExternalIdentityRestrictionsRecord,
+        [Parameter(Mandatory = $false)]$GuestAccessConfigurationRecord,
+        [Parameter(Mandatory = $false)]$MfaEnforcementSummaryRecord
+    )
+
+    $allowInvitesFrom = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $GuestAccessConfigurationRecord -Names @('GuestInvitationControl', 'AllowInvitesFrom')) -Default ''
+    if ([string]::IsNullOrWhiteSpace($allowInvitesFrom)) {
+        $allowInvitesFrom = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $ExternalIdentityRestrictionsRecord -Names @('AllowInvitesFrom')) -Default 'Not validated from the reviewed data'
     }
 
-    $businessValue = Convert-ToArrayaOutcomeSentence -Text $LeadFinding.BusinessValue
-    if (-not [string]::IsNullOrWhiteSpace($businessValue)) {
-        return $businessValue
+    $hasCrossTenantAccessPolicy = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExternalIdentityRestrictionsRecord -Names @('HasCrossTenantAccessPolicy'))
+    $defaultInboundMfaTrustRaw = Get-ArrayaObjectValue -Object $ExternalIdentityRestrictionsRecord -Names @('DefaultInboundMfaTrust')
+    $defaultOutboundMfaTrustRaw = Get-ArrayaObjectValue -Object $ExternalIdentityRestrictionsRecord -Names @('DefaultOutboundMfaTrust')
+    $defaultInboundMfaTrust = Convert-ToArrayaDisplayText -Value $defaultInboundMfaTrustRaw -Default 'Not validated from the reviewed data'
+    $defaultOutboundMfaTrust = Convert-ToArrayaDisplayText -Value $defaultOutboundMfaTrustRaw -Default 'Not validated from the reviewed data'
+    $guestCoverageDetected = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $MfaEnforcementSummaryRecord -Names @('GuestOrExternalCoverage'))
+    $enabledPoliciesRequiringMfa = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $MfaEnforcementSummaryRecord -Names @('EnabledPoliciesRequiringMfa'))
+    $guestUserCoveragePercent = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $MfaEnforcementSummaryRecord -Names @('GuestUserCoveragePercent'))
+
+    $inboundTrustBoolean = Convert-ToArrayaBoolean $defaultInboundMfaTrustRaw
+    $trustValidated = -not ($defaultInboundMfaTrust -match '(?i)^not validated|^not available')
+    $trustConfigured = ($inboundTrustBoolean -eq $true)
+    $trustNotConfigured = (($inboundTrustBoolean -eq $false) -or ($defaultInboundMfaTrust -match '(?i)^not configured$'))
+
+    $guestInvitationContext = if ($allowInvitesFrom -match '(?i)everyone|allmembers') {
+        'The current invitation model is broad enough that guest MFA should be treated as a baseline control, not an exception path.'
+    }
+    elseif ($allowInvitesFrom -match '(?i)admins') {
+        'Even with a more restricted invitation model, guest MFA still matters for every external identity that receives access to this tenant.'
+    }
+    else {
+        'Guest MFA should be reviewed alongside the current invitation model so external access does not rely on sponsorship alone.'
     }
 
-    return 'The reviewed condition is validated, the agreed target state is in place, and the supporting detailed section no longer shows the same control gap.'
+    $currentCoverageText = if ($null -ne $guestUserCoveragePercent) {
+        "The reviewed data currently estimates guest-user Conditional Access MFA coverage at $guestUserCoveragePercent%."
+    }
+    elseif ($guestCoverageDetected -eq $true) {
+        'Guest or external-user Conditional Access coverage was detected in the reviewed baseline.'
+    }
+    elseif ($guestCoverageDetected -eq $false) {
+        'Guest or external-user Conditional Access coverage was not clearly detected in the reviewed baseline.'
+    }
+    else {
+        'The reviewed data did not clearly confirm guest or external-user Conditional Access coverage.'
+    }
+
+    $trustStateText = if ($trustConfigured -and ($hasCrossTenantAccessPolicy -ne $false)) {
+        'Home-tenant MFA trust appears available for the default guest access model.'
+    }
+    elseif ($trustNotConfigured) {
+        'Home-tenant MFA trust does not appear configured in the reviewed default cross-tenant settings.'
+    }
+    else {
+        'The reviewed data did not confirm that home-tenant MFA trust is configured.'
+    }
+
+    $userExperienceText = if ($trustConfigured -and ($hasCrossTenantAccessPolicy -ne $false)) {
+        'When guest MFA is enforced and inbound MFA trust is configured, many guests can satisfy the requirement with the MFA they already complete in their home tenant instead of registering separately in this tenant.'
+    }
+    elseif ($trustNotConfigured) {
+        'When guest MFA is enforced without trusted home-tenant MFA, guest users may see additional verification prompts and a more disruptive sign-in experience depending on the collaboration flow and identity type.'
+    }
+    else {
+        'The reviewed data did not confirm that home-tenant MFA trust is configured, so guest-user experience may be more disruptive until that design is validated.'
+    }
+
+    $recommendationImpactText = if ($trustConfigured -and ($hasCrossTenantAccessPolicy -ne $false)) {
+        'Guest users should expect MFA to be required for protected access, but where home-tenant MFA trust is configured they can often use their existing MFA from the tenant they belong to instead of registering again here.'
+    }
+    elseif ($trustNotConfigured) {
+        'Guest users should expect stronger sign-in requirements, and some may see additional verification or separate registration friction until trusted home-tenant MFA is configured or the guest-access design is narrowed.'
+    }
+    else {
+        'Guest users should expect stronger sign-in requirements. The reviewed data did not confirm home-tenant MFA trust, so the access experience should be validated before broad enforcement.'
+    }
+
+    return [pscustomobject]@{
+        AllowInvitesFrom                = $allowInvitesFrom
+        HasCrossTenantAccessPolicy      = $hasCrossTenantAccessPolicy
+        DefaultInboundMfaTrust          = $defaultInboundMfaTrust
+        DefaultOutboundMfaTrust         = $defaultOutboundMfaTrust
+        GuestOrExternalCoverage         = $guestCoverageDetected
+        EnabledPoliciesRequiringMfa     = $enabledPoliciesRequiringMfa
+        GuestUserCoveragePercent        = $guestUserCoveragePercent
+        WhyThisMatters                  = "Guest MFA enforcement matters because guest identities are external accounts with access into this tenant's resources. Without active MFA requirements, guest collaboration can bypass the same identity assurance expected for internal users. $guestInvitationContext"
+        CurrentStateSummary             = "$currentCoverageText $trustStateText"
+        UserExperience                  = $userExperienceText
+        DesiredState                    = 'The desired baseline is to require strong guest authentication and trust the guest home-tenant MFA where supported and approved, rather than asking every guest to register separately in the resource tenant.'
+        RecommendationImpactText        = $recommendationImpactText
+    }
+}
+
+function Get-CustomerActionUserImpactExperience {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$Action,
+        [Parameter(Mandatory = $false)]$GuestMfaExperienceSummary
+    )
+
+    $actionTitle = Convert-ToArrayaDisplayText -Value $Action.ActionTitle -Default ''
+    switch ($actionTitle) {
+        'Reduce privileged access and strengthen identity controls' {
+            if ($null -ne $GuestMfaExperienceSummary) {
+                return "Users should expect more consistent sign-in verification for sensitive access. $($GuestMfaExperienceSummary.RecommendationImpactText)"
+            }
+
+            return 'Users should expect more consistent sign-in verification for sensitive access, with limited disruption once pilot exclusions and break-glass paths are confirmed.'
+        }
+        'Strengthen baseline security and access protections' {
+            if ($null -ne $GuestMfaExperienceSummary) {
+                return "Users should expect short-term sign-in prompt increases as baseline access protections move from observation into enforcement. $($GuestMfaExperienceSummary.RecommendationImpactText)"
+            }
+
+            return 'Users should expect short-term sign-in prompt increases during rollout until the stronger access baseline is fully established.'
+        }
+        'Improve device compliance and managed endpoint coverage' {
+            return 'Users on unmanaged or non-compliant devices may temporarily lose access to protected resources until their device is brought into policy or granted a documented exception.'
+        }
+        'Establish accountable ownership for collaboration spaces' {
+            return 'Minimal day-to-day end-user disruption. Most change is administrative and affects workspace owners, sponsors, and lifecycle decisions more than routine collaboration.'
+        }
+        'Strengthen domain and anti-spoofing controls' {
+            return 'Minimal end-user disruption. The main impact is on administrators and approved senders who may need to update mail-authentication records or documented relay exceptions.'
+        }
+        'Review external forwarding and mail flow exposure' {
+            return 'Little impact for most users. Unapproved forwarding paths, legacy relay patterns, or inbox rules may stop working once exceptions are reviewed and removed.'
+        }
+        'Reconcile license capacity and tenant governance gaps' {
+            return 'Primarily administrative change with little day-to-day end-user disruption once assignments, ownership, and license headroom are reconciled.'
+        }
+        default {
+            return 'Primarily administrative change with low end-user impact once the current state is validated and approved exceptions are documented.'
+        }
+    }
+}
+
+function Get-CustomerActionImplementationExperienceNote {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$Action,
+        [Parameter(Mandatory = $false)]$GuestMfaExperienceSummary
+    )
+
+    $actionTitle = Convert-ToArrayaDisplayText -Value $Action.ActionTitle -Default ''
+    switch ($actionTitle) {
+        'Reduce privileged access and strengthen identity controls' {
+            return 'Pilot identity-enforcement changes with admins, guests, and a small user group before broader rollout.'
+        }
+        'Strengthen baseline security and access protections' {
+            return 'Expect a staged rollout with report-only review, pilot enforcement, and an exception review before broad enablement.'
+        }
+        'Improve device compliance and managed endpoint coverage' {
+            return 'Validate exception handling first so unmanaged or unsupported devices do not create avoidable access outages.'
+        }
+        'Review external forwarding and mail flow exposure' {
+            return 'Review approved business exceptions before removing forwarding paths or tightening relay settings.'
+        }
+        default {
+            return 'Validate the affected user population, exceptions, and rollback path before broad enforcement.'
+        }
+    }
+}
+
+function Add-CustomerRoadmapActionExperienceNotes {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$RoadmapActions = @(),
+        [Parameter(Mandatory = $false)]$GuestMfaExperienceSummary
+    )
+
+    return @(
+        foreach ($action in @($RoadmapActions)) {
+            $actionProperties = [ordered]@{}
+            foreach ($property in @($action.PSObject.Properties)) {
+                $actionProperties[$property.Name] = $property.Value
+            }
+
+            $actionProperties['UserImpactExperience'] = Get-CustomerActionUserImpactExperience -Action $action -GuestMfaExperienceSummary $GuestMfaExperienceSummary
+            $actionProperties['ImplementationExperienceNote'] = Get-CustomerActionImplementationExperienceNote -Action $action -GuestMfaExperienceSummary $GuestMfaExperienceSummary
+            [pscustomobject]$actionProperties
+        }
+    )
 }
 
 function Get-CustomerRoadmapActions {
@@ -3234,6 +3444,10 @@ function Get-CustomerConsultativeSummaries {
     $dmarcMissingCount = @($domainRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DmarcConfigured'))) -ne $true }).Count
     $licensePressure = Get-CustomerTopLicensePressureText -LicenseRows $licenseRows -Top 3
     $dirSyncEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $tenantInfoSummaryRecord -Names @('DirSyncEnabled', 'DirectorySynchronizationEnabled'))
+    $guestMfaExperienceSummary = Get-CustomerGuestMfaExperienceSummary `
+        -ExternalIdentityRestrictionsRecord $externalIdentityRestrictionsRecord `
+        -GuestAccessConfigurationRecord $guestAccessConfigurationRecord `
+        -MfaEnforcementSummaryRecord $mfaEnforcementSummaryRecord
 
     $inactiveLicensedUsers = @(
         $userRows |
@@ -3253,6 +3467,7 @@ function Get-CustomerConsultativeSummaries {
 
     return [pscustomobject]@{
         ExecutiveDecisionSummary = Get-CustomerExecutiveDecisionSummary -ExecutiveThemes $ExecutiveThemes -RoadmapActions $RoadmapActions -OwnerGroups $OwnerGroups
+        GuestMfaExperienceSummary = $guestMfaExperienceSummary
         IdentityConsultativeSummary = (New-CustomerConsultativeSummary -Title 'IdentityConsultativeSummary' -SnapshotRows @(
             (New-CustomerConfigurationRow -Signal 'Global Administrator count' -State $globalAdminCount),
             (New-CustomerConfigurationRow -Signal 'Stale privileged accounts (>90 days)' -State $stalePrivileged90Days),
@@ -3594,6 +3809,8 @@ function New-CustomerReportSourceModel {
     $technicalObservations = if ($PSBoundParameters.ContainsKey('TechnicalObservations') -and @($TechnicalObservations).Count -gt 0) { @($TechnicalObservations) } else { @() }
     $executiveNarrative = Get-CustomerExecutiveSummaryNarrative -Findings $Findings -ExecutiveThemes $executiveThemes -OwnerGroups $ownerGroups
     $consultativeSummaries = if ($null -ne $ConsultativeSummaries) { $ConsultativeSummaries } else { [pscustomobject]@{} }
+    $guestMfaExperienceSummary = $consultativeSummaries.GuestMfaExperienceSummary
+    $roadmapActions = Add-CustomerRoadmapActionExperienceNotes -RoadmapActions $roadmapActions -GuestMfaExperienceSummary $guestMfaExperienceSummary
     $resolvedAssessmentVersion = if ([string]::IsNullOrWhiteSpace($AssessmentVersion)) { (Resolve-ArrayaAssessmentVersionLabel) } else { $AssessmentVersion.Trim() }
 
     $sourceModel = [pscustomobject]@{
@@ -3617,6 +3834,7 @@ function New-CustomerReportSourceModel {
     $sourceModel | Add-Member -NotePropertyName SummaryRows -NotePropertyValue (Get-CustomerSourceSummaryRows -SourceModel $sourceModel)
     $sourceModel | Add-Member -NotePropertyName FindingsLegendRows -NotePropertyValue (Get-CustomerFindingsLegendRows)
     $sourceModel | Add-Member -NotePropertyName ExecutiveDecisionSummary -NotePropertyValue $(if ($consultativeSummaries.PSObject.Properties.Name -contains 'ExecutiveDecisionSummary') { $consultativeSummaries.ExecutiveDecisionSummary } else { Get-CustomerExecutiveDecisionSummary -ExecutiveThemes $executiveThemes -RoadmapActions $roadmapActions -OwnerGroups $ownerGroups })
+    $sourceModel | Add-Member -NotePropertyName GuestMfaExperienceSummary -NotePropertyValue $guestMfaExperienceSummary
     $sourceModel | Add-Member -NotePropertyName IdentityConsultativeSummary -NotePropertyValue $consultativeSummaries.IdentityConsultativeSummary
     $sourceModel | Add-Member -NotePropertyName MessagingConsultativeSummary -NotePropertyValue $consultativeSummaries.MessagingConsultativeSummary
     $sourceModel | Add-Member -NotePropertyName CollaborationConsultativeSummary -NotePropertyValue $consultativeSummaries.CollaborationConsultativeSummary
@@ -4483,8 +4701,123 @@ $mfaEnrollmentDerivedSummary = Get-ArrayaObjectValue -Object $snapshotDerived -N
 $mfaEnforcementDerivedSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('MfaEnforcementSummary')
 $conditionalAccessSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('ConditionalAccessPolicySummary')
 $securityDefaultsPolicy = Get-ArrayaObjectValue -Object $tenantData -Names @('SecurityDefaultsPolicy')
-$enterpriseApplications = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('EnterpriseApplications', 'AuthenticationSSOApplications'))
+$rawEnterpriseApplications = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('EnterpriseApplications'))
+$authenticationSsoApplications = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('AuthenticationSSOApplications'))
+$enterpriseApplicationByIdentity = @{}
+$enterpriseApplications = New-Object System.Collections.Generic.List[object]
+
+function Test-AssessmentEnterpriseApplicationRow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        $ApplicationRow
+    )
+
+    if ($null -eq $ApplicationRow) {
+        return $false
+    }
+
+    if (-not $ApplicationRow.PSObject -or $ApplicationRow.PSObject.Properties.Count -eq 0) {
+        return $false
+    }
+
+    $identitySignals = @(
+        (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('ServicePrincipalId', 'Id')),
+        (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('AppId')),
+        (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('DisplayName')),
+        (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('SSOMode', 'PreferredSingleSignOnMode'))
+    )
+
+    foreach ($signal in @($identitySignals)) {
+        $signalText = Convert-ToArrayaDisplayText -Value $signal -Default ''
+        if (-not [string]::IsNullOrWhiteSpace($signalText)) {
+            return $true
+        }
+    }
+
+    return (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('SsoEnabled'))) -eq $true
+}
+
+foreach ($applicationRow in @(@($rawEnterpriseApplications) + @($authenticationSsoApplications))) {
+    if (-not (Test-AssessmentEnterpriseApplicationRow -ApplicationRow $applicationRow)) {
+        continue
+    }
+
+    $identityParts = @(
+        Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $applicationRow -Names @('ServicePrincipalId', 'Id')) -Default ''
+        Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $applicationRow -Names @('AppId')) -Default ''
+        Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $applicationRow -Names @('DisplayName')) -Default ''
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    if ($identityParts.Count -eq 0) {
+        $enterpriseApplications.Add($applicationRow) | Out-Null
+        continue
+    }
+
+    $applicationIdentity = ($identityParts -join '|').ToLowerInvariant()
+    if ($enterpriseApplicationByIdentity.ContainsKey($applicationIdentity)) {
+        $existing = $enterpriseApplicationByIdentity[$applicationIdentity]
+        $mergedProperties = [ordered]@{}
+        foreach ($property in @($existing.PSObject.Properties)) {
+            $mergedProperties[$property.Name] = $property.Value
+        }
+        foreach ($property in @($applicationRow.PSObject.Properties)) {
+            $currentValue = $null
+            $hasCurrentValue = $mergedProperties.Contains($property.Name)
+            if ($hasCurrentValue) {
+                $currentValue = $mergedProperties[$property.Name]
+            }
+
+            if (-not $hasCurrentValue -or $null -eq $currentValue -or [string]::IsNullOrWhiteSpace([string]$currentValue)) {
+                $mergedProperties[$property.Name] = $property.Value
+            }
+        }
+        $enterpriseApplicationByIdentity[$applicationIdentity] = [pscustomobject]$mergedProperties
+        continue
+    }
+
+    $enterpriseApplicationByIdentity[$applicationIdentity] = $applicationRow
+}
+
+foreach ($applicationIdentity in @($enterpriseApplicationByIdentity.Keys | Sort-Object)) {
+    $enterpriseApplications.Add($enterpriseApplicationByIdentity[$applicationIdentity]) | Out-Null
+}
+$enterpriseApplications = @($enterpriseApplications.ToArray())
 $enterpriseApplicationSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('EnterpriseApplicationSummary')
+if ($null -eq $enterpriseApplicationSummary -and $enterpriseApplications.Count -gt 0) {
+    $enterpriseApplicationSummary = [pscustomobject]@{
+        Summary = [pscustomobject]@{
+            TotalEnterpriseApplications      = $enterpriseApplications.Count
+            ApplicationsWithHighPrivilege    = @($enterpriseApplications | Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('HighPrivilegePermissionCount'))) -gt 0 }).Count
+            ApplicationsWithDelegatedGrants  = @($enterpriseApplications | Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('DelegatedPermissionGrantCount'))) -gt 0 }).Count
+            ApplicationsWithApplicationPerms = @($enterpriseApplications | Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('ApplicationPermissionCount'))) -gt 0 }).Count
+            SsoEnabledApplications           = @($enterpriseApplications | Where-Object {
+                $explicitSsoEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('SsoEnabled'))
+                $preferredSingleSignOnMode = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('SSOMode', 'PreferredSingleSignOnMode')) -Default ''
+                ($explicitSsoEnabled -eq $true) -or (-not [string]::IsNullOrWhiteSpace($preferredSingleSignOnMode) -and $preferredSingleSignOnMode -ne 'notSupported')
+            }).Count
+        }
+    }
+}
+elseif ($null -ne $enterpriseApplicationSummary -and $enterpriseApplications.Count -gt 0) {
+    $existingEnterpriseApplicationSummaryRecord = Get-ArrayaObjectValue -Object $enterpriseApplicationSummary -Names @('Summary')
+    $existingTotalEnterpriseApplications = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $existingEnterpriseApplicationSummaryRecord -Names @('TotalEnterpriseApplications', 'EnterpriseApplicationCount'))
+    if ($null -eq $existingTotalEnterpriseApplications -or $existingTotalEnterpriseApplications -eq 0) {
+        $enterpriseApplicationSummary = [pscustomobject]@{
+            Summary = [pscustomobject]@{
+                TotalEnterpriseApplications      = $enterpriseApplications.Count
+                ApplicationsWithHighPrivilege    = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $existingEnterpriseApplicationSummaryRecord -Names @('ApplicationsWithHighPrivilege', 'HighPrivilegeApplicationCount'))
+                ApplicationsWithDelegatedGrants  = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $existingEnterpriseApplicationSummaryRecord -Names @('ApplicationsWithDelegatedGrants'))
+                ApplicationsWithApplicationPerms = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $existingEnterpriseApplicationSummaryRecord -Names @('ApplicationsWithApplicationPerms'))
+                SsoEnabledApplications           = @($enterpriseApplications | Where-Object {
+                    $explicitSsoEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('SsoEnabled'))
+                    $preferredSingleSignOnMode = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('SSOMode', 'PreferredSingleSignOnMode')) -Default ''
+                    ($explicitSsoEnabled -eq $true) -or (-not [string]::IsNullOrWhiteSpace($preferredSingleSignOnMode) -and $preferredSingleSignOnMode -ne 'notSupported')
+                }).Count
+            }
+        }
+    }
+}
 $guestSignInSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('GuestSignInSummary')
 $privilegedAccessSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('PrivilegedAccessSummary')
 $inboxRulesExternalForwarding = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('InboxRulesExternalForwarding'))
