@@ -96,12 +96,12 @@
                 Default {
                     # Define Core Scopes for Microsoft Graph SDK
                     $CommonScopes = @(
-                        "Directory.Read.All", "Group.Read.All", "GroupMember.Read.All",
-                        "User.Read.All", "Sites.Read.All", "Files.Read.All",
-                        "MailboxSettings.ReadWrite", "AuditLog.Read.All", "Policy.Read.All",
-                        "Team.ReadBasic.All", "TeamSettings.Read.All", "TeamsTab.Read.All",
-                        "LicenseAssignment.ReadWrite.All", "User.EnableDisableAccount.All", "User.Export.All",
-                        "Device.Read.All", "SecurityEvents.Read.All", "SharePointTenantSettings.Read.All", "Organization.Read.All",
+                        "Organization.Read.All", "User.Read.All", "AuditLog.Read.All",
+                        "Group.Read.All", "GroupMember.Read.All", "RoleManagement.Read.Directory",
+                        "Domain.Read.All", "Device.Read.All", "Reports.Read.All",
+                        "ReportSettings.Read.All", "Policy.Read.All", "CrossTenantInformation.ReadBasic.All",
+                        "SecurityEvents.Read.All", "Application.Read.All", "Sites.Read.All", "SharePointTenantSettings.Read.All",
+                        "Team.ReadBasic.All", "Channel.ReadBasic.All",
                         "OnPremDirectorySynchronization.Read.All"
                     )
     
