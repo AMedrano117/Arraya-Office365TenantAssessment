@@ -114,6 +114,8 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$SkipAuth,
     [Parameter(Mandatory = $false)]
+    [switch]$SkipPermissionPreflight,
+    [Parameter(Mandatory = $false)]
     [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
     [string]$AuthMode,
     [Parameter(Mandatory = $false)]
@@ -7607,6 +7609,107 @@ function Get-AuthenticationConfiguration {
             return (-not [string]::IsNullOrWhiteSpace($preferredSingleSignOnMode) -and $preferredSingleSignOnMode -ne 'notSupported')
         }
 
+        function Get-AssessmentEnterpriseApplicationIdentityProfile {
+            param(
+                [Parameter(Mandatory = $false)]
+                $ServicePrincipal
+            )
+
+            if ($null -eq $ServicePrincipal) {
+                return [pscustomobject]@{
+                    ServicePrincipalId       = $null
+                    DisplayName              = $null
+                    AppId                    = $null
+                    ServicePrincipalType     = $null
+                    PreferredSingleSignOnMode = $null
+                    PublisherName            = $null
+                }
+            }
+
+            return [pscustomobject]@{
+                ServicePrincipalId        = $(if ($ServicePrincipal.PSObject.Properties['id']) { [string]$ServicePrincipal.id } elseif ($ServicePrincipal.PSObject.Properties['Id']) { [string]$ServicePrincipal.Id } else { $null })
+                DisplayName               = $(if ($ServicePrincipal.PSObject.Properties['displayName']) { [string]$ServicePrincipal.displayName } elseif ($ServicePrincipal.PSObject.Properties['DisplayName']) { [string]$ServicePrincipal.DisplayName } else { $null })
+                AppId                     = $(if ($ServicePrincipal.PSObject.Properties['appId']) { [string]$ServicePrincipal.appId } elseif ($ServicePrincipal.PSObject.Properties['AppId']) { [string]$ServicePrincipal.AppId } else { $null })
+                ServicePrincipalType      = $(if ($ServicePrincipal.PSObject.Properties['servicePrincipalType']) { [string]$ServicePrincipal.servicePrincipalType } elseif ($ServicePrincipal.PSObject.Properties['ServicePrincipalType']) { [string]$ServicePrincipal.ServicePrincipalType } else { $null })
+                PreferredSingleSignOnMode = $(if ($ServicePrincipal.PSObject.Properties['preferredSingleSignOnMode']) { [string]$ServicePrincipal.preferredSingleSignOnMode } elseif ($ServicePrincipal.PSObject.Properties['PreferredSingleSignOnMode']) { [string]$ServicePrincipal.PreferredSingleSignOnMode } else { $null })
+                PublisherName             = $(if ($ServicePrincipal.PSObject.Properties['publisherName']) { [string]$ServicePrincipal.publisherName } elseif ($ServicePrincipal.PSObject.Properties['PublisherName']) { [string]$ServicePrincipal.PublisherName } else { $null })
+            }
+        }
+
+        function Test-AssessmentEnterpriseApplicationValidRow {
+            param(
+                [Parameter(Mandatory = $false)]
+                $ServicePrincipal
+            )
+
+            $identityProfile = Get-AssessmentEnterpriseApplicationIdentityProfile -ServicePrincipal $ServicePrincipal
+            if ([string]::IsNullOrWhiteSpace([string]$identityProfile.ServicePrincipalId)) {
+                return $false
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace([string]$identityProfile.AppId)) {
+                return $true
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace([string]$identityProfile.DisplayName)) {
+                return $true
+            }
+
+            return (-not [string]::IsNullOrWhiteSpace([string]$identityProfile.PreferredSingleSignOnMode) -and $identityProfile.PreferredSingleSignOnMode -ne 'notSupported')
+        }
+
+        function Test-AssessmentEnterpriseApplicationCustomerRelevant {
+            param(
+                [Parameter(Mandatory = $false)]
+                $ServicePrincipal,
+                [Parameter(Mandatory = $false)]
+                [hashtable]$AdditionalProperties = @{}
+            )
+
+            if (-not (Test-AssessmentEnterpriseApplicationValidRow -ServicePrincipal $ServicePrincipal)) {
+                return $false
+            }
+
+            $identityProfile = Get-AssessmentEnterpriseApplicationIdentityProfile -ServicePrincipal $ServicePrincipal
+            if ([string]$identityProfile.ServicePrincipalType -eq 'ManagedIdentity') {
+                return $false
+            }
+
+            $publisherName = [string]$identityProfile.PublisherName
+            $isFirstPartyPublisher = (-not [string]::IsNullOrWhiteSpace($publisherName)) -and ($publisherName -match '(?i)microsoft')
+
+            $usesSso = Test-AssessmentAppUsesSso -ServicePrincipal $ServicePrincipal
+            $appRoleAssignmentRequired = $null
+            if ($ServicePrincipal.PSObject.Properties['appRoleAssignmentRequired']) {
+                $appRoleAssignmentRequired = $ServicePrincipal.appRoleAssignmentRequired
+            } elseif ($ServicePrincipal.PSObject.Properties['AppRoleAssignmentRequired']) {
+                $appRoleAssignmentRequired = $ServicePrincipal.AppRoleAssignmentRequired
+            }
+
+            $appRoleAssignmentRequired = (Convert-ToAssessmentBoolean $appRoleAssignmentRequired)
+            $hasDelegatedPermissions = (Convert-ArrayaToNumber $AdditionalProperties['DelegatedPermissionGrantCount']) -gt 0
+            $hasApplicationPermissions = (Convert-ArrayaToNumber $AdditionalProperties['ApplicationPermissionCount']) -gt 0
+            $hasHighPrivilegePermissions = (Convert-ArrayaToNumber $AdditionalProperties['HighPrivilegePermissionCount']) -gt 0
+
+            $looksLikeCustomerFacingEnterpriseApp =
+                (-not [string]::IsNullOrWhiteSpace([string]$identityProfile.AppId)) -and
+                (
+                    -not [string]::IsNullOrWhiteSpace([string]$identityProfile.DisplayName) -or
+                    $usesSso -or
+                    $appRoleAssignmentRequired -eq $true
+                )
+
+            if ($usesSso -or $appRoleAssignmentRequired -eq $true -or $hasDelegatedPermissions -or $hasApplicationPermissions -or $hasHighPrivilegePermissions) {
+                return $true
+            }
+
+            if ($isFirstPartyPublisher) {
+                return $false
+            }
+
+            return $looksLikeCustomerFacingEnterpriseApp
+        }
+
         function Get-AssessmentEnterpriseApplicationStorageKey {
             param(
                 [Parameter(Mandatory = $true)]
@@ -7641,41 +7744,20 @@ function Get-AuthenticationConfiguration {
                 [hashtable]$AdditionalProperties = @{}
             )
 
-            $servicePrincipalId = if ($ServicePrincipal.PSObject.Properties['id']) {
-                [string]$ServicePrincipal.id
-            } elseif ($ServicePrincipal.PSObject.Properties['Id']) {
-                [string]$ServicePrincipal.Id
-            } else {
-                $null
+            if (-not (Test-AssessmentEnterpriseApplicationCustomerRelevant -ServicePrincipal $ServicePrincipal -AdditionalProperties $AdditionalProperties)) {
+                return
             }
+
+            $identityProfile = Get-AssessmentEnterpriseApplicationIdentityProfile -ServicePrincipal $ServicePrincipal
+            $servicePrincipalId = $identityProfile.ServicePrincipalId
 
             if ([string]::IsNullOrWhiteSpace($servicePrincipalId)) {
                 return
             }
 
-            $displayName = if ($ServicePrincipal.PSObject.Properties['displayName']) {
-                [string]$ServicePrincipal.displayName
-            } elseif ($ServicePrincipal.PSObject.Properties['DisplayName']) {
-                [string]$ServicePrincipal.DisplayName
-            } else {
-                $null
-            }
-
-            $appId = if ($ServicePrincipal.PSObject.Properties['appId']) {
-                [string]$ServicePrincipal.appId
-            } elseif ($ServicePrincipal.PSObject.Properties['AppId']) {
-                [string]$ServicePrincipal.AppId
-            } else {
-                $null
-            }
-
-            $preferredSingleSignOnMode = if ($ServicePrincipal.PSObject.Properties['preferredSingleSignOnMode']) {
-                [string]$ServicePrincipal.preferredSingleSignOnMode
-            } elseif ($ServicePrincipal.PSObject.Properties['PreferredSingleSignOnMode']) {
-                [string]$ServicePrincipal.PreferredSingleSignOnMode
-            } else {
-                $null
-            }
+            $displayName = $identityProfile.DisplayName
+            $appId = $identityProfile.AppId
+            $preferredSingleSignOnMode = $identityProfile.PreferredSingleSignOnMode
 
             $storageKey = $null
             if ($enterpriseApplicationKeyById.ContainsKey($servicePrincipalId)) {
@@ -7703,6 +7785,7 @@ function Get-AuthenticationConfiguration {
                 SsoEnabled                    = $ssoEnabled
                 SSOMode                       = $(if ($ssoEnabled) { $preferredSingleSignOnMode } else { $null })
                 AppRoleAssignmentRequired     = $(if ($ServicePrincipal.PSObject.Properties['appRoleAssignmentRequired']) { $ServicePrincipal.appRoleAssignmentRequired } elseif ($ServicePrincipal.PSObject.Properties['AppRoleAssignmentRequired']) { $ServicePrincipal.AppRoleAssignmentRequired } else { $null })
+                PublisherName                 = $identityProfile.PublisherName
                 Tags                          = $(if ($ServicePrincipal.PSObject.Properties['tags']) { @($ServicePrincipal.tags) -join ',' } elseif ($ServicePrincipal.PSObject.Properties['Tags']) { @($ServicePrincipal.Tags) -join ',' } else { $null })
                 DelegatedPermissionScopes     = ''
                 DelegatedPermissionGrantCount = 0
@@ -7734,7 +7817,7 @@ function Get-AuthenticationConfiguration {
             try {
                 $servicePrincipals = @(
                     Get-ArrayaGraphResource `
-                        -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=id,displayName,appId,servicePrincipalType,accountEnabled,preferredSingleSignOnMode,tags,appRoleAssignmentRequired&`$top=250" `
+                        -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=id,displayName,appId,servicePrincipalType,accountEnabled,preferredSingleSignOnMode,tags,appRoleAssignmentRequired,publisherName&`$top=250" `
                         -Activity 'Enterprise applications inventory' `
                         -Headers $global:GraphHeaders
                 )
@@ -7778,7 +7861,7 @@ function Get-AuthenticationConfiguration {
                 Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] Checking Enterprise Applications for SSO" -ExportFileLocation $ExportDetails
 
                 $ssoAppDetails = New-Object System.Collections.Generic.List[object]
-                foreach ($app in @($servicePrincipals | Where-Object { Test-AssessmentAppUsesSso -ServicePrincipal $_ })) {
+                foreach ($app in @($servicePrincipals | Where-Object { (Test-AssessmentEnterpriseApplicationCustomerRelevant -ServicePrincipal $_) -and (Test-AssessmentAppUsesSso -ServicePrincipal $_) })) {
                     $preferredSingleSignOnMode = if ($app.PSObject.Properties['preferredSingleSignOnMode']) {
                         [string]$app.preferredSingleSignOnMode
                     } elseif ($app.PSObject.Properties['PreferredSingleSignOnMode']) {
@@ -7801,6 +7884,7 @@ function Get-AuthenticationConfiguration {
                         ServicePrincipalType = $(if ($app.PSObject.Properties['servicePrincipalType']) { $app.servicePrincipalType } else { $app.ServicePrincipalType })
                         AccountEnabled = $(if ($app.PSObject.Properties['accountEnabled']) { $app.accountEnabled } else { $app.AccountEnabled })
                         AppRoleAssignmentRequired = $(if ($app.PSObject.Properties['appRoleAssignmentRequired']) { $app.appRoleAssignmentRequired } else { $app.AppRoleAssignmentRequired })
+                        PublisherName = $(if ($app.PSObject.Properties['publisherName']) { $app.publisherName } else { $app.PublisherName })
                     })
                 }
 
@@ -8062,12 +8146,17 @@ function Get-AuthenticationConfiguration {
         }
 
         $enterpriseApplicationRows = @($script:tenantStatsHash["EnterpriseApplications"].Values)
+        $resolvedSsoApplicationRows = @($enterpriseApplicationRows | Where-Object { (Convert-ToAssessmentBoolean $_.SsoEnabled) -eq $true })
+        if ($resolvedSsoApplicationRows.Count -gt 0) {
+            $authMethodsPolicy.SSOEnabled = $true
+        }
+        $authMethodsPolicy.SSOApplications = @($resolvedSsoApplicationRows)
         $script:tenantStatsHash["EnterpriseApplicationSummary"]["Summary"] = [PSCustomObject]@{
             TotalEnterpriseApplications      = $enterpriseApplicationRows.Count
             ApplicationsWithHighPrivilege    = @($enterpriseApplicationRows | Where-Object { (Convert-ArrayaToNumber $_.HighPrivilegePermissionCount) -gt 0 }).Count
             ApplicationsWithDelegatedGrants  = @($enterpriseApplicationRows | Where-Object { (Convert-ArrayaToNumber $_.DelegatedPermissionGrantCount) -gt 0 }).Count
             ApplicationsWithApplicationPerms = @($enterpriseApplicationRows | Where-Object { (Convert-ArrayaToNumber $_.ApplicationPermissionCount) -gt 0 }).Count
-            SsoEnabledApplications           = @($enterpriseApplicationRows | Where-Object { (Convert-ToAssessmentBoolean $_.SsoEnabled) -eq $true }).Count
+            SsoEnabledApplications           = $resolvedSsoApplicationRows.Count
         }
         
         $normalizedAuthenticationConfig = [pscustomobject]@{
@@ -11426,8 +11515,13 @@ Write-Host "Progress view: overall step completion is shown after each major tas
 Write-Host "Legend: cyan=section/progress, green=completed, yellow=warnings/skips." -ForegroundColor DarkCyan
 
 if (-not $runExportOnly) {
-    Write-Host "Validating required permissions and service access..." -ForegroundColor Cyan
-    Test-AssessmentPermissionPreflight -ConnectionResult $connectionResult
+    if ($SkipPermissionPreflight) {
+        Write-Host "Skipping permission preflight by request. Collection will continue and may fail later where access is missing." -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "Validating required permissions and service access..." -ForegroundColor Cyan
+        Test-AssessmentPermissionPreflight -ConnectionResult $connectionResult
+    }
 }
 
 $GraphTest = if ($runExportOnly) {

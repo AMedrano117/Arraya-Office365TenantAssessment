@@ -13,6 +13,8 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$SkipAuth,
     [Parameter(Mandatory = $false)]
+    [switch]$SkipPermissionPreflight,
+    [Parameter(Mandatory = $false)]
     [string]$TenantId,
     [Parameter(Mandatory = $false)]
     [string]$CertificateThumbprint,
@@ -371,6 +373,7 @@ switch ($Action) {
         if ($StoreTenantStatsGlobal) { $invokeParams.StoreTenantStatsGlobal = $true }
         if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
         if ($SkipAuth) { $invokeParams.SkipAuth = $true }
+        if ($SkipPermissionPreflight) { $invokeParams.SkipPermissionPreflight = $true }
         if (-not [string]::IsNullOrWhiteSpace($AuthMode)) { $invokeParams.AuthMode = $AuthMode }
         if (-not [string]::IsNullOrWhiteSpace($TenantId)) { $invokeParams.TenantId = $TenantId }
         if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
@@ -412,6 +415,7 @@ switch ($Action) {
         if ($StoreTenantStatsGlobal) { $invokeParams.StoreTenantStatsGlobal = $true }
         if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
         if ($SkipAuth) { $invokeParams.SkipAuth = $true }
+        if ($SkipPermissionPreflight) { $invokeParams.SkipPermissionPreflight = $true }
         if (-not [string]::IsNullOrWhiteSpace($AuthMode)) { $invokeParams.AuthMode = $AuthMode }
         if (-not [string]::IsNullOrWhiteSpace($TenantId)) { $invokeParams.TenantId = $TenantId }
         if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
