@@ -41,6 +41,7 @@ If you are using app-based authentication, complete the setup guidance first:
 - [Certificate Auth Setup](docs/runbooks/certificate-auth-setup.md)
 
 If you already connected to Microsoft Graph and Exchange Online in the same PowerShell session, you can reuse those sessions with `-SkipAuth`.
+If you want the assessment to continue without the startup permission gate, you can add `-SkipPermissionPreflight`. This skips the initial required-access validation and allows collection to continue on a best-effort basis, so missing permissions may still show up later as workload-specific warnings or failures.
 
 ## Required Access And API Permissions
 
@@ -211,6 +212,18 @@ Run a full assessment with certificate-based app authentication:
   -CertificateThumbprint '<cert-thumbprint>'
 ```
 
+Run a full assessment with certificate-based auth and skip the permission preflight gate:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365 `
+  -AuthMode Certificate `
+  -TenantId '<tenant-guid>' `
+  -ClientId '<app-id>' `
+  -CertificateThumbprint '<cert-thumbprint>' `
+  -SkipPermissionPreflight
+```
+
 Run a full assessment with client-secret authentication:
 
 ```powershell
@@ -228,6 +241,15 @@ Collect tenant data only and save a JSON snapshot for later export:
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
   -Action M365Collect `
   -OutputProfile SolutionsEngineer
+```
+
+Collect data only and let the run continue even if some startup permission checks would normally stop it:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365Collect `
+  -OutputProfile SolutionsEngineer `
+  -SkipPermissionPreflight
 ```
 
 The following actions prompt you for additional inputs at runtime:
@@ -443,6 +465,7 @@ If a required module is missing, rerun:
 ```
 
 If you are prompted for authentication unexpectedly, check whether you intended to use the default interactive mode or whether `-SkipAuth` should be used to reuse an existing session.
+If the run stops before collection because of the startup access gate and you want best-effort behavior instead, rerun with `-SkipPermissionPreflight`.
 
 If PDF output is missing, the assessment can still complete successfully. PDF generation depends on a locally installed Chromium-based browser such as Google Chrome or Microsoft Edge.
 

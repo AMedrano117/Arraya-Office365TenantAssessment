@@ -7,13 +7,15 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:graphDataSource = Get-Content -Raw -Path $script:graphDataPath
     }
 
-    It 'defines a hard permission preflight and invokes it before collection starts' {
+    It 'defines a permission preflight with an explicit skip switch and invokes it before collection starts by default' {
         Test-Path $script:collectorPath | Should -BeTrue
         $script:collectorSource | Should -Match 'function Test-AssessmentPermissionPreflight'
+        $script:collectorSource | Should -Match '\[switch\]\$SkipPermissionPreflight'
         $script:collectorSource | Should -Match 'Permission preflight failed\. The assessment will not continue'
         $script:collectorSource | Should -Match 'Permission preflight warnings:'
         $script:collectorSource | Should -Match 'Validating required permissions and service access'
         $script:collectorSource | Should -Match 'Test-AssessmentPermissionPreflight -ConnectionResult \$connectionResult'
+        $script:collectorSource | Should -Match 'Skipping permission preflight by request'
     }
 
     It 'checks the critical Graph permissions used by the collector' {
@@ -141,13 +143,21 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
 
     It 'builds a lightweight enterprise application inventory and SSO subset for non-minimum profiles' {
         $script:collectorSource | Should -Match 'function Test-AssessmentAppUsesSso'
+        $script:collectorSource | Should -Match 'function Get-AssessmentEnterpriseApplicationIdentityProfile'
+        $script:collectorSource | Should -Match 'function Test-AssessmentEnterpriseApplicationValidRow'
+        $script:collectorSource | Should -Match 'function Test-AssessmentEnterpriseApplicationCustomerRelevant'
         $script:collectorSource | Should -Match 'function Add-AssessmentEnterpriseApplicationRecord'
         $script:collectorSource | Should -Match 'PreferredSingleSignOnMode'
         $script:collectorSource | Should -Match 'SsoEnabled'
         $script:collectorSource | Should -Match 'SSOMode'
+        $script:collectorSource | Should -Match 'PublisherName'
         $script:collectorSource | Should -Match 'SsoEnabledApplications'
+        $script:collectorSource | Should -Match 'servicePrincipalType'
+        $script:collectorSource | Should -Match 'ManagedIdentity'
+        $script:collectorSource | Should -Match 'publisherName'
         $script:collectorSource | Should -Match 'Get-ArrayaGraphResource .*servicePrincipals'
         $script:collectorSource | Should -Match 'Checking Enterprise Applications for SSO'
         $script:collectorSource | Should -Match 'AuthenticationSSOApplications'
+        $script:collectorSource | Should -Match '\$resolvedSsoApplicationRows'
     }
 }

@@ -27,6 +27,7 @@ Users do not need to manually import modules. The launcher imports `Arraya.M365.
 
 If you do not pass `-AuthMode`, the assessment defaults to delegated interactive sign-in. For backward compatibility, supplying `-CertificateThumbprint` still switches the run to certificate auth, and supplying `-ClientSecret` still switches the run to client-secret auth.
 If you already connected to Microsoft Graph and Exchange Online in the current session, you can run with `-SkipAuth` to reuse those sessions and bypass the repo's authentication bootstrap.
+If you want the assessment to continue without the startup permission gate, you can add `-SkipPermissionPreflight`. This skips the required-access validation at the beginning of the run and allows collection to continue on a best-effort basis, which means missing permissions may still surface later as individual workload failures.
 
 Examples:
 
@@ -44,6 +45,10 @@ Examples:
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
   -Action M365 `
   -SkipAuth
+
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365 `
+  -SkipPermissionPreflight
 
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
   -Action M365 `
@@ -87,7 +92,8 @@ Examples:
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
   -CertificateThumbprint '<cert-thumbprint>' `
-  -OutputProfile SolutionsEngineer
+  -OutputProfile SolutionsEngineer `
+  -SkipPermissionPreflight
 
 # Export artifacts from an existing JSON snapshot
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `

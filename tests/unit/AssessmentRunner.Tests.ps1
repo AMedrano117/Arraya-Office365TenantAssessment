@@ -58,10 +58,12 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match '\[string\]::Equals\(\$resolvedOutputFolder, \$resolvedExportPath, \[System\.StringComparison\]::OrdinalIgnoreCase\)'
     }
 
-    It 'surfaces AuthMode on tenant assessment entrypoints' {
+    It 'surfaces auth and permission-preflight controls on tenant assessment entrypoints' {
         $runnerSource = Get-Content -Raw -Path $script:runnerPath
         $runnerSource | Should -Match '\[ValidateSet\(''Interactive'', ''Certificate'', ''ClientSecret''\)\]\s*\[string\]\$AuthMode'
         $runnerSource | Should -Match '\$invokeParams\.AuthMode = \$AuthMode'
+        $runnerSource | Should -Match '\[switch\]\$SkipPermissionPreflight'
+        $runnerSource | Should -Match '\$invokeParams\.SkipPermissionPreflight = \$SkipPermissionPreflight'
     }
 
     It 'updates the assessment manifest with improve artifacts including the markdown companion' {
