@@ -551,4 +551,13 @@ Describe 'Arraya.M365.Common' {
         Remove-Item Function:\Write-Log -ErrorAction SilentlyContinue
         Remove-Item Function:\Capture-ErrorHelper -ErrorAction SilentlyContinue
     }
+
+    It 'skips SharePoint module import for app-based auth and relies on Graph collection instead' {
+        $connectOffice365Path = Join-Path $script:repoRoot 'src\vendor\Office365Custom\1.2.1\Public\Connect-Office365.ps1'
+        Test-Path $connectOffice365Path | Should -BeTrue
+
+        $connectOffice365Source = Get-Content -Raw -Path $connectOffice365Path
+        $connectOffice365Source | Should -Match "SharePoint Online SPO cmdlets are skipped for app-based authentication"
+        $connectOffice365Source | Should -Match "Skipping SharePoint module import and Connect-SPOService for authentication type"
+    }
 }

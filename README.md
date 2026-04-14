@@ -29,12 +29,16 @@ If you do not pass `-AuthMode`, the assessment defaults to delegated interactive
 If you already connected to Microsoft Graph and Exchange Online in the current session, you can run with `-SkipAuth` to reuse those sessions and bypass the repo's authentication bootstrap.
 The launcher now also reuses the repo modules already loaded from this repository in the current PowerShell session instead of force-reimporting them on every run.
 If you want the assessment to continue without the startup permission gate, you can add `-SkipPermissionPreflight`. This skips the required-access validation at the beginning of the run and allows collection to continue on a best-effort basis, which means missing permissions may still surface later as individual workload failures.
+The permission preflight now shows the specific check in progress, then prints a short summary of how many checks succeeded and how many access gaps remain. Non-blocking checks such as `OnPremDirectorySynchronization.Read.All` are reported as structured warnings in the preflight summary instead of only surfacing as raw Graph 403 noise.
 
 Retention and DLP policy collection uses Purview compliance PowerShell through `Connect-IPPSSession`, not the main Graph collector path. In this workflow:
 - delegated auth is supported
 - certificate auth is supported using `AppId + Organization + CertificateThumbprint`
 - client-secret auth is not supported for Purview compliance collection
 - `ExchangeOnlineManagement` must be available because it provides `Connect-IPPSSession`
+- when Purview compliance connection fails, the assessment now reports the auth path, tenant organization value, and next-step guidance in the preflight output so the operator can see what still needs to be corrected
+
+For SharePoint and OneDrive collection, certificate-based and client-secret runs now skip importing the `Microsoft.Online.SharePoint.PowerShell` module entirely. Those app-based runs rely on Microsoft Graph collection instead of `Connect-SPOService`.
 
 Examples:
 

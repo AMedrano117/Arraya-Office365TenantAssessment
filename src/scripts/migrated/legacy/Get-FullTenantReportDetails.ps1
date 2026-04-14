@@ -2336,7 +2336,7 @@ function Test-AssessmentPermissionPreflight {
     }
     else {
         try {
-            $organizationRecord = @(Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/organization?$select=id' -Activity 'Permission preflight: organization id resolution' -PreferRest:$false -SuppressProgress) | Select-Object -First 1
+            $organizationRecord = @(Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/organization?$select=id' -Activity 'Permission preflight: organization id resolution' -PreferRest:$false -SuppressProgress -SuppressAccessDeniedWarning) | Select-Object -First 1
             if ($organizationRecord -and $organizationRecord.PSObject.Properties['id']) {
                 $resolvedTenantId = [string]$organizationRecord.id
             }
@@ -2411,7 +2411,7 @@ function Test-AssessmentPermissionPreflight {
             return
         }
 
-        Get-ArrayaGraphResource -Uri $Uri -Activity ("Permission preflight: {0}" -f $Uri) -SuppressProgress | Out-Null
+        Get-ArrayaGraphResource -Uri $Uri -Activity ("Permission preflight: {0}" -f $Uri) -SuppressProgress -SuppressAccessDeniedWarning | Out-Null
     }
 
     $invokeGraphProbe = {
@@ -2452,18 +2452,35 @@ function Test-AssessmentPermissionPreflight {
         }
     }
 
+    $formatPreflightSummary = {
+        param(
+            [int]$SuccessfulCount,
+            [int]$FailureCount,
+            [int]$WarningCount
+        )
+
+        $remainingCount = $FailureCount + $WarningCount
+        return [pscustomobject]@{
+            SuccessfulCount = $SuccessfulCount
+            FailureCount    = $FailureCount
+            WarningCount    = $WarningCount
+            RemainingCount  = $remainingCount
+            SummaryText     = ("Permission preflight summary: {0} successful, {1} remaining ({2} blocking, {3} non-blocking)." -f $SuccessfulCount, $remainingCount, $FailureCount, $WarningCount)
+        }
+    }
+
     $graphChecks = New-Object System.Collections.Generic.List[object]
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('Organization.Read.All')
         NeededFor       = 'tenant organization metadata and tenant naming'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/organization?$select=id,displayName,onPremisesSyncEnabled' -Activity 'Permission preflight: Organization.Read.All' -SuppressProgress | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/organization?$select=id,displayName,onPremisesSyncEnabled' -Activity 'Permission preflight: Organization.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('User.Read.All')
         NeededFor       = 'user inventory, guest review, and sign-in hygiene analysis'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/users?$top=1&$select=id,userType,accountEnabled' -Activity 'Permission preflight: User.Read.All' -SuppressProgress | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/users?$top=1&$select=id,userType,accountEnabled' -Activity 'Permission preflight: User.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
@@ -2475,16 +2492,16 @@ function Test-AssessmentPermissionPreflight {
         Area            = 'Graph'
         PermissionNames = @('Group.Read.All')
         NeededFor       = 'Entra groups, collaboration ownership, and Microsoft 365 group inventory'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/groups?$top=1&$select=id,displayName' -Activity 'Permission preflight: Group.Read.All' -SuppressProgress | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/groups?$top=1&$select=id,displayName' -Activity 'Permission preflight: Group.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('GroupMember.Read.All')
         NeededFor       = 'group member and owner review used by ownership and collaboration findings'
         Probe           = {
-            $firstGroup = @(Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/groups?$top=1&$select=id' -Activity 'Permission preflight: group lookup for GroupMember.Read.All' -SuppressProgress) | Select-Object -First 1
+            $firstGroup = @(Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/groups?$top=1&$select=id' -Activity 'Permission preflight: group lookup for GroupMember.Read.All' -SuppressProgress -SuppressAccessDeniedWarning) | Select-Object -First 1
             if ($firstGroup -and $firstGroup.PSObject.Properties['id'] -and -not [string]::IsNullOrWhiteSpace([string]$firstGroup.id)) {
-                Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/groups/{0}/members?$top=1&$select=id" -f $firstGroup.id) -Activity 'Permission preflight: GroupMember.Read.All' -SuppressProgress | Out-Null
+                Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/groups/{0}/members?$top=1&$select=id" -f $firstGroup.id) -Activity 'Permission preflight: GroupMember.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null
             }
         }
     }) | Out-Null
@@ -2505,19 +2522,19 @@ function Test-AssessmentPermissionPreflight {
         Area            = 'Graph'
         PermissionNames = @('Domain.Read.All')
         NeededFor       = 'accepted domain inventory and DNS posture review'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/domains?$top=1&$select=id,isVerified' -Activity 'Permission preflight: Domain.Read.All' -SuppressProgress | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/domains?$top=1&$select=id,isVerified' -Activity 'Permission preflight: Domain.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('Device.Read.All')
         NeededFor       = 'device inventory and compliance posture review'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/devices?$top=1&$select=id,displayName' -Activity 'Permission preflight: Device.Read.All' -SuppressProgress | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/devices?$top=1&$select=id,displayName' -Activity 'Permission preflight: Device.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('Policy.Read.All')
         NeededFor       = 'Conditional Access, guest invitation, and authentication policy review'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/policies/authorizationPolicy?$select=id,allowInvitesFrom,allowedToUseSSPR' -Activity 'Permission preflight: Policy.Read.All' -SuppressProgress | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/policies/authorizationPolicy?$select=id,allowInvitesFrom,allowedToUseSSPR' -Activity 'Permission preflight: Policy.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
@@ -2525,7 +2542,7 @@ function Test-AssessmentPermissionPreflight {
         NeededFor       = 'cross-tenant partner visibility and external access posture review'
         Probe           = {
             if (-not [string]::IsNullOrWhiteSpace($resolvedTenantId)) {
-                Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/tenantRelationships/findTenantInformationByTenantId(tenantId='{0}')" -f $resolvedTenantId) -Activity 'Permission preflight: CrossTenantInformation.ReadBasic.All' -SuppressProgress | Out-Null
+                Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/tenantRelationships/findTenantInformationByTenantId(tenantId='{0}')" -f $resolvedTenantId) -Activity 'Permission preflight: CrossTenantInformation.ReadBasic.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null
             }
         }
     }) | Out-Null
@@ -2533,13 +2550,13 @@ function Test-AssessmentPermissionPreflight {
         Area            = 'Graph'
         PermissionNames = @('Application.Read.All')
         NeededFor       = 'enterprise application and permission posture review'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/servicePrincipals?$top=1&$select=id,displayName' -Activity 'Permission preflight: Application.Read.All' -SuppressProgress | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/servicePrincipals?$top=1&$select=id,displayName' -Activity 'Permission preflight: Application.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('Sites.Read.All')
         NeededFor       = 'SharePoint and OneDrive site inventory'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/sites/root?$select=id,webUrl' -Activity 'Permission preflight: Sites.Read.All' -SuppressProgress | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/sites/root?$select=id,webUrl' -Activity 'Permission preflight: Sites.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
@@ -2551,14 +2568,14 @@ function Test-AssessmentPermissionPreflight {
         Area            = 'Graph'
         PermissionNames = @('OnPremDirectorySynchronization.Read.All')
         NeededFor       = 'directory synchronization and password lifecycle review'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/directory/onPremisesSynchronization' -Activity 'Permission preflight: OnPremDirectorySynchronization.Read.All' -SuppressProgress | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/directory/onPremisesSynchronization' -Activity 'Permission preflight: OnPremDirectorySynchronization.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
         IsBlocking      = $false
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('SecurityEvents.Read.All')
         NeededFor       = 'Microsoft Secure Score collection'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/security/secureScores?$top=1' -Activity 'Permission preflight: SecurityEvents.Read.All' -SuppressProgress | Out-Null }
+        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/security/secureScores?$top=1' -Activity 'Permission preflight: SecurityEvents.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
@@ -2601,7 +2618,7 @@ function Test-AssessmentPermissionPreflight {
                     $teamProbeResponse = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/teams?$top=1&$select=id,displayName' -ProgressAction SilentlyContinue -ErrorAction Stop
                 }
                 else {
-                    $teamProbeResponse = Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/teams?$top=1&$select=id,displayName' -Activity 'Permission preflight: Team.ReadBasic.All' -SuppressProgress
+                    $teamProbeResponse = Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/teams?$top=1&$select=id,displayName' -Activity 'Permission preflight: Team.ReadBasic.All' -SuppressProgress -SuppressAccessDeniedWarning
                 }
 
                 $firstTeamId = $null
@@ -2659,7 +2676,8 @@ function Test-AssessmentPermissionPreflight {
         )
 
         $ProgressIndex.Value++
-        Write-ProgressHelper -Total ([Math]::Max($preflightProgressTotal, 1)) -Id $preflightProgressId -Index $ProgressIndex.Value -Activity 'Permission preflight' -Operation ("{0}: {1}" -f $Area, $Requirement)
+        $progressActivity = "Permission preflight: {0}: {1}" -f $Area, $Requirement
+        Write-ProgressHelper -Total ([Math]::Max($preflightProgressTotal, 1)) -Id $preflightProgressId -Index $ProgressIndex.Value -Activity $progressActivity
     }
 
     try {
@@ -2696,6 +2714,10 @@ function Test-AssessmentPermissionPreflight {
                     else {
                         'Purview compliance PowerShell session could not be established.'
                     }
+                    $purviewDiagnosticMessage = Get-PurviewComplianceDiagnosticMessage
+                    if (-not [string]::IsNullOrWhiteSpace($purviewDiagnosticMessage)) {
+                        $purviewFailure = $purviewDiagnosticMessage
+                    }
 
                     & $addFailure 'Purview' 'Retention and DLP policy access' 'retention and DLP policy collection' $purviewFailure
                 }
@@ -2716,9 +2738,16 @@ function Test-AssessmentPermissionPreflight {
         Write-ProgressHelper -Total ([Math]::Max($preflightProgressTotal, 1)) -Id $preflightProgressId -Activity 'Permission preflight' -Completed
     }
 
+    $preflightSummary = & $formatPreflightSummary ($preflightProgressTotal - ($permissionFailures.Count + $permissionWarnings.Count)) $permissionFailures.Count $permissionWarnings.Count
+
+    Write-Host ''
+    Write-Host $preflightSummary.SummaryText -ForegroundColor Cyan
+    Write-Log -Type INFO -Message $preflightSummary.SummaryText -ExportFileLocation $ExportDetails
+
     if ($permissionFailures.Count -gt 0) {
         $messageLines = New-Object System.Collections.Generic.List[string]
         $messageLines.Add('Permission preflight failed. The assessment will not continue until the required access is available.') | Out-Null
+        $messageLines.Add($preflightSummary.SummaryText) | Out-Null
         $messageLines.Add('Required updates:') | Out-Null
 
         Write-Host ''
@@ -2739,6 +2768,7 @@ function Test-AssessmentPermissionPreflight {
     if ($permissionWarnings.Count -gt 0) {
         $warningLines = New-Object System.Collections.Generic.List[string]
         $warningLines.Add('Permission preflight found non-blocking access gaps. The assessment will continue with validation notes for the affected fields.') | Out-Null
+        $warningLines.Add($preflightSummary.SummaryText) | Out-Null
         Write-Host ''
         Write-Host 'Permission preflight warnings:' -ForegroundColor Yellow
         foreach ($warning in $permissionWarnings) {
@@ -2752,7 +2782,7 @@ function Test-AssessmentPermissionPreflight {
         Write-Log -Type WARNING -Message (($warningLines -join [System.Environment]::NewLine) + [System.Environment]::NewLine + 'Hybrid sync and password lifecycle fields may be marked as not validated in current auth mode.') -ExportFileLocation $ExportDetails
     }
 
-    Write-Log -Type INFO -Message '[PermissionPreflight] Required Graph, Exchange Online, and supported governance access checks passed.' -ExportFileLocation $ExportDetails
+    Write-Log -Type INFO -Message ('[PermissionPreflight] Required Graph, Exchange Online, and supported governance access checks passed. ' + $preflightSummary.SummaryText) -ExportFileLocation $ExportDetails
 }
 
 function Get-CurrentProcessMemorySnapshot {
@@ -8769,6 +8799,62 @@ function Ensure-PurviewComplianceCommandAvailable {
     return (Get-Command -Name 'Connect-IPPSSession' -ErrorAction SilentlyContinue)
 }
 
+function Set-PurviewComplianceDiagnosticState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Status,
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+        [Parameter(Mandatory = $false)]
+        [string]$Guidance,
+        [Parameter(Mandatory = $false)]
+        [string]$AuthPath,
+        [Parameter(Mandatory = $false)]
+        [string]$Organization,
+        [Parameter(Mandatory = $false)]
+        [string[]]$MissingCommands = @()
+    )
+
+    $script:PurviewComplianceSessionDiagnostic = [pscustomobject][ordered]@{
+        Status          = $Status
+        Message         = $Message
+        Guidance        = $Guidance
+        AuthPath        = $AuthPath
+        Organization    = $Organization
+        MissingCommands = @($MissingCommands | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    }
+}
+
+function Get-PurviewComplianceDiagnosticMessage {
+    [CmdletBinding()]
+    param()
+
+    $diagnostic = $script:PurviewComplianceSessionDiagnostic
+    if (-not $diagnostic) {
+        return $null
+    }
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace([string]$diagnostic.Message)) {
+        $parts.Add([string]$diagnostic.Message) | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$diagnostic.AuthPath)) {
+        $parts.Add("Auth path: $($diagnostic.AuthPath).") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$diagnostic.Organization)) {
+        $parts.Add("Organization used: $($diagnostic.Organization).") | Out-Null
+    }
+    if ($diagnostic.MissingCommands -and @($diagnostic.MissingCommands).Count -gt 0) {
+        $parts.Add("Missing compliance cmdlets after connect: $((@($diagnostic.MissingCommands) -join ', ')).") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$diagnostic.Guidance)) {
+        $parts.Add("Next step: $($diagnostic.Guidance)") | Out-Null
+    }
+
+    return ($parts -join ' ')
+}
+
 function Ensure-PurviewComplianceSession {
     [CmdletBinding()]
     param()
@@ -8779,18 +8865,25 @@ function Ensure-PurviewComplianceSession {
 
     $script:PurviewComplianceSessionInitialized = $true
     $script:PurviewComplianceSessionAvailable = $false
+    $script:PurviewComplianceSessionDiagnostic = $null
 
     $requiredComplianceCommands = @('Get-RetentionCompliancePolicy', 'Get-DlpCompliancePolicy')
     $existingComplianceCommands = @(
         $requiredComplianceCommands | Where-Object { Get-Command -Name $_ -ErrorAction SilentlyContinue }
     )
     if ($existingComplianceCommands.Count -eq $requiredComplianceCommands.Count) {
+        Set-PurviewComplianceDiagnosticState -Status 'AlreadyAvailable' -Message 'Purview compliance cmdlets are already available in the current session.' -AuthPath 'Existing session'
         $script:PurviewComplianceSessionAvailable = $true
         return $true
     }
 
     $connectCommand = Ensure-PurviewComplianceCommandAvailable
     if (-not $connectCommand) {
+        Set-PurviewComplianceDiagnosticState `
+            -Status 'MissingConnectCommand' `
+            -Message 'Connect-IPPSSession is unavailable in the current session.' `
+            -Guidance "Install or import ExchangeOnlineManagement on the execution host, then rerun the assessment." `
+            -AuthPath 'Unavailable'
         Write-Log -Type WARNING -Message "[Ensure-PurviewComplianceSession] Connect-IPPSSession is unavailable. Retention/DLP policy collection will be skipped." -ExportFileLocation $ExportDetails
         return $false
     }
@@ -8798,6 +8891,8 @@ function Ensure-PurviewComplianceSession {
     $connectParams = @{
         ErrorAction = 'Stop'
     }
+    $purviewAuthPath = 'Delegated'
+    $organization = $null
     if ($connectCommand.Parameters.ContainsKey('CommandName')) {
         $connectParams.CommandName = @('Get-RetentionCompliancePolicy', 'Get-DlpCompliancePolicy')
     }
@@ -8807,8 +8902,15 @@ function Ensure-PurviewComplianceSession {
 
     try {
         if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
+            $purviewAuthPath = 'Certificate'
             $organization = Get-AssessmentInitialDomainName
             if ([string]::IsNullOrWhiteSpace($ClientId) -or [string]::IsNullOrWhiteSpace($organization)) {
+                Set-PurviewComplianceDiagnosticState `
+                    -Status 'MissingCertificateInputs' `
+                    -Message 'Certificate-based Purview collection requires both the application ClientId and the tenant initial domain.' `
+                    -Guidance "Confirm the assessment app registration AppId is supplied and that the tenant initial domain can be resolved from the current tenant context." `
+                    -AuthPath $purviewAuthPath `
+                    -Organization $organization
                 throw "Certificate-based Purview collection requires both the application ClientId and the tenant initial domain."
             }
 
@@ -8816,9 +8918,15 @@ function Ensure-PurviewComplianceSession {
             $connectParams.Organization = $organization
             $connectParams.CertificateThumbprint = $CertificateThumbprint
             Connect-IPPSSession @connectParams | Out-Null
+            Set-PurviewComplianceDiagnosticState -Status 'Connected' -Message 'Connected to Purview compliance PowerShell using certificate authentication.' -AuthPath $purviewAuthPath -Organization $organization
             Write-Log -Type INFO -Message "[Ensure-PurviewComplianceSession] Connected to Purview compliance PowerShell using certificate authentication." -ExportFileLocation $ExportDetails
         }
         elseif (-not [string]::IsNullOrWhiteSpace($ClientSecret)) {
+            Set-PurviewComplianceDiagnosticState `
+                -Status 'UnsupportedClientSecret' `
+                -Message 'Client secret authentication is not supported for Purview compliance PowerShell in this workflow.' `
+                -Guidance 'Use delegated authentication or certificate-based authentication for retention and DLP policy collection.' `
+                -AuthPath 'ClientSecret'
             Write-Log -Type INFO -Message "[Ensure-PurviewComplianceSession] Client secret authentication is not supported for Purview compliance PowerShell in this workflow." -ExportFileLocation $ExportDetails
             return $false
         }
@@ -8829,10 +8937,24 @@ function Ensure-PurviewComplianceSession {
             }
 
             Connect-IPPSSession @connectParams | Out-Null
+            Set-PurviewComplianceDiagnosticState -Status 'Connected' -Message 'Connected to Purview compliance PowerShell using delegated authentication.' -AuthPath $purviewAuthPath -Organization $organization
             Write-Log -Type INFO -Message "[Ensure-PurviewComplianceSession] Connected to Purview compliance PowerShell using delegated authentication." -ExportFileLocation $ExportDetails
         }
     }
     catch {
+        $guidance = if ($purviewAuthPath -eq 'Certificate') {
+            'Confirm the app registration has the required Purview / compliance PowerShell access, the certificate thumbprint is valid on this host, and the tenant initial domain used for -Organization is correct.'
+        }
+        else {
+            'Confirm the signed-in operator can establish a compliance PowerShell session and that Connect-IPPSSession is allowed in this environment.'
+        }
+
+        Set-PurviewComplianceDiagnosticState `
+            -Status 'ConnectFailed' `
+            -Message ("Purview compliance PowerShell session could not be established. Underlying error: {0}" -f $_.Exception.Message) `
+            -Guidance $guidance `
+            -AuthPath $purviewAuthPath `
+            -Organization $organization
         Write-Log -Type WARNING -Message "[Ensure-PurviewComplianceSession] Unable to establish Purview compliance PowerShell session: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         return $false
     }
@@ -8840,7 +8962,19 @@ function Ensure-PurviewComplianceSession {
     $existingComplianceCommands = @(
         $requiredComplianceCommands | Where-Object { Get-Command -Name $_ -ErrorAction SilentlyContinue }
     )
+    $missingComplianceCommands = @(
+        $requiredComplianceCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
+    )
     $script:PurviewComplianceSessionAvailable = ($existingComplianceCommands.Count -eq $requiredComplianceCommands.Count)
+    if (-not $script:PurviewComplianceSessionAvailable) {
+        Set-PurviewComplianceDiagnosticState `
+            -Status 'MissingComplianceCmdletsAfterConnect' `
+            -Message 'Purview compliance PowerShell connected, but the required retention/DLP cmdlets were not available afterward.' `
+            -Guidance 'Confirm Connect-IPPSSession completed successfully for the target tenant and that the compliance cmdlets are exposed in the current session.' `
+            -AuthPath $purviewAuthPath `
+            -Organization $organization `
+            -MissingCommands $missingComplianceCommands
+    }
     return [bool]$script:PurviewComplianceSessionAvailable
 }
 
@@ -8913,6 +9047,10 @@ function Get-PurviewCompliancePolicies {
             }
             else {
                 'Purview compliance PowerShell session could not be established.'
+            }
+            $purviewDiagnosticMessage = Get-PurviewComplianceDiagnosticMessage
+            if (-not [string]::IsNullOrWhiteSpace($purviewDiagnosticMessage)) {
+                $message = $purviewDiagnosticMessage
             }
 
             return (New-AssessmentStepResult -Status Skipped -Message $message)
@@ -11594,7 +11732,6 @@ try {
 }
 Write-Host "Microsoft 365 Tenant Assessment" -ForegroundColor Cyan
 Write-Host "Progress view: overall step completion is shown after each major task." -ForegroundColor DarkCyan
-Write-Host "Legend: cyan=section/progress, green=completed, yellow=warnings/skips." -ForegroundColor DarkCyan
 
 if (-not $runExportOnly) {
     if ($SkipPermissionPreflight) {

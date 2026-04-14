@@ -42,6 +42,7 @@ Certificate auth in this repo is not limited to Graph.
 - Microsoft Graph uses `TenantId + ClientId + CertificateThumbprint`
 - Exchange Online uses `AppId + Organization + CertificateThumbprint`
 - Purview retention and DLP policy collection uses compliance PowerShell through `Connect-IPPSSession` with `AppId + Organization + CertificateThumbprint`
+- SharePoint and OneDrive collection use Microsoft Graph in certificate mode; the workflow does not import the SharePoint Online module or call `Connect-SPOService` for certificate auth
 
 Notes:
 - for Purview collection, `Organization` is the tenant initial domain, not the GUID tenant ID
