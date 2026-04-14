@@ -441,84 +441,71 @@ function Connect-Office365 {
 
         # ===== CONNECT TO SHAREPOINT ONLINE (ADMIN) =====
         try {
-            Write-Verbose "Checking for SharePoint module 'Microsoft.Online.SharePoint.PowerShell'..."
-            
-            if (-not (Get-Module -ListAvailable -Name 'Microsoft.Online.SharePoint.PowerShell')) {
-                Write-Host "✗ SharePoint Online: The module 'Microsoft.Online.SharePoint.PowerShell' is not installed. Please install it before proceeding." -ForegroundColor Red
-                return
-            }
-
-            if (-not (Get-Module -Name 'Microsoft.Online.SharePoint.PowerShell')) {
-                Write-Host "Importing SharePoint module..." -ForegroundColor Cyan
-                if ($PSVersionTable.PSVersion.Major -ge 7) {
-                    Write-Verbose "Importing SharePoint module using Windows PowerShell context (for PS7+ compatibility)..."
-                    Import-Module 'Microsoft.Online.SharePoint.PowerShell' -UseWindowsPowerShell -ErrorAction Stop -WarningAction SilentlyContinue
-                } else {
-                    Write-Verbose "Importing SharePoint module..."
-                    Import-Module 'Microsoft.Online.SharePoint.PowerShell' -ErrorAction Stop -WarningAction SilentlyContinue
-                }
-                Write-Host "SharePoint module imported successfully." -ForegroundColor Green
-            } else {
-                Write-Verbose "SharePoint module already imported."
-            }
-            
             $spoAdminUrl = "https://$TenantName-admin.sharepoint.com"
-            $existingAdminSite = $null
-            try {
-                Write-Verbose "Checking if already connected to SharePoint Online..."
-                $tenant = Get-SPOTenant -ErrorAction Stop
-                if ($tenant) {
-                    $existingAdminSite = $spoAdminUrl
-                }
-            } catch {}
-            
-            if ($existingAdminSite -and -not $Force) {
-                Write-Host "✓ SharePoint Online (already connected)" -ForegroundColor Green
-                Write-Verbose "Existing SharePoint Online session detected at '$existingAdminSite', skipping reconnect."
-                $result.SharePointOnline = $true
-                $result.SharePointAdmin = $existingAdminSite
+
+            if ($AuthenticationType -eq 'Certificate' -or $AuthenticationType -eq 'ClientSecret') {
+                Write-Host "SharePoint Online SPO cmdlets are skipped for app-based authentication. Relying on Microsoft Graph site collection instead." -ForegroundColor Yellow
+                Write-Verbose "Skipping SharePoint module import and Connect-SPOService for authentication type '$AuthenticationType'. Graph will be used for SharePoint / OneDrive collection."
+                $result.SharePointOnline = $false
+                $result.SharePointAdmin = $spoAdminUrl
             }
             else {
-                try {
-                    switch ($authenticationType) {
-                        'Certificate' {
-                            Write-Verbose "Using certificate-based authentication for SharePoint Online ($spoAdminUrl)..."
-                            if (-not $TenantId) { 
-                                Write-Host "✗ SharePoint Online: SharePoint Online Certificate auth requires -TenantId." -ForegroundColor Red
-                                return
-                            }
-                            if (-not $ClientId) { 
-                                Write-Host "✗ SharePoint Online: SharePoint Online Certificate auth requires -ClientId." -ForegroundColor Red
-                                return
-                            }
-                            Write-Host "SharePoint Online certificate auth is not supported by Connect-SPOService. Skipping SPO cmdlets and relying on Microsoft Graph site collection instead." -ForegroundColor Yellow
-                            Write-Verbose "Skipping Connect-SPOService certificate path for SharePoint Online. Graph will be used for SharePoint / OneDrive collection."
-                            $result.SharePointOnline = $false
-                            $result.SharePointAdmin = $spoAdminUrl
-                            break
-                        }
-                        'ClientSecret' {
-                            Write-Warning "SharePoint Online does not support client secret authentication via Connect-SPOService. Will Rely on Microsoft Graph API instead."
-                            $result.SharePointOnline = $false
-                            $result.SharePointAdmin = $spoAdminUrl
-                            break
-                        }
-                        Default {
-                            Write-Verbose "Connecting to SharePoint Online ($spoAdminUrl) with Delegate authentication..."
-                            Write-Host "Connecting to SharePoint Online (delegate)..." -ForegroundColor Cyan
-                            Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
-                            $result.SharePointOnline = $true
-                        }
-                    }
+                Write-Verbose "Checking for SharePoint module 'Microsoft.Online.SharePoint.PowerShell'..."
+                
+                if (-not (Get-Module -ListAvailable -Name 'Microsoft.Online.SharePoint.PowerShell')) {
+                    Write-Host "✗ SharePoint Online: The module 'Microsoft.Online.SharePoint.PowerShell' is not installed. Please install it before proceeding." -ForegroundColor Red
+                    return
+                }
 
-                    if ($result.SharePointOnline) {
-                        $result.SharePointAdmin = $spoAdminUrl
-                        Write-Host "✓ SharePoint Online connected" -ForegroundColor Green
+                if (-not (Get-Module -Name 'Microsoft.Online.SharePoint.PowerShell')) {
+                    Write-Host "Importing SharePoint module..." -ForegroundColor Cyan
+                    if ($PSVersionTable.PSVersion.Major -ge 7) {
+                        Write-Verbose "Importing SharePoint module using Windows PowerShell context (for PS7+ compatibility)..."
+                        Import-Module 'Microsoft.Online.SharePoint.PowerShell' -UseWindowsPowerShell -ErrorAction Stop -WarningAction SilentlyContinue
+                    } else {
+                        Write-Verbose "Importing SharePoint module..."
+                        Import-Module 'Microsoft.Online.SharePoint.PowerShell' -ErrorAction Stop -WarningAction SilentlyContinue
                     }
-                } catch {
-                    Write-Host "✗ SharePoint Online: $($_.Exception.Message)" -ForegroundColor Red
-                    $result.SharePointOnline = $false
-                    $result.SharePointAdmin = $spoAdminUrl
+                    Write-Host "SharePoint module imported successfully." -ForegroundColor Green
+                } else {
+                    Write-Verbose "SharePoint module already imported."
+                }
+                
+                $existingAdminSite = $null
+                try {
+                    Write-Verbose "Checking if already connected to SharePoint Online..."
+                    $tenant = Get-SPOTenant -ErrorAction Stop
+                    if ($tenant) {
+                        $existingAdminSite = $spoAdminUrl
+                    }
+                } catch {}
+                
+                if ($existingAdminSite -and -not $Force) {
+                    Write-Host "✓ SharePoint Online (already connected)" -ForegroundColor Green
+                    Write-Verbose "Existing SharePoint Online session detected at '$existingAdminSite', skipping reconnect."
+                    $result.SharePointOnline = $true
+                    $result.SharePointAdmin = $existingAdminSite
+                }
+                else {
+                    try {
+                        switch ($authenticationType) {
+                            Default {
+                                Write-Verbose "Connecting to SharePoint Online ($spoAdminUrl) with Delegate authentication..."
+                                Write-Host "Connecting to SharePoint Online (delegate)..." -ForegroundColor Cyan
+                                Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
+                                $result.SharePointOnline = $true
+                            }
+                        }
+
+                        if ($result.SharePointOnline) {
+                            $result.SharePointAdmin = $spoAdminUrl
+                            Write-Host "✓ SharePoint Online connected" -ForegroundColor Green
+                        }
+                    } catch {
+                        Write-Host "✗ SharePoint Online: $($_.Exception.Message)" -ForegroundColor Red
+                        $result.SharePointOnline = $false
+                        $result.SharePointAdmin = $spoAdminUrl
+                    }
                 }
             }
         }

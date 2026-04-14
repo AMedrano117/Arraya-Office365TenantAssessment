@@ -86,6 +86,9 @@ function Get-GraphData {
         [switch]$SuppressProgress,
 
         [Parameter(Mandatory = $false)]
+        [switch]$SuppressAccessDeniedWarning,
+
+        [Parameter(Mandatory = $false)]
         [string]$AccessToken,
 
         [Parameter(Mandatory = $false)]
@@ -185,7 +188,9 @@ function Get-GraphData {
                             }
                             403 {
                                 # Forbidden - insufficient permissions
-                                Write-Warning "Access denied (403). Insufficient permissions for: $CurrentUri"
+                                if (-not $SuppressAccessDeniedWarning) {
+                                    Write-Warning "Access denied (403). Insufficient permissions for: $CurrentUri"
+                                }
                                 throw $_
                             }
                             404 {

@@ -17,6 +17,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Validating required permissions and service access'
         $script:collectorSource | Should -Match 'Test-AssessmentPermissionPreflight -ConnectionResult \$connectionResult'
         $script:collectorSource | Should -Match 'Skipping permission preflight by request'
+        $script:collectorSource | Should -Not -Match 'Legend: cyan=section/progress, green=completed, yellow=warnings/skips\.'
         $script:collectorSource | Should -Match 'Join-Path -Path \$Module\.ModuleBase -ChildPath \(\[System\.IO\.Path\]::GetFileName\(\$resolvedManifestPath\)\)'
         $script:collectorSource | Should -Not -Match '\$loadedCommonModule\.Path -ne \$resolvedCommonManifestPath'
         $script:collectorSource | Should -Not -Match '\$loadedReportingModule\.Path -ne \$resolvedReportingManifestPath'
@@ -51,6 +52,8 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Exchange mailbox read access'
         $script:collectorSource | Should -Match 'Exchange unified group read access'
         $script:collectorSource | Should -Match 'function Ensure-PurviewComplianceCommandAvailable'
+        $script:collectorSource | Should -Match 'function Set-PurviewComplianceDiagnosticState'
+        $script:collectorSource | Should -Match 'function Get-PurviewComplianceDiagnosticMessage'
         $script:collectorSource | Should -Match 'Ensure-PurviewComplianceSession'
         $script:collectorSource | Should -Match 'Get-RetentionCompliancePolicy'
         $script:collectorSource | Should -Match 'Get-DlpCompliancePolicy'
@@ -59,6 +62,10 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Connect-IPPSSession'
         $script:collectorSource | Should -Match 'Connected to Purview compliance PowerShell using certificate authentication'
         $script:collectorSource | Should -Match 'Client secret authentication is not supported for Purview compliance PowerShell in this workflow'
+        $script:collectorSource | Should -Match 'Purview compliance PowerShell session could not be established\. Underlying error:'
+        $script:collectorSource | Should -Match 'Organization used:'
+        $script:collectorSource | Should -Match 'Next step:'
+        $script:collectorSource | Should -Match 'Missing compliance cmdlets after connect:'
     }
 
     It 'treats directory synchronization feature access as a non-blocking validation warning' {
@@ -72,10 +79,15 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Write-ProgressHelper -Total \(\[Math\]::Max\(\$preflightProgressTotal, 1\)\) -Id \$preflightProgressId'
         $script:collectorSource | Should -Match '\$ProgressIndex\.Value\+\+'
         $script:collectorSource | Should -Match '\(\[ref\]\$preflightProgressIndex\)'
+        $script:collectorSource | Should -Match '\$progressActivity = "Permission preflight: \{0\}: \{1\}" -f \$Area, \$Requirement'
+        $script:collectorSource | Should -Match 'Write-ProgressHelper -Total \(\[Math\]::Max\(\$preflightProgressTotal, 1\)\) -Id \$preflightProgressId -Index \$ProgressIndex\.Value -Activity \$progressActivity'
+        $script:collectorSource | Should -Match 'Permission preflight summary: \{0\} successful, \{1\} remaining \(\{2\} blocking, \{3\} non-blocking\)\.'
         $script:collectorSource | Should -Match 'Get-ArrayaGraphResource .* -SuppressProgress'
+        $script:collectorSource | Should -Match 'Get-ArrayaGraphResource .* -SuppressAccessDeniedWarning'
         $script:collectorSource | Should -Match 'Get-ArrayaGraphAdminReportSettings -Headers \$global:GraphHeaders -SuppressProgress'
         $script:graphDataSource | Should -Match '\(\?i\)\(\?:\[\?&\]\)\\\$top='
         $script:graphDataSource | Should -Match '\[switch\]\$SuppressProgress'
+        $script:graphDataSource | Should -Match '\[switch\]\$SuppressAccessDeniedWarning'
     }
 
     It 'normalizes guest role labels, auth config arrays, and cross-tenant trust parsing for collector summaries' {
