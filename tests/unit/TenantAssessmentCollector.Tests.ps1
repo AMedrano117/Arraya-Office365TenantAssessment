@@ -90,6 +90,12 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:graphDataSource | Should -Match '\[switch\]\$SuppressAccessDeniedWarning'
     }
 
+    It 'forwards the access-denied warning suppression flag through the local Graph wrapper' {
+        $script:collectorSource | Should -Match 'function Get-ArrayaGraphResource'
+        $script:collectorSource | Should -Match '\[switch\]\$SuppressAccessDeniedWarning'
+        $script:collectorSource | Should -Match '-SuppressAccessDeniedWarning:\$SuppressAccessDeniedWarning'
+    }
+
     It 'normalizes guest role labels, auth config arrays, and cross-tenant trust parsing for collector summaries' {
         $script:collectorSource | Should -Match 'function Get-AssessmentGuestUserRoleLabel'
         $script:collectorSource | Should -Match 'function Get-AssessmentMfaMethodProfile'

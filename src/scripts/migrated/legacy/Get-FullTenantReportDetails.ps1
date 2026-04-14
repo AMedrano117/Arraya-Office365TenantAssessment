@@ -779,10 +779,19 @@ function Get-ArrayaGraphResource {
         [Parameter(Mandatory = $false)]
         [int]$MaxRetries = 5,
         [Parameter(Mandatory = $false)]
-        [switch]$SuppressProgress
+        [switch]$SuppressProgress,
+        [Parameter(Mandatory = $false)]
+        [switch]$SuppressAccessDeniedWarning
     )
 
-    return Office365Custom\Get-GraphData -Uri $Uri -PageSize $PageSize -Activity $Activity -UseRestMethod:$PreferRest -MaxRetries $MaxRetries -SuppressProgress:$SuppressProgress
+    return Office365Custom\Get-GraphData `
+        -Uri $Uri `
+        -PageSize $PageSize `
+        -Activity $Activity `
+        -UseRestMethod:$PreferRest `
+        -MaxRetries $MaxRetries `
+        -SuppressProgress:$SuppressProgress `
+        -SuppressAccessDeniedWarning:$SuppressAccessDeniedWarning
 }
 
 function Export-ArrayaGraphReportCsv {
