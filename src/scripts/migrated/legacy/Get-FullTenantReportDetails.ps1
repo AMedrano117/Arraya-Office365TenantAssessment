@@ -8741,6 +8741,34 @@ function Get-AssessmentInitialDomainName {
     return $null
 }
 
+function Ensure-PurviewComplianceCommandAvailable {
+    [CmdletBinding()]
+    param()
+
+    $connectCommand = Get-Command -Name 'Connect-IPPSSession' -ErrorAction SilentlyContinue
+    if ($connectCommand) {
+        return $connectCommand
+    }
+
+    if (-not (Get-Module -ListAvailable -Name 'ExchangeOnlineManagement')) {
+        Write-Log -Type WARNING -Message "[Ensure-PurviewComplianceCommandAvailable] ExchangeOnlineManagement is not installed. Purview retention/DLP collection requires Connect-IPPSSession from that module." -ExportFileLocation $ExportDetails
+        return $null
+    }
+
+    if (-not (Get-Module -Name 'ExchangeOnlineManagement')) {
+        try {
+            Write-Log -Type INFO -Message "[Ensure-PurviewComplianceCommandAvailable] Importing ExchangeOnlineManagement so Connect-IPPSSession is available for Purview compliance collection." -ExportFileLocation $ExportDetails
+            Import-Module 'ExchangeOnlineManagement' -ErrorAction Stop -WarningAction SilentlyContinue
+        }
+        catch {
+            Write-Log -Type WARNING -Message "[Ensure-PurviewComplianceCommandAvailable] Failed to import ExchangeOnlineManagement for Purview compliance collection: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+            return $null
+        }
+    }
+
+    return (Get-Command -Name 'Connect-IPPSSession' -ErrorAction SilentlyContinue)
+}
+
 function Ensure-PurviewComplianceSession {
     [CmdletBinding()]
     param()
@@ -8761,7 +8789,7 @@ function Ensure-PurviewComplianceSession {
         return $true
     }
 
-    $connectCommand = Get-Command -Name 'Connect-IPPSSession' -ErrorAction SilentlyContinue
+    $connectCommand = Ensure-PurviewComplianceCommandAvailable
     if (-not $connectCommand) {
         Write-Log -Type WARNING -Message "[Ensure-PurviewComplianceSession] Connect-IPPSSession is unavailable. Retention/DLP policy collection will be skipped." -ExportFileLocation $ExportDetails
         return $false

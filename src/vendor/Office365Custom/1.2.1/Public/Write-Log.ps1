@@ -111,6 +111,11 @@ function Write-Log {
         $CaptureError = $true
     }
     if ($CaptureError) {
-        Capture-ErrorHelper -ErrorRecordVar $ErrorRecordVar -errorMessage $Message
+        if ($PSBoundParameters.ContainsKey('ErrorRecordVar') -and $null -ne $ErrorRecordVar) {
+            Capture-ErrorHelper -ErrorRecordVar $ErrorRecordVar -errorMessage $Message
+        }
+        elseif ($VerbosePreference -eq 'Continue') {
+            Write-Verbose "CaptureError was requested for Write-Log, but no ErrorRecordVar was supplied. Skipping structured error capture."
+        }
     }
 }
