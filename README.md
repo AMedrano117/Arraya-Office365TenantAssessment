@@ -30,6 +30,12 @@ If you already connected to Microsoft Graph and Exchange Online in the current s
 The launcher now also reuses the repo modules already loaded from this repository in the current PowerShell session instead of force-reimporting them on every run.
 If you want the assessment to continue without the startup permission gate, you can add `-SkipPermissionPreflight`. This skips the required-access validation at the beginning of the run and allows collection to continue on a best-effort basis, which means missing permissions may still surface later as individual workload failures.
 
+Retention and DLP policy collection uses Purview compliance PowerShell through `Connect-IPPSSession`, not the main Graph collector path. In this workflow:
+- delegated auth is supported
+- certificate auth is supported using `AppId + Organization + CertificateThumbprint`
+- client-secret auth is not supported for Purview compliance collection
+- `ExchangeOnlineManagement` must be available because it provides `Connect-IPPSSession`
+
 Examples:
 
 ```powershell

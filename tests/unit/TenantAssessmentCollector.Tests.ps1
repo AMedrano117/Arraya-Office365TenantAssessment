@@ -50,9 +50,15 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     It 'checks Exchange and Purview access in addition to Graph' {
         $script:collectorSource | Should -Match 'Exchange mailbox read access'
         $script:collectorSource | Should -Match 'Exchange unified group read access'
+        $script:collectorSource | Should -Match 'function Ensure-PurviewComplianceCommandAvailable'
         $script:collectorSource | Should -Match 'Ensure-PurviewComplianceSession'
         $script:collectorSource | Should -Match 'Get-RetentionCompliancePolicy'
         $script:collectorSource | Should -Match 'Get-DlpCompliancePolicy'
+        $script:collectorSource | Should -Match 'ExchangeOnlineManagement'
+        $script:collectorSource | Should -Match "Import-Module 'ExchangeOnlineManagement'"
+        $script:collectorSource | Should -Match 'Connect-IPPSSession'
+        $script:collectorSource | Should -Match 'Connected to Purview compliance PowerShell using certificate authentication'
+        $script:collectorSource | Should -Match 'Client secret authentication is not supported for Purview compliance PowerShell in this workflow'
     }
 
     It 'treats directory synchronization feature access as a non-blocking validation warning' {

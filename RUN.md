@@ -44,6 +44,8 @@ If you already connected to Microsoft Graph and Exchange Online in the same Powe
 The launcher also reuses the repo modules already loaded from this repository in the same PowerShell session, so repeat runs should not keep re-importing the assessment modules.
 If you want the assessment to continue without the startup permission gate, you can add `-SkipPermissionPreflight`. This skips the initial required-access validation and allows collection to continue on a best-effort basis, so missing permissions may still show up later as workload-specific warnings or failures.
 
+Purview retention and DLP policy collection is a separate compliance PowerShell surface in this workflow. It uses `Connect-IPPSSession` and the compliance cmdlets `Get-RetentionCompliancePolicy` and `Get-DlpCompliancePolicy` rather than the main Graph collector path.
+
 ## Required Access And API Permissions
 
 The current app registration and consent baseline is documented here from the active collector set used by this repo. Treat this as the operator source of truth for app-based auth.
@@ -137,12 +139,16 @@ For app-based operation beyond Graph:
 
 - Exchange Online requires Exchange app-only access for the app registration when using `Certificate` mode.
 - SharePoint Online certificate mode requires certificate-based app access for `Connect-SPOService`.
+- Purview retention and DLP policy collection uses `Connect-IPPSSession` from `ExchangeOnlineManagement`.
+- Purview compliance PowerShell supports delegated auth and certificate auth in this workflow.
+- Purview compliance PowerShell does not support client-secret auth in this workflow.
 - Teams PowerShell in this workflow is still delegated-only, so app-based runs may have reduced Teams detail.
 
 ### Workload Notes
 
 - Exchange Online connectivity is required for the full `M365` assessment path. If Exchange auth fails, the run stops.
 - SharePoint Online admin connectivity is helpful for fuller coverage, but some SharePoint collection can still proceed through Microsoft Graph.
+- Purview retention/DLP collection depends on compliance PowerShell cmdlets being available after `Connect-IPPSSession`. If that connection cannot be established, governance/compliance policy sections will be skipped or can stop the run during permission preflight.
 - Teams connectivity is non-blocking in app-based auth modes, but some Teams-specific enrichment may be reduced or skipped.
 
 ## Default Output Location

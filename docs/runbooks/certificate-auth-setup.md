@@ -36,6 +36,18 @@ Get-ChildItem Cert:\CurrentUser\My, Cert:\LocalMachine\My |
   -CertificateThumbprint '<cert-thumbprint>'
 ```
 
+## Certificate auth coverage in this workflow
+Certificate auth in this repo is not limited to Graph.
+
+- Microsoft Graph uses `TenantId + ClientId + CertificateThumbprint`
+- Exchange Online uses `AppId + Organization + CertificateThumbprint`
+- Purview retention and DLP policy collection uses compliance PowerShell through `Connect-IPPSSession` with `AppId + Organization + CertificateThumbprint`
+
+Notes:
+- for Purview collection, `Organization` is the tenant initial domain, not the GUID tenant ID
+- `ExchangeOnlineManagement` must be installed because it provides both Exchange Online connection support and `Connect-IPPSSession`
+- client-secret auth is not supported for the Purview compliance PowerShell portion of this workflow
+
 ## Rotation guidance
 - track certificate expiry before it becomes operationally urgent
 - upload the replacement public cert before removing the old one

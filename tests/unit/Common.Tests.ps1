@@ -526,4 +526,29 @@ Describe 'Arraya.M365.Common' {
         $worksheetNames.IndexOf('ExternalSharingSummary') | Should -BeLessThan $worksheetNames.IndexOf('ExternalSharingSiteOverrides')
         $worksheetNames.IndexOf('ExternalSharingSiteOverrides') | Should -BeLessThan $worksheetNames.IndexOf('ExternalExposureFindings')
     }
+
+    It 'does not throw when Write-Log captures an error message without an ErrorRecordVar' {
+        $writeLogPath = Join-Path $script:repoRoot 'src\vendor\Office365Custom\1.2.1\Public\Write-Log.ps1'
+        Test-Path $writeLogPath | Should -BeTrue
+
+        $script:captureErrorHelperInvocations = 0
+        function global:Capture-ErrorHelper {
+            param(
+                [Parameter(Mandatory = $true)]
+                $ErrorRecordVar,
+                [Parameter(Mandatory = $true)]
+                [string]$errorMessage
+            )
+
+            $script:captureErrorHelperInvocations++
+        }
+
+        . $writeLogPath
+
+        { Write-Log -Type ERROR -Message 'Synthetic error without ErrorRecordVar' } | Should -Not -Throw
+        $script:captureErrorHelperInvocations | Should -Be 0
+
+        Remove-Item Function:\Write-Log -ErrorAction SilentlyContinue
+        Remove-Item Function:\Capture-ErrorHelper -ErrorAction SilentlyContinue
+    }
 }
