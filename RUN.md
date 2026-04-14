@@ -47,6 +47,7 @@ The permission preflight now shows the specific check being evaluated, then prin
 
 Purview retention and DLP policy collection is a separate compliance PowerShell surface in this workflow. It uses `Connect-IPPSSession` and the compliance cmdlets `Get-RetentionCompliancePolicy` and `Get-DlpCompliancePolicy` rather than the main Graph collector path.
 If that connection fails during permission preflight, the run now reports the auth path used, the tenant organization value when applicable, and a next-step message so the operator can tell whether the problem is missing module availability, unsupported auth mode, certificate/app access, or missing compliance cmdlets after connect.
+The same certificate and app registration can also behave differently across tenants: one tenant may expose the Purview retention/DLP cmdlets to the app session while another rejects that feature surface. When the compliance endpoint accepts the certificate sign-in but returns "No cmdlet assigned to the user have this feature enabled," treat it as a tenant-specific Purview/compliance access or licensing gap rather than a generic Graph auth failure.
 
 ## Required Access And API Permissions
 

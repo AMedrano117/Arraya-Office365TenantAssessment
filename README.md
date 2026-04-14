@@ -38,6 +38,7 @@ Retention and DLP policy collection uses Purview compliance PowerShell through `
 - client-secret auth is not supported for Purview compliance collection
 - `ExchangeOnlineManagement` must be available because it provides `Connect-IPPSSession`
 - when Purview compliance connection fails, the assessment now reports the auth path, tenant organization value, and next-step guidance in the preflight output so the operator can see what still needs to be corrected
+- a certificate/app combination can succeed in one tenant and fail in another if the target tenant does not expose the Purview retention/DLP cmdlets to that app session; the preflight now calls that out explicitly when the compliance endpoint accepts auth but does not assign those cmdlets
 
 For SharePoint and OneDrive collection, certificate-based and client-secret runs now skip importing the `Microsoft.Online.SharePoint.PowerShell` module entirely. Those app-based runs rely on Microsoft Graph collection instead of `Connect-SPOService`.
 

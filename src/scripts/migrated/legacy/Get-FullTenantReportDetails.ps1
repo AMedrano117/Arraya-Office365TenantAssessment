@@ -2412,6 +2412,36 @@ function Test-AssessmentPermissionPreflight {
         return $false
     }
 
+    $getClaimEquivalents = {
+        param([string[]]$PermissionNames)
+
+        $equivalentPermissions = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($permissionName in @($PermissionNames)) {
+            if ([string]::IsNullOrWhiteSpace([string]$permissionName)) {
+                continue
+            }
+
+            $null = $equivalentPermissions.Add([string]$permissionName)
+
+            switch -Regex ([string]$permissionName) {
+                '^Sites\.Read\.All$' {
+                    $null = $equivalentPermissions.Add('Sites.ReadWrite.All')
+                    continue
+                }
+                '^Application\.Read\.All$' {
+                    $null = $equivalentPermissions.Add('Application.ReadWrite.All')
+                    continue
+                }
+                '^RoleManagement\.Read\.Directory$' {
+                    $null = $equivalentPermissions.Add('RoleManagement.ReadWrite.Directory')
+                    continue
+                }
+            }
+        }
+
+        return @($equivalentPermissions)
+    }
+
     $invokeGraphSdkGet = {
         param([Parameter(Mandatory = $true)][string]$Uri)
 
@@ -2433,7 +2463,7 @@ function Test-AssessmentPermissionPreflight {
             [bool]$TrustClaimPresence = $false
         )
 
-        $claimState = & $testClaimPresence $PermissionNames
+        $claimState = & $testClaimPresence (& $getClaimEquivalents $PermissionNames)
         $requirementLabel = ($PermissionNames -join ' or ')
 
         if ($TrustClaimPresence -and $claimState -eq $true) {
@@ -2544,9 +2574,8 @@ function Test-AssessmentPermissionPreflight {
                 return
             }
 
-            & $invokeGraphSdkGet 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?$top=1'
+            & $invokeGraphSdkGet 'https://graph.microsoft.com/v1.0/directoryRoles?$select=id,displayName,roleTemplateId'
         }
-        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
@@ -2578,21 +2607,18 @@ function Test-AssessmentPermissionPreflight {
                 Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/tenantRelationships/findTenantInformationByTenantId(tenantId='{0}')" -f $resolvedTenantId) -Activity 'Permission preflight: CrossTenantInformation.ReadBasic.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null
             }
         }
-        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('Application.Read.All')
         NeededFor       = 'enterprise application and permission posture review'
         Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/servicePrincipals?$top=1&$select=id,displayName' -Activity 'Permission preflight: Application.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
-        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('Sites.Read.All')
         NeededFor       = 'SharePoint and OneDrive site inventory'
         Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/sites/root?$select=id,webUrl' -Activity 'Permission preflight: Sites.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
-        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
@@ -2682,7 +2708,6 @@ function Test-AssessmentPermissionPreflight {
                     & $invokeGraphSdkGet ("https://graph.microsoft.com/v1.0/teams/{0}/allChannels?$top=1&$select=displayName,membershipType" -f $firstTeamId)
                 }
             }
-            TrustClaimPresence = $true
         }) | Out-Null
     }
 
@@ -8985,8 +9010,14 @@ function Ensure-PurviewComplianceSession {
         }
     }
     catch {
+        $underlyingError = [string]$_.Exception.Message
         $guidance = if ($purviewAuthPath -eq 'Certificate') {
-            'Confirm the app registration has the required Purview / compliance PowerShell access, the certificate thumbprint is valid on this host, and the tenant initial domain used for -Organization is correct.'
+            if ($underlyingError -match 'No cmdlet assigned to the user have this feature enabled') {
+                'The certificate and app registration were accepted, but this tenant did not expose the Purview retention/DLP cmdlets to that app session. Confirm the service principal has the required compliance/Purview role assignment in this tenant and that the target tenant is licensed and enabled for those compliance features.'
+            }
+            else {
+                'Confirm the app registration has the required Purview / compliance PowerShell access, the certificate thumbprint is valid on this host, and the tenant initial domain used for -Organization is correct.'
+            }
         }
         else {
             'Confirm the signed-in operator can establish a compliance PowerShell session and that Connect-IPPSSession is allowed in this environment.'
@@ -8994,11 +9025,11 @@ function Ensure-PurviewComplianceSession {
 
         Set-PurviewComplianceDiagnosticState `
             -Status 'ConnectFailed' `
-            -Message ("Purview compliance PowerShell session could not be established. Underlying error: {0}" -f $_.Exception.Message) `
+            -Message ("Purview compliance PowerShell session could not be established. Underlying error: {0}" -f $underlyingError) `
             -Guidance $guidance `
             -AuthPath $purviewAuthPath `
             -Organization $organization
-        Write-Log -Type WARNING -Message "[Ensure-PurviewComplianceSession] Unable to establish Purview compliance PowerShell session: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        Write-Log -Type WARNING -Message "[Ensure-PurviewComplianceSession] Unable to establish Purview compliance PowerShell session: $underlyingError" -ExportFileLocation $ExportDetails
         return $false
     }
 

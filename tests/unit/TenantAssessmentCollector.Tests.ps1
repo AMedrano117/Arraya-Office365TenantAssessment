@@ -67,6 +67,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Organization used:'
         $script:collectorSource | Should -Match 'Next step:'
         $script:collectorSource | Should -Match 'Missing compliance cmdlets after connect:'
+        $script:collectorSource | Should -Match 'The certificate and app registration were accepted, but this tenant did not expose the Purview retention/DLP cmdlets to that app session'
     }
 
     It 'treats directory synchronization feature access as a non-blocking validation warning' {
@@ -99,6 +100,13 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match "PermissionNames = @\('Reports.Read.All'\)"
         $script:collectorSource | Should -Match "PermissionNames = @\('ReportSettings.Read.All'\)"
         $script:collectorSource | Should -Match "PermissionNames = @\('OnPremDirectorySynchronization.Read.All'\)"
+        $script:collectorSource | Should -Match 'Sites\.ReadWrite\.All'
+        $script:collectorSource | Should -Match 'Application\.ReadWrite\.All'
+        $script:collectorSource | Should -Match 'RoleManagement\.ReadWrite\.Directory'
+        $script:collectorSource | Should -Match "PermissionNames = @\('CrossTenantInformation.ReadBasic.All'\)"
+        $script:collectorSource | Should -Match "PermissionNames = @\('Application.Read.All'\)"
+        $script:collectorSource | Should -Match "PermissionNames = @\('Sites.Read.All'\)"
+        $script:collectorSource | Should -Match "PermissionNames = @\('Channel.ReadBasic.All'\)"
     }
 
     It 'forwards the access-denied warning suppression flag through the local Graph wrapper' {
