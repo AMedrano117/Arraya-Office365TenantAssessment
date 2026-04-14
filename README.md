@@ -27,6 +27,7 @@ Users do not need to manually import modules. The launcher imports `Arraya.M365.
 
 If you do not pass `-AuthMode`, the assessment defaults to delegated interactive sign-in. For backward compatibility, supplying `-CertificateThumbprint` still switches the run to certificate auth, and supplying `-ClientSecret` still switches the run to client-secret auth.
 If you already connected to Microsoft Graph and Exchange Online in the current session, you can run with `-SkipAuth` to reuse those sessions and bypass the repo's authentication bootstrap.
+The launcher now also reuses the repo modules already loaded from this repository in the current PowerShell session instead of force-reimporting them on every run.
 If you want the assessment to continue without the startup permission gate, you can add `-SkipPermissionPreflight`. This skips the required-access validation at the beginning of the run and allows collection to continue on a best-effort basis, which means missing permissions may still surface later as individual workload failures.
 
 Examples:

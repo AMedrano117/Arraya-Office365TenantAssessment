@@ -41,6 +41,7 @@ If you are using app-based authentication, complete the setup guidance first:
 - [Certificate Auth Setup](docs/runbooks/certificate-auth-setup.md)
 
 If you already connected to Microsoft Graph and Exchange Online in the same PowerShell session, you can reuse those sessions with `-SkipAuth`.
+The launcher also reuses the repo modules already loaded from this repository in the same PowerShell session, so repeat runs should not keep re-importing the assessment modules.
 If you want the assessment to continue without the startup permission gate, you can add `-SkipPermissionPreflight`. This skips the initial required-access validation and allows collection to continue on a best-effort basis, so missing permissions may still show up later as workload-specific warnings or failures.
 
 ## Required Access And API Permissions
