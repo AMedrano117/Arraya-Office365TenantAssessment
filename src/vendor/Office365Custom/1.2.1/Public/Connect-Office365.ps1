@@ -520,7 +520,30 @@ function Connect-Office365 {
             $existingEXOOrg = $null
             try {
                 Write-Verbose "Checking if already connected to Exchange Online..."
-                $existingEXOOrg = (Get-OrganizationConfig -ErrorAction Stop).Name
+                if (Get-Command -Name 'Get-ConnectionInformation' -ErrorAction SilentlyContinue) {
+                    $existingExchangeConnection = @(Get-ConnectionInformation -ErrorAction Stop | Select-Object -First 1)
+                    if ($existingExchangeConnection.Count -gt 0) {
+                        $existingEXOOrg = if (
+                            $existingExchangeConnection[0].PSObject.Properties['Name'] -and
+                            -not [string]::IsNullOrWhiteSpace([string]$existingExchangeConnection[0].Name)
+                        ) {
+                            [string]$existingExchangeConnection[0].Name
+                        }
+                        elseif (
+                            $existingExchangeConnection[0].PSObject.Properties['ConnectionUri'] -and
+                            -not [string]::IsNullOrWhiteSpace([string]$existingExchangeConnection[0].ConnectionUri)
+                        ) {
+                            [string]$existingExchangeConnection[0].ConnectionUri
+                        }
+                        else {
+                            'existing Exchange Online session'
+                        }
+                    }
+                }
+
+                if (-not $existingEXOOrg) {
+                    $existingEXOOrg = (Get-OrganizationConfig -ErrorAction Stop).Name
+                }
             } catch {}
             
             if ($existingEXOOrg -and -not $Force) {
