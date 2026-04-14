@@ -30,6 +30,7 @@ If you already connected to Microsoft Graph and Exchange Online in the current s
 The launcher now also reuses the repo modules already loaded from this repository in the current PowerShell session instead of force-reimporting them on every run.
 If you want the assessment to continue without the startup permission gate, you can add `-SkipPermissionPreflight`. This skips the required-access validation at the beginning of the run and allows collection to continue on a best-effort basis, which means missing permissions may still surface later as individual workload failures.
 The permission preflight now shows the specific check in progress, then prints a short summary of how many checks succeeded and how many access gaps remain. It fast-passes core Graph permissions from the current token claims and reserves live probes for the more ambiguous endpoints, so startup validation stays more accurate without making every Graph scope wait on a network call. Non-blocking checks such as `OnPremDirectorySynchronization.Read.All` are reported as structured warnings in the preflight summary instead of only surfacing as raw Graph 403 noise.
+The operator docs now distinguish between the core Graph permission set used by the standard assessment and optional extended-enrichment permissions, so the app registration ask is easier to defend and keep least-privileged.
 
 Retention and DLP policy collection uses Purview compliance PowerShell through `Connect-IPPSSession`, not the main Graph collector path. In this workflow:
 - delegated auth is supported

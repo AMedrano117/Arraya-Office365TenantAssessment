@@ -11,11 +11,32 @@ Use this runbook when you want to run the assessment with `-AuthMode Certificate
    - Directory (tenant) ID
 
 ## Grant Microsoft Graph application permissions
-Add these Microsoft Graph application permissions and grant admin consent:
+Add these core Microsoft Graph application permissions and grant admin consent for the standard assessment:
 
 - `Application.Read.All`
 - `AuditLog.Read.All`
 - `CrossTenantInformation.ReadBasic.All`
+- `Device.Read.All`
+- `Domain.Read.All`
+- `Group.Read.All`
+- `GroupMember.Read.All`
+- `OnPremDirectorySynchronization.Read.All`
+- `Organization.Read.All`
+- `Policy.Read.All`
+- `Reports.Read.All`
+- `ReportSettings.Read.All`
+- `RoleManagement.Read.All`
+- `SecurityEvents.Read.All`
+- `SharePointTenantSettings.Read.All`
+- `Sites.Read.All`
+- `Channel.ReadBasic.All`
+- `Team.ReadBasic.All`
+- `User.Read.All`
+
+Keep delegated `User.Read` available for interactive sign-in scenarios, but the app-based baseline above is the primary collector requirement.
+
+If you want optional extended enrichment beyond the standard assessment path, add these only when needed:
+
 - `DeviceManagementApps.Read.All`
 - `DeviceManagementConfiguration.Read.All`
 - `DeviceManagementManagedDevices.Read.All`
@@ -23,29 +44,16 @@ Add these Microsoft Graph application permissions and grant admin consent:
 - `DeviceManagementScripts.Read.All`
 - `DeviceManagementServiceConfig.Read.All`
 - `DirectoryRecommendations.Read.All`
-- `Group.Read.All`
-- `GroupMember.Read.All`
 - `IdentityRiskEvent.Read.All`
 - `IdentityRiskyUser.Read.All`
 - `LicenseAssignment.Read.All`
-- `Organization.Read.All`
-- `Policy.Read.All`
-- `Reports.Read.All`
-- `ReportSettings.Read.All`
-- `RoleManagement.Read.All`
-- `SecurityEvents.Read.All`
 - `ServiceMessage.Read.All`
-- `Sites.Read.All`
-- `Team.ReadBasic.All`
 - `User.Export.All`
-- `User.Read.All`
 - `UserAuthenticationMethod.Read.All`
-
-Keep delegated `User.Read` available for interactive sign-in scenarios, but the app-based baseline above is the primary collector requirement.
 
 ## Grant workload access outside Graph
 - Exchange Online app-only access must be configured for certificate-based Exchange collection.
-- SharePoint Online certificate-based access must be configured if you want SPO admin cmdlet coverage.
+- SharePoint and OneDrive standard collection use Microsoft Graph in the current app-based workflow.
 - Teams PowerShell remains reduced in app-based auth modes, so treat Teams detail as best-effort when running non-interactively.
 
 ## Recommended operator/admin roles for setup

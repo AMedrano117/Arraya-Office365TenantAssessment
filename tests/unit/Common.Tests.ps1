@@ -569,4 +569,19 @@ Describe 'Arraya.M365.Common' {
         $connectOffice365Source | Should -Match "Get-ConnectionInformation"
         $connectOffice365Source | Should -Match "Get-OrganizationConfig"
     }
+
+    It 'aligns the default delegated Graph scope ask to the standard assessment core set' {
+        $connectOffice365Path = Join-Path $script:repoRoot 'src\vendor\Office365Custom\1.2.1\Public\Connect-Office365.ps1'
+        $graphSdkHelperPath = Join-Path $script:repoRoot 'src\vendor\Office365Custom\1.2.1\Private\Connect-MicrosoftGraphSDK.ps1'
+        Test-Path $connectOffice365Path | Should -BeTrue
+        Test-Path $graphSdkHelperPath | Should -BeTrue
+
+        $connectOffice365Source = Get-Content -Raw -Path $connectOffice365Path
+        $graphSdkHelperSource = Get-Content -Raw -Path $graphSdkHelperPath
+
+        $connectOffice365Source | Should -Match 'SharePointTenantSettings\.Read\.All'
+        $connectOffice365Source | Should -Not -Match 'Files\.Read\.All'
+        $graphSdkHelperSource | Should -Match 'SharePointTenantSettings\.Read\.All'
+        $graphSdkHelperSource | Should -Not -Match 'Files\.Read\.All'
+    }
 }

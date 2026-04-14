@@ -265,14 +265,13 @@ function Connect-Office365 {
             "Group.Read.All","GroupMember.Read.All","RoleManagement.Read.Directory",
             "Domain.Read.All","Device.Read.All","Reports.Read.All",
             "ReportSettings.Read.All","Policy.Read.All","CrossTenantInformation.ReadBasic.All",
-            "SecurityEvents.Read.All","Application.Read.All","Sites.Read.All","Files.Read.All",
+            "SecurityEvents.Read.All","Application.Read.All","Sites.Read.All","SharePointTenantSettings.Read.All",
             "Team.ReadBasic.All","Channel.ReadBasic.All","OnPremDirectorySynchronization.Read.All"
         )
         $AdditionalScopes = @(
             "Directory.Read.All",
             "MailboxSettings.ReadWrite","TeamSettings.Read.All","TeamsTab.Read.All",
             "LicenseAssignment.ReadWrite.All","User.EnableDisableAccount.All","User.Export.All",
-            "SharePointTenantSettings.Read.All",
             "Mail.Read","MailboxSettings.Read","DirectoryRecommendations.Read.All",
             "Policy.ReadWrite.CrossTenantAccess"
         )

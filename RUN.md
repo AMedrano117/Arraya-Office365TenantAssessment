@@ -78,7 +78,7 @@ If you are setting up app-based authentication, you will also need enough Entra 
 
 ### Microsoft Graph Delegated Scopes
 
-When you run the main assessment in `Interactive` mode, the connector requests these Microsoft Graph delegated scopes:
+When you run the main assessment in `Interactive` mode, the connector now requests the core delegated scope set used by the standard assessment:
 
 - `Organization.Read.All`
 - `User.Read.All`
@@ -95,19 +95,40 @@ When you run the main assessment in `Interactive` mode, the connector requests t
 - `SecurityEvents.Read.All`
 - `Application.Read.All`
 - `Sites.Read.All`
-- `Files.Read.All`
+- `SharePointTenantSettings.Read.All`
 - `Team.ReadBasic.All`
 - `Channel.ReadBasic.All`
+- `OnPremDirectorySynchronization.Read.All`
 
 These scopes support the repo's current Graph-based collection for tenant, identity, reporting, security, collaboration, and SharePoint data.
+They are meant to cover the standard assessment path, not every possible legacy helper or optional enrichment path in the repo.
 
 ### App-Based Permission Baseline
 
-For `Certificate` or `ClientSecret` mode, the app registration should be granted these Microsoft Graph application permissions:
+For `Certificate` or `ClientSecret` mode, the app registration should be granted this core Microsoft Graph application-permission baseline for the standard assessment:
 
 - `Application.Read.All`
 - `AuditLog.Read.All`
 - `CrossTenantInformation.ReadBasic.All`
+- `Device.Read.All`
+- `Domain.Read.All`
+- `Group.Read.All`
+- `GroupMember.Read.All`
+- `OnPremDirectorySynchronization.Read.All`
+- `Organization.Read.All`
+- `Policy.Read.All`
+- `Reports.Read.All`
+- `ReportSettings.Read.All`
+- `RoleManagement.Read.All`
+- `SecurityEvents.Read.All`
+- `SharePointTenantSettings.Read.All`
+- `Sites.Read.All`
+- `Channel.ReadBasic.All`
+- `Team.ReadBasic.All`
+- `User.Read.All`
+
+Optional extended enrichment permissions can be added when you explicitly want broader coverage beyond the standard assessment path:
+
 - `DeviceManagementApps.Read.All`
 - `DeviceManagementConfiguration.Read.All`
 - `DeviceManagementManagedDevices.Read.All`
@@ -115,22 +136,11 @@ For `Certificate` or `ClientSecret` mode, the app registration should be granted
 - `DeviceManagementScripts.Read.All`
 - `DeviceManagementServiceConfig.Read.All`
 - `DirectoryRecommendations.Read.All`
-- `Group.Read.All`
-- `GroupMember.Read.All`
 - `IdentityRiskEvent.Read.All`
 - `IdentityRiskyUser.Read.All`
 - `LicenseAssignment.Read.All`
-- `Organization.Read.All`
-- `Policy.Read.All`
-- `Reports.Read.All`
-- `ReportSettings.Read.All`
-- `RoleManagement.Read.All`
-- `SecurityEvents.Read.All`
 - `ServiceMessage.Read.All`
-- `Sites.Read.All`
-- `Team.ReadBasic.All`
 - `User.Export.All`
-- `User.Read.All`
 - `UserAuthenticationMethod.Read.All`
 
 Delegated baseline:
