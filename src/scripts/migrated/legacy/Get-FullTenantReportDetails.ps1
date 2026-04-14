@@ -2429,11 +2429,16 @@ function Test-AssessmentPermissionPreflight {
             [string[]]$PermissionNames,
             [string]$NeededFor,
             [scriptblock]$Probe,
-            [bool]$IsBlocking = $true
+            [bool]$IsBlocking = $true,
+            [bool]$TrustClaimPresence = $false
         )
 
         $claimState = & $testClaimPresence $PermissionNames
         $requirementLabel = ($PermissionNames -join ' or ')
+
+        if ($TrustClaimPresence -and $claimState -eq $true) {
+            return
+        }
 
         if ($null -eq $Probe) {
             if ($claimState -eq $false) {
@@ -2443,6 +2448,16 @@ function Test-AssessmentPermissionPreflight {
                 else {
                     & $addWarning $Area $requirementLabel $NeededFor 'The current Microsoft Graph token does not include this permission. The assessment will continue, but related fields may remain not validated.'
                 }
+            }
+            return
+        }
+
+        if ($TrustClaimPresence -and $claimState -eq $false) {
+            if ($IsBlocking) {
+                & $addFailure $Area $requirementLabel $NeededFor 'The current Microsoft Graph token does not include this permission.'
+            }
+            else {
+                & $addWarning $Area $requirementLabel $NeededFor 'The current Microsoft Graph token does not include this permission. The assessment will continue, but related fields may remain not validated.'
             }
             return
         }
@@ -2484,24 +2499,28 @@ function Test-AssessmentPermissionPreflight {
         PermissionNames = @('Organization.Read.All')
         NeededFor       = 'tenant organization metadata and tenant naming'
         Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/organization?$select=id,displayName,onPremisesSyncEnabled' -Activity 'Permission preflight: Organization.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
+        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('User.Read.All')
         NeededFor       = 'user inventory, guest review, and sign-in hygiene analysis'
         Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/users?$top=1&$select=id,userType,accountEnabled' -Activity 'Permission preflight: User.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
+        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('AuditLog.Read.All')
         NeededFor       = 'stale account detection and sign-in based identity review'
         Probe           = { & $invokeGraphSdkGet 'https://graph.microsoft.com/v1.0/auditLogs/signIns?$top=1&$select=id,createdDateTime' }
+        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('Group.Read.All')
         NeededFor       = 'Entra groups, collaboration ownership, and Microsoft 365 group inventory'
         Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/groups?$top=1&$select=id,displayName' -Activity 'Permission preflight: Group.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
+        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
@@ -2513,6 +2532,7 @@ function Test-AssessmentPermissionPreflight {
                 Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/groups/{0}/members?$top=1&$select=id" -f $firstGroup.id) -Activity 'Permission preflight: GroupMember.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null
             }
         }
+        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
@@ -2526,24 +2546,28 @@ function Test-AssessmentPermissionPreflight {
 
             & $invokeGraphSdkGet 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?$top=1'
         }
+        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('Domain.Read.All')
         NeededFor       = 'accepted domain inventory and DNS posture review'
         Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/domains?$top=1&$select=id,isVerified' -Activity 'Permission preflight: Domain.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
+        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('Device.Read.All')
         NeededFor       = 'device inventory and compliance posture review'
         Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/devices?$top=1&$select=id,displayName' -Activity 'Permission preflight: Device.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
+        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('Policy.Read.All')
         NeededFor       = 'Conditional Access, guest invitation, and authentication policy review'
         Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/policies/authorizationPolicy?$select=id,allowInvitesFrom,allowedToUseSSPR' -Activity 'Permission preflight: Policy.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
+        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
@@ -2554,18 +2578,21 @@ function Test-AssessmentPermissionPreflight {
                 Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/tenantRelationships/findTenantInformationByTenantId(tenantId='{0}')" -f $resolvedTenantId) -Activity 'Permission preflight: CrossTenantInformation.ReadBasic.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null
             }
         }
+        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('Application.Read.All')
         NeededFor       = 'enterprise application and permission posture review'
         Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/servicePrincipals?$top=1&$select=id,displayName' -Activity 'Permission preflight: Application.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
+        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('Sites.Read.All')
         NeededFor       = 'SharePoint and OneDrive site inventory'
         Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/sites/root?$select=id,webUrl' -Activity 'Permission preflight: Sites.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
+        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
@@ -2585,6 +2612,7 @@ function Test-AssessmentPermissionPreflight {
         PermissionNames = @('SecurityEvents.Read.All')
         NeededFor       = 'Microsoft Secure Score collection'
         Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/security/secureScores?$top=1' -Activity 'Permission preflight: SecurityEvents.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
+        TrustClaimPresence = $true
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
@@ -2616,6 +2644,7 @@ function Test-AssessmentPermissionPreflight {
             PermissionNames = @('Team.ReadBasic.All')
             NeededFor       = 'Teams inventory and external collaboration review'
             Probe           = { & $invokeGraphSdkGet 'https://graph.microsoft.com/v1.0/teams?$top=1&$select=id,displayName' }
+            TrustClaimPresence = $true
         }) | Out-Null
         $graphChecks.Add([pscustomobject]@{
             Area            = 'Graph'
@@ -2653,6 +2682,7 @@ function Test-AssessmentPermissionPreflight {
                     & $invokeGraphSdkGet ("https://graph.microsoft.com/v1.0/teams/{0}/allChannels?$top=1&$select=displayName,membershipType" -f $firstTeamId)
                 }
             }
+            TrustClaimPresence = $true
         }) | Out-Null
     }
 
@@ -2695,9 +2725,13 @@ function Test-AssessmentPermissionPreflight {
             if ($graphCheck.PSObject.Properties['IsBlocking']) {
                 $isBlocking = [bool]$graphCheck.IsBlocking
             }
+            $trustClaimPresence = $false
+            if ($graphCheck.PSObject.Properties['TrustClaimPresence']) {
+                $trustClaimPresence = [bool]$graphCheck.TrustClaimPresence
+            }
 
             & $updatePreflightProgress $graphCheck.Area (($graphCheck.PermissionNames -join ' or ')) ([ref]$preflightProgressIndex)
-            & $invokeGraphProbe $graphCheck.Area $graphCheck.PermissionNames $graphCheck.NeededFor $graphCheck.Probe $isBlocking
+            & $invokeGraphProbe $graphCheck.Area $graphCheck.PermissionNames $graphCheck.NeededFor $graphCheck.Probe $isBlocking $trustClaimPresence
         }
 
         foreach ($exchangeCheck in $exchangeChecks) {
@@ -10044,6 +10078,18 @@ function Ensure-AssessmentServiceContext {
     $hasUnifiedGroupCommand = [bool](Get-Command -Name 'Get-UnifiedGroup' -ErrorAction SilentlyContinue)
     if (-not ($hasExoMailboxCommand -and $hasUnifiedGroupCommand)) {
         try {
+            $existingExchangeConnection = @()
+            if (Get-Command -Name 'Get-ConnectionInformation' -ErrorAction SilentlyContinue) {
+                try {
+                    $existingExchangeConnection = @(Get-ConnectionInformation -ErrorAction Stop)
+                }
+                catch {}
+            }
+
+            if ($existingExchangeConnection.Count -gt 0) {
+                Write-Log -Type INFO -Message '[Ensure-AssessmentServiceContext] Exchange Online session exists, but EXO cmdlets are not visible in the collector scope. Reconnecting cmdlets for collector visibility.' -ExportFileLocation $ExportDetails
+            }
+
             if (
                 -not [string]::IsNullOrWhiteSpace($ClientId) -and
                 -not [string]::IsNullOrWhiteSpace($CertificateThumbprint)

@@ -51,6 +51,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     It 'checks Exchange and Purview access in addition to Graph' {
         $script:collectorSource | Should -Match 'Exchange mailbox read access'
         $script:collectorSource | Should -Match 'Exchange unified group read access'
+        $script:collectorSource | Should -Match 'Exchange Online session exists, but EXO cmdlets are not visible in the collector scope'
         $script:collectorSource | Should -Match 'function Ensure-PurviewComplianceCommandAvailable'
         $script:collectorSource | Should -Match 'function Set-PurviewComplianceDiagnosticState'
         $script:collectorSource | Should -Match 'function Get-PurviewComplianceDiagnosticMessage'
@@ -88,6 +89,16 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:graphDataSource | Should -Match '\(\?i\)\(\?:\[\?&\]\)\\\$top='
         $script:graphDataSource | Should -Match '\[switch\]\$SuppressProgress'
         $script:graphDataSource | Should -Match '\[switch\]\$SuppressAccessDeniedWarning'
+    }
+
+    It 'fast-passes core Graph permission checks from token claims and keeps live probes for ambiguous endpoints' {
+        $script:collectorSource | Should -Match '\[bool\]\$TrustClaimPresence = \$false'
+        $script:collectorSource | Should -Match 'if \(\$TrustClaimPresence -and \$claimState -eq \$true\)'
+        $script:collectorSource | Should -Match 'TrustClaimPresence = \$true'
+        $script:collectorSource | Should -Match "PermissionNames = @\('SharePointTenantSettings.Read.All'\)"
+        $script:collectorSource | Should -Match "PermissionNames = @\('Reports.Read.All'\)"
+        $script:collectorSource | Should -Match "PermissionNames = @\('ReportSettings.Read.All'\)"
+        $script:collectorSource | Should -Match "PermissionNames = @\('OnPremDirectorySynchronization.Read.All'\)"
     }
 
     It 'forwards the access-denied warning suppression flag through the local Graph wrapper' {
