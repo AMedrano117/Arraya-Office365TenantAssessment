@@ -9,6 +9,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
 
     It 'defines a permission preflight with an explicit skip switch and invokes it before collection starts by default' {
         Test-Path $script:collectorPath | Should -BeTrue
+        $script:collectorSource | Should -Match 'function Test-AssessmentImportedModuleMatchesManifestPath'
         $script:collectorSource | Should -Match 'function Test-AssessmentPermissionPreflight'
         $script:collectorSource | Should -Match '\[switch\]\$SkipPermissionPreflight'
         $script:collectorSource | Should -Match 'Permission preflight failed\. The assessment will not continue'
@@ -16,6 +17,9 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Validating required permissions and service access'
         $script:collectorSource | Should -Match 'Test-AssessmentPermissionPreflight -ConnectionResult \$connectionResult'
         $script:collectorSource | Should -Match 'Skipping permission preflight by request'
+        $script:collectorSource | Should -Match 'Join-Path -Path \$Module\.ModuleBase -ChildPath \(\[System\.IO\.Path\]::GetFileName\(\$resolvedManifestPath\)\)'
+        $script:collectorSource | Should -Not -Match '\$loadedCommonModule\.Path -ne \$resolvedCommonManifestPath'
+        $script:collectorSource | Should -Not -Match '\$loadedReportingModule\.Path -ne \$resolvedReportingManifestPath'
     }
 
     It 'checks the critical Graph permissions used by the collector' {

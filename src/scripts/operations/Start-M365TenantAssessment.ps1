@@ -56,6 +56,60 @@ $repoRoot = Resolve-ArrayaRepoRoot -StartPath $PSScriptRoot
 $commonManifestPath = Join-Path $repoRoot 'src\modules\Arraya.M365.Common\Arraya.M365.Common.psd1'
 $runnerManifestPath = Join-Path $repoRoot 'src\modules\Arraya.M365.AssessmentRunner\Arraya.M365.AssessmentRunner.psd1'
 
+function Test-LauncherModuleMatchesManifestPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [System.Management.Automation.PSModuleInfo]$Module,
+        [Parameter(Mandatory = $true)]
+        [string]$ManifestPath
+    )
+
+    if (-not $Module) {
+        return $false
+    }
+
+    try {
+        $resolvedManifestPath = (Resolve-Path -Path $ManifestPath -ErrorAction Stop).Path
+    }
+    catch {
+        return $false
+    }
+
+    $candidatePaths = @(
+        $Module.Path
+        (Join-Path -Path $Module.ModuleBase -ChildPath ([System.IO.Path]::GetFileName($resolvedManifestPath)))
+        $Module.ModuleBase
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+
+    foreach ($candidatePath in $candidatePaths) {
+        try {
+            $resolvedCandidatePath = [System.IO.Path]::GetFullPath($candidatePath)
+        }
+        catch {
+            $resolvedCandidatePath = $candidatePath
+        }
+
+        if ([string]::Equals($resolvedCandidatePath, $resolvedManifestPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+
+    $resolvedManifestDirectory = Split-Path -Path $resolvedManifestPath -Parent
+    if (
+        -not [string]::IsNullOrWhiteSpace([string]$Module.ModuleBase) -and
+        [string]::Equals(
+            ([System.IO.Path]::GetFullPath($Module.ModuleBase)),
+            ([System.IO.Path]::GetFullPath($resolvedManifestDirectory)),
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        return $true
+    }
+
+    return $false
+}
+
 if (-not (Test-Path -Path $commonManifestPath)) {
     throw "Common module manifest not found: $commonManifestPath"
 }
@@ -67,7 +121,7 @@ $missingCommonCommands = @(
 )
 if (
     -not $loadedCommonModule -or
-    $loadedCommonModule.Path -ne $resolvedCommonManifestPath -or
+    -not (Test-LauncherModuleMatchesManifestPath -Module $loadedCommonModule -ManifestPath $resolvedCommonManifestPath) -or
     $missingCommonCommands.Count -gt 0
 ) {
     Import-Module -Name $resolvedCommonManifestPath -Force -DisableNameChecking -ErrorAction Stop
@@ -88,7 +142,7 @@ $missingRunnerCommands = @(
 )
 if (
     -not $loadedRunnerModule -or
-    $loadedRunnerModule.Path -ne $resolvedRunnerManifestPath -or
+    -not (Test-LauncherModuleMatchesManifestPath -Module $loadedRunnerModule -ManifestPath $resolvedRunnerManifestPath) -or
     $missingRunnerCommands.Count -gt 0
 ) {
     Import-Module -Name $resolvedRunnerManifestPath -Force -DisableNameChecking -ErrorAction Stop

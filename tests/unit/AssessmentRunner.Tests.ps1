@@ -28,10 +28,13 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match 'function Invoke-AssessmentScript'
         $runnerSource | Should -Match 'function Invoke-M365TenantWorkflow'
         $runnerSource | Should -Match 'function Resolve-AssessmentScriptPath'
+        $runnerSource | Should -Match 'function Test-AssessmentRunnerModuleMatchesManifestPath'
         $runnerSource | Should -Match 'function Resolve-AssessmentExportPathInput'
         $runnerSource | Should -Match 'Get-ArrayaAssessmentOutputRoot -FallbackPath \$script:RepoRoot'
         $runnerSource | Should -Match 'src\\scripts\\reporting'
         $runnerSource | Should -Match 'src\\scripts\\migrated\\legacy'
+        $runnerSource | Should -Match 'Join-Path -Path \$Module\.ModuleBase -ChildPath \(\[System\.IO\.Path\]::GetFileName\(\$resolvedManifestPath\)\)'
+        $runnerSource | Should -Not -Match '\$loadedCommonModule\.Path -ne \$resolvedCommonManifestPath'
         $runnerSource | Should -Not -Match 'function Invoke-LegacyScriptCompat'
         $runnerSource | Should -Not -Match 'function Get-LegacyScriptPath'
     }
