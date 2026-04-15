@@ -1737,6 +1737,7 @@ function Get-AssessmentConditionalAccessRoleUserIds {
     }
 
     if ($RoleTemplateLookup.Count -eq 0) {
+        $errorCountBeforeRoleLookup = $global:Error.Count
         try {
             $directoryRoles = @(
                 Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/directoryRoles?`$select=id,displayName,roleTemplateId' -Activity "${OperationName}: loading active directory roles"
@@ -1756,6 +1757,9 @@ function Get-AssessmentConditionalAccessRoleUserIds {
             }
         }
         catch {
+            while ($global:Error.Count -gt $errorCountBeforeRoleLookup) {
+                $global:Error.RemoveAt(0)
+            }
             Write-Log -Type WARNING -Message "[$OperationName] Unable to load active directory roles for Conditional Access role expansion. $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
     }
@@ -3804,7 +3808,7 @@ function Get-EmailActivityInsights {
         $teamsActiveUsers = 0
         try {
             $teamsActivityReport = Get-ActivityReportRows `
-                -ServiceName 'TeamsUserActivity' `
+                -ServiceName 'TeamsUser' `
                 -PeriodDuration $periodDuration `
                 -FallbackUri "https://graph.microsoft.com/v1.0/reports/getTeamsUserActivityUserDetail(period='$periodDuration')" `
                 -FallbackActivity "Teams user activity detail report ($periodDuration)"
@@ -4939,7 +4943,8 @@ function Get-TeamsDetails {
         $allTeams = @()
         $selectedSource = 'Unavailable'
         $graphContext = Get-MgContext -ErrorAction SilentlyContinue
-        $canUseGraphSdk = ($ServiceName -eq 'MGGraph') -and $graphContext -and (Get-Command -Name 'Get-MgTeam' -ErrorAction SilentlyContinue)
+        $graphTeamCommand = Get-Command -Name 'Get-MgTeam' -ErrorAction SilentlyContinue
+        $canUseGraphSdk = ($ServiceName -eq 'MGGraph') -and $graphContext -and $graphTeamCommand
         $canUseGraphRest = ($ServiceName -eq 'MGGraph') -and $global:GraphHeaders
         $teamsConnected = $false
         $scriptConnectionResult = Get-Variable -Name connectionResult -Scope Script -ErrorAction SilentlyContinue
@@ -4948,7 +4953,7 @@ function Get-TeamsDetails {
         }
 
         if ($canUseGraphSdk) {
-            $allTeams = @(Invoke-QuietCommand -ScriptBlock { Get-MgTeam -All -ErrorAction Stop })
+            $allTeams = @(Invoke-QuietCommand -ScriptBlock { & $graphTeamCommand -All -ErrorAction Stop })
             $selectedSource = 'MGGraph-SDK'
         }
         elseif ($canUseGraphRest) {
@@ -4999,6 +5004,10 @@ function Get-TeamsDetails {
         }
 
         $collectChannelDetails = ($detailLevel -ne 'minimum')
+        $teamsChannelExpansionAllowed = $true
+        $teamsChannelExpansionWarningLogged = $false
+        $teamsMemberExpansionAllowed = $true
+        $teamsMemberExpansionWarningLogged = $false
         $totalCount = [Math]::Max($allTeams.Count, 1)
         $index = 0
         $collectedCount = 0
@@ -5043,19 +5052,50 @@ function Get-TeamsDetails {
 
                 if ($collectChannelDetails -and -not [string]::IsNullOrWhiteSpace($teamId)) {
                     $channels = @()
-                    if ($selectedSource -eq 'MGGraph-SDK') {
-                        if (Get-Command -Name 'Get-MgTeamAllChannel' -ErrorAction SilentlyContinue) {
-                            $channels = @(Get-MgTeamAllChannel -TeamId $teamId -ProgressAction SilentlyContinue -ErrorAction SilentlyContinue)
+                    $channelErrorCountBeforeFetch = $global:Error.Count
+                    $channelFetchMessage = $null
+                    if ($teamsChannelExpansionAllowed) {
+                        try {
+                            if ($selectedSource -eq 'MGGraph-SDK') {
+                                $channels = @(
+                                    Get-ArrayaGraphResource `
+                                        -Uri ("https://graph.microsoft.com/v1.0/teams/{0}/allChannels?`$select=displayName,membershipType" -f $teamId) `
+                                        -Activity "Teams channels [$displayName]" `
+                                        -SuppressProgress `
+                                        -SuppressAccessDeniedWarning
+                                )
+                            }
+                            elseif ($selectedSource -eq 'MGGraph-REST') {
+                                $channels = @(Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/teams/{0}/allChannels?`$select=displayName,membershipType" -f $teamId) -Activity "Teams channels [$displayName]" -PreferRest -Headers $global:GraphHeaders)
+                            }
+                            elseif ($selectedSource -eq 'TeamsPowerShell') {
+                                $channels = @(Get-TeamChannel -GroupId $teamId -ErrorAction SilentlyContinue)
+                            }
+                        }
+                        catch {
+                            $channelFetchMessage = $_.Exception.Message
+                        }
+                    }
+
+                    if ($global:Error.Count -gt $channelErrorCountBeforeFetch) {
+                        while ($global:Error.Count -gt $channelErrorCountBeforeFetch) {
+                            $global:Error.RemoveAt(0)
+                        }
+                    }
+
+                    if (-not [string]::IsNullOrWhiteSpace($channelFetchMessage)) {
+                        if ($channelFetchMessage -match 'Channel\.ReadBasic\.All|required permissions for accessing this API|Forbidden|403') {
+                            $teamsChannelExpansionAllowed = $false
+                            if (-not $teamsChannelExpansionWarningLogged) {
+                                Write-Log -Type WARNING -Message "[Get-TeamsDetails] Teams channel inventory requires Channel.ReadBasic.All. Continuing with team inventory only for the remaining teams." -ExportFileLocation $ExportDetails
+                                $teamsChannelExpansionWarningLogged = $true
+                            }
                         }
                         else {
-                            $channels = @(Get-MgTeamChannel -TeamId $teamId -ProgressAction SilentlyContinue -ErrorAction SilentlyContinue)
+                            Write-Log -Type DEBUG -Message "[Get-TeamsDetails] Teams channel lookup failed for '$displayName': $channelFetchMessage" -ExportFileLocation $ExportDetails
                         }
-                    }
-                    elseif ($selectedSource -eq 'MGGraph-REST') {
-                        $channels = @(Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/teams/{0}/allChannels?`$select=displayName,membershipType" -f $teamId) -Activity "Teams channels [$displayName]" -PreferRest -Headers $global:GraphHeaders)
-                    }
-                    elseif ($selectedSource -eq 'TeamsPowerShell') {
-                        $channels = @(Get-TeamChannel -GroupId $teamId -ErrorAction SilentlyContinue)
+
+                        $channels = @()
                     }
 
                     foreach ($channel in $channels) {
@@ -5073,20 +5113,69 @@ function Get-TeamsDetails {
                             default { $publicChannels += $channelName }
                         }
                     }
+
                 }
 
                 if ($detailLevel -ne 'minimum' -and -not [string]::IsNullOrWhiteSpace($teamId)) {
                     $memberObjects = @()
-                    if ($selectedSource -eq 'MGGraph-SDK') {
-                        if (Get-Command -Name 'Get-MgTeamMember' -ErrorAction SilentlyContinue) {
-                            $memberObjects = @(Get-MgTeamMember -TeamId $teamId -All -ProgressAction SilentlyContinue -ErrorAction SilentlyContinue)
+                    if ($teamsMemberExpansionAllowed) {
+                        $memberFetchError = @()
+                        $memberErrorCountBeforeFetch = $global:Error.Count
+                        $memberFetchMessage = $null
+                        try {
+                            if ($selectedSource -eq 'MGGraph-SDK') {
+                                $memberObjects = @(
+                                    Get-ArrayaGraphResource `
+                                        -Uri ("https://graph.microsoft.com/v1.0/teams/{0}/members?`$select=id,email,userId,roles" -f $teamId) `
+                                        -Activity "Teams members [$displayName]" `
+                                        -SuppressProgress `
+                                        -SuppressAccessDeniedWarning `
+                                        -ErrorAction SilentlyContinue `
+                                        -ErrorVariable memberFetchError
+                                )
+                            }
+                            elseif ($selectedSource -eq 'MGGraph-REST') {
+                                $memberObjects = @(
+                                    Get-ArrayaGraphResource `
+                                        -Uri ("https://graph.microsoft.com/v1.0/teams/{0}/members?`$select=id,email,userId,roles" -f $teamId) `
+                                        -Activity "Teams members [$displayName]" `
+                                        -PreferRest `
+                                        -Headers $global:GraphHeaders `
+                                        -SuppressAccessDeniedWarning
+                                )
+                            }
+                            elseif ($selectedSource -eq 'TeamsPowerShell' -and (Get-Command -Name 'Get-TeamUser' -ErrorAction SilentlyContinue)) {
+                                $memberObjects = @(Get-TeamUser -GroupId $teamId -ErrorAction SilentlyContinue -ErrorVariable memberFetchError)
+                            }
                         }
-                    }
-                    elseif ($selectedSource -eq 'MGGraph-REST') {
-                        $memberObjects = @(Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/teams/{0}/members?`$select=id,email,userId,roles" -f $teamId) -Activity "Teams members [$displayName]" -PreferRest -Headers $global:GraphHeaders)
-                    }
-                    elseif ($selectedSource -eq 'TeamsPowerShell' -and (Get-Command -Name 'Get-TeamUser' -ErrorAction SilentlyContinue)) {
-                        $memberObjects = @(Get-TeamUser -GroupId $teamId -ErrorAction SilentlyContinue)
+                        catch {
+                            $memberFetchMessage = $_.Exception.Message
+                        }
+
+                        if (-not $memberFetchMessage -and $memberFetchError.Count -gt 0) {
+                            $memberFetchMessage = [string]($memberFetchError | Select-Object -First 1 | ForEach-Object { $_.Exception.Message })
+                        }
+
+                        if ($global:Error.Count -gt $memberErrorCountBeforeFetch) {
+                            while ($global:Error.Count -gt $memberErrorCountBeforeFetch) {
+                                $global:Error.RemoveAt(0)
+                            }
+                        }
+
+                        if (-not [string]::IsNullOrWhiteSpace($memberFetchMessage)) {
+                            if ($memberFetchMessage -match 'TeamMember\.Read\.All|TeamMember\.ReadWrite\.All|required permissions for accessing this API') {
+                                $teamsMemberExpansionAllowed = $false
+                                if (-not $teamsMemberExpansionWarningLogged) {
+                                    Write-Log -Type WARNING -Message "[Get-TeamsDetails] Teams member and guest counts require TeamMember.Read.All or TeamMember.ReadWrite.All in app-based Graph collection. Continuing with team and channel inventory only." -ExportFileLocation $ExportDetails
+                                    $teamsMemberExpansionWarningLogged = $true
+                                }
+                            }
+                            else {
+                                Write-Log -Type DEBUG -Message "[Get-TeamsDetails] Teams member lookup failed for '$displayName': $memberFetchMessage" -ExportFileLocation $ExportDetails
+                            }
+
+                            $memberObjects = @()
+                        }
                     }
 
                     if ($memberObjects.Count -gt 0) {
@@ -6466,15 +6555,15 @@ function Get-AllOffice365Domains {
 
                 #Gather DNS Records from 1.1.1.1
                 Write-Log -Type DEBUG -Message "[Get-AllOffice365Domains] Gathering DNS Records for '$($domainName)'" -ExportFileLocation $ExportDetails
-                $aRecords = Resolve-DnsName -Name $domainName -Server 1.1.1.1 -Type A -ErrorAction SilentlyContinue -verbose:$false
-                $mxRecords = Resolve-DnsName -Name $domainName -Server 1.1.1.1 -Type MX -ErrorAction SilentlyContinue -verbose:$false
-                $NSRecords = Resolve-DnsName -Name $domainName -Server 1.1.1.1 -Type NS -ErrorAction SilentlyContinue -verbose:$false
-                $txtRecords = Resolve-DnsName -Name $domainName -Server 1.1.1.1 -Type TXT -ErrorAction SilentlyContinue -verbose:$false
-                $dmarcRecords = Resolve-DnsName -Name ("_dmarc.{0}" -f $domainName) -Server 1.1.1.1 -Type TXT -ErrorAction SilentlyContinue -verbose:$false
+                $aRecords = Resolve-DnsName -Name $domainName -Server 1.1.1.1 -Type A -ErrorAction Ignore -verbose:$false
+                $mxRecords = Resolve-DnsName -Name $domainName -Server 1.1.1.1 -Type MX -ErrorAction Ignore -verbose:$false
+                $NSRecords = Resolve-DnsName -Name $domainName -Server 1.1.1.1 -Type NS -ErrorAction Ignore -verbose:$false
+                $txtRecords = Resolve-DnsName -Name $domainName -Server 1.1.1.1 -Type TXT -ErrorAction Ignore -verbose:$false
+                $dmarcRecords = Resolve-DnsName -Name ("_dmarc.{0}" -f $domainName) -Server 1.1.1.1 -Type TXT -ErrorAction Ignore -verbose:$false
 
                 $selectorRecords = @()
                 foreach ($selector in @('selector1', 'selector2')) {
-                    $selectorRecords += @(Resolve-DnsName -Name ("{0}._domainkey.{1}" -f $selector, $domainName) -Server 1.1.1.1 -Type CNAME -ErrorAction SilentlyContinue -verbose:$false)
+                    $selectorRecords += @(Resolve-DnsName -Name ("{0}._domainkey.{1}" -f $selector, $domainName) -Server 1.1.1.1 -Type CNAME -ErrorAction Ignore -verbose:$false)
                 }
 
                 $spfConfigured = $false
@@ -8214,7 +8303,7 @@ function Get-AuthenticationConfiguration {
 
         if ($collectExtendedIdentityTierB) {
             try {
-                Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] Collecting enterprise application permission posture for Tier B findings" -ExportFileLocation $ExportDetails
+                Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] Collecting enterprise application permission posture for governance findings" -ExportFileLocation $ExportDetails
                 $resourceServicePrincipalCache = @{}
                 $highPrivilegePatterns = @(
                     'Directory.ReadWrite.All', 'Directory.AccessAsUser.All', 'RoleManagement.ReadWrite.Directory',
@@ -8424,7 +8513,13 @@ function Get-AuthenticationConfiguration {
             $guestUsers |
                 Where-Object {
                     $lastSignIn = $null
-                    try { $lastSignIn = [datetime]$_.LastSignInDateTime } catch { $lastSignIn = $null }
+                    $lastSignInText = [string]$_.LastSignInDateTime
+                    if (-not [string]::IsNullOrWhiteSpace($lastSignInText)) {
+                        $parsedLastSignIn = [datetime]::MinValue
+                        if ([datetime]::TryParse($lastSignInText, [ref]$parsedLastSignIn)) {
+                            $lastSignIn = $parsedLastSignIn
+                        }
+                    }
                     ($null -eq $lastSignIn) -or ($lastSignIn -lt (Get-Date).AddDays(-90))
                 }
         )
@@ -8440,7 +8535,13 @@ function Get-AuthenticationConfiguration {
             $privilegedAdmins |
                 Where-Object {
                     $lastSignIn = $null
-                    try { $lastSignIn = [datetime]$_.LastSignInDateTime } catch { $lastSignIn = $null }
+                    $lastSignInText = [string]$_.LastSignInDateTime
+                    if (-not [string]::IsNullOrWhiteSpace($lastSignInText)) {
+                        $parsedLastSignIn = [datetime]::MinValue
+                        if ([datetime]::TryParse($lastSignInText, [ref]$parsedLastSignIn)) {
+                            $lastSignIn = $parsedLastSignIn
+                        }
+                    }
                     ($_.AccountEnabled -eq $true) -and $lastSignIn -and ($lastSignIn -lt (Get-Date).AddDays(-90))
                 }
         )
@@ -8512,6 +8613,7 @@ function Get-TenantOverviewInfo {
         $selfServiceNotes = "MSCommerce module not installed"
         $selfServiceDetails = $null
 
+        $selfServiceErrorCountBeforeLookup = $global:Error.Count
         try {
             if (-not (Get-Module -ListAvailable -Name MSCommerce)) {
                 Write-Log -Type INFO -Message "[Get-TenantOverviewInfo] Installing MSCommerce module (CurrentUser)" -ExportFileLocation $ExportDetails
@@ -8553,6 +8655,11 @@ function Get-TenantOverviewInfo {
                 $selfServiceNotes = "MSCommerce connection or policy retrieval failed: $($_.Exception.Message)"
             }
         } catch {
+            if ($global:Error.Count -gt $selfServiceErrorCountBeforeLookup) {
+                while ($global:Error.Count -gt $selfServiceErrorCountBeforeLookup) {
+                    $global:Error.RemoveAt(0)
+                }
+            }
             $selfServiceAnswer = "Unknown"
             $selfServiceNotes = "MSCommerce module install/load failed: $($_.Exception.Message)"
         }
@@ -8680,6 +8787,7 @@ function Get-AdConnectSyncDetails {
         $syncErrors = @()
 
         $syncFeatureCollectionNote = $null
+        $syncFeatureErrorCountBeforeFetch = $global:Error.Count
         try {
             $syncServiceResponse = $null
             if (Get-Command Get-MgDirectoryOnPremiseSynchronization -ErrorAction SilentlyContinue) {
@@ -8728,6 +8836,11 @@ function Get-AdConnectSyncDetails {
             } else {
                 'Not surfaced in current source'
             }
+            if ($global:Error.Count -gt $syncFeatureErrorCountBeforeFetch) {
+                while ($global:Error.Count -gt $syncFeatureErrorCountBeforeFetch) {
+                    $global:Error.RemoveAt(0)
+                }
+            }
             Write-Log -Type DEBUG -Message "[Get-AdConnectSyncDetails] Unable to retrieve directory synchronization feature flags: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
 
@@ -8759,7 +8872,11 @@ function Get-AdConnectSyncDetails {
             FeatureCollectionNote                      = $syncFeatureCollectionNote
         }
         
-        if (Get-Command Get-AzureADConnectHealthSyncServices -ErrorAction SilentlyContinue) {
+        $healthSyncServicesCommand = Get-Command Get-AzureADConnectHealthSyncServices -ErrorAction Ignore
+        $healthSyncErrorsCommand = Get-Command Get-AzureADConnectHealthSyncErrors -ErrorAction Ignore
+        $healthSyncAlertCommand = Get-Command Get-AzureADConnectHealthSyncAlert -ErrorAction Ignore
+
+        if ($healthSyncServicesCommand) {
             try {
                 $services = Get-AzureADConnectHealthSyncServices -ErrorAction SilentlyContinue
                 foreach ($svc in $services) {
@@ -8775,11 +8892,11 @@ function Get-AdConnectSyncDetails {
             } catch {}
         }
         
-        if (Get-Command Get-AzureADConnectHealthSyncErrors -ErrorAction SilentlyContinue) {
+        if ($healthSyncErrorsCommand) {
             try {
                 $syncErrors = Get-AzureADConnectHealthSyncErrors -ErrorAction SilentlyContinue
             } catch {}
-        } elseif (Get-Command Get-AzureADConnectHealthSyncAlert -ErrorAction SilentlyContinue) {
+        } elseif ($healthSyncAlertCommand) {
             try {
                 $syncErrors = Get-AzureADConnectHealthSyncAlert -ErrorAction SilentlyContinue
             } catch {}
@@ -9525,13 +9642,28 @@ function Get-FederationAndCrossTenantConfiguration {
             Write-Log -Type WARNING -Message "[Get-FederationAndCrossTenantConfiguration] Unable to retrieve CrossTenantAccessPolicy partners: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
 
+        $b2bPolicyErrorCountBeforeLookup = $global:Error.Count
         try {
-            $b2bPolicy = Get-MgPolicyB2BManagementPolicy -ProgressAction SilentlyContinue -ErrorAction Stop
+            $b2bPolicyCommand = Get-Command -Name 'Get-MgPolicyB2BManagementPolicy' -ErrorAction Ignore
+            if ($b2bPolicyCommand) {
+                $b2bPolicy = Get-MgPolicyB2BManagementPolicy -ProgressAction SilentlyContinue -ErrorAction Stop
+            }
+            else {
+                throw 'Get-MgPolicyB2BManagementPolicy is not available in the installed Microsoft Graph module set.'
+            }
         } catch {
+            if ($global:Error.Count -gt $b2bPolicyErrorCountBeforeLookup) {
+                while ($global:Error.Count -gt $b2bPolicyErrorCountBeforeLookup) {
+                    $global:Error.RemoveAt(0)
+                }
+            }
             if (Get-Command Invoke-MgGraphRequest -ErrorAction SilentlyContinue) {
                 try {
                     $b2bPolicy = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/policies/b2bManagementPolicy' -ProgressAction SilentlyContinue -ErrorAction Stop
                 } catch {
+                    while ($global:Error.Count -gt $b2bPolicyErrorCountBeforeLookup) {
+                        $global:Error.RemoveAt(0)
+                    }
                     $b2bMessage = $_.Exception.Message
                     $b2bLogType = if ($b2bMessage -match 'BadRequest') { 'INFO' } else { 'WARNING' }
                     Write-Log -Type $b2bLogType -Message "[Get-FederationAndCrossTenantConfiguration] Unable to retrieve B2B management policy: $b2bMessage" -ExportFileLocation $ExportDetails
@@ -10630,6 +10762,7 @@ function Update-ExchangeGovernanceTables {
     foreach ($mailbox in $mailboxesToInspect) {
         $mailboxAddress = [string]$mailbox.PrimarySmtpAddress
         $previousWarningPreference = $WarningPreference
+        $errorCountBeforeInboxRuleLookup = $global:Error.Count
         try {
             $WarningPreference = 'SilentlyContinue'
             $inboxRules = @(Get-InboxRule -Mailbox $mailboxAddress -WarningAction SilentlyContinue -ErrorAction Stop)
@@ -10670,6 +10803,9 @@ function Update-ExchangeGovernanceTables {
             }
         }
         catch {
+            while ($global:Error.Count -gt $errorCountBeforeInboxRuleLookup) {
+                $global:Error.RemoveAt(0)
+            }
             Write-Log -Type DEBUG -Message "[Update-ExchangeGovernanceTables] Inbox rule lookup failed for ${mailboxAddress}: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
         finally {
@@ -10881,14 +11017,29 @@ function Update-TierBOperationalSummaries {
         return $updated
     }
 
-    if (Get-Command -Name 'Get-SPOTenant' -ErrorAction SilentlyContinue) {
-        try {
-            $spoTenant = Get-SPOTenant -ErrorAction Stop
-            $spoTenantSettingsRetrieved = $true
-            $null = Update-SharePointSummaryFromSettingsObject -SettingsObject $spoTenant -SourceLabel 'SharePoint Online Management Shell' -ApiVersion 'SPO'
+    $sharePointConnected = $false
+    $scriptConnectionResult = Get-Variable -Name connectionResult -Scope Script -ErrorAction SilentlyContinue
+    if ($scriptConnectionResult -and $scriptConnectionResult.Value -and $scriptConnectionResult.Value.PSObject.Properties['SharePointOnline']) {
+        $sharePointConnectionValue = $scriptConnectionResult.Value.SharePointOnline
+        if ($sharePointConnectionValue -is [bool]) {
+            $sharePointConnected = $sharePointConnectionValue
         }
-        catch {
-            Write-Log -Type DEBUG -Message "[Update-TierBOperationalSummaries] SharePoint tenant sharing summary lookup failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        elseif (-not [string]::IsNullOrWhiteSpace([string]$sharePointConnectionValue)) {
+            $sharePointConnected = ([string]$sharePointConnectionValue -match '^(?i:true|1|yes|connected)$')
+        }
+    }
+
+    if ($sharePointConnected) {
+        $spoTenantCommand = Get-Command -Name 'Get-SPOTenant' -ErrorAction SilentlyContinue
+        if ($spoTenantCommand) {
+            try {
+                $spoTenant = Get-SPOTenant -ErrorAction Stop
+                $spoTenantSettingsRetrieved = $true
+                $null = Update-SharePointSummaryFromSettingsObject -SettingsObject $spoTenant -SourceLabel 'SharePoint Online Management Shell' -ApiVersion 'SPO'
+            }
+            catch {
+                Write-Log -Type DEBUG -Message "[Update-TierBOperationalSummaries] SharePoint tenant sharing summary lookup failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+            }
         }
     }
 
@@ -11062,15 +11213,19 @@ function Update-TierBOperationalSummaries {
     }
 
     $anonymousLinkExpirationDays = $null
-    try {
-        $anonymousLinkExpirationDays = [int]$sharePointSummary['AnonymousLinkExpirationInDays']
+    $anonymousLinkExpirationText = [string]$sharePointSummary['AnonymousLinkExpirationInDays']
+    $parsedAnonymousLinkExpirationDays = 0
+    if (
+        -not [string]::IsNullOrWhiteSpace($anonymousLinkExpirationText) -and
+        [int]::TryParse($anonymousLinkExpirationText, [ref]$parsedAnonymousLinkExpirationDays)
+    ) {
+        $anonymousLinkExpirationDays = $parsedAnonymousLinkExpirationDays
     }
-    catch {}
     if ($null -ne $anonymousLinkExpirationDays) {
         $sharePointSummary['RequireAnonymousLinksExpire'] = [bool]($anonymousLinkExpirationDays -gt 0)
     }
-    elseif ([string]$sharePointSummary['AnonymousLinkExpirationInDays'] -in @('Not collected', 'Not surfaced in current source', 'Not available in current app-only source')) {
-        $sharePointSummary['RequireAnonymousLinksExpire'] = [string]$sharePointSummary['AnonymousLinkExpirationInDays']
+    elseif ($anonymousLinkExpirationText -in @('Not collected', 'Not surfaced in current source', 'Not available in current app-only source')) {
+        $sharePointSummary['RequireAnonymousLinksExpire'] = $anonymousLinkExpirationText
     }
 
     $externalResharingEnabledValue = $sharePointSummary['ExternalResharingEnabled']
@@ -11928,8 +12083,8 @@ else {
     Write-Host
     Write-Host "Consolidating Discovery Report data for each user / object into one file" -ForegroundColor Black -BackgroundColor Green
     Invoke-ProfileAwareAssessmentStep -Name 'Combined user/mailbox reporting' -Enabled $script:ProfileCollectionPlan.BuildCombinedUserMailboxProjection -SkipReason 'Reserved for TenantToTenantMigration / All profile runs.' -ScriptBlock { Report-UserAndMailboxStats }
-    Invoke-AssessmentProgressStep -Name 'Exchange governance Tier B summaries' -ScriptBlock { Update-ExchangeGovernanceTables -TenantStatsHash $script:tenantStatsHash -DetailLevel $reportingMode }
-    Invoke-AssessmentProgressStep -Name 'Operational Tier B summaries' -ScriptBlock { Update-TierBOperationalSummaries -TenantStatsHash $script:tenantStatsHash }
+    Invoke-AssessmentProgressStep -Name 'Exchange governance summaries' -ScriptBlock { Update-ExchangeGovernanceTables -TenantStatsHash $script:tenantStatsHash -DetailLevel $reportingMode }
+    Invoke-AssessmentProgressStep -Name 'Operational governance summaries' -ScriptBlock { Update-TierBOperationalSummaries -TenantStatsHash $script:tenantStatsHash }
     Invoke-AssessmentProgressStep -Name 'External sharing and guest access summaries' -ScriptBlock { Update-ExternalExposureSummaries -TenantStatsHash $script:tenantStatsHash }
 
     Invoke-ProfileAwareAssessmentStep -Name 'Ownership governance tables' -Enabled $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables -SkipReason 'Ownership governance table build is disabled for this profile.' -ScriptBlock { Update-OwnershipGovernanceTables -TenantStatsHash $script:tenantStatsHash }

@@ -44,6 +44,7 @@ If you already connected to Microsoft Graph and Exchange Online in the same Powe
 The launcher also reuses the repo modules already loaded from this repository in the same PowerShell session, so repeat runs should not keep re-importing the assessment modules.
 If you want the assessment to continue without the startup permission gate, you can add `-SkipPermissionPreflight`. This skips the initial required-access validation and allows collection to continue on a best-effort basis, so missing permissions may still show up later as workload-specific warnings or failures.
 The permission preflight now shows the specific check being evaluated, then prints a short summary of how many checks succeeded and how many remain. It uses the current Graph token claims to fast-pass the clear-cut permissions and keeps live endpoint probes for the more ambiguous checks, so startup validation is usually faster while still catching real workload-specific access gaps. Non-blocking checks such as `OnPremDirectorySynchronization.Read.All` are surfaced as structured preflight warnings so the operator can see the remaining gap without relying on a raw Graph 403 line.
+Assessment progress output now uses plain-language governance step names instead of older internal `Tier B` terminology.
 
 Purview retention and DLP policy collection is a separate compliance PowerShell surface in this workflow. It uses `Connect-IPPSSession` and the compliance cmdlets `Get-RetentionCompliancePolicy` and `Get-DlpCompliancePolicy` rather than the main Graph collector path.
 If that connection fails during permission preflight, the run now reports the auth path used, the tenant organization value when applicable, and a next-step message so the operator can tell whether the problem is missing module availability, unsupported auth mode, certificate/app access, or missing compliance cmdlets after connect.
@@ -156,6 +157,7 @@ For app-based operation beyond Graph:
 - Purview compliance PowerShell supports delegated auth and certificate auth in this workflow.
 - Purview compliance PowerShell does not support client-secret auth in this workflow.
 - Teams PowerShell in this workflow is still delegated-only, so app-based runs may have reduced Teams detail.
+- Teams member and guest counts are optional enrichment in app-based Graph runs. If `TeamMember.Read.All` or `TeamMember.ReadWrite.All` is not granted, the assessment continues with team and channel inventory only.
 
 ### Workload Notes
 
@@ -163,6 +165,7 @@ For app-based operation beyond Graph:
 - SharePoint Online admin connectivity is only used for delegated runs in this workflow. Certificate and client-secret runs skip the SharePoint module import and use Microsoft Graph for SharePoint and OneDrive collection.
 - Purview retention/DLP collection depends on compliance PowerShell cmdlets being available after `Connect-IPPSSession`. If that connection cannot be established, governance/compliance policy sections will be skipped or can stop the run during permission preflight.
 - Teams connectivity is non-blocking in app-based auth modes, but some Teams-specific enrichment may be reduced or skipped.
+- Team and channel inventory remain part of the standard app-based path, but member-count and guest-count enrichment require the broader Teams member read scope set.
 
 ## Default Output Location
 

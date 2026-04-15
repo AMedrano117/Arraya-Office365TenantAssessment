@@ -1740,6 +1740,7 @@ function New-CustomerAssessmentDocumentBlocks {
     $guestMfaCurrentStateSummaryText = Convert-ToCustomerAssessmentNarrativeText -Text (Get-ArrayaObjectValue -Object $guestMfaExperienceSummary -Names @('CurrentStateSummary'))
     $guestMfaUserExperienceText = Convert-ToCustomerAssessmentNarrativeText -Text (Get-ArrayaObjectValue -Object $guestMfaExperienceSummary -Names @('UserExperience'))
     $guestMfaDesiredStateText = Convert-ToCustomerAssessmentNarrativeText -Text (Get-ArrayaObjectValue -Object $guestMfaExperienceSummary -Names @('DesiredState'))
+    $guestMfaRecommendationStrategyText = Convert-ToCustomerAssessmentNarrativeText -Text (Get-ArrayaObjectValue -Object $guestMfaExperienceSummary -Names @('RecommendationStrategy'))
     $largestDomainsByRecipients = @(
         $domainRows |
             Sort-Object { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('TotalDomainRecipients')) } -Descending |
@@ -2291,6 +2292,10 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaWhyThisMattersText)) { $guestMfaWhyThisMattersText } else { ("This matters because guest access combines identity risk with collaboration exposure. Once guest lifecycle, sharing defaults, and sponsor accountability drift at the same time, it becomes harder to validate which external access is still justified. Default inbound MFA trust is currently shown as {0}, which means cross-tenant trust decisions should be reviewed alongside guest invitation settings rather than as a separate design concern." -f $defaultInboundMfaTrustText) })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaCurrentStateSummaryText)) { $guestMfaCurrentStateSummaryText } else { ("Default inbound MFA trust is currently shown as {0}, so guest MFA design should be reviewed alongside guest invitation settings rather than as a separate design concern." -f $defaultInboundMfaTrustText) })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaUserExperienceText)) { $guestMfaUserExperienceText } else { 'When guest MFA is enforced, the desired experience is to require strong authentication and trust the guest home-tenant MFA where that design is supported and approved.' })) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaDesiredStateText)) { $guestMfaDesiredStateText } else { 'The desired baseline is strong guest authentication with trusted home-tenant MFA where supported and approved, not a blanket requirement for every guest to register separately in the resource tenant.' })) -Style 'Normal')) | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($guestMfaRecommendationStrategyText)) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text $guestMfaRecommendationStrategyText -Style 'Normal')) | Out-Null
+    }
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.4 Entra Applications and Access Review' -Style 'Heading2')) | Out-Null
     if ($applicationInventoryClearlyEmpty) {
@@ -2438,26 +2443,103 @@ function New-CustomerAssessmentDocumentBlocks {
     else {
         @((New-CustomerWordTableRow -Cells @('Not validated from the reviewed data', 'Not validated from the reviewed data', 'Not validated from the reviewed data', 'Not validated from the reviewed data', 'Not validated from the reviewed data')))
     }
-    $mfaScopeDetailRows = if ($mfaScopeRowsSorted.Count -gt 0) {
+    $guestScopeKeywordPattern = '(?i)guest|external|b2b|partner'
+    $guestRelevantMfaScopeRows = @(
+        $mfaScopeRowsSorted | Where-Object {
+            $scopeCompositeText = @(
+                (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('PolicyName')) -Default ''),
+                (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ObjectType')) -Default ''),
+                (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName', 'Identifier')) -Default ''),
+                (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Notes')) -Default '')
+            ) -join ' '
+            $scopeCompositeText -match $guestScopeKeywordPattern
+        }
+    )
+    $guestRelevantExcludeCount = @($guestRelevantMfaScopeRows | Where-Object {
+        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ScopeType')) -Default '').ToLowerInvariant() -eq 'exclude'
+    }).Count
+    $guestRelevantIncludeCount = @($guestRelevantMfaScopeRows | Where-Object {
+        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ScopeType')) -Default '').ToLowerInvariant() -eq 'include'
+    }).Count
+    $mfaScopeDriverText = if ($mfaUncoveredGuestCount -le 0 -and $mfaGapRowsSorted.Count -gt 0) {
+        'The reviewed enabled guest population appears covered by the active MFA baseline, so the current guest story is more about maintaining that design than closing a large enforcement gap.'
+    }
+    elseif ($mfaUncoveredGuestCount -le 0) {
+        'The reviewed data did not surface a large guest-specific MFA gap, but guest coverage should still be validated alongside cross-tenant trust and invitation controls.'
+    }
+    elseif ($guestRelevantMfaScopeRows.Count -eq 0 -or $guestCoverageStateText -match '(?i)^not clearly detected|^not validated') {
+        'The guest MFA gap appears to be driven mainly by the absence of a clearly guest-specific enforcement pattern in the reviewed baseline rather than by one isolated exclusion.'
+    }
+    elseif ($guestRelevantExcludeCount -gt 0) {
+        'The guest MFA gap appears to be driven by a mix of explicit guest or external exclusions and guests falling outside the active include scope.'
+    }
+    else {
+        'The guest MFA gap appears to be driven mostly by guests sitting outside the active include scope rather than by a large number of explicit guest exclusions.'
+    }
+    $mfaScopeInterpretationText = 'Some Conditional Access policies naturally target employee, admin, or workload-specific populations, so a long raw include and exclude list is not the best way to understand guest risk. The summary below focuses on what is actually shaping guest coverage, while the workbook tab MfaEnforcementScopeReview keeps the full policy detail for implementation planning.'
+    $mfaScopeExampleSourceRows = @(
+        $mfaScopeRowsSorted |
+            Sort-Object `
+                @{ Expression = {
+                    $scopeTypeText = (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ScopeType')) -Default '').ToLowerInvariant()
+                    $scopeCompositeText = @(
+                        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('PolicyName')) -Default ''),
+                        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ObjectType')) -Default ''),
+                        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName', 'Identifier')) -Default ''),
+                        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Notes')) -Default '')
+                    ) -join ' '
+                    if ($scopeCompositeText -match $guestScopeKeywordPattern -and $scopeTypeText -eq 'exclude') { 0 }
+                    elseif ($scopeCompositeText -match $guestScopeKeywordPattern) { 1 }
+                    elseif ($scopeTypeText -eq 'exclude') { 2 }
+                    else { 3 }
+                } }, `
+                @{ Expression = {
+                    $affectedUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('AffectedEnabledUsers'))
+                    if ($null -eq $affectedUsers) { -1 } else { -1 * $affectedUsers }
+                } }, `
+                @{ Expression = { (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('PolicyName')) -Default '').ToLowerInvariant() } }, `
+                @{ Expression = { (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName', 'Identifier')) -Default '').ToLowerInvariant() } }
+    )
+    $mfaScopeExampleRows = if ($mfaScopeExampleSourceRows.Count -gt 0) {
         @(
-            $mfaScopeRowsSorted |
+            $mfaScopeExampleSourceRows |
+                Select-Object -First 6 |
                 ForEach-Object {
+                    $policyNameText = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('PolicyName')) -Default 'Not validated from the reviewed data'
+                    $scopeTypeText = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ScopeType')) -Default 'Not validated from the reviewed data'
+                    $objectTypeText = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ObjectType')) -Default ''
+                    $displayNameText = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName', 'Identifier')) -Default 'Not validated from the reviewed data'
+                    $scopeSignalText = if (-not [string]::IsNullOrWhiteSpace($objectTypeText) -and $objectTypeText -ne 'Not validated from the reviewed data') {
+                        '{0}: {1}' -f $objectTypeText, $displayNameText
+                    }
+                    else {
+                        $displayNameText
+                    }
+                    $scopeCompositeText = @($policyNameText, $objectTypeText, $displayNameText, (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Notes')) -Default '')) -join ' '
+                    $observationText = if ($scopeCompositeText -match $guestScopeKeywordPattern -and $scopeTypeText.ToLowerInvariant() -eq 'exclude') {
+                        'This example shows an explicit guest or external exclusion path that can reduce guest MFA coverage.'
+                    }
+                    elseif ($scopeCompositeText -match $guestScopeKeywordPattern) {
+                        'This example shows guest or external access being targeted directly in the MFA policy scope.'
+                    }
+                    elseif ($scopeTypeText.ToLowerInvariant() -eq 'exclude') {
+                        'This example shows an exclusion path that matters if that excluded group overlaps guest access or guest sponsors.'
+                    }
+                    else {
+                        'This example shows one of the groups shaping the active MFA include scope for the current baseline.'
+                    }
+
                     New-CustomerWordTableRow -Cells @(
-                        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('PolicyName')) -Default 'Not validated from the reviewed data'),
-                        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ScopeType')) -Default 'Not validated from the reviewed data'),
-                        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ObjectType')) -Default 'Not validated from the reviewed data'),
-                        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName', 'Identifier')) -Default 'Not validated from the reviewed data'),
-                        $(if ($null -ne (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('AffectedEnabledUsers')))) {
-                            [string](Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('AffectedEnabledUsers')))
-                        } else {
-                            'Not validated from the reviewed data'
-                        })
+                        $policyNameText,
+                        $scopeTypeText,
+                        $scopeSignalText,
+                        $observationText
                     )
                 }
         )
     }
     else {
-        @((New-CustomerWordTableRow -Cells @('Not validated from the reviewed data', 'Not validated from the reviewed data', 'Not validated from the reviewed data', 'Not validated from the reviewed data', 'Not validated from the reviewed data')))
+        @((New-CustomerWordTableRow -Cells @('Not validated from the reviewed data', 'Not validated from the reviewed data', 'Not validated from the reviewed data', 'Not validated from the reviewed data')))
     }
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '6.0 Authentication Methods, MFA Enrollment, and MFA Enforcement' -Style 'Heading1')) | Out-Null
@@ -2503,13 +2585,18 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("Enforcement shows whether users are actually being required to perform MFA, not just whether they have registered methods. In this review, the policy baseline shows {0} enabled Conditional Access policy/policies that require MFA and {1} still in report-only mode. Based on the reviewed enabled-user inventory, those enabled MFA policies appear to cover {2} of {3} enabled reviewed user(s), or {4}. Report-only policies do not count as enforced coverage. Detailed uncovered-user and policy-scope review rows are available in the workbook tabs MfaEnforcementGapUsers and MfaEnforcementScopeReview." -f $(if ($null -eq $enabledMfaEnforcementPolicies) { 'an unconfirmed number of' } else { $enabledMfaEnforcementPolicies }), $(if ($null -eq $reportOnlyMfaEnforcementPolicies) { 'an unconfirmed number of policies' } else { $reportOnlyMfaEnforcementPolicies }), $(if ($null -eq $mfaUsersCoveredByEnabledPolicies) { 'an unconfirmed number' } else { $mfaUsersCoveredByEnabledPolicies }), $(if ($null -eq $mfaEnabledUsersReviewed) { 'an unconfirmed number' } else { $mfaEnabledUsersReviewed }), $(if ($null -eq $mfaUserCoveragePercent) { 'an unconfirmed percentage' } else { "$mfaUserCoveragePercent%" })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaUserExperienceText)) { $guestMfaUserExperienceText } else { 'Guest-user experience should be reviewed separately from enrollment counts because strong guest authentication can often rely on the guest home-tenant MFA rather than a separate registration in this tenant.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaDesiredStateText)) { $guestMfaDesiredStateText } else { 'The desired baseline is strong guest authentication with trusted home-tenant MFA where supported and approved, not a blanket requirement for every guest to register separately in the resource tenant.' })) -Style 'Normal')) | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($guestMfaRecommendationStrategyText)) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text $guestMfaRecommendationStrategyText -Style 'Normal')) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'MFA Enforcement Gap Summary' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Coverage Gap Signal', 'Current State') -Rows $mfaGapSummaryRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("Of the {0} enabled reviewed user(s) not currently covered by active MFA enforcement, {1} appear explicitly excluded while {2} fall outside the active include scope. The table below highlights the first {3} uncovered identities so the team can see whether the current gap is being driven by exclusions, narrow targeting, or both." -f $(if ($null -eq $mfaUsersNotCoveredByEnabledPolicies) { 'unconfirmed' } else { $mfaUsersNotCoveredByEnabledPolicies }), $mfaExcludedUserCount, $mfaOutsideIncludeUserCount, [math]::Min($mfaGapRowsSorted.Count, 15)) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Top Users Not Covered by Enabled MFA Enforcement' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Display Name', 'User Principal Name', 'User Type', 'Gap Category', 'Related Policy / Scope') -Rows $mfaGapDetailRows)) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Enabled MFA Policy Scope Review' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Policy', 'Scope Type', 'Object Type', 'Display Name', 'Affected Enabled Users') -Rows $mfaScopeDetailRows)) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Guest MFA Coverage Drivers' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("Guest users currently show {0} covered and {1} uncovered account(s) in the reviewed enabled-user inventory. {2} There are {3} guest or external-focused include row(s) and {4} guest or external-focused exclusion row(s) surfaced in the reviewed policy scope. {5}" -f $(if ($null -eq $mfaGuestUsersCoveredByEnabledPolicies) { 'an unconfirmed number of' } else { $mfaGuestUsersCoveredByEnabledPolicies }), $mfaUncoveredGuestCount, $mfaScopeDriverText, $guestRelevantIncludeCount, $guestRelevantExcludeCount, $mfaScopeInterpretationText) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Representative MFA Scope Examples' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordTableBlock -Headers @('Policy', 'Scope Type', 'Scope Signal', 'Why It Matters') -Rows $mfaScopeExampleRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $identityConsultativeSummary) { $identityConsultativeSummary.RecommendationSupport } else { 'This section supports the identity and access recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '7.0 Password Writeback and Self-Service Password Reset' -Style 'Heading1')) | Out-Null
