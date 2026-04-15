@@ -1676,6 +1676,8 @@ function Get-CustomerGuestMfaExperienceSummary {
     $guestCoverageDetected = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $MfaEnforcementSummaryRecord -Names @('GuestOrExternalCoverage'))
     $enabledPoliciesRequiringMfa = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $MfaEnforcementSummaryRecord -Names @('EnabledPoliciesRequiringMfa'))
     $guestUserCoveragePercent = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $MfaEnforcementSummaryRecord -Names @('GuestUserCoveragePercent'))
+    $guestCoverageLow = ($null -ne $guestUserCoveragePercent -and $guestUserCoveragePercent -lt 80)
+    $guestCoverageNotClear = ($guestCoverageDetected -eq $false -or $null -eq $guestUserCoveragePercent)
 
     $inboundTrustBoolean = Convert-ToArrayaBoolean $defaultInboundMfaTrustRaw
     $trustValidated = -not ($defaultInboundMfaTrust -match '(?i)^not validated|^not available')
@@ -1715,24 +1717,42 @@ function Get-CustomerGuestMfaExperienceSummary {
         'The reviewed data did not confirm that home-tenant MFA trust is configured.'
     }
 
+    $scopeInterpretationText = 'Some Conditional Access policies naturally target employee, admin, or workload-specific populations, so the guest risk story should be read from guest coverage, guest-specific targeting, and explicit exclusions rather than from every raw include and exclude row.'
+
     $userExperienceText = if ($trustConfigured -and ($hasCrossTenantAccessPolicy -ne $false)) {
-        'When guest MFA is enforced and inbound MFA trust is configured, many guests can satisfy the requirement with the MFA they already complete in their home tenant instead of registering separately in this tenant.'
+        'When guest MFA is enforced and inbound MFA trust is configured, many guests can satisfy the requirement with the MFA they already complete in their home tenant instead of registering separately in this tenant. That experience is usually best reserved for trusted partner tenants with meaningful ongoing collaboration.'
     }
     elseif ($trustNotConfigured) {
-        'When guest MFA is enforced without trusted home-tenant MFA, guest users may see additional verification prompts and a more disruptive sign-in experience depending on the collaboration flow and identity type.'
+        'When guest MFA is enforced without trusted home-tenant MFA, guest users may see additional verification prompts and a more disruptive sign-in experience depending on the collaboration flow and identity type. That is why selective trust for validated partner tenants is usually a better first step than broad trust for every external tenant.'
     }
     else {
-        'The reviewed data did not confirm that home-tenant MFA trust is configured, so guest-user experience may be more disruptive until that design is validated.'
+        'The reviewed data did not confirm that home-tenant MFA trust is configured, so guest-user experience may be more disruptive until that design is validated. A safer default is to trust high-collaboration partner tenants first instead of enabling broad trust immediately.'
+    }
+
+    $recommendationStrategyText = if ($guestCoverageLow -and $trustConfigured -and ($hasCrossTenantAccessPolicy -ne $false)) {
+        'Recommended approach: keep or create a guest-specific Conditional Access policy requiring MFA for the uncovered population, then use inbound MFA trust first for the partner tenants with the most collaboration and a validated trust relationship instead of broad trust for every external tenant.'
+    }
+    elseif ($trustConfigured -and ($hasCrossTenantAccessPolicy -ne $false)) {
+        'Recommended approach: keep a guest-specific Conditional Access policy requiring MFA in place, and trust home-tenant MFA first for the partner tenants with the most collaboration and a validated trust relationship rather than enabling broad trust for every external tenant.'
+    }
+    elseif ($trustNotConfigured -and ($guestCoverageLow -or $guestCoverageNotClear)) {
+        'Recommended approach: create or validate a guest-specific Conditional Access policy requiring MFA, then enable inbound MFA trust first for the external tenants with the most collaboration and a validated trust relationship. Keep other guest access on stricter resource-tenant enforcement until trust is deliberately approved.'
+    }
+    elseif ($trustNotConfigured) {
+        'Recommended approach: keep guest MFA requirements explicit in Conditional Access, then evaluate inbound MFA trust first for the external tenants with the most collaboration before expanding trust more broadly.'
+    }
+    else {
+        'Recommended approach: start with a guest-specific Conditional Access policy requiring MFA, then validate which partner tenants justify inbound MFA trust before expanding that trust beyond a small strategic set.'
     }
 
     $recommendationImpactText = if ($trustConfigured -and ($hasCrossTenantAccessPolicy -ne $false)) {
-        'Guest users should expect MFA to be required for protected access, but where home-tenant MFA trust is configured they can often use their existing MFA from the tenant they belong to instead of registering again here.'
+        'Guest users should expect MFA to be required for protected access, but trusted strategic partner tenants can often satisfy that requirement with the MFA already completed in the tenant they belong to instead of registering again here.'
     }
     elseif ($trustNotConfigured) {
-        'Guest users should expect stronger sign-in requirements, and some may see additional verification or separate registration friction until trusted home-tenant MFA is configured or the guest-access design is narrowed.'
+        'Guest users should expect stronger sign-in requirements, and some may see additional verification or separate registration friction until trusted home-tenant MFA is configured for the partner tenants that justify it.'
     }
     else {
-        'Guest users should expect stronger sign-in requirements. The reviewed data did not confirm home-tenant MFA trust, so the access experience should be validated before broad enforcement.'
+        'Guest users should expect stronger sign-in requirements. The reviewed data did not confirm home-tenant MFA trust, so the access experience should be validated before broad enforcement or broad trust decisions are made.'
     }
 
     return [pscustomobject]@{
@@ -1744,9 +1764,10 @@ function Get-CustomerGuestMfaExperienceSummary {
         EnabledPoliciesRequiringMfa     = $enabledPoliciesRequiringMfa
         GuestUserCoveragePercent        = $guestUserCoveragePercent
         WhyThisMatters                  = "Guest MFA enforcement matters because guest identities are external accounts with access into this tenant's resources. Without active MFA requirements, guest collaboration can bypass the same identity assurance expected for internal users. $guestInvitationContext"
-        CurrentStateSummary             = "$currentCoverageText $trustStateText"
+        CurrentStateSummary             = "$currentCoverageText $trustStateText $scopeInterpretationText"
         UserExperience                  = $userExperienceText
-        DesiredState                    = 'The desired baseline is to require strong guest authentication and trust the guest home-tenant MFA where supported and approved, rather than asking every guest to register separately in the resource tenant.'
+        DesiredState                    = 'The desired baseline is to require strong guest authentication through a guest-specific Conditional Access policy and to trust the guest home-tenant MFA where supported and approved, rather than asking every guest to register separately in the resource tenant or broadly trusting every external tenant by default.'
+        RecommendationStrategy          = $recommendationStrategyText
         RecommendationImpactText        = $recommendationImpactText
     }
 }
@@ -5258,13 +5279,13 @@ if ($permissionGrantPolicies.Count -gt 0) {
 $guestSummaryRecord = if ($guestSignInSummary) { Get-ArrayaObjectValue -Object $guestSignInSummary -Names @('Summary') } else { $null }
 $inactiveGuests90Days = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $guestSummaryRecord -Names @('InactiveGuests90Days'))
 if ($null -ne $inactiveGuests90Days -and $inactiveGuests90Days -gt 0) {
-    Add-HeuristicFinding -Store $findingStore -RuleId 'ID-005' -Area 'Identity Governance' -Category 'Identity Governance' -Severity $(if ($inactiveGuests90Days -ge 10) { 'High' } else { 'Medium' }) -Finding 'Inactive guest accounts were identified by the Tier B sign-in summary.' -Recommendation 'Review stale guest identities, validate sponsor ownership, and remove or disable guests that are no longer required.' -CurrentValue "$inactiveGuests90Days inactive guest account(s) over 90 days" -TargetValue 'Inactive guest accounts reviewed and dispositioned' -Source 'Summary/GuestSignIn' -RelatedWorksheet 'GuestSignInSummary' -RelatedSection 'Guest Access'
+    Add-HeuristicFinding -Store $findingStore -RuleId 'ID-005' -Area 'Identity Governance' -Category 'Identity Governance' -Severity $(if ($inactiveGuests90Days -ge 10) { 'High' } else { 'Medium' }) -Finding 'Inactive guest accounts were identified by the guest sign-in governance summary.' -Recommendation 'Review stale guest identities, validate sponsor ownership, and remove or disable guests that are no longer required.' -CurrentValue "$inactiveGuests90Days inactive guest account(s) over 90 days" -TargetValue 'Inactive guest accounts reviewed and dispositioned' -Source 'Summary/GuestSignIn' -RelatedWorksheet 'GuestSignInSummary' -RelatedSection 'Guest Access'
 }
 
 $privilegedSummaryRecord = if ($privilegedAccessSummary) { Get-ArrayaObjectValue -Object $privilegedAccessSummary -Names @('Summary') } else { $null }
 $stalePrivilegedSummary = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $privilegedSummaryRecord -Names @('StalePrivilegedAccounts90Days'))
 if ($null -ne $stalePrivilegedSummary -and $stalePrivilegedSummary -gt 0) {
-    Add-HeuristicFinding -Store $findingStore -RuleId 'ID-006' -Area 'Identity Governance' -Category 'Identity Governance' -Severity 'Medium' -Finding 'Privileged identities with stale sign-in activity were identified by the Tier B summary.' -Recommendation 'Review stale privileged accounts, remove unused role assignments, and validate emergency access documentation.' -CurrentValue "$stalePrivilegedSummary stale privileged account(s) over 90 days" -TargetValue '0 stale privileged accounts' -Source 'Summary/PrivilegedAccess' -RelatedWorksheet 'PrivilegedAccessSummary' -RelatedSection 'Privileged Access'
+    Add-HeuristicFinding -Store $findingStore -RuleId 'ID-006' -Area 'Identity Governance' -Category 'Identity Governance' -Severity 'Medium' -Finding 'Privileged identities with stale sign-in activity were identified by the privileged-access governance summary.' -Recommendation 'Review stale privileged accounts, remove unused role assignments, and validate emergency access documentation.' -CurrentValue "$stalePrivilegedSummary stale privileged account(s) over 90 days" -TargetValue '0 stale privileged accounts' -Source 'Summary/PrivilegedAccess' -RelatedWorksheet 'PrivilegedAccessSummary' -RelatedSection 'Privileged Access'
 }
 
 $enterpriseAppSummaryRecord = if ($enterpriseApplicationSummary) { Get-ArrayaObjectValue -Object $enterpriseApplicationSummary -Names @('Summary') } else { $null }

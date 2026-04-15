@@ -23,6 +23,14 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Not -Match '\$loadedReportingModule\.Path -ne \$resolvedReportingManifestPath'
     }
 
+    It 'uses plain-language governance progress labels instead of legacy Tier B terminology' {
+        $script:collectorSource | Should -Match 'Exchange governance summaries'
+        $script:collectorSource | Should -Match 'Operational governance summaries'
+        $script:collectorSource | Should -Match 'governance findings'
+        $script:collectorSource | Should -Not -Match 'Exchange governance Tier B summaries'
+        $script:collectorSource | Should -Not -Match 'Operational Tier B summaries'
+    }
+
     It 'checks the critical Graph permissions used by the collector' {
         @(
             'Organization.Read.All'
@@ -149,6 +157,14 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Where-Object \{ Test-AssessmentConditionalAccessRequiresMfa -Policy \$_ \}'
     }
 
+    It 'removes handled non-fatal Exchange and directory-role probe errors from the session error stack' {
+        $script:collectorSource | Should -Match '\$errorCountBeforeRoleLookup = \$global:Error\.Count'
+        $script:collectorSource | Should -Match 'while \(\$global:Error\.Count -gt \$errorCountBeforeRoleLookup\)'
+        $script:collectorSource | Should -Match '\$errorCountBeforeInboxRuleLookup = \$global:Error\.Count'
+        $script:collectorSource | Should -Match 'while \(\$global:Error\.Count -gt \$errorCountBeforeInboxRuleLookup\)'
+        $script:collectorSource | Should -Match '\$global:Error\.RemoveAt\(0\)'
+    }
+
     It 'stores Conditional Access detail rows with stable unique keys and aligns MFA enforcement counts to CA summary totals' {
         $script:collectorSource | Should -Match '\$policyStorageKey'
         $script:collectorSource | Should -Match '\[string\]\$policy\.Id'
@@ -186,6 +202,12 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
             $escapedPattern = [regex]::Escape($_)
             $script:collectorSource | Should -Match $escapedPattern
         }
+        $script:collectorSource | Should -Match 'AnonymousLinkExpirationInDays'
+        $script:collectorSource | Should -Match '\[int\]::TryParse\(\$anonymousLinkExpirationText, \[ref\]\$parsedAnonymousLinkExpirationDays\)'
+        $script:collectorSource | Should -Match "Get-Variable -Name connectionResult -Scope Script -ErrorAction SilentlyContinue"
+        $script:collectorSource | Should -Match '\$sharePointConnectionValue = \$scriptConnectionResult\.Value\.SharePointOnline'
+        $script:collectorSource | Should -Match '\[string\]::IsNullOrWhiteSpace\(\[string\]\$sharePointConnectionValue\)'
+        $script:collectorSource | Should -Match '\$sharePointConnected = \(\[string\]\$sharePointConnectionValue -match ''\^\(\?i:true\|1\|yes\|connected\)\$''\)'
     }
 
     It 'builds a lightweight enterprise application inventory and SSO subset for non-minimum profiles' {
@@ -206,5 +228,50 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Checking Enterprise Applications for SSO'
         $script:collectorSource | Should -Match 'AuthenticationSSOApplications'
         $script:collectorSource | Should -Match '\$resolvedSsoApplicationRows'
+    }
+
+    It 'treats Teams member and guest counts as optional enrichment for app-based runs without TeamMember scopes' {
+        $script:collectorSource | Should -Match '\$teamsChannelExpansionAllowed = \$true'
+        $script:collectorSource | Should -Match '\$teamsChannelExpansionWarningLogged = \$false'
+        $script:collectorSource | Should -Match '\$teamsMemberExpansionAllowed = \$true'
+        $script:collectorSource | Should -Match '\$teamsMemberExpansionWarningLogged = \$false'
+        $script:collectorSource | Should -Match 'https://graph\.microsoft\.com/v1\.0/teams/\{0\}/allChannels'
+        $script:collectorSource | Should -Match 'https://graph\.microsoft\.com/v1\.0/teams/\{0\}/members'
+        $script:collectorSource | Should -Match 'Get-ArrayaGraphResource'
+        $script:collectorSource | Should -Match 'allChannels\?`\$select=displayName,membershipType'
+        $script:collectorSource | Should -Match 'members\?`\$select=id,email,userId,roles'
+        $script:collectorSource | Should -Match 'Teams channel inventory requires Channel\.ReadBasic\.All'
+        $script:collectorSource | Should -Match 'Teams member and guest counts require TeamMember.Read.All or TeamMember.ReadWrite.All in app-based Graph collection'
+        $script:collectorSource | Should -Match 'Continuing with team and channel inventory only'
+        $script:collectorSource | Should -Match '\$channelErrorCountBeforeFetch = \$global:Error\.Count'
+        $script:collectorSource | Should -Match '\$memberErrorCountBeforeFetch = \$global:Error\.Count'
+        $script:collectorSource | Should -Match 'while \(\$global:Error\.Count -gt \$channelErrorCountBeforeFetch\)'
+        $script:collectorSource | Should -Match 'while \(\$global:Error\.Count -gt \$memberErrorCountBeforeFetch\)'
+    }
+
+    It 'cleans up non-blocking hybrid-sync and health-command errors instead of leaving them in the session error stack' {
+        $script:collectorSource | Should -Match '\$syncFeatureErrorCountBeforeFetch = \$global:Error\.Count'
+        $script:collectorSource | Should -Match 'while \(\$global:Error\.Count -gt \$syncFeatureErrorCountBeforeFetch\)'
+        $script:collectorSource | Should -Match 'Get-Command Get-AzureADConnectHealthSyncServices -ErrorAction Ignore'
+        $script:collectorSource | Should -Match 'Get-Command Get-AzureADConnectHealthSyncErrors -ErrorAction Ignore'
+        $script:collectorSource | Should -Match 'Get-Command Get-AzureADConnectHealthSyncAlert -ErrorAction Ignore'
+    }
+
+    It 'safely parses privileged admin last sign-in timestamps without null cast noise' {
+        $script:collectorSource | Should -Match '\[datetime\]::TryParse\(\$lastSignInText, \[ref\]\$parsedLastSignIn\)'
+    }
+
+    It 'safely parses guest last sign-in timestamps and suppresses expected DNS / MSCommerce noise' {
+        $script:collectorSource | Should -Match '\$selfServiceErrorCountBeforeLookup = \$global:Error\.Count'
+        $script:collectorSource | Should -Match 'while \(\$global:Error\.Count -gt \$selfServiceErrorCountBeforeLookup\)'
+        $script:collectorSource | Should -Match 'Resolve-DnsName -Name \$domainName -Server 1\.1\.1\.1 -Type A -ErrorAction Ignore'
+        $script:collectorSource | Should -Match 'Resolve-DnsName -Name \("\{0\}\._domainkey\.\{1\}" -f \$selector, \$domainName\) -Server 1\.1\.1\.1 -Type CNAME -ErrorAction Ignore'
+    }
+
+    It 'guards version-specific B2B and Teams activity calls with supported command names and cleanup' {
+        $script:collectorSource | Should -Match 'Get-Command -Name ''Get-MgPolicyB2BManagementPolicy'' -ErrorAction Ignore'
+        $script:collectorSource | Should -Match '\$b2bPolicyErrorCountBeforeLookup = \$global:Error\.Count'
+        $script:collectorSource | Should -Match 'while \(\$global:Error\.Count -gt \$b2bPolicyErrorCountBeforeLookup\)'
+        $script:collectorSource | Should -Match '-ServiceName ''TeamsUser'''
     }
 }
