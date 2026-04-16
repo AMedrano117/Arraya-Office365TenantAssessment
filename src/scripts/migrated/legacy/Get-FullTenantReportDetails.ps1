@@ -146,6 +146,8 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$DataCollectionOnly,
     [Parameter(Mandatory = $false)]
+    [switch]$PreflightOnly,
+    [Parameter(Mandatory = $false)]
     [switch]$ExportOnly,
     [Parameter(Mandatory = $false)]
     [string]$TenantStatsJsonPath
@@ -182,12 +184,14 @@ $script:EffectiveOutputProfileLabel = $OutputProfile
 $isMergedOutputProfileSelection = $false
 $runExportOnly = $ExportOnly.IsPresent
 $runCollectionOnly = $DataCollectionOnly.IsPresent
+$runPreflightOnly = $PreflightOnly.IsPresent
 $script:LoadedTenantSnapshot = $null
 $script:CurrentGraphMode = 'UNKNOWN'
 $script:AssessmentAuthWorkloadPlan = $null
+$script:SuppressCollectorCompletionBanners = $true
 
-if ($runCollectionOnly -and $runExportOnly) {
-    throw "Data collection only mode and export only mode cannot be used together."
+if ((@($runCollectionOnly, $runExportOnly, $runPreflightOnly) | Where-Object { $_ }).Count -gt 1) {
+    throw "Data collection only mode, preflight only mode, and export only mode cannot be used together."
 }
 
 if ($runExportOnly -and [string]::IsNullOrWhiteSpace($TenantStatsJsonPath)) {
@@ -1444,6 +1448,54 @@ function Write-ConsoleSection {
     Write-Host ""
     Write-Host "[$Step] $Title" -ForegroundColor White
     Write-Host ('-' * 72) -ForegroundColor DarkGray
+}
+
+function Write-AssessmentCollectorCompletionBanner {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+        [Parameter(Mandatory = $false)]
+        [string]$ForegroundColor = 'Green'
+    )
+
+    if ($script:SuppressCollectorCompletionBanners) {
+        return
+    }
+
+    Write-Host $Message -ForegroundColor $ForegroundColor
+}
+
+function Write-ConnectionPreflightSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [pscustomobject]$ConnectionResult,
+        [Parameter(Mandatory = $false)]
+        [switch]$PermissionPreflightSkipped
+    )
+
+    $connectedWorkloads = @($ConnectionResult.ConnectedWorkloads | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    $fallbackWorkloads = @($ConnectionResult.FallbackWorkloads | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    $skippedWorkloads = @($ConnectionResult.SkippedWorkloads | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+
+    Write-Host ''
+    Write-Host 'Connection / preflight ready.' -ForegroundColor Green
+    Write-Host ("  Connected workloads: {0}" -f $(if ($connectedWorkloads.Count -gt 0) { $connectedWorkloads -join ', ' } else { 'None' })) -ForegroundColor DarkGray
+    if ($fallbackWorkloads.Count -gt 0) {
+        Write-Host ("  Fallback workloads: {0}" -f ($fallbackWorkloads -join ', ')) -ForegroundColor DarkGray
+    }
+    if ($skippedWorkloads.Count -gt 0) {
+        Write-Host ("  Skipped workloads: {0}" -f ($skippedWorkloads -join ', ')) -ForegroundColor Yellow
+    }
+
+    $permissionSummary = if ($PermissionPreflightSkipped) {
+        'Skipped by request'
+    }
+    else {
+        'Passed for required workloads'
+    }
+    Write-Host ("  Permission checks: {0}" -f $permissionSummary) -ForegroundColor $(if ($PermissionPreflightSkipped) { 'Yellow' } else { 'DarkGray' })
 }
 
 function Invoke-QuietRestMethod {
@@ -3915,7 +3967,7 @@ function Test-AssessmentPermissionPreflight {
 
     switch ($Workload) {
         'Graph' {
-            foreach ($graphCheck in @($graphChecks)) {
+            foreach ($graphCheck in $graphChecks) {
                 $selectedGraphChecks.Add($graphCheck) | Out-Null
             }
             $summaryLabel = 'Graph preflight summary'
@@ -3925,7 +3977,7 @@ function Test-AssessmentPermissionPreflight {
             $warningLead = 'Graph preflight found non-blocking access gaps. The assessment will continue with validation notes for the affected fields.'
         }
         'ExchangeOnline' {
-            foreach ($exchangeCheck in @($exchangeChecks)) {
+            foreach ($exchangeCheck in $exchangeChecks) {
                 $selectedExchangeChecks.Add($exchangeCheck) | Out-Null
             }
             $summaryLabel = 'Exchange preflight summary'
@@ -5190,7 +5242,7 @@ function Get-EmailActivityInsights {
     }
     finally {
         $completedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-        Write-Host "Completed in $($completedTime)" -ForegroundColor Green
+        Write-AssessmentCollectorCompletionBanner -Message "Completed in $($completedTime)"
         Write-Log -Type INFO -Message "[Get-EmailActivityInsights] COMPLETED: Gathering email activity details in $($completedTime)" -ExportFileLocation $ExportDetails
     }
 }
@@ -5438,7 +5490,7 @@ function Get-AllUnifiedGroups {
         Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Completed
         Write-ProgressHelper -Total 1 -Id $hashProgressId -Activity "Adding Unified Group data to Hash" -Completed
         Write-Progress -Id $statsProgressId -Activity "Gathering Unified Group Mailbox Statistics" -Completed
-        Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+        Write-AssessmentCollectorCompletionBanner -Message "Completed in $($CompletedTime)"
         Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] COMPLETED: Gathering all Unified Groups in $($CompletedTime)" -ExportFileLocation $ExportDetails
     }
 }
@@ -6128,7 +6180,7 @@ function Get-SharePointAndOneDriveSites {
     }
    
     $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-    Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+    Write-AssessmentCollectorCompletionBanner -Message "Completed in $($CompletedTime)"
     Write-Log -Type Info -Message "[Get-SharePointAndOneDriveSites] COMPLETED: Gathering all SharePoint and OneDrive Details ($($ServiceName)) in $($CompletedTime)" -ExportFileLocation $ExportDetails
 }
 
@@ -6471,7 +6523,7 @@ function Get-TeamsDetails {
     finally {
         $completedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
         Write-ProgressHelper -Total 1 -Id $teamsProgressId -Activity "Gathering Teams inventory ($detailLevel)" -Completed
-        Write-Host "Completed in $completedTime" -ForegroundColor Green
+        Write-AssessmentCollectorCompletionBanner -Message "Completed in $completedTime"
         Write-Log -Type INFO -Message "[Get-TeamsDetails] COMPLETED in $completedTime" -ExportFileLocation $ExportDetails
     }
 }
@@ -7442,7 +7494,7 @@ function Get-AllUserDetails {
         [GC]::Collect()
         [GC]::WaitForPendingFinalizers()
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-        Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+        Write-AssessmentCollectorCompletionBanner -Message "Completed in $($CompletedTime)"
         Write-Log -Type INFO -Message "[Get-allUserDetails] Licensing summary: LicensedUsers=$($userCollectionState.LicensedUserCount) UnlicensedUsers=$($userCollectionState.UnlicensedUserCount) LicenseLookupUsers=$($userCollectionState.LicenseFallbackUserCount) UnresolvedSkuReferences=$($userCollectionState.UnresolvedSkuCount)" -ExportFileLocation $ExportDetails
         Write-Log -Type Info -Message "[Get-allUserDetails] COMPLETED: Gathering all  User Details in $($CompletedTime)" -ExportFileLocation $ExportDetails
     }     
@@ -7594,7 +7646,7 @@ function Get-AllOffice365Admins {
     }
     finally {
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-        Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+        Write-AssessmentCollectorCompletionBanner -Message "Completed in $($CompletedTime)"
         Write-ProgressHelper -Total $totalCount -Id 1 -Activity "Gathering Admins in Roles" -Completed
         Write-ProgressHelper -Total 1 -Id 2 -Activity "Gathering Admin Details" -Completed
         Write-Log -Type INFO -Message "[Get-AllOffice365Admins] COMPLETED: Gathering All Admins in $($CompletedTime)" -ExportFileLocation $ExportDetails
@@ -7920,7 +7972,7 @@ function Get-AllOffice365Domains {
     }
     finally {
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-        Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+        Write-AssessmentCollectorCompletionBanner -Message "Completed in $($CompletedTime)"
         Write-ProgressHelper -Total $totalCount -Id 1 -Activity "Gathering Domain Details" -Completed
         Write-Log -Type INFO -Message "[Get-AllOffice365Domains] COMPLETED: Gathering All Domain Details" -ExportFileLocation $ExportDetails
     }
@@ -8345,7 +8397,7 @@ function Report-UserAndMailboxStats {
         Write-ProgressHelper -Total ([Math]::Max($inactiveMailboxCount, 1)) -Id $inactiveMailboxProgressId -Activity "Processing Inactive Mailbox Data" -Completed
 
         $completedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-        Write-Host "Completed Inactive Mailbox Report in $completedTime" -ForegroundColor Green
+        Write-AssessmentCollectorCompletionBanner -Message "Completed Inactive Mailbox Report in $completedTime"
         Write-Log -Type INFO -Message "[Report-InactiveMailboxes] COMPLETED: Processed Inactive Mailboxes in $completedTime" -ExportFileLocation $ExportDetails
     }
 
@@ -8361,7 +8413,7 @@ function Report-UserAndMailboxStats {
         Write-Log -Type ERROR -Message "[Combine-UserAndMailboxStats] An error occurred while combining User and Mailbox Details. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
     } finally {
         $completedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-        Write-Host "Completed in $completedTime" -ForegroundColor Green
+        Write-AssessmentCollectorCompletionBanner -Message "Completed in $completedTime"
         Write-Log -Type INFO -Message "[Combine-UserAndMailboxStats] COMPLETED: Combined User and Mailbox Details in $completedTime" -ExportFileLocation $ExportDetails
     }
 }
@@ -8491,7 +8543,7 @@ function Get-AllDevicesReport {
     finally {
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
         Write-ProgressHelper -Total $deviceProgressTotal -Id $deviceProgressId -Activity "Processing all Found Devices" -Completed
-        Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+        Write-AssessmentCollectorCompletionBanner -Message "Completed in $($CompletedTime)"
         Write-Log -Type INFO -Message "[Get-AllDevicesReport] COMPLETED: Gathering all Entra Devices with $($detailLevel) details" -ExportFileLocation $ExportDetails
     }   
 }
@@ -8758,7 +8810,7 @@ function Get-ConditionalAccessPoliciesReport {
     finally {
         Write-ProgressHelper -Total $conditionalAccessProgressTotal -Id $conditionalAccessProgressId -Activity "Processing all Conditional Access Policies" -Completed
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-        Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+        Write-AssessmentCollectorCompletionBanner -Message "Completed in $($CompletedTime)"
         Write-Log -Type INFO -Message "[Get-ConditionalAccessPoliciesReport] COMPLETED: Gathering all Entra Conditional Access Policies with $($detailLevel) details" -ExportFileLocation $ExportDetails
     }
 }
@@ -8989,7 +9041,7 @@ function Get-SecuritySecureScoreReport {
         [GC]::WaitForPendingFinalizers()
         Write-ProgressHelper -Total $secureScoreProgressTotal -Id $secureScoreProgressId -Activity "Processing all Security Score Details" -Completed
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-        Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+        Write-AssessmentCollectorCompletionBanner -Message "Completed in $($CompletedTime)"
         Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] COMPLETED: Gathering Security Score details" -ExportFileLocation $ExportDetails
     }   
 }
@@ -9946,7 +9998,7 @@ function Get-AuthenticationConfiguration {
     }
     
     $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-    Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+    Write-AssessmentCollectorCompletionBanner -Message "Completed in $($CompletedTime)"
     Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] COMPLETED: Checking Authentication Configuration in $($CompletedTime)" -ExportFileLocation $ExportDetails
 }
 
@@ -10080,7 +10132,7 @@ function Get-TenantOverviewInfo {
     }
 
     $elapsed = ((Get-Date) - $start).ToString('hh\:mm\:ss')
-    Write-Host "Completed in $($elapsed)" -ForegroundColor Green
+    Write-AssessmentCollectorCompletionBanner -Message "Completed in $($elapsed)"
     Write-Log -Type INFO -Message "[Get-TenantOverviewInfo] COMPLETED in $elapsed" -ExportFileLocation $ExportDetails
 }
 
@@ -10296,7 +10348,7 @@ function Get-AdConnectSyncDetails {
     }
     
     $elapsed = ((Get-Date) - $start).ToString('hh\:mm\:ss')
-    Write-Host " Completed in $elapsed" -ForegroundColor Green
+    Write-AssessmentCollectorCompletionBanner -Message " Completed in $elapsed"
     Write-Log -Type INFO -Message "[Get-AdConnectSyncDetails] COMPLETED in $elapsed" -ExportFileLocation $ExportDetails
 }
 
@@ -11126,7 +11178,7 @@ function Get-MfaRegistrationDetails {
     }
     
     $elapsed = ((Get-Date) - $start).ToString('hh\:mm\:ss')
-    Write-Host " Completed in $elapsed" -ForegroundColor Green
+    Write-AssessmentCollectorCompletionBanner -Message " Completed in $elapsed"
     Write-Log -Type INFO -Message "[Get-MfaRegistrationDetails] COMPLETED in $elapsed" -ExportFileLocation $ExportDetails
 }
 
@@ -11474,7 +11526,7 @@ function Get-FederationAndCrossTenantConfiguration {
     }
 
     $elapsed = ((Get-Date) - $start).ToString('hh\:mm\:ss')
-    Write-Host " Completed in $elapsed" -ForegroundColor Green
+    Write-AssessmentCollectorCompletionBanner -Message " Completed in $elapsed"
     Write-Log -Type INFO -Message "[Get-FederationAndCrossTenantConfiguration] COMPLETED in $elapsed" -ExportFileLocation $ExportDetails
 }
 
@@ -11881,6 +11933,7 @@ else {
         -NeedsSharePointData $true
     $script:AssessmentAuthWorkloadPlan = $assessmentAuthWorkloadPlan
 
+    Write-ConsoleSection -Step 'Connection' -Title 'Connection / Preflight'
     $connectionResult = Initialize-AssessmentAuthentication `
         -WorkloadPlan $assessmentAuthWorkloadPlan `
         -SkipAuth:$SkipAuth `
@@ -11909,6 +11962,11 @@ else {
         $initialDomainForContext = [string]$connectionResult.InitialDomain
     }
     Ensure-AssessmentServiceContext -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -ClientSecret $ClientSecret -InitialDomain $initialDomainForContext
+    Write-ConnectionPreflightSummary -ConnectionResult ([pscustomobject]$connectionResult) -PermissionPreflightSkipped:$SkipPermissionPreflight
+
+    if ($runPreflightOnly) {
+        return
+    }
 }
 
 #Get Export Path
@@ -12308,19 +12366,16 @@ function Update-ExchangeGovernanceTables {
     }
 }
 
-function Update-TierBOperationalSummaries {
+function Update-DeviceManagementSummary {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [hashtable]$TenantStatsHash
     )
 
-    if (-not $TenantStatsHash.ContainsKey('SharePointSharingSummary')) { $TenantStatsHash['SharePointSharingSummary'] = @{} }
     if (-not $TenantStatsHash.ContainsKey('DeviceManagementSummary')) { $TenantStatsHash['DeviceManagementSummary'] = @{} }
 
     $deviceRows = if ($TenantStatsHash.ContainsKey('DeviceDetails') -and $TenantStatsHash['DeviceDetails'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['DeviceDetails'].Values) } else { @() }
-    $sharePointRows = if ($TenantStatsHash.ContainsKey('SharePoint') -and $TenantStatsHash['SharePoint'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['SharePoint'].Values) } else { @() }
-    $oneDriveRows = if ($TenantStatsHash.ContainsKey('OneDrive') -and $TenantStatsHash['OneDrive'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['OneDrive'].Values) } else { @() }
     $managedDeviceCount = @($deviceRows | Where-Object { $_.PSObject.Properties['IsManaged'] -and $_.IsManaged -eq $true }).Count
     $compliantDeviceCount = @($deviceRows | Where-Object { $_.PSObject.Properties['IsCompliant'] -and $_.IsCompliant -eq $true }).Count
     $unsupportedOsCount = @(
@@ -12333,14 +12388,29 @@ function Update-TierBOperationalSummaries {
             ($os -match 'iOS' -and $version -match '^[0-9]+(\.[0-9]+)?' -and ([double]($version.Split('.')[0]) -lt 16))
         }
     ).Count
+
     $TenantStatsHash['DeviceManagementSummary']['Summary'] = [pscustomobject]@{
-        TotalDevices          = $deviceRows.Count
-        ManagedDevices        = $managedDeviceCount
-        UnmanagedDevices      = $deviceRows.Count - $managedDeviceCount
-        CompliantDevices      = $compliantDeviceCount
-        NonCompliantDevices   = $deviceRows.Count - $compliantDeviceCount
-        UnsupportedOsDevices  = $unsupportedOsCount
+        TotalDevices         = $deviceRows.Count
+        ManagedDevices       = $managedDeviceCount
+        UnmanagedDevices     = $deviceRows.Count - $managedDeviceCount
+        CompliantDevices     = $compliantDeviceCount
+        NonCompliantDevices  = $deviceRows.Count - $compliantDeviceCount
+        UnsupportedOsDevices = $unsupportedOsCount
     }
+}
+
+function Update-TierBOperationalSummaries {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$TenantStatsHash
+    )
+
+    if (-not $TenantStatsHash.ContainsKey('SharePointSharingSummary')) { $TenantStatsHash['SharePointSharingSummary'] = @{} }
+    Update-DeviceManagementSummary -TenantStatsHash $TenantStatsHash
+
+    $sharePointRows = if ($TenantStatsHash.ContainsKey('SharePoint') -and $TenantStatsHash['SharePoint'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['SharePoint'].Values) } else { @() }
+    $oneDriveRows = if ($TenantStatsHash.ContainsKey('OneDrive') -and $TenantStatsHash['OneDrive'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['OneDrive'].Values) } else { @() }
 
     $sharePointSummary = [ordered]@{
         CollectionState                         = 'Not collected'
@@ -13479,55 +13549,61 @@ if ($runExportOnly) {
     }
 }
 else {
-    $baseCollectionSteps = 14 # Exchange(6) + Hybrid(5) + Collaboration(3)
-    $identitySteps = if ($GraphTest -eq 'REST') { 2 } else { 13 }
-    $combineSteps = 3
-    $postProcessingSteps = 4
-    $overallCollectionSteps = $baseCollectionSteps + $identitySteps + $combineSteps + $postProcessingSteps
+    $tenantOverviewSteps = 2
+    $identitySteps = 9
+    $exchangeSteps = 11
+    $collaborationSteps = 4
+    $endpointSteps = 2
+    $governanceSteps = 8
+    $overallCollectionSteps = $tenantOverviewSteps + $identitySteps + $exchangeSteps + $collaborationSteps + $endpointSteps + $governanceSteps
     Initialize-AssessmentProgress -TotalSteps $overallCollectionSteps
 
-    Write-ConsoleSection -Step '1/5' -Title 'Exchange inventory'
-    Invoke-ProfileAwareAssessmentStep -Name 'Exchange recipients' -Enabled $script:ProfileCollectionPlan.CollectExchangeRecipients -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllRecipientDetails -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-AssessmentProgressStep -Name 'Exchange mailboxes' -ScriptBlock { Get-AllExchangeMailboxDetails -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'Email activity insights' -Enabled $script:ProfileCollectionPlan.CollectEmailActivityDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-EmailActivityInsights -detailLevel $reportingMode }
-    Invoke-ProfileAwareAssessmentStep -Name 'Exchange groups' -Enabled $script:ProfileCollectionPlan.CollectExchangeGroups -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-ExchangeGroupDetails -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'Mail flow rules/connectors' -Enabled $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors -SkipReason 'Skipped in best-practices-only profile to reduce runtime.' -ScriptBlock { Get-MailFlowRulesandConnectors -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'Public folders' -Enabled $script:ProfileCollectionPlan.CollectPublicFolders -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllPublicFolderDetails -detailLevel $reportingMode -Context $script:AssessmentContext }
+    Write-ConsoleSection -Step '1/6' -Title 'Tenant Overview'
+    Invoke-AssessmentProgressStep -Name 'Tenant overview' -ScriptBlock { Get-TenantOverviewInfo }
+    Invoke-AssessmentProgressStep -Name 'AD Connect sync details' -ScriptBlock { Get-AdConnectSyncDetails }
 
-    Write-ConsoleSection -Step '2/5' -Title 'Hybrid and configuration'
-    Invoke-AssessmentProgressStep -Name 'Exchange hybrid configuration' -ScriptBlock { Get-ExchangeHybridConfiguration -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-AssessmentProgressStep -Name 'Federation/cross-tenant configuration' -ScriptBlock { Get-FederationAndCrossTenantConfiguration }
-    Invoke-ProfileAwareAssessmentStep -Name 'Third-party spam filtering configuration' -Enabled $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering -SkipReason 'Requires mail flow connector/rule collection, which is disabled for this profile.' -ScriptBlock { Get-ThirdPartySpamFilteringConfig -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'SMTP relay configuration' -Enabled $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration -SkipReason 'Requires mail flow connector collection, which is disabled for this profile.' -ScriptBlock { Get-SMTPRelayConfiguration -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'Purview retention/DLP policies' -Enabled $script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies -SkipReason 'Governance compliance collection is disabled for this profile.' -ScriptBlock { Get-PurviewCompliancePolicies }
-
-    Write-ConsoleSection -Step '3/5' -Title 'Identity, devices, and licensing'
-    # Determine if using REST or SDK Graph API
+    Write-ConsoleSection -Step '2/6' -Title 'Identity'
     switch ($GraphTest) {
-        "REST" {
-            Write-Verbose "Attempting to use Microsoft Graph REST API for Tenant Object and License details"
-            Invoke-AssessmentProgressStep -Name 'Graph user statistics' -ScriptBlock { Get-GraphUserStats -Context $script:AssessmentContext }
-            Invoke-AssessmentProgressStep -Name 'Entra groups (REST)' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType REST -Context $script:AssessmentContext }
-         }
-        "SDK" {
-            Write-Verbose "Attempting to use Microsoft Graph SDK for Tenant Object and License details"
-            Invoke-AssessmentProgressStep -Name 'Conditional Access policies' -ScriptBlock { Get-ConditionalAccessPoliciesReport -detailLevel $reportingMode }
+        'REST' {
+            Write-Verbose 'Attempting to use Microsoft Graph REST API for tenant identity details'
+            Invoke-AssessmentProgressStep -Name 'License SKUs' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+            Invoke-AssessmentProgressStep -Name 'Users' -ScriptBlock { Get-GraphUserStats -Context $script:AssessmentContext }
+            Invoke-AssessmentProgressStep -Name 'Admins' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+            Invoke-AssessmentProgressStep -Name 'Entra groups' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType REST -Context $script:AssessmentContext }
+            Invoke-AssessmentProgressStep -Name 'Domains' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+            Invoke-AssessmentProgressStep -Name 'Authentication/SSO configuration' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+            Invoke-AssessmentProgressStep -Name 'Federation/cross-tenant configuration' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+            Invoke-AssessmentProgressStep -Name 'Conditional Access policies' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+            Invoke-AssessmentProgressStep -Name 'MFA registration details' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+        }
+        default {
+            Write-Verbose 'Attempting to use Microsoft Graph SDK for tenant identity details'
             Invoke-AssessmentProgressStep -Name 'License SKUs' -ScriptBlock { Get-AllLicenseSKUs }
             Invoke-AssessmentProgressStep -Name 'Users' -ScriptBlock { Get-AllUserDetails -detailLevel $reportingMode }
-            Invoke-ProfileAwareAssessmentStep -Name 'Teams voice details' -Enabled $script:ProfileCollectionPlan.CollectTeamsVoiceDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-TeamsVoiceDetails }
-            Invoke-AssessmentProgressStep -Name 'Entra groups (SDK)' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType SDK -Context $script:AssessmentContext }
-            Invoke-AssessmentProgressStep -Name 'Domains' -ScriptBlock { Get-AllOffice365Domains }
             Invoke-AssessmentProgressStep -Name 'Admins' -ScriptBlock { Get-AllOffice365Admins }
-            Invoke-AssessmentProgressStep -Name 'Devices' -ScriptBlock { Get-AllDevicesReport -detailLevel $reportingMode }
-            Invoke-AssessmentProgressStep -Name 'Tenant overview' -ScriptBlock { Get-TenantOverviewInfo }
+            Invoke-AssessmentProgressStep -Name 'Entra groups' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType SDK -Context $script:AssessmentContext }
+            Invoke-AssessmentProgressStep -Name 'Domains' -ScriptBlock { Get-AllOffice365Domains }
             Invoke-AssessmentProgressStep -Name 'Authentication/SSO configuration' -ScriptBlock { Get-AuthenticationConfiguration -detailLevel $reportingMode }
-            Invoke-AssessmentProgressStep -Name 'AD Connect sync details' -ScriptBlock { Get-AdConnectSyncDetails }
+            Invoke-AssessmentProgressStep -Name 'Federation/cross-tenant configuration' -ScriptBlock { Get-FederationAndCrossTenantConfiguration }
+            Invoke-AssessmentProgressStep -Name 'Conditional Access policies' -ScriptBlock { Get-ConditionalAccessPoliciesReport -detailLevel $reportingMode }
             Invoke-AssessmentProgressStep -Name 'MFA registration details' -ScriptBlock { Get-MfaRegistrationDetails }
-            Invoke-AssessmentProgressStep -Name 'Secure Score report' -ScriptBlock { Get-SecuritySecureScoreReport -detailLevel $reportingMode -MostRecent }
-         }
+        }
     }
 
-    Write-ConsoleSection -Step '4/5' -Title 'Collaboration and SharePoint'
+    Write-ConsoleSection -Step '3/6' -Title 'Exchange'
+    Invoke-ProfileAwareAssessmentStep -Name 'Exchange recipients' -Enabled $script:ProfileCollectionPlan.CollectExchangeRecipients -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllRecipientDetails -detailLevel $reportingMode -Context $script:AssessmentContext }
+    Invoke-AssessmentProgressStep -Name 'Exchange mailboxes' -ScriptBlock { Get-AllExchangeMailboxDetails -detailLevel $reportingMode -Context $script:AssessmentContext }
+    Invoke-ProfileAwareAssessmentStep -Name 'Exchange groups' -Enabled $script:ProfileCollectionPlan.CollectExchangeGroups -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-ExchangeGroupDetails -detailLevel $reportingMode -Context $script:AssessmentContext }
+    Invoke-ProfileAwareAssessmentStep -Name 'Public folders' -Enabled $script:ProfileCollectionPlan.CollectPublicFolders -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllPublicFolderDetails -detailLevel $reportingMode -Context $script:AssessmentContext }
+    Invoke-AssessmentProgressStep -Name 'Exchange hybrid configuration' -ScriptBlock { Get-ExchangeHybridConfiguration -detailLevel $reportingMode -Context $script:AssessmentContext }
+    Invoke-ProfileAwareAssessmentStep -Name 'Mail flow rules/connectors' -Enabled $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors -SkipReason 'Skipped in best-practices-only profile to reduce runtime.' -ScriptBlock { Get-MailFlowRulesandConnectors -detailLevel $reportingMode -Context $script:AssessmentContext }
+    Invoke-ProfileAwareAssessmentStep -Name 'Email activity insights' -Enabled $script:ProfileCollectionPlan.CollectEmailActivityDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-EmailActivityInsights -detailLevel $reportingMode }
+    Invoke-ProfileAwareAssessmentStep -Name 'Third-party spam filtering configuration' -Enabled $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering -SkipReason 'Requires mail flow connector/rule collection, which is disabled for this profile.' -ScriptBlock { Get-ThirdPartySpamFilteringConfig -Context $script:AssessmentContext }
+    Invoke-ProfileAwareAssessmentStep -Name 'SMTP relay configuration' -Enabled $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration -SkipReason 'Requires mail flow connector collection, which is disabled for this profile.' -ScriptBlock { Get-SMTPRelayConfiguration -Context $script:AssessmentContext }
+    Invoke-ProfileAwareAssessmentStep -Name 'Combined user/mailbox reporting' -Enabled $script:ProfileCollectionPlan.BuildCombinedUserMailboxProjection -SkipReason 'Reserved for TenantToTenantMigration / All profile runs.' -ScriptBlock { Report-UserAndMailboxStats }
+    Invoke-AssessmentProgressStep -Name 'Exchange governance summaries' -ScriptBlock { Update-ExchangeGovernanceTables -TenantStatsHash $script:tenantStatsHash -DetailLevel $reportingMode }
+
+    Write-ConsoleSection -Step '4/6' -Title 'Collaboration'
     Invoke-ProfileAwareAssessmentStep -Name 'Unified groups' -Enabled $script:ProfileCollectionPlan.CollectUnifiedGroups -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllUnifiedGroups -detailLevel $reportingMode }
     $sharePointDiscoveryService = if ($GraphTest -in @('REST', 'SDK')) {
         'API'
@@ -13540,18 +13616,28 @@ else {
     }
     Invoke-AssessmentProgressStep -Name "SharePoint/OneDrive sites ($sharePointDiscoveryService)" -ScriptBlock { Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName $sharePointDiscoveryService }
     $teamsDiscoveryService = if ($GraphTest -in @('SDK', 'REST')) { 'MGGraph' } else { 'Teams' }
+    Invoke-ProfileAwareAssessmentStep -Name 'Teams voice details' -Enabled $script:ProfileCollectionPlan.CollectTeamsVoiceDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-TeamsVoiceDetails }
     Invoke-ProfileAwareAssessmentStep -Name "Teams inventory ($teamsDiscoveryService)" -Enabled $script:ProfileCollectionPlan.CollectTeamsDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-TeamsDetails -detailLevel $reportingMode -ServiceName $teamsDiscoveryService }
-    Write-Host
 
+    Write-ConsoleSection -Step '5/6' -Title 'Endpoint'
+    if ($GraphTest -eq 'REST') {
+        Invoke-AssessmentProgressStep -Name 'Devices' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+    }
+    else {
+        Invoke-AssessmentProgressStep -Name 'Devices' -ScriptBlock { Get-AllDevicesReport -detailLevel $reportingMode }
+    }
+    Invoke-AssessmentProgressStep -Name 'Endpoint operational summaries' -ScriptBlock { Update-DeviceManagementSummary -TenantStatsHash $script:tenantStatsHash }
 
-    # Combine reporting data for all profiles so mailbox/detail stats are available across every output type.
-    Write-Host
-    Write-Host "Consolidating Discovery Report data for each user / object into one file" -ForegroundColor Black -BackgroundColor Green
-    Invoke-ProfileAwareAssessmentStep -Name 'Combined user/mailbox reporting' -Enabled $script:ProfileCollectionPlan.BuildCombinedUserMailboxProjection -SkipReason 'Reserved for TenantToTenantMigration / All profile runs.' -ScriptBlock { Report-UserAndMailboxStats }
-    Invoke-AssessmentProgressStep -Name 'Exchange governance summaries' -ScriptBlock { Update-ExchangeGovernanceTables -TenantStatsHash $script:tenantStatsHash -DetailLevel $reportingMode }
+    Write-ConsoleSection -Step '6/6' -Title 'Governance'
+    if ($GraphTest -eq 'REST') {
+        Invoke-AssessmentProgressStep -Name 'Secure Score report' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+    }
+    else {
+        Invoke-AssessmentProgressStep -Name 'Secure Score report' -ScriptBlock { Get-SecuritySecureScoreReport -detailLevel $reportingMode -MostRecent }
+    }
+    Invoke-ProfileAwareAssessmentStep -Name 'Purview retention/DLP policies' -Enabled $script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies -SkipReason 'Governance compliance collection is disabled for this profile.' -ScriptBlock { Get-PurviewCompliancePolicies }
     Invoke-AssessmentProgressStep -Name 'Operational governance summaries' -ScriptBlock { Update-TierBOperationalSummaries -TenantStatsHash $script:tenantStatsHash }
     Invoke-AssessmentProgressStep -Name 'External sharing and guest access summaries' -ScriptBlock { Update-ExternalExposureSummaries -TenantStatsHash $script:tenantStatsHash }
-
     Invoke-ProfileAwareAssessmentStep -Name 'Ownership governance tables' -Enabled $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables -SkipReason 'Ownership governance table build is disabled for this profile.' -ScriptBlock { Update-OwnershipGovernanceTables -TenantStatsHash $script:tenantStatsHash }
     Invoke-ProfileAwareAssessmentStep -Name 'License classification metadata' -Enabled $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata -SkipReason 'License classification metadata is disabled for this profile.' -ScriptBlock { Update-LicenseClassificationMetadata -TenantStatsHash $script:tenantStatsHash }
     Invoke-ProfileAwareAssessmentStep -Name 'Best-practice assessment tables' -Enabled $script:ProfileCollectionPlan.BuildAssessmentReportTables -SkipReason 'Best-practice table build is disabled for this profile.' -ScriptBlock { Update-AssessmentReportTables -TenantStatsHash $script:tenantStatsHash }
@@ -13567,7 +13653,7 @@ else {
 ########################################################
 
 #Exclude specific reports from Export
-Write-ConsoleSection -Step '5/5' -Title 'Exporting results'
+Write-ConsoleSection -Step 'Export' -Title 'Exporting results'
 $requiresFilteredExportSnapshot = (-not $effectiveSkipWorkbook)
 $ExportTenantStatsHash = $null
 if ($requiresFilteredExportSnapshot) {

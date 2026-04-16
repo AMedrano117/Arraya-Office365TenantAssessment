@@ -96,6 +96,7 @@ Examples:
 ## Collection Vs Export
 The M365 workflow now supports explicit separation between data collection and artifact export:
 
+- `M365Preflight`: runs only workload connection plus permission preflight, prints readiness, and exits without collection, export, or `Improve`.
 - `M365Collect`: runs discovery/collection only and writes a JSON snapshot.
 - `M365Export`: loads a previously collected JSON snapshot and generates artifacts without re-collecting tenant data.
 - `M365`: the standard full assessment path. It now runs the assessment deliverables and the `Improve` post-processing step in one flow unless you pass `-SkipImprove`.
@@ -106,6 +107,13 @@ The M365 workflow now supports explicit separation between data collection and a
 Examples:
 
 ```powershell
+# Connection and permission preflight only
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365Preflight `
+  -TenantId '<tenant-guid>' `
+  -ClientId '<app-id>' `
+  -CertificateThumbprint '<cert-thumbprint>'
+
 # Collect data only (JSON snapshot)
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
   -Action M365Collect `

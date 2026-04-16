@@ -11,12 +11,16 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         Test-Path $script:collectorPath | Should -BeTrue
         $script:collectorSource | Should -Match 'function Test-AssessmentImportedModuleMatchesManifestPath'
         $script:collectorSource | Should -Match 'function Test-AssessmentPermissionPreflight'
+        $script:collectorSource | Should -Match '\[switch\]\$PreflightOnly'
         $script:collectorSource | Should -Match '\[switch\]\$SkipPermissionPreflight'
         $script:collectorSource | Should -Match 'Permission preflight failed\. The assessment will not continue'
         $script:collectorSource | Should -Match 'Permission preflight warnings:'
         $script:collectorSource | Should -Match 'Test-AssessmentPermissionPreflight -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload Graph'
         $script:collectorSource | Should -Match 'Test-AssessmentPermissionPreflight -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload ExchangeOnline'
         $script:collectorSource | Should -Match 'Test-AssessmentPermissionPreflight -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload Purview'
+        $script:collectorSource | Should -Match 'Connection / Preflight'
+        $script:collectorSource | Should -Match 'Write-ConnectionPreflightSummary'
+        $script:collectorSource | Should -Match 'if \(\$runPreflightOnly\)\s*\{\s*return'
         $script:collectorSource | Should -Match 'Workload preflight skipped by request'
         $script:collectorSource | Should -Not -Match 'Legend: cyan=section/progress, green=completed, yellow=warnings/skips\.'
         $script:collectorSource | Should -Not -Match 'Clear-Host'
@@ -76,6 +80,18 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'governance findings'
         $script:collectorSource | Should -Not -Match 'Exchange governance Tier B summaries'
         $script:collectorSource | Should -Not -Match 'Operational Tier B summaries'
+    }
+
+    It 'separates connection from assessment and uses the new six-section assessment flow' {
+        $script:collectorSource | Should -Match "Write-ConsoleSection -Step 'Connection' -Title 'Connection / Preflight'"
+        $script:collectorSource | Should -Match "Write-ConsoleSection -Step '1/6' -Title 'Tenant Overview'"
+        $script:collectorSource | Should -Match "Write-ConsoleSection -Step '2/6' -Title 'Identity'"
+        $script:collectorSource | Should -Match "Write-ConsoleSection -Step '3/6' -Title 'Exchange'"
+        $script:collectorSource | Should -Match "Write-ConsoleSection -Step '4/6' -Title 'Collaboration'"
+        $script:collectorSource | Should -Match "Write-ConsoleSection -Step '5/6' -Title 'Endpoint'"
+        $script:collectorSource | Should -Match "Write-ConsoleSection -Step '6/6' -Title 'Governance'"
+        $script:collectorSource | Should -Match "Write-ConsoleSection -Step 'Export' -Title 'Exporting results'"
+        $script:collectorSource | Should -Not -Match 'Consolidating Discovery Report'
     }
 
     It 'checks the critical Graph permissions used by the collector' {
@@ -258,6 +274,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     It 'emits compact one-line assessment step status output instead of the older redundant progress pair' {
         $script:collectorSource | Should -Not -Match 'Write-Host \("Gathering \{0\} \.\.\." -f \$Name\)'
         $script:collectorSource | Should -Not -Match 'Overall progress:'
+        $script:collectorSource | Should -Match 'Write-AssessmentCollectorCompletionBanner'
         $script:collectorSource | Should -Match '\[\{0\}/\{1\} \| \{2\}%\] \{3\} - \{4\} in \{5\}\{6\}'
     }
 

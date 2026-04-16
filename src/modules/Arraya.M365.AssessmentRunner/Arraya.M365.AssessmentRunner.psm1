@@ -568,7 +568,7 @@ function Invoke-M365TenantWorkflow {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('Full', 'CollectOnly', 'ExportOnly')]
+        [ValidateSet('Full', 'CollectOnly', 'ExportOnly', 'PreflightOnly')]
         [string]$Mode,
         [Parameter(Mandatory = $false)]
         [string]$ExportPath,
@@ -613,6 +613,7 @@ function Invoke-M365TenantWorkflow {
         $modeLabel = switch ($Mode) {
             'CollectOnly' { 'collection pass' }
             'ExportOnly' { 'export pass' }
+            'PreflightOnly' { 'preflight pass' }
             default { 'pass' }
         }
         Write-Host ("Running merged profile {0} for: {1}" -f $modeLabel, ($plan.SelectedOutputProfiles -join ', ')) -ForegroundColor Cyan
@@ -688,6 +689,23 @@ function Invoke-M365TenantWorkflow {
             if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
             if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
         }
+        'PreflightOnly' {
+            $invokeParams.OutputProfileLabel = "Preflight-$($plan.ProfileLabel)"
+            $invokeParams.GenerateWorkbookOverride = $false
+            $invokeParams.GenerateTechnicalHtmlOverride = $false
+            $invokeParams.GenerateBestPracticesHtmlOverride = $false
+            $invokeParams.GenerateQuestionnaireOverride = $false
+            $invokeParams.GenerateJsonOverride = $false
+            $invokeParams.GeneratePdfOverride = $false
+            $invokeParams.PreflightOnly = $true
+            if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
+            if ($PSBoundParameters.ContainsKey('SkipPermissionPreflight')) { $invokeParams.SkipPermissionPreflight = $SkipPermissionPreflight }
+            if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
+            if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
+            if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
+            if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
+            if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
+        }
     }
 
     Invoke-AssessmentScript -ScriptPath $scriptPath -Parameters $invokeParams
@@ -762,6 +780,45 @@ function Invoke-M365TenantAssessment {
         $resolvedExportPath = Resolve-AssessmentExportPathInput -ExportPath $ExportPath
         Invoke-M365ImproveForAssessmentRun -ExportPath $resolvedExportPath -OutputFolder $ImproveOutputFolder -UseGraphFallback:$UseGraphFallback -IncludeLegacyArtifacts:$IncludeLegacyArtifacts | Out-Null
     }
+}
+
+function Invoke-M365TenantConnectionPreflight {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$ExportPath,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
+        [string[]]$OutputProfile = @('SolutionsEngineer'),
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipAuth,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipPermissionPreflight,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
+        [string]$AuthMode,
+        [Parameter(Mandatory = $false)]
+        [string]$TenantId,
+        [Parameter(Mandatory = $false)]
+        [string]$CertificateThumbprint,
+        [Parameter(Mandatory = $false)]
+        [string]$ClientId,
+        [Parameter(Mandatory = $false)]
+        [string]$ClientSecret
+    )
+
+    $invokeParams = @{}
+    if ($PSBoundParameters.ContainsKey('ExportPath')) { $invokeParams.ExportPath = $ExportPath }
+    if ($PSBoundParameters.ContainsKey('OutputProfile')) { $invokeParams.OutputProfile = $OutputProfile }
+    if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
+    if ($PSBoundParameters.ContainsKey('SkipPermissionPreflight')) { $invokeParams.SkipPermissionPreflight = $SkipPermissionPreflight }
+    if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
+    if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
+    if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
+    if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
+    if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
+
+    Invoke-M365TenantWorkflow -Mode PreflightOnly @invokeParams
 }
 
 function Invoke-M365TenantDataCollection {
@@ -963,6 +1020,7 @@ function Invoke-M365AssessmentComparison {
 
 Export-ModuleMember -Function @(
     'Invoke-M365TenantAssessment',
+    'Invoke-M365TenantConnectionPreflight',
     'Invoke-M365TenantDataCollection',
     'Invoke-M365TenantAssessmentExport',
     'Invoke-ADTenantAssessment',
