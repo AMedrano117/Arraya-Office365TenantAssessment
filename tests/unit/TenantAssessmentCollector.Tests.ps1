@@ -14,10 +14,13 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match '\[switch\]\$SkipPermissionPreflight'
         $script:collectorSource | Should -Match 'Permission preflight failed\. The assessment will not continue'
         $script:collectorSource | Should -Match 'Permission preflight warnings:'
-        $script:collectorSource | Should -Match 'Validating required permissions and service access'
-        $script:collectorSource | Should -Match 'Test-AssessmentPermissionPreflight -ConnectionResult \$connectionResult'
-        $script:collectorSource | Should -Match 'Skipping permission preflight by request'
+        $script:collectorSource | Should -Match 'Test-AssessmentPermissionPreflight -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload Graph'
+        $script:collectorSource | Should -Match 'Test-AssessmentPermissionPreflight -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload ExchangeOnline'
+        $script:collectorSource | Should -Match 'Test-AssessmentPermissionPreflight -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload Purview'
+        $script:collectorSource | Should -Match 'Workload preflight skipped by request'
         $script:collectorSource | Should -Not -Match 'Legend: cyan=section/progress, green=completed, yellow=warnings/skips\.'
+        $script:collectorSource | Should -Not -Match 'Clear-Host'
+        $script:collectorSource | Should -Not -Match 'Progress view: overall step completion is shown after each major task\.'
         $script:collectorSource | Should -Match 'Join-Path -Path \$Module\.ModuleBase -ChildPath \(\[System\.IO\.Path\]::GetFileName\(\$resolvedManifestPath\)\)'
         $script:collectorSource | Should -Not -Match '\$loadedCommonModule\.Path -ne \$resolvedCommonManifestPath'
         $script:collectorSource | Should -Not -Match '\$loadedReportingModule\.Path -ne \$resolvedReportingManifestPath'
@@ -59,7 +62,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     }
 
     It 'validates only the required workload sessions when SkipAuth is used' {
-        $script:collectorSource | Should -Match 'Skipping assessment authentication bootstrap and validating existing workload sessions'
+        $script:collectorSource | Should -Match 'Reusing existing workload sessions for this run'
         $script:collectorSource | Should -Match 'SkipAuth was requested, but no existing Microsoft Graph session was found'
         $script:collectorSource | Should -Match 'SkipAuth was requested, but Exchange Online cmdlets are not available in the current session'
         $script:collectorSource | Should -Match 'function Test-AssessmentPurviewSessionReady'
@@ -132,13 +135,13 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     }
 
     It 'uses a stable preflight progress counter and suppresses inner Graph record-count progress' {
-        $script:collectorSource | Should -Match '\$preflightProgressTotal\s*=\s*\$graphChecks\.Count \+ \$exchangeChecks\.Count'
+        $script:collectorSource | Should -Match '\$preflightProgressTotal\s*=\s*\$selectedGraphChecks\.Count \+ \$selectedExchangeChecks\.Count'
         $script:collectorSource | Should -Match 'Write-ProgressHelper -Total \(\[Math\]::Max\(\$preflightProgressTotal, 1\)\) -Id \$preflightProgressId'
         $script:collectorSource | Should -Match '\$ProgressIndex\.Value\+\+'
         $script:collectorSource | Should -Match '\(\[ref\]\$preflightProgressIndex\)'
         $script:collectorSource | Should -Match '\$progressActivity = "Permission preflight: \{0\}: \{1\}" -f \$Area, \$Requirement'
         $script:collectorSource | Should -Match 'Write-ProgressHelper -Total \(\[Math\]::Max\(\$preflightProgressTotal, 1\)\) -Id \$preflightProgressId -Index \$ProgressIndex\.Value -Activity \$progressActivity'
-        $script:collectorSource | Should -Match 'Permission preflight summary: \{0\} successful, \{1\} remaining \(\{2\} blocking, \{3\} non-blocking\)\.'
+        $script:collectorSource | Should -Match '\{0\}: \{1\} successful, \{2\} remaining \(\{3\} blocking, \{4\} non-blocking\)\.'
         $script:collectorSource | Should -Match 'Get-ArrayaGraphResource .* -SuppressProgress'
         $script:collectorSource | Should -Match 'Get-ArrayaGraphResource .* -SuppressAccessDeniedWarning'
         $script:collectorSource | Should -Match 'Get-ArrayaGraphAdminReportSettings -Headers \$global:GraphHeaders -SuppressProgress'
@@ -250,6 +253,12 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Some enterprise application sign-in lookups exceeded the reviewed sign-in history window'
         $script:collectorSource | Should -Match 'Unable to retrieve batched enterprise application sign-in details'
         $script:collectorSource | Should -Not -Match 'Get-AssessmentEnterpriseApplicationLatestSignIn -AppId'
+    }
+
+    It 'emits compact one-line assessment step status output instead of the older redundant progress pair' {
+        $script:collectorSource | Should -Not -Match 'Write-Host \("Gathering \{0\} \.\.\." -f \$Name\)'
+        $script:collectorSource | Should -Not -Match 'Overall progress:'
+        $script:collectorSource | Should -Match '\[\{0\}/\{1\} \| \{2\}%\] \{3\} - \{4\} in \{5\}\{6\}'
     }
 
     It 'maps the broader SharePoint tenant settings surface used by the sharing review' {
