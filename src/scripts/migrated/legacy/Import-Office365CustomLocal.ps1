@@ -82,7 +82,7 @@ function Import-Office365CustomLocal {
         -not (Test-ImportedModuleMatchesManifestPath -Module $loadedCommonModule -ManifestPath $resolvedCommonManifestPath) -or
         $missingCommonCommands.Count -gt 0
     ) {
-        Import-Module -Name $resolvedCommonManifestPath -Force -DisableNameChecking -ErrorAction Stop
+        Import-Module -Name $resolvedCommonManifestPath -Force -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
     }
 
     Import-ArrayaOffice365CustomLocal -RepoRoot $resolvedRepoRoot -RequiredCommands $RequiredCommands

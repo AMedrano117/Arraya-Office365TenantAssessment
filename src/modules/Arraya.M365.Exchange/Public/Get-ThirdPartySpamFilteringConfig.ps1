@@ -12,7 +12,7 @@ function Get-ThirdPartySpamFilteringConfig {
     $start = Get-Date
     $tenantStatsHash['SpamFilteringConfig'] = @{}
 
-    Write-Host 'Analyzing Mail Flow for 3rd Party Spam Filtering ...' -ForegroundColor Cyan -nonewline
+    Write-ArrayaExchangeCollectorBanner -Message '[Get-ThirdPartySpamFilteringConfig] START: Analyzing mail flow connectors' -ExportFileLocation $exportDetails
     Write-Log -Type INFO -Message '[Get-ThirdPartySpamFilteringConfig] START: Analyzing mail flow connectors' -ExportFileLocation $exportDetails
 
     try {
@@ -116,6 +116,6 @@ function Get-ThirdPartySpamFilteringConfig {
     }
 
     $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-    Write-Host "Completed in $CompletedTime" -ForegroundColor Green
+    Write-ArrayaExchangeCollectorCompletionBanner -Message "[Get-ThirdPartySpamFilteringConfig] COMPLETED: Analyzing mail flow in $CompletedTime" -ExportFileLocation $exportDetails
     Write-Log -Type INFO -Message "[Get-ThirdPartySpamFilteringConfig] COMPLETED: Analyzing mail flow in $CompletedTime" -ExportFileLocation $exportDetails
 }

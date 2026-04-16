@@ -94,6 +94,21 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Not -Match 'Consolidating Discovery Report'
     }
 
+    It 'moves license collection into Tenant Overview and removes combined mailbox reporting from Exchange collection' {
+        $script:collectorSource | Should -Match "Write-ConsoleSection -Step '1/6' -Title 'Tenant Overview'[\s\S]*Invoke-AssessmentProgressStep -Name 'License SKUs'"
+        $script:collectorSource | Should -Not -Match "Write-ConsoleSection -Step '2/6' -Title 'Identity'[\s\S]*Invoke-AssessmentProgressStep -Name 'License SKUs'"
+        $script:collectorSource | Should -Not -Match "Invoke-ProfileAwareAssessmentStep -Name 'Combined user/mailbox reporting'"
+        $script:collectorSource | Should -Match 'function Prepare-AssessmentExportData'
+        $script:collectorSource | Should -Match 'Export preparation: combined user/mailbox reporting'
+    }
+
+    It 'keeps top-level progress labels clean while surfacing key live substeps for long-running user collection' {
+        $script:collectorSource | Should -Not -Match 'Write-Host "Gathering Tenant Overview Info \.\.\."'
+        $script:collectorSource | Should -Match "Write-AssessmentCollectorBanner -Message 'Gathering Tenant Overview Info \.\.\.' -NoNewline"
+        $script:collectorSource | Should -Match "Write-AssessmentConsoleSubstep -Message 'Users: Graph inventory retrieval and per-user enrichment'"
+        $script:collectorSource | Should -Match 'Users: processed \{0\} directory records'
+    }
+
     It 'checks the critical Graph permissions used by the collector' {
         @(
             'Organization.Read.All'
@@ -142,6 +157,8 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Next step:'
         $script:collectorSource | Should -Match 'Missing compliance cmdlets after connect:'
         $script:collectorSource | Should -Match 'The certificate and app registration were accepted, but this tenant did not expose the Purview retention/DLP cmdlets to that app session'
+        $script:collectorSource | Should -Match 'Exchange Administrator role'
+        $script:collectorSource | Should -Match 'Connect-IPPSSession successfully in the current PowerShell session and rerun the assessment with session reuse'
     }
 
     It 'treats directory synchronization feature access as a non-blocking validation warning' {
@@ -244,6 +261,9 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'UserCoveragePercent'
         $script:collectorSource | Should -Match 'MemberUserCoveragePercent'
         $script:collectorSource | Should -Match 'GuestUserCoveragePercent'
+        $script:collectorSource | Should -Match 'GuestCoveredPolicyNames'
+        $script:collectorSource | Should -Match 'GuestExplicitScopePolicyNames'
+        $script:collectorSource | Should -Match 'GuestMfaEnforcementSources'
         $script:collectorSource | Should -Match 'CoverageCalculationNote'
     }
 
@@ -264,6 +284,13 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'GuestUserEnforcementState'
     }
 
+    It 'surfaces guest MFA enforcement details in the guest access summary' {
+        $script:collectorSource | Should -Match 'GuestMfaEnforcementState'
+        $script:collectorSource | Should -Match 'GuestMfaEnforcementSources'
+        $script:collectorSource | Should -Match 'GuestMfaConditionalAccessPolicies'
+        $script:collectorSource | Should -Match 'GuestMfaExplicitScopePolicies'
+    }
+
     It 'batches enterprise application sign-in enrichment instead of making one Graph call per app' {
         $script:collectorSource | Should -Match 'function Get-AssessmentEnterpriseApplicationLatestSignInMap'
         $script:collectorSource | Should -Match 'Some enterprise application sign-in lookups exceeded the reviewed sign-in history window'
@@ -275,7 +302,17 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Not -Match 'Write-Host \("Gathering \{0\} \.\.\." -f \$Name\)'
         $script:collectorSource | Should -Not -Match 'Overall progress:'
         $script:collectorSource | Should -Match 'Write-AssessmentCollectorCompletionBanner'
+        $script:collectorSource | Should -Match 'if \(\$script:AssessmentProgressState\) \{\s*return\s*\}'
         $script:collectorSource | Should -Match '\[\{0\}/\{1\} \| \{2\}%\] \{3\} - \{4\} in \{5\}\{6\}'
+    }
+
+    It 'shows visible substeps for long-running group, governance, and export preparation work' {
+        $script:collectorSource | Should -Match 'Exchange governance: shared mailbox review'
+        $script:collectorSource | Should -Match 'Exchange governance: forwarding policy review'
+        $script:collectorSource | Should -Match 'Exchange governance: inbox rule forwarding review'
+        $script:collectorSource | Should -Match 'Export preparation: user and mailbox detail projection'
+        $script:collectorSource | Should -Match 'Export preparation: inactive mailbox detail projection'
+        $script:collectorSource | Should -Match 'Users: tenant license lookup unavailable, continuing without license and sign-in activity enrichment'
     }
 
     It 'maps the broader SharePoint tenant settings surface used by the sharing review' {

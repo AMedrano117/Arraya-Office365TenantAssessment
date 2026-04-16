@@ -28,7 +28,7 @@ function Resolve-ArrayaRepoRoot {
 $repoRoot = Resolve-ArrayaRepoRoot -StartPath $PSScriptRoot
 $runnerManifestPath = Join-Path $repoRoot 'src\modules\Arraya.M365.AssessmentRunner\Arraya.M365.AssessmentRunner.psd1'
 if (-not (Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction SilentlyContinue)) {
-    Import-Module -Name $runnerManifestPath -ErrorAction Stop
+    Import-Module -Name $runnerManifestPath -WarningAction SilentlyContinue -ErrorAction Stop
 }
 
 Invoke-ADTenantAssessment

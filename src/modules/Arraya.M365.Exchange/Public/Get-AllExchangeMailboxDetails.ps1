@@ -160,7 +160,7 @@ function Get-AllExchangeMailboxDetails {
 
     $start = Get-Date
     $mailboxInventoryProgressId = 30
-    Write-Host "Getting all mailboxes and inactive mailboxes with $($detailLevel) details ..." -ForegroundColor Cyan -nonewline
+    Write-ArrayaExchangeCollectorBanner -Message ("[Get-AllExchangeMailboxDetails] START: Getting all mailboxes and inactive mailboxes with {0} details" -f $detailLevel) -ExportFileLocation $exportDetails
     Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] START: Getting all mailboxes with $($detailLevel) details" -ExportFileLocation $exportDetails
     try {
         # Gather Mailboxes - Include InActive Mailboxes
@@ -317,7 +317,7 @@ function Get-AllExchangeMailboxDetails {
     } finally {
         Write-ProgressHelper -Total ([Math]::Max($totalCount, 1)) -Id $mailboxInventoryProgressId -Activity "Gathering All Exchange Mailbox Details" -Completed
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-        Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+        Write-ArrayaExchangeCollectorCompletionBanner -Message "[Get-AllExchangeMailboxDetails] COMPLETED: Gathering All Mailbox Details in $($CompletedTime)" -ExportFileLocation $exportDetails
         Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] COMPLETED: Gathering All Mailbox Details in $($CompletedTime)" -ExportFileLocation $exportDetails
     }
 
@@ -330,7 +330,7 @@ function Get-AllExchangeMailboxDetails {
     try {
         $start = Get-Date
         Write-Progress -Id $primaryStatsProgressId -Activity "Gathering All Primary Mailbox Statistics" -Status (((Get-Date) - $initialStart).ToString('hh\:mm\:ss'))
-        Write-Host "  Getting primary mailbox stats..." -ForegroundColor Cyan -nonewline
+        Write-ArrayaExchangeCollectorSubstep -Message 'Exchange mailboxes: primary mailbox statistics'
         Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Gathering all primary mailbox statistics for collected mailboxes (including inactive where available)." -ExportFileLocation $exportDetails
 
         $tenantStatsHash["PrimaryMailboxStats"] = @{}
@@ -824,7 +824,7 @@ function Get-AllExchangeMailboxDetails {
     finally {
         Write-Progress -Id $primaryStatsProgressId -Activity "Gathering All Primary Mailbox Statistics" -Completed
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-        Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+        Write-ArrayaExchangeCollectorCompletionBanner -Message "[Get-AllExchangeMailboxDetails] COMPLETED: Gathering All Primary Mailbox Statistics in $($CompletedTime)" -ExportFileLocation $exportDetails
         Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] COMPLETED: Gathering All Primary Mailbox Statistics in $($CompletedTime)" -ExportFileLocation $exportDetails
     }
     
@@ -832,7 +832,7 @@ function Get-AllExchangeMailboxDetails {
     if ($tenantStatsHash['AllMailboxes'].Values | Where-Object {$_.ArchiveStatus -ne "None"}) {
         try {
             $start = Get-Date
-            Write-Host "  Getting archive mailbox stats..." -ForegroundColor Cyan -nonewline
+            Write-ArrayaExchangeCollectorSubstep -Message 'Exchange mailboxes: archive mailbox statistics'
             Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Archive mailbox size/item metrics are not exposed in Graph mailbox usage reports; using EXO statistics for archive mailboxes." -ExportFileLocation $exportDetails
             Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Gathering All Archive Mailbox Statistics. Including Group and Inactive Mailboxes" -ExportFileLocation $exportDetails
             Write-Progress -Id $archiveStatsProgressId -Activity "Gathering All Archive Mailbox Statistics" -Status (((Get-Date) - $initialStart).ToString('hh\:mm\:ss'))
@@ -865,11 +865,11 @@ function Get-AllExchangeMailboxDetails {
         finally { 
             Write-Progress -Id $archiveStatsProgressId -Activity "Gathering All Archive Mailbox Statistics" -Completed
             $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-            Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+            Write-ArrayaExchangeCollectorCompletionBanner -Message "[Get-AllExchangeMailboxDetails] COMPLETED: Gathering All Archive Mailbox Statistics in $($CompletedTime)" -ExportFileLocation $exportDetails
             Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails]COMPLETED: Gathering All Archive Mailbox Statistics in $($CompletedTime)" -ExportFileLocation $exportDetails
         }
     } else {
         Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] No Archive Mailboxes found." -ExportFileLocation $exportDetails
-        Write-Host "  No Archive Mailboxes found." -ForegroundColor Yellow
+        Write-ArrayaExchangeCollectorSubstep -Message 'Exchange mailboxes: no archive mailboxes found' -ForegroundColor 'Yellow'
     }
 }

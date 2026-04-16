@@ -3,6 +3,8 @@ Describe 'Arraya.M365.Exchange' {
         $script:repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
         $script:manifestPath = Join-Path $script:repoRoot 'src\modules\Arraya.M365.Exchange\Arraya.M365.Exchange.psd1'
         $script:moduleRoot = Join-Path $script:repoRoot 'src\modules\Arraya.M365.Exchange'
+        $script:hybridPath = Join-Path $script:moduleRoot 'Public\Get-ExchangeHybridConfiguration.ps1'
+        $script:hybridSource = Get-Content -Raw -Path $script:hybridPath
         $script:expectedExports = @(
             'Get-AllExchangeMailboxDetails'
             'Get-AllPublicFolderDetails'
@@ -51,5 +53,16 @@ Describe 'Arraya.M365.Exchange' {
                 'Invoke-QuietRestMethod'
             ) -CaseSensitive
         $matches | Should -BeNullOrEmpty
+    }
+
+    It 'uses safe connector identity fallback logic for hybrid detection and suppresses noisy fallback warnings' {
+        Test-Path $script:hybridPath | Should -BeTrue
+        $script:hybridSource | Should -Match 'function Get-ConnectorIdentityValue'
+        $script:hybridSource | Should -Match "\('Identity', 'Guid', 'Name', 'Id'\)"
+        $script:hybridSource | Should -Not -Match 'Select-Object -ExpandProperty ID'
+        $script:hybridSource | Should -Match 'MailFlowConnectors'
+        $script:hybridSource | Should -Match 'Test-mode connectors may not be included in this fallback view'
+        $script:hybridSource | Should -Match 'Get-InboundConnector -ErrorAction SilentlyContinue -WarningAction SilentlyContinue'
+        $script:hybridSource | Should -Match 'Get-OutboundConnector -ErrorAction SilentlyContinue -WarningAction SilentlyContinue'
     }
 }

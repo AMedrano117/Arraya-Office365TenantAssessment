@@ -45,7 +45,7 @@ function Import-ArrayaCommonModuleForSnapshotComparison {
         $loadedCommonModule.Path -ne $resolvedCommonManifestPath -or
         $missingCommonCommands.Count -gt 0
     ) {
-        Import-Module -Name $resolvedCommonManifestPath -Force -ErrorAction Stop
+        Import-Module -Name $resolvedCommonManifestPath -Force -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
     }
 }
 Import-ArrayaCommonModuleForSnapshotComparison

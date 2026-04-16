@@ -21,7 +21,7 @@ if (-not (Test-Path -Path $resolveRepoRootHelperPath)) {
 
 $repoRoot = Resolve-ArrayaRepoRoot -StartPath $PSScriptRoot
 $runnerManifestPath = Join-Path $repoRoot 'src\modules\Arraya.M365.AssessmentRunner\Arraya.M365.AssessmentRunner.psd1'
-Import-Module -Name $runnerManifestPath -Force -DisableNameChecking -ErrorAction Stop
+Import-Module -Name $runnerManifestPath -Force -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
 
 $invokeParams = @{ AssessmentJsonPath = $AssessmentJsonPath }
 if ($PSBoundParameters.ContainsKey('OutputFolder')) { $invokeParams.OutputFolder = $OutputFolder }

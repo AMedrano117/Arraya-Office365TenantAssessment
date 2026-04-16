@@ -234,6 +234,17 @@ Describe 'Improve workflow' {
                             RelatedPolicies    = ''
                             AccountEnabled     = $true
                             LastSignInDateTime = '2026-01-01T00:00:00Z'
+                        },
+                        [pscustomobject]@{
+                            DisplayName        = 'Uncovered Guest'
+                            UserPrincipalName  = 'uncovered.guest_contoso.com#EXT#@contoso.onmicrosoft.com'
+                            UserType           = 'Guest'
+                            DirectoryObjectId  = 'guest-001'
+                            GapCategory        = 'Outside enabled MFA CA include scope'
+                            GapReason          = 'Guest user is outside the include scope of all enabled Conditional Access policies that currently require MFA.'
+                            RelatedPolicies    = ''
+                            AccountEnabled     = $true
+                            LastSignInDateTime = '2026-01-01T00:00:00Z'
                         }
                     )
                     MfaEnforcementScopeReview = @(
@@ -677,12 +688,13 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'Users not covered by enabled MFA enforcement policies'
         $customerReportDocument | Should -Match 'MFA enforcement state'
         $customerReportDocument | Should -Match 'MFA Enforcement Gap Summary'
-        $customerReportDocument | Should -Match 'Top Users Not Covered by Enabled MFA Enforcement'
+        $customerReportDocument | Should -Match 'Top Internal Member Users Not Covered by Enabled MFA Enforcement'
         $customerReportDocument | Should -Match 'Guest MFA Coverage Drivers'
         $customerReportDocument | Should -Match 'Representative MFA Scope Examples'
         $customerReportDocument | Should -Match 'Coverage Gap Signal'
         $customerReportDocument | Should -Match 'Related Policy / Scope'
         $customerReportDocument | Should -Match 'Uncovered Member'
+        $customerReportDocument | Should -Not -Match 'Uncovered Guest'
         $customerReportDocument | Should -Match 'Break Glass Exclusions'
         $customerReportDocument | Should -Match 'Outside include scope'
         $customerReportDocument | Should -Match 'Some Conditional Access policies naturally target employee, admin, or workload-specific populations'
@@ -816,11 +828,12 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match '\| Admin users not covered by enabled MFA enforcement policies \| 1 \|'
         $customerReportMarkdown | Should -Match '#### MFA Enforcement Gap Summary'
         $customerReportMarkdown | Should -Match '\| Coverage Gap Signal \| Current State \|'
-        $customerReportMarkdown | Should -Match '\| Users outside enabled MFA CA include scope \| 1 \|'
+        $customerReportMarkdown | Should -Match '\| Users outside enabled MFA CA include scope \| 2 \|'
         $customerReportMarkdown | Should -Match '\| Users explicitly excluded from enabled MFA CA policies \| 0 \|'
-        $customerReportMarkdown | Should -Match '#### Top Users Not Covered by Enabled MFA Enforcement'
+        $customerReportMarkdown | Should -Match '#### Top Internal Member Users Not Covered by Enabled MFA Enforcement'
         $customerReportMarkdown | Should -Match '\| Display Name \| User Principal Name \| User Type \| Gap Category \| Related Policy / Scope \|'
         $customerReportMarkdown | Should -Match 'Uncovered Member'
+        $customerReportMarkdown | Should -Not -Match 'Uncovered Guest'
         $customerReportMarkdown | Should -Match 'Outside include scope'
         $customerReportMarkdown | Should -Match 'The desired baseline is to require strong guest authentication through a guest-specific Conditional Access policy and to trust the guest home-tenant MFA where supported and approved'
         $customerReportMarkdown | Should -Match '#### Guest MFA Coverage Drivers'

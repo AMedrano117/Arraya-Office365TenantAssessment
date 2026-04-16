@@ -2420,6 +2420,15 @@ function New-CustomerAssessmentDocumentBlocks {
                 @{ Expression = { (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName')) -Default 'Unnamed user').ToLowerInvariant() } }, `
                 @{ Expression = { (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserPrincipalName')) -Default '').ToLowerInvariant() } }
     )
+    $mfaGapInternalMemberRowsSorted = @(
+        $mfaGapRowsSorted |
+            Where-Object {
+                $userTypeText = (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default '').ToLowerInvariant()
+                $userPrincipalName = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserPrincipalName')) -Default ''
+                $isGuestIdentity = ($userTypeText -eq 'guest' -or $userPrincipalName -like '*#EXT#*')
+                -not $isGuestIdentity
+            }
+    )
     $mfaScopeRowsSorted = @(
         $mfaEnforcementScopeReviewRows |
             Sort-Object `
@@ -2462,9 +2471,9 @@ function New-CustomerAssessmentDocumentBlocks {
     else {
         @((New-CustomerWordTableRow -Cells @('Not validated from the reviewed data', 'Not validated from the reviewed data')))
     }
-    $mfaGapDetailRows = if ($mfaGapRowsSorted.Count -gt 0) {
+    $mfaGapDetailRows = if ($mfaGapInternalMemberRowsSorted.Count -gt 0) {
         @(
-            $mfaGapRowsSorted |
+            $mfaGapInternalMemberRowsSorted |
                 Select-Object -First 15 |
                 ForEach-Object {
                     $relatedPolicyText = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('RelatedPolicies')) -Default ''
@@ -2486,7 +2495,7 @@ function New-CustomerAssessmentDocumentBlocks {
         )
     }
     else {
-        @((New-CustomerWordTableRow -Cells @('Not validated from the reviewed data', 'Not validated from the reviewed data', 'Not validated from the reviewed data', 'Not validated from the reviewed data', 'Not validated from the reviewed data')))
+        @((New-CustomerWordTableRow -Cells @('No uncovered internal member users surfaced in the reviewed data', 'N/A', 'Member', 'N/A', 'Guest and external-user gaps remain summarized separately in this report and in the workbook tabs.')))
     }
     $guestScopeKeywordPattern = '(?i)guest|external|b2b|partner'
     $guestRelevantMfaScopeRows = @(
@@ -2644,8 +2653,8 @@ function New-CustomerAssessmentDocumentBlocks {
     }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'MFA Enforcement Gap Summary' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Coverage Gap Signal', 'Current State') -Rows $mfaGapSummaryRows)) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ("Of the {0} enabled reviewed user(s) not currently covered by active MFA enforcement, {1} appear explicitly excluded while {2} fall outside the active include scope. The table below highlights the first {3} uncovered identities so the team can see whether the current gap is being driven by exclusions, narrow targeting, or both." -f $(if ($null -eq $mfaUsersNotCoveredByEnabledPolicies) { 'unconfirmed' } else { $mfaUsersNotCoveredByEnabledPolicies }), $mfaExcludedUserCount, $mfaOutsideIncludeUserCount, [math]::Min($mfaGapRowsSorted.Count, 15)) -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Top Users Not Covered by Enabled MFA Enforcement' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("Of the {0} enabled reviewed user(s) not currently covered by active MFA enforcement, {1} appear explicitly excluded while {2} fall outside the active include scope. The table below highlights the first {3} uncovered internal member identities so the team can see whether the current employee-focused gap is being driven by exclusions, narrow targeting, or both." -f $(if ($null -eq $mfaUsersNotCoveredByEnabledPolicies) { 'unconfirmed' } else { $mfaUsersNotCoveredByEnabledPolicies }), $mfaExcludedUserCount, $mfaOutsideIncludeUserCount, [math]::Min($mfaGapInternalMemberRowsSorted.Count, 15)) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Top Internal Member Users Not Covered by Enabled MFA Enforcement' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Display Name', 'User Principal Name', 'User Type', 'Gap Category', 'Related Policy / Scope') -Rows $mfaGapDetailRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Guest MFA Coverage Drivers' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("Guest users currently show {0} covered and {1} uncovered account(s) in the reviewed enabled-user inventory. {2} There are {3} guest or external-focused include row(s) and {4} guest or external-focused exclusion row(s) surfaced in the reviewed policy scope. {5}" -f $(if ($null -eq $mfaGuestUsersCoveredByEnabledPolicies) { 'an unconfirmed number of' } else { $mfaGuestUsersCoveredByEnabledPolicies }), $mfaUncoveredGuestCount, $mfaScopeDriverText, $guestRelevantIncludeCount, $guestRelevantExcludeCount, $mfaScopeInterpretationText) -Style 'Normal')) | Out-Null

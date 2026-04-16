@@ -302,7 +302,7 @@ if (
     -not (Test-AssessmentImportedModuleMatchesManifestPath -Module $loadedCommonModule -ManifestPath $resolvedCommonManifestPath) -or
     $missingCommonCommands.Count -gt 0
 ) {
-    Import-Module -Name $resolvedCommonManifestPath -Force -DisableNameChecking -ErrorAction Stop
+    Import-Module -Name $resolvedCommonManifestPath -Force -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
 }
 
 $reportingModuleManifestPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\modules\Arraya.M365.Reporting\Arraya.M365.Reporting.psd1'))
@@ -325,7 +325,7 @@ if (
     -not (Test-AssessmentImportedModuleMatchesManifestPath -Module $loadedReportingModule -ManifestPath $resolvedReportingManifestPath) -or
     $missingReportingCommands.Count -gt 0
 ) {
-    Import-Module -Name $resolvedReportingManifestPath -Force -DisableNameChecking -ErrorAction Stop
+    Import-Module -Name $resolvedReportingManifestPath -Force -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
 }
 
 function Get-ArrayaAssessmentScriptVersionInfo {
@@ -402,7 +402,7 @@ function Import-AssessmentCollectorModules {
         $loadedGraphModule.Path -ne $resolvedGraphManifestPath -or
         $missingGraphCommands.Count -gt 0
     ) {
-        Import-Module -Name $resolvedGraphManifestPath -Force -ErrorAction Stop
+        Import-Module -Name $resolvedGraphManifestPath -Force -WarningAction SilentlyContinue -ErrorAction Stop
     }
 
     $exchangeModuleManifestPath = [System.IO.Path]::GetFullPath((Join-Path -Path $LegacyScriptRoot -ChildPath '..\..\..\modules\Arraya.M365.Exchange\Arraya.M365.Exchange.psd1'))
@@ -430,7 +430,7 @@ function Import-AssessmentCollectorModules {
         $loadedExchangeModule.Path -ne $resolvedExchangeManifestPath -or
         $missingExchangeCommands.Count -gt 0
     ) {
-        Import-Module -Name $resolvedExchangeManifestPath -Force -ErrorAction Stop
+        Import-Module -Name $resolvedExchangeManifestPath -Force -WarningAction SilentlyContinue -ErrorAction Stop
     }
 }
 
@@ -1464,6 +1464,41 @@ function Write-AssessmentCollectorCompletionBanner {
     }
 
     Write-Host $Message -ForegroundColor $ForegroundColor
+}
+
+function Write-AssessmentCollectorBanner {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+        [Parameter(Mandatory = $false)]
+        [string]$ForegroundColor = 'Cyan',
+        [Parameter(Mandatory = $false)]
+        [switch]$NoNewline
+    )
+
+    if ($script:AssessmentProgressState) {
+        return
+    }
+
+    if ($NoNewline) {
+        Write-Host $Message -ForegroundColor $ForegroundColor -NoNewline
+    }
+    else {
+        Write-Host $Message -ForegroundColor $ForegroundColor
+    }
+}
+
+function Write-AssessmentConsoleSubstep {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+        [Parameter(Mandatory = $false)]
+        [string]$ForegroundColor = 'DarkCyan'
+    )
+
+    Write-Host ("    > {0}" -f $Message) -ForegroundColor $ForegroundColor
 }
 
 function Write-ConnectionPreflightSummary {
@@ -3098,6 +3133,32 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
 
     $coveredMemberUsers = @(@($coveredUserIdSet.Keys) | Where-Object { $enabledMemberUserIdSet.ContainsKey([string]$_) })
     $coveredGuestUsers = @(@($coveredUserIdSet.Keys) | Where-Object { $enabledGuestUserIdSet.ContainsKey([string]$_) })
+    $guestCoveredPolicyNameSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($coveredGuestUserId in $coveredGuestUsers) {
+        if (-not $userCoveredPolicyLookup.ContainsKey([string]$coveredGuestUserId)) {
+            continue
+        }
+
+        foreach ($policyName in @($userCoveredPolicyLookup[[string]$coveredGuestUserId])) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$policyName)) {
+                $null = $guestCoveredPolicyNameSet.Add([string]$policyName)
+            }
+        }
+    }
+
+    $guestExplicitScopePolicyNameSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($scopeReviewRow in @($scopeReviewRows)) {
+        $scopeType = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $scopeReviewRow -Names @('ScopeType')) -Default ''
+        $objectType = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $scopeReviewRow -Names @('ObjectType')) -Default ''
+        if ($scopeType -ne 'Include' -or $objectType -ne 'GuestOrExternal') {
+            continue
+        }
+
+        $scopePolicyName = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $scopeReviewRow -Names @('PolicyName')) -Default ''
+        if (-not [string]::IsNullOrWhiteSpace($scopePolicyName)) {
+            $null = $guestExplicitScopePolicyNameSet.Add($scopePolicyName)
+        }
+    }
 
     $coverageSummary.UsersCoveredByEnabledMfaPolicies = @($coveredUserIdSet.Keys).Count
     $coverageSummary.UserCoveragePercent = if ($enabledReviewedUsers.Count -gt 0) { [math]::Round((@($coveredUserIdSet.Keys).Count / $enabledReviewedUsers.Count) * 100, 1) } else { $null }
@@ -3105,6 +3166,10 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
     $coverageSummary.MemberUserCoveragePercent = if ($enabledMemberUsers.Count -gt 0) { [math]::Round(($coveredMemberUsers.Count / $enabledMemberUsers.Count) * 100, 1) } else { $null }
     $coverageSummary.GuestUsersCoveredByEnabledMfaPolicies = $coveredGuestUsers.Count
     $coverageSummary.GuestUserCoveragePercent = if ($enabledGuestUsers.Count -gt 0) { [math]::Round(($coveredGuestUsers.Count / $enabledGuestUsers.Count) * 100, 1) } else { $null }
+    $coverageSummary.GuestCoveredPolicyCount = $guestCoveredPolicyNameSet.Count
+    $coverageSummary.GuestCoveredPolicyNames = @($guestCoveredPolicyNameSet | Sort-Object)
+    $coverageSummary.GuestExplicitScopePolicyCount = $guestExplicitScopePolicyNameSet.Count
+    $coverageSummary.GuestExplicitScopePolicyNames = @($guestExplicitScopePolicyNameSet | Sort-Object)
     $coverageSummary.CoverageCalculationNote = 'Estimate is based on enabled reviewed users and enabled Conditional Access policies that require MFA, whether through built-in MFA or authentication strength, expanded across direct users, targeted groups, targeted roles, and guest/external-user scope where supported.'
 
     if ($IncludeDetails) {
@@ -4274,6 +4339,7 @@ function Invoke-AssessmentProgressStep {
     if (Test-ShowAssessmentProgress) {
         Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Status "[$current/$total] $Name" -PercentComplete $percent
     }
+    Write-Host ("  [{0}/{1} | {2}%] {3}" -f $current, $total, $percent, $Name) -ForegroundColor Cyan
     try {
         Sync-CollectorModuleRuntimeContext
         $stepResult = & $ScriptBlock
@@ -4827,7 +4893,7 @@ function Get-EmailActivityInsights {
     $script:tenantStatsHash['CollaborationActivitySummary'] = @{}
     $adminReportSettings = $null
 
-    Write-Host "Getting email activity details ..." -ForegroundColor Cyan -NoNewline
+    Write-AssessmentCollectorBanner -Message 'Getting email activity details ...' -NoNewline
     Write-Log -Type INFO -Message "[Get-EmailActivityInsights] START: Gathering email activity details from Microsoft Graph" -ExportFileLocation $ExportDetails
 
     function Convert-EmailActivityDateValue {
@@ -5277,7 +5343,7 @@ function Get-AllUnifiedGroups {
             $script:tenantStatsHash = @{}
         }
         $script:tenantStatsHash["UnifiedGroups"] = @{}
-        Write-Host "Getting all unified groups (including soft deleted)..." -ForegroundColor Cyan -nonewline
+    Write-AssessmentCollectorBanner -Message 'Getting all unified groups (including soft deleted)...' -NoNewline
         Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] START: Gathering all Unified with $($detailLevel) details" -ExportFileLocation $ExportDetails
         $allUnifiedGroups = New-Object System.Collections.Generic.List[object]
         $cachedUnifiedGroups = if ($script:UnifiedGroupsInventoryCache) { @($script:UnifiedGroupsInventoryCache) } else { @() }
@@ -5523,7 +5589,7 @@ function Get-SharePointAndOneDriveSites {
     }
     $script:tenantStatsHash['SharePoint'] = @{}
     $script:tenantStatsHash['OneDrive'] = @{}
-    Write-Host "Getting all $($ServiceName) SharePoint Online and OneDrive Sites with $($detailLevel) ..." -ForegroundColor Cyan -nonewline
+    Write-AssessmentCollectorBanner -Message ("Getting all {0} SharePoint Online and OneDrive Sites with {1} ..." -f $ServiceName, $detailLevel) -NoNewline
     Write-Log -Type Info -Message "[Get-SharePointAndOneDriveSites] START: Getting all SharePoint Online and OneDrive $($detailLevel) details ($($ServiceName))" -ExportFileLocation $ExportDetails
     $graphSitesProgressId = 51
     $spoSitesProgressId = 52
@@ -6204,7 +6270,7 @@ function Get-TeamsDetails {
     }
     $script:tenantStatsHash['AllTeams'] = @{}
 
-    Write-Host "Getting all Microsoft Teams details ..." -ForegroundColor Cyan -NoNewline
+    Write-AssessmentCollectorBanner -Message 'Getting all Microsoft Teams details ...' -NoNewline
     Write-Log -Type INFO -Message "[Get-TeamsDetails] START: Gathering Teams inventory with $detailLevel details" -ExportFileLocation $ExportDetails
 
     try {
@@ -7185,6 +7251,7 @@ function Get-AllUserDetails {
     )
     $minimumModeMessage = 'NotCollected (minimum mode)'
     $progressStatusInterval = 25
+    $consoleProgressInterval = 500
     $isGeekDetail = ($detailLevel -in @('geek', 'all'))
     $logPerUserDebug = $isGeekDetail
     $BasicMGDetails = $false
@@ -7236,6 +7303,9 @@ function Get-AllUserDetails {
             $userCollectionState.ProcessedUserCount++
             if ($userCollectionState.ProcessedUserCount -eq 1 -or ($userCollectionState.ProcessedUserCount % $progressStatusInterval) -eq 0) {
                 Write-Progress -Id $userDetailsProgressId -Activity "Gathering Tenant User Details" -Status "Processed $($userCollectionState.ProcessedUserCount) user(s): $scriptLabel"
+            }
+            if (($userCollectionState.ProcessedUserCount % $consoleProgressInterval) -eq 0) {
+                Write-AssessmentConsoleSubstep -Message ("Users: processed {0} directory records" -f $userCollectionState.ProcessedUserCount)
             }
 
             $userPrincipalName = [string]$UserRecord.UserPrincipalName
@@ -7424,7 +7494,7 @@ function Get-AllUserDetails {
     }
 
     try {
-        Write-Host "Getting all Microsoft Graph $($detailLevel) User data..." -ForegroundColor Cyan -nonewline
+        Write-AssessmentConsoleSubstep -Message 'Users: Graph inventory retrieval and per-user enrichment'
         Write-Log -Type Info -Message "[Get-allUserDetails] START: Getting all Microsoft Graph $($detailLevel) User data" -ExportFileLocation $ExportDetails
         Write-Progress -Id $graphUsersProgressId -Activity "Getting all Microsoft Graph User Data" -Status (((Get-Date) - $global:initialStart).ToString('hh\:mm\:ss'))
 
@@ -7462,7 +7532,7 @@ function Get-AllUserDetails {
             Write-Log -Type ERROR -Message "[Get-allUserDetails] An error occurred in running Get-allMGUserDetails function. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
 
             Write-Host
-            Write-Host "Caught a tenant license exception. Getting all Microsoft Graph User data without licenses and sign in activity..." -ForegroundColor Yellow -nonewline
+            Write-AssessmentConsoleSubstep -Message 'Users: tenant license lookup unavailable, continuing without license and sign-in activity enrichment' -ForegroundColor 'Yellow'
             try {
                 Write-Log -Type Info -Message "[Get-allUserDetails] Attempt 2. Getting all Microsoft Graph $($detailLevel) with limited User Details" -ExportFileLocation $ExportDetails
                 $script:tenantStatsHash["Users"] = @{}
@@ -7516,7 +7586,7 @@ function Get-AllOffice365Admins {
     }
     $script:tenantStatsHash["Admins"] = @{}
     $adminResults = New-Object System.Collections.Generic.List[object]
-    Write-Host "Gathering All Admins ..." -ForegroundColor Cyan -nonewline
+    Write-AssessmentCollectorBanner -Message 'Gathering All Admins ...' -NoNewline
     Write-Log -Type INFO -Message "[Get-AllOffice365Admins] START: Gathering All Admins from Tenant" -ExportFileLocation $ExportDetails
 
     try {
@@ -7782,7 +7852,7 @@ function Get-AllOffice365Domains {
     }
     $script:tenantStatsHash["Domains"] = @{}
     $script:tenantStatsHash["RemoteDomains"] = @{}
-    Write-Host "Gathering All Domains ..." -ForegroundColor Cyan -nonewline
+    Write-AssessmentCollectorBanner -Message 'Gathering All Domains ...' -NoNewline
     Write-Log -Type INFO -Message "[Get-AllOffice365Domains] START: Gathering All Domains from tenant" -ExportFileLocation $ExportDetails
     try {
         # Get all the domains
@@ -8405,9 +8475,9 @@ function Report-UserAndMailboxStats {
     Write-Log -Type INFO -Message "[Combine-UserAndMailboxStats] Combining User and Mailbox Details" -ExportFileLocation $ExportDetails
     try {
         $start = Get-Date
-        Write-Host "Combining User and Mailbox Details..." -ForegroundColor Cyan -NoNewline
+        Write-AssessmentConsoleSubstep -Message 'Export preparation: user and mailbox detail projection'
         Combine-UserAndMailboxStats -TenantStatsStore $tenantStatsStore
-        Write-Host "Generating Inactive Mailbox Report..." -ForegroundColor Cyan -NoNewline
+        Write-AssessmentConsoleSubstep -Message 'Export preparation: inactive mailbox detail projection'
         Report-InactiveMailboxes -TenantStatsStore $tenantStatsStore
     } catch {
         Write-Log -Type ERROR -Message "[Combine-UserAndMailboxStats] An error occurred while combining User and Mailbox Details. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
@@ -8416,6 +8486,23 @@ function Report-UserAndMailboxStats {
         Write-AssessmentCollectorCompletionBanner -Message "Completed in $completedTime"
         Write-Log -Type INFO -Message "[Combine-UserAndMailboxStats] COMPLETED: Combined User and Mailbox Details in $completedTime" -ExportFileLocation $ExportDetails
     }
+}
+
+function Prepare-AssessmentExportData {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [bool]$BuildCombinedUserMailboxProjection,
+        [Parameter(Mandatory = $true)]
+        [bool]$RequiresFilteredExportSnapshot
+    )
+
+    if (-not $BuildCombinedUserMailboxProjection -or -not $RequiresFilteredExportSnapshot) {
+        return
+    }
+
+    Write-AssessmentConsoleSubstep -Message 'Export preparation: combined user/mailbox reporting'
+    Report-UserAndMailboxStats
 }
 
 
@@ -8442,7 +8529,7 @@ function Get-AllDevicesReport {
         }
     $script:tenantStatsHash["DeviceDetails"] = @{}
 
-    Write-Host "Getting Device Details ..." -ForegroundColor Cyan -nonewline
+    Write-AssessmentCollectorBanner -Message 'Getting Device Details ...' -NoNewline
     Write-Log -Type INFO -Message "[Get-AllDevicesReport] START: Gathering all Device with $($detailLevel) details" -ExportFileLocation $ExportDetails
     
     try {
@@ -8567,7 +8654,7 @@ function Get-ConditionalAccessPoliciesReport {
     $script:tenantStatsHash["ConditionalAccessPolicies"] = @{}
     $script:tenantStatsHash["ConditionalAccessPolicySummary"] = @{}
 
-    Write-Host "Getting Entra Conditional Access Policies Details ..." -ForegroundColor Cyan -nonewline
+    Write-AssessmentCollectorBanner -Message 'Getting Entra Conditional Access Policies Details ...' -NoNewline
     Write-Log -Type INFO -Message "[Get-ConditionalAccessPoliciesReport] START: Gathering all Entra Conditional Access Policies  with $($detailLevel) details" -ExportFileLocation $ExportDetails
 
     function Get-PolicyItemCounts {
@@ -8840,7 +8927,7 @@ function Get-SecuritySecureScoreReport {
     }
     $collectSecureScoreMappings = ($depthPolicy.CollectSecureScoreMappings -eq $true)
 
-    Write-Host "Getting Security Score Details ..." -ForegroundColor Cyan -nonewline
+    Write-AssessmentCollectorBanner -Message 'Getting Security Score Details ...' -NoNewline
     Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] START: Gathering all Security Score details" -ExportFileLocation $ExportDetails
     try {
         $controlProfileLookup = @{}
@@ -9070,7 +9157,7 @@ function Get-AuthenticationConfiguration {
     $script:tenantStatsHash["GuestSignInSummary"] = @{}
     $script:tenantStatsHash["PrivilegedAccessSummary"] = @{}
     
-    Write-Host "Checking Authentication and SSO Configuration ..." -ForegroundColor Cyan -nonewline
+    Write-AssessmentCollectorBanner -Message 'Checking Authentication and SSO Configuration ...' -NoNewline
     Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] START: Checking Authentication Configuration" -ExportFileLocation $ExportDetails
     
     try {
@@ -10010,7 +10097,7 @@ function Get-TenantOverviewInfo {
     if (-not $script:tenantStatsHash) { $script:tenantStatsHash = @{} }
     $script:tenantStatsHash["TenantInfo"] = @{}
 
-    Write-Host "Gathering Tenant Overview Info ..." -ForegroundColor Cyan -nonewline
+    Write-AssessmentCollectorBanner -Message 'Gathering Tenant Overview Info ...' -NoNewline
     Write-Log -Type INFO -Message "[Get-TenantOverviewInfo] START: Gathering tenant overview information" -ExportFileLocation $ExportDetails
 
     try {
@@ -10144,7 +10231,7 @@ function Get-AdConnectSyncDetails {
     if (-not $script:tenantStatsHash) { $script:tenantStatsHash = @{} }
     $script:tenantStatsHash["AdConnectConfiguration"] = @{}
     
-    Write-Host "Checking AD Connect/Sync status ..." -ForegroundColor Cyan -NoNewline
+    Write-AssessmentCollectorBanner -Message 'Checking AD Connect/Sync status ...' -NoNewline
     Write-Log -Type INFO -Message "[Get-AdConnectSyncDetails] START" -ExportFileLocation $ExportDetails
     
     try {
@@ -10664,14 +10751,14 @@ function Ensure-PurviewComplianceSession {
         $underlyingError = [string]$_.Exception.Message
         $guidance = if ($purviewAuthPath -eq 'Certificate') {
             if ($underlyingError -match 'No cmdlet assigned to the user have this feature enabled') {
-                'The certificate and app registration were accepted, but this tenant did not expose the Purview retention/DLP cmdlets to that app session. Confirm the service principal has the required compliance/Purview role assignment in this tenant and that the target tenant is licensed and enabled for those compliance features.'
+                'The certificate and app registration were accepted, but this tenant did not expose the Purview retention/DLP cmdlets to that app session. Update the service principal to include the Exchange Administrator role in this tenant, or establish Connect-IPPSSession successfully in the current PowerShell session and rerun the assessment with session reuse. Also confirm the target tenant is licensed and enabled for those compliance features.'
             }
             else {
-                'Confirm the app registration has the required Purview / compliance PowerShell access, the certificate thumbprint is valid on this host, and the tenant initial domain used for -Organization is correct.'
+                'Confirm the app registration has the required Purview / compliance PowerShell access, the certificate thumbprint is valid on this host, and the tenant initial domain used for -Organization is correct. If the app path remains blocked, update the service principal to include the Exchange Administrator role in this tenant or run Connect-IPPSSession successfully in the current session and rerun the assessment with session reuse.'
             }
         }
         else {
-            'Confirm the signed-in operator can establish a compliance PowerShell session and that Connect-IPPSSession is allowed in this environment.'
+            'Confirm the signed-in operator can establish a compliance PowerShell session and that Connect-IPPSSession is allowed in this environment. If app-based Purview access is expected, update the service principal to include the Exchange Administrator role in the tenant.'
         }
 
         Set-PurviewComplianceDiagnosticState `
@@ -10695,7 +10782,7 @@ function Ensure-PurviewComplianceSession {
         Set-PurviewComplianceDiagnosticState `
             -Status 'MissingComplianceCmdletsAfterConnect' `
             -Message 'Purview compliance PowerShell connected, but the required retention/DLP cmdlets were not available afterward.' `
-            -Guidance 'Confirm Connect-IPPSSession completed successfully for the target tenant and that the compliance cmdlets are exposed in the current session.' `
+            -Guidance 'Confirm Connect-IPPSSession completed successfully for the target tenant and that the compliance cmdlets are exposed in the current session. If this is an app-based run, update the service principal to include the Exchange Administrator role in the tenant, or run Connect-IPPSSession successfully in the current PowerShell session and rerun the assessment with session reuse.' `
             -AuthPath $purviewAuthPath `
             -Organization $organization `
             -MissingCommands $missingComplianceCommands
@@ -10898,7 +10985,7 @@ function Get-MfaRegistrationDetails {
     $script:tenantStatsHash["AdminMfaRegistrationGaps"] = @{}
     $script:tenantStatsHash["AdminMfaEnforcementGaps"] = @{}
     
-    Write-Host "Gathering MFA registration details ..." -ForegroundColor Cyan -NoNewline
+    Write-AssessmentCollectorBanner -Message 'Gathering MFA registration details ...' -NoNewline
     Write-Log -Type INFO -Message "[Get-MfaRegistrationDetails] START: Gathering MFA registration details" -ExportFileLocation $ExportDetails
     
     try {
@@ -11106,6 +11193,47 @@ function Get-MfaRegistrationDetails {
             $conditionalAccessPoliciesReviewed = @($conditionalAccessPolicies).Count
         }
 
+        $guestCoveredPolicyNames = @(
+            Convert-ToAssessmentStringArray -Value (Get-ArrayaObjectValue -Object $mfaCoverageSummary -Names @('GuestCoveredPolicyNames'))
+        )
+        $guestExplicitScopePolicyNames = @(
+            Convert-ToAssessmentStringArray -Value (Get-ArrayaObjectValue -Object $mfaCoverageSummary -Names @('GuestExplicitScopePolicyNames'))
+        )
+        $guestMfaConditionalAccessPoliciesText = if ($guestCoveredPolicyNames.Count -gt 0) {
+            $guestCoveredPolicyNames -join '; '
+        }
+        elseif ($enabledMfaPolicies.Count -gt 0) {
+            'No specific guest-covered MFA policy names were resolved from the reviewed guest population.'
+        }
+        else {
+            'None detected'
+        }
+        $guestMfaExplicitGuestScopePoliciesText = if ($guestExplicitScopePolicyNames.Count -gt 0) {
+            $guestExplicitScopePolicyNames -join '; '
+        }
+        else {
+            'No explicit guest/external-user MFA scope detected.'
+        }
+        $guestMfaEnforcementSources = New-Object System.Collections.Generic.List[string]
+        if ($securityDefaultsEnabled -eq $true) {
+            $guestMfaEnforcementSources.Add('Security Defaults') | Out-Null
+        }
+        if ($guestCoveredPolicyNames.Count -gt 0) {
+            $guestMfaEnforcementSources.Add(("Conditional Access: {0}" -f ($guestCoveredPolicyNames -join '; '))) | Out-Null
+        }
+        elseif ($enabledMfaPolicies.Count -gt 0) {
+            $guestMfaEnforcementSources.Add('Conditional Access: enabled MFA policies were detected, but no guest-covered policy names were resolved from the reviewed guest population') | Out-Null
+        }
+        if ($guestMfaEnforcementSources.Count -eq 0 -and $reportOnlyMfaPolicies.Count -gt 0) {
+            $guestMfaEnforcementSources.Add('Report-only Conditional Access policies require MFA, but active guest enforcement was not clearly detected') | Out-Null
+        }
+        $guestMfaEnforcementSourcesText = if ($guestMfaEnforcementSources.Count -gt 0) {
+            @($guestMfaEnforcementSources) -join ' | '
+        }
+        else {
+            'No active guest MFA enforcement source was clearly detected.'
+        }
+
         $script:tenantStatsHash["MfaEnforcementSummary"] = [pscustomobject]@{
             ConditionalAccessPoliciesReviewed     = $conditionalAccessPoliciesReviewed
             EnabledConditionalAccessPolicies      = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('EnabledPolicies'))
@@ -11123,6 +11251,11 @@ function Get-MfaRegistrationDetails {
             MemberUserCoveragePercent            = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaCoverageSummary -Names @('MemberUserCoveragePercent'))
             GuestUsersCoveredByEnabledMfaPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaCoverageSummary -Names @('GuestUsersCoveredByEnabledMfaPolicies'))
             GuestUserCoveragePercent             = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaCoverageSummary -Names @('GuestUserCoveragePercent'))
+            GuestCoveredPolicyCount              = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaCoverageSummary -Names @('GuestCoveredPolicyCount'))
+            GuestCoveredPolicyNames              = $guestMfaConditionalAccessPoliciesText
+            GuestExplicitScopePolicyCount        = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaCoverageSummary -Names @('GuestExplicitScopePolicyCount'))
+            GuestExplicitScopePolicyNames        = $guestMfaExplicitGuestScopePoliciesText
+            GuestMfaEnforcementSources           = $guestMfaEnforcementSourcesText
             GroupTargetedPolicyCount             = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaCoverageSummary -Names @('GroupTargetedPolicyCount'))
             RoleTargetedPolicyCount              = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaCoverageSummary -Names @('RoleTargetedPolicyCount'))
             CoverageCalculationNote              = Get-ArrayaObjectValue -Object $mfaCoverageSummary -Names @('CoverageCalculationNote')
@@ -11191,7 +11324,7 @@ function Get-FederationAndCrossTenantConfiguration {
     if (-not $script:tenantStatsHash) { $script:tenantStatsHash = @{} }
     $script:tenantStatsHash["FederationConfiguration"] = @{}
 
-    Write-Host "Checking Federation and Cross-Tenant Configuration ..." -ForegroundColor Cyan -NoNewline
+    Write-AssessmentCollectorBanner -Message 'Checking Federation and Cross-Tenant Configuration ...' -NoNewline
     Write-Log -Type INFO -Message "[Get-FederationAndCrossTenantConfiguration] START" -ExportFileLocation $ExportDetails
 
     try {
@@ -12141,6 +12274,7 @@ function Update-ExchangeGovernanceTables {
     if (-not $TenantStatsHash.ContainsKey('SharedMailboxGovernanceSummary')) { $TenantStatsHash['SharedMailboxGovernanceSummary'] = @{} }
     if (-not $TenantStatsHash.ContainsKey('ForwardingPolicySummary')) { $TenantStatsHash['ForwardingPolicySummary'] = @{} }
 
+    Write-AssessmentConsoleSubstep -Message 'Exchange governance: shared mailbox review'
     $allMailboxRows = if ($TenantStatsHash.ContainsKey('AllMailboxes') -and $TenantStatsHash['AllMailboxes'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['AllMailboxes'].Values) } else { @() }
     $mailboxFullRows = if ($TenantStatsHash.ContainsKey('MailboxFullDetails') -and $TenantStatsHash['MailboxFullDetails'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['MailboxFullDetails'].Values) } else { @() }
     $sharedMailboxRows = @(
@@ -12166,6 +12300,7 @@ function Update-ExchangeGovernanceTables {
         SharedMailboxesWithoutOwnerSignal = $ownerSignalMissing.Count
     }
 
+    Write-AssessmentConsoleSubstep -Message 'Exchange governance: forwarding policy review'
     $remoteDomainRows = if ($TenantStatsHash.ContainsKey('RemoteDomains') -and $TenantStatsHash['RemoteDomains'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['RemoteDomains'].Values) } else { @() }
     $remoteDomainsWithForwardingEnabled = @(
         $remoteDomainRows |
@@ -12287,6 +12422,7 @@ function Update-ExchangeGovernanceTables {
         return
     }
 
+    Write-AssessmentConsoleSubstep -Message 'Exchange governance: inbox rule forwarding review'
     $acceptedDomains = @()
     if ($TenantStatsHash.ContainsKey('Domains') -and $TenantStatsHash['Domains'] -is [System.Collections.IDictionary]) {
         $acceptedDomains = @(
@@ -13159,6 +13295,16 @@ function Update-ExternalExposureSummaries {
 
     $inactiveGuests90Days = Get-ExternalExposureValue -Object $guestSummaryRecord -Names @('InactiveGuests90Days')
     $guestCoverage = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $conditionalAccessSummaryRecord -Names @('HasGuestCoverage')) -Default 'Not surfaced in current source'
+    $mfaEnforcementSummaryRecord = if ($TenantStatsHash.ContainsKey('MfaEnforcementSummary')) {
+        $TenantStatsHash['MfaEnforcementSummary']
+    }
+    else {
+        $null
+    }
+    $guestMfaEnforcementState = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $mfaEnforcementSummaryRecord -Names @('GuestUserEnforcementState')) -Default 'Not surfaced in current source'
+    $guestMfaEnforcementSources = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $mfaEnforcementSummaryRecord -Names @('GuestMfaEnforcementSources')) -Default 'Not surfaced in current source'
+    $guestMfaConditionalAccessPolicies = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $mfaEnforcementSummaryRecord -Names @('GuestCoveredPolicyNames')) -Default 'Not surfaced in current source'
+    $guestMfaExplicitScopePolicies = Convert-ToExternalExposureText -Value (Get-ExternalExposureValue -Object $mfaEnforcementSummaryRecord -Names @('GuestExplicitScopePolicyNames')) -Default 'Not surfaced in current source'
     $groupsAllowingGuests = @(
         $unifiedGroupRows | Where-Object {
             $allowGuests = Get-ExternalExposureValue -Object $_ -Names @('AllowAddGuests')
@@ -13191,6 +13337,10 @@ function Update-ExternalExposureSummaries {
         CollectionState                 = $guestAccessCollectionState
         InactiveGuests90Days            = $(if ($null -eq $inactiveGuests90Days) { 'Not surfaced in current source' } else { $inactiveGuests90Days })
         ConditionalAccessGuestCoverage  = $guestCoverage
+        GuestMfaEnforcementState        = $guestMfaEnforcementState
+        GuestMfaEnforcementSources      = $guestMfaEnforcementSources
+        GuestMfaConditionalAccessPolicies = $guestMfaConditionalAccessPolicies
+        GuestMfaExplicitScopePolicies   = $guestMfaExplicitScopePolicies
         GuestInvitationControl          = $allowInvitesFrom
         GuestUserRoleId                 = $guestUserRoleId
         GuestUserRoleLabel              = $guestUserRoleLabel
@@ -13549,9 +13699,9 @@ if ($runExportOnly) {
     }
 }
 else {
-    $tenantOverviewSteps = 2
-    $identitySteps = 9
-    $exchangeSteps = 11
+    $tenantOverviewSteps = 3
+    $identitySteps = 8
+    $exchangeSteps = 10
     $collaborationSteps = 4
     $endpointSteps = 2
     $governanceSteps = 8
@@ -13560,13 +13710,18 @@ else {
 
     Write-ConsoleSection -Step '1/6' -Title 'Tenant Overview'
     Invoke-AssessmentProgressStep -Name 'Tenant overview' -ScriptBlock { Get-TenantOverviewInfo }
+    if ($GraphTest -eq 'REST') {
+        Invoke-AssessmentProgressStep -Name 'License SKUs' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+    }
+    else {
+        Invoke-AssessmentProgressStep -Name 'License SKUs' -ScriptBlock { Get-AllLicenseSKUs }
+    }
     Invoke-AssessmentProgressStep -Name 'AD Connect sync details' -ScriptBlock { Get-AdConnectSyncDetails }
 
     Write-ConsoleSection -Step '2/6' -Title 'Identity'
     switch ($GraphTest) {
         'REST' {
             Write-Verbose 'Attempting to use Microsoft Graph REST API for tenant identity details'
-            Invoke-AssessmentProgressStep -Name 'License SKUs' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
             Invoke-AssessmentProgressStep -Name 'Users' -ScriptBlock { Get-GraphUserStats -Context $script:AssessmentContext }
             Invoke-AssessmentProgressStep -Name 'Admins' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
             Invoke-AssessmentProgressStep -Name 'Entra groups' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType REST -Context $script:AssessmentContext }
@@ -13578,7 +13733,6 @@ else {
         }
         default {
             Write-Verbose 'Attempting to use Microsoft Graph SDK for tenant identity details'
-            Invoke-AssessmentProgressStep -Name 'License SKUs' -ScriptBlock { Get-AllLicenseSKUs }
             Invoke-AssessmentProgressStep -Name 'Users' -ScriptBlock { Get-AllUserDetails -detailLevel $reportingMode }
             Invoke-AssessmentProgressStep -Name 'Admins' -ScriptBlock { Get-AllOffice365Admins }
             Invoke-AssessmentProgressStep -Name 'Entra groups' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType SDK -Context $script:AssessmentContext }
@@ -13600,7 +13754,6 @@ else {
     Invoke-ProfileAwareAssessmentStep -Name 'Email activity insights' -Enabled $script:ProfileCollectionPlan.CollectEmailActivityDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-EmailActivityInsights -detailLevel $reportingMode }
     Invoke-ProfileAwareAssessmentStep -Name 'Third-party spam filtering configuration' -Enabled $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering -SkipReason 'Requires mail flow connector/rule collection, which is disabled for this profile.' -ScriptBlock { Get-ThirdPartySpamFilteringConfig -Context $script:AssessmentContext }
     Invoke-ProfileAwareAssessmentStep -Name 'SMTP relay configuration' -Enabled $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration -SkipReason 'Requires mail flow connector collection, which is disabled for this profile.' -ScriptBlock { Get-SMTPRelayConfiguration -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'Combined user/mailbox reporting' -Enabled $script:ProfileCollectionPlan.BuildCombinedUserMailboxProjection -SkipReason 'Reserved for TenantToTenantMigration / All profile runs.' -ScriptBlock { Report-UserAndMailboxStats }
     Invoke-AssessmentProgressStep -Name 'Exchange governance summaries' -ScriptBlock { Update-ExchangeGovernanceTables -TenantStatsHash $script:tenantStatsHash -DetailLevel $reportingMode }
 
     Write-ConsoleSection -Step '4/6' -Title 'Collaboration'
@@ -13656,6 +13809,9 @@ else {
 Write-ConsoleSection -Step 'Export' -Title 'Exporting results'
 $requiresFilteredExportSnapshot = (-not $effectiveSkipWorkbook)
 $ExportTenantStatsHash = $null
+Prepare-AssessmentExportData `
+    -BuildCombinedUserMailboxProjection ([bool]$script:ProfileCollectionPlan.BuildCombinedUserMailboxProjection) `
+    -RequiresFilteredExportSnapshot ([bool]$requiresFilteredExportSnapshot)
 if ($requiresFilteredExportSnapshot) {
     $ExportTenantStatsHash = Filter-TenantStatsHash -TenantStatsStore $script:tenantStatsHash -reportingMode $reportingMode -GraphTest $GraphTest
 } else {

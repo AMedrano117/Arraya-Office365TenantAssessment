@@ -15,7 +15,7 @@ function Get-AllRecipientDetails {
     try {
         $start = Get-Date
         $tenantStatsHash["AllRecipients"] = @{}
-        Write-Host "Getting all Exchange Online Recipients $($detailLevel) details ..." -ForegroundColor Cyan -nonewline
+        Write-ArrayaExchangeCollectorBanner -Message ("[Get-AllRecipientDetails] START: Gathering all Exchange Online Recipients {0} details" -f $detailLevel) -ExportFileLocation $exportDetails
         Write-Log -Type INFO -Message "[Get-AllRecipientDetails] START: Gathering all Exchange Online Recipients $($detailLevel) details" -ExportFileLocation $exportDetails
         Write-Progress -Id $recipientProgressId -Activity "Gathering All Exchange Online Recipients" -Status (((Get-Date) - $initialStart).ToString('hh\:mm\:ss'))
 
@@ -58,7 +58,7 @@ function Get-AllRecipientDetails {
     finally {
         Write-Progress -Id $recipientProgressId -Activity "Gathering All Exchange Online Recipients" -Completed
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-        Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+        Write-ArrayaExchangeCollectorCompletionBanner -Message "[Get-AllRecipientDetails] COMPLETED: Gathering all Exchange Online Recipients in $($CompletedTime)" -ExportFileLocation $exportDetails
         Write-Log -Type INFO -Message "[Get-AllRecipientDetails] COMPLETED: Gathering all Exchange Online Recipients" -ExportFileLocation $exportDetails
     }
 }
