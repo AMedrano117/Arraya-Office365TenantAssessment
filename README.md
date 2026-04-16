@@ -19,6 +19,7 @@ Run the launcher and pick an action from the menu:
 ```
 
 Users do not need to manually import modules. The launcher imports `Arraya.M365.AssessmentRunner`, and the tenant assessment now owns its own workload-aware login flow. `Office365Custom` remains available for shared helpers and legacy scripts, but the main assessment no longer relies on `Connect-Office365` as its startup bootstrap.
+The assessment also now validates required access as each workload connects, instead of deferring one large permission preflight block until after all authentication work is finished.
 
 ## Auth Modes
 - `Delegated`: interactive sign-in for full module compatibility.
@@ -29,6 +30,7 @@ If you do not pass `-AuthMode`, the assessment defaults to delegated interactive
 The assessment now stages authentication by workload instead of trying to connect every possible Microsoft 365 surface up front. Graph and Exchange remain the baseline live-collection dependencies. Purview is only connected when the active run needs retention/DLP collection. SharePoint admin PowerShell and Teams PowerShell are treated as optional workload-specific connections with explicit fallback behavior.
 If you already connected the required workloads for the current run in the current session, you can run with `-SkipAuth` to reuse those sessions and bypass the assessment's authentication bootstrap. `-SkipAuth` now validates only the workloads the active profile actually needs.
 When the active profile includes Purview retention or DLP collection, `-SkipAuth` expects an already-usable compliance PowerShell session, not just imported cmdlet names.
+Use `-SkipPermissionPreflight` if you want to bypass the staged workload access checks during startup and let the collection continue until a later collector hits missing access.
 The launcher now also reuses the repo modules already loaded from this repository in the current PowerShell session instead of force-reimporting them on every run.
 If you want the assessment to continue without the startup permission gate, you can add `-SkipPermissionPreflight`. This skips the required-access validation at the beginning of the run and allows collection to continue on a best-effort basis, which means missing permissions may still surface later as individual workload failures.
 The permission preflight now shows the specific check in progress, then prints a short summary of how many checks succeeded and how many access gaps remain. It fast-passes core Graph permissions from the current token claims and reserves live probes for the more ambiguous endpoints, so startup validation stays more accurate without making every Graph scope wait on a network call. Non-blocking checks such as `OnPremDirectorySynchronization.Read.All` are reported as structured warnings in the preflight summary instead of only surfacing as raw Graph 403 noise.

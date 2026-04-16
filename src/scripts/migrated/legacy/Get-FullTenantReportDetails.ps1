@@ -1203,6 +1203,8 @@ function Initialize-AssessmentAuthentication {
         [Parameter(Mandatory = $false)]
         [switch]$SkipAuth,
         [Parameter(Mandatory = $false)]
+        [switch]$SkipPermissionPreflight,
+        [Parameter(Mandatory = $false)]
         [string]$TenantId,
         [Parameter(Mandatory = $false)]
         [string]$ClientId,
@@ -1211,11 +1213,6 @@ function Initialize-AssessmentAuthentication {
         [Parameter(Mandatory = $false)]
         [string]$ClientSecret
     )
-
-    if ($SkipAuth) {
-        Write-Host 'Skipping assessment authentication bootstrap and validating existing workload sessions...' -ForegroundColor Cyan
-        return (Test-AssessmentExistingSessions -WorkloadPlan $WorkloadPlan)
-    }
 
     $authResult = [ordered]@{
         AuthenticationType       = $WorkloadPlan.AuthenticationType
@@ -1234,26 +1231,54 @@ function Initialize-AssessmentAuthentication {
     }
 
     Write-Host ("Assessment login mode: {0}" -f $WorkloadPlan.AuthenticationType) -ForegroundColor Cyan
-    Write-Host ("Required auth workloads: {0}" -f ($WorkloadPlan.RequiredWorkloads -join ', ')) -ForegroundColor DarkCyan
+    Write-Host ("Required auth workloads: {0}" -f ($WorkloadPlan.RequiredWorkloads -join ', ')) -ForegroundColor DarkGray
+    if ($SkipPermissionPreflight) {
+        Write-Host 'Workload preflight skipped by request. Collection will continue and may fail later where access is missing.' -ForegroundColor Yellow
+    }
 
-    $graphResult = Connect-AssessmentGraph -AuthenticationType $WorkloadPlan.AuthenticationType -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -ClientSecret $ClientSecret
-    $authResult.Graph = [bool]$graphResult.Graph
-    $authResult.GraphContextAvailable = [bool](Get-MgContext -ErrorAction SilentlyContinue)
-    $authResult.InitialDomain = $graphResult.InitialDomain
-    $authResult.ConnectedWorkloads += 'Graph'
-
-    $exchangeResult = Connect-AssessmentExchange -AuthenticationType $WorkloadPlan.AuthenticationType -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -InitialDomain $authResult.InitialDomain
-    $authResult.ExchangeOnline = [bool]$exchangeResult.ExchangeOnline
-    $authResult.ExchangeCmdletsAvailable = [bool](Test-AssessmentExchangeCmdletsAvailable)
-    $authResult.ConnectedWorkloads += 'ExchangeOnline'
-
-    if ($WorkloadPlan.Workloads.PurviewCompliance.Required) {
-        $purviewResult = Connect-AssessmentPurview
-        $authResult.PurviewCmdletsAvailable = [bool]$purviewResult.PurviewCmdletsAvailable
-        $authResult.ConnectedWorkloads += 'PurviewCompliance'
+    if ($SkipAuth) {
+        Write-Host 'Reusing existing workload sessions for this run.' -ForegroundColor Cyan
+        $existingSessionResult = Test-AssessmentExistingSessions -WorkloadPlan $WorkloadPlan
+        foreach ($property in @($existingSessionResult.PSObject.Properties)) {
+            $authResult[$property.Name] = $property.Value
+        }
+        if (-not $SkipPermissionPreflight) {
+            Test-AssessmentPermissionPreflight -ConnectionResult ([pscustomobject]$authResult) -Workload Graph
+            Test-AssessmentPermissionPreflight -ConnectionResult ([pscustomobject]$authResult) -Workload ExchangeOnline
+            if ($WorkloadPlan.Workloads.PurviewCompliance.Required) {
+                Test-AssessmentPermissionPreflight -ConnectionResult ([pscustomobject]$authResult) -Workload Purview
+            }
+        }
     }
     else {
-        $authResult.SkippedWorkloads += 'PurviewCompliance'
+        $graphResult = Connect-AssessmentGraph -AuthenticationType $WorkloadPlan.AuthenticationType -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -ClientSecret $ClientSecret
+        $authResult.Graph = [bool]$graphResult.Graph
+        $authResult.GraphContextAvailable = [bool](Get-MgContext -ErrorAction SilentlyContinue)
+        $authResult.InitialDomain = $graphResult.InitialDomain
+        $authResult.ConnectedWorkloads += 'Graph'
+        if (-not $SkipPermissionPreflight) {
+            Test-AssessmentPermissionPreflight -ConnectionResult ([pscustomobject]$authResult) -Workload Graph
+        }
+
+        $exchangeResult = Connect-AssessmentExchange -AuthenticationType $WorkloadPlan.AuthenticationType -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -InitialDomain $authResult.InitialDomain
+        $authResult.ExchangeOnline = [bool]$exchangeResult.ExchangeOnline
+        $authResult.ExchangeCmdletsAvailable = [bool](Test-AssessmentExchangeCmdletsAvailable)
+        $authResult.ConnectedWorkloads += 'ExchangeOnline'
+        if (-not $SkipPermissionPreflight) {
+            Test-AssessmentPermissionPreflight -ConnectionResult ([pscustomobject]$authResult) -Workload ExchangeOnline
+        }
+
+        if ($WorkloadPlan.Workloads.PurviewCompliance.Required) {
+            $purviewResult = Connect-AssessmentPurview
+            $authResult.PurviewCmdletsAvailable = [bool]$purviewResult.PurviewCmdletsAvailable
+            $authResult.ConnectedWorkloads += 'PurviewCompliance'
+            if (-not $SkipPermissionPreflight) {
+                Test-AssessmentPermissionPreflight -ConnectionResult ([pscustomobject]$authResult) -Workload Purview
+            }
+        }
+        else {
+            $authResult.SkippedWorkloads += 'PurviewCompliance'
+        }
     }
 
     if ($WorkloadPlan.Workloads.SharePointOnline.Connect) {
@@ -1263,11 +1288,11 @@ function Initialize-AssessmentAuthentication {
             'Connected' { $authResult.ConnectedWorkloads += 'SharePointOnline' }
             'GraphFallback' {
                 if ($authResult.FallbackWorkloads -notcontains 'SharePointOnline') { $authResult.FallbackWorkloads += 'SharePointOnline' }
-                Write-Host ("SharePoint module login not required for this run. {0}" -f $sharePointResult.Message) -ForegroundColor Yellow
+                Write-Host ("SharePoint auth: Graph fallback active. {0}" -f $sharePointResult.Message) -ForegroundColor DarkGray
             }
             default {
                 $authResult.SkippedWorkloads += 'SharePointOnline'
-                Write-Host ("Skipping SharePoint module login. {0}" -f $sharePointResult.Message) -ForegroundColor Yellow
+                Write-Host ("SharePoint auth skipped. {0}" -f $sharePointResult.Message) -ForegroundColor DarkGray
             }
         }
     }
@@ -1282,11 +1307,11 @@ function Initialize-AssessmentAuthentication {
             'Connected' { $authResult.ConnectedWorkloads += 'Teams' }
             'GraphOnly' {
                 if ($authResult.FallbackWorkloads -notcontains 'Teams') { $authResult.FallbackWorkloads += 'Teams' }
-                Write-Host ("Teams PowerShell login not required for this run. {0}" -f $teamsResult.Message) -ForegroundColor Yellow
+                Write-Host ("Teams auth: Graph-only path active. {0}" -f $teamsResult.Message) -ForegroundColor DarkGray
             }
             default {
                 $authResult.SkippedWorkloads += 'Teams'
-                Write-Host ("Skipping Teams PowerShell login. {0}" -f $teamsResult.Message) -ForegroundColor Yellow
+                Write-Host ("Teams auth skipped. {0}" -f $teamsResult.Message) -ForegroundColor DarkGray
             }
         }
     }
@@ -1417,8 +1442,8 @@ function Write-ConsoleSection {
     )
 
     Write-Host ""
-    Write-Host "[$Step] $Title" -ForegroundColor Cyan
-    Write-Host ('-' * 72) -ForegroundColor DarkCyan
+    Write-Host "[$Step] $Title" -ForegroundColor White
+    Write-Host ('-' * 72) -ForegroundColor DarkGray
 }
 
 function Invoke-QuietRestMethod {
@@ -3475,7 +3500,10 @@ function Test-AssessmentPermissionPreflight {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)]
-        [object]$ConnectionResult
+        [object]$ConnectionResult,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('All', 'Graph', 'ExchangeOnline', 'Purview')]
+        [string]$Workload = 'All'
     )
 
     $grantedPermissionInfo = Get-AssessmentGrantedGraphPermissions
@@ -3655,6 +3683,7 @@ function Test-AssessmentPermissionPreflight {
 
     $formatPreflightSummary = {
         param(
+            [string]$Label,
             [int]$SuccessfulCount,
             [int]$FailureCount,
             [int]$WarningCount
@@ -3666,7 +3695,7 @@ function Test-AssessmentPermissionPreflight {
             FailureCount    = $FailureCount
             WarningCount    = $WarningCount
             RemainingCount  = $remainingCount
-            SummaryText     = ("Permission preflight summary: {0} successful, {1} remaining ({2} blocking, {3} non-blocking)." -f $SuccessfulCount, $remainingCount, $FailureCount, $WarningCount)
+            SummaryText     = ("{0}: {1} successful, {2} remaining ({3} blocking, {4} non-blocking)." -f $Label, $SuccessfulCount, $remainingCount, $FailureCount, $WarningCount)
         }
     }
 
@@ -3875,9 +3904,50 @@ function Test-AssessmentPermissionPreflight {
         }) | Out-Null
     }
 
+    $selectedGraphChecks = @()
+    $selectedExchangeChecks = @()
+    $runPurviewCheck = $false
+    $summaryLabel = 'Permission preflight summary'
+    $failureHeading = 'Permission preflight failed.'
+    $warningHeading = 'Permission preflight warnings:'
+    $failureLead = 'Permission preflight failed. The assessment will not continue until the required access is available.'
+    $warningLead = 'Permission preflight found non-blocking access gaps. The assessment will continue with validation notes for the affected fields.'
+
+    switch ($Workload) {
+        'Graph' {
+            $selectedGraphChecks = @($graphChecks)
+            $summaryLabel = 'Graph preflight summary'
+            $failureHeading = 'Graph preflight failed.'
+            $warningHeading = 'Graph preflight warnings:'
+            $failureLead = 'Graph preflight failed. The assessment will not continue until the required Microsoft Graph access is available.'
+            $warningLead = 'Graph preflight found non-blocking access gaps. The assessment will continue with validation notes for the affected fields.'
+        }
+        'ExchangeOnline' {
+            $selectedExchangeChecks = @($exchangeChecks)
+            $summaryLabel = 'Exchange preflight summary'
+            $failureHeading = 'Exchange preflight failed.'
+            $warningHeading = 'Exchange preflight warnings:'
+            $failureLead = 'Exchange preflight failed. The assessment will not continue until the required Exchange Online access is available.'
+            $warningLead = 'Exchange preflight found non-blocking access gaps. The assessment will continue with validation notes for the affected fields.'
+        }
+        'Purview' {
+            $runPurviewCheck = [bool]$script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies
+            $summaryLabel = 'Purview preflight summary'
+            $failureHeading = 'Purview preflight failed.'
+            $warningHeading = 'Purview preflight warnings:'
+            $failureLead = 'Purview preflight failed. The assessment will not continue until the required compliance access is available.'
+            $warningLead = 'Purview preflight found non-blocking access gaps. The assessment will continue with validation notes for the affected fields.'
+        }
+        default {
+            $selectedGraphChecks = @($graphChecks)
+            $selectedExchangeChecks = @($exchangeChecks)
+            $runPurviewCheck = [bool]$script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies
+        }
+    }
+
     $preflightProgressId = 91
     $preflightProgressIndex = 0
-    $preflightProgressTotal = $graphChecks.Count + $exchangeChecks.Count + $(if ($script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies) { 1 } else { 0 })
+    $preflightProgressTotal = $selectedGraphChecks.Count + $selectedExchangeChecks.Count + $(if ($runPurviewCheck) { 1 } else { 0 })
 
     $updatePreflightProgress = {
         param(
@@ -3892,7 +3962,7 @@ function Test-AssessmentPermissionPreflight {
     }
 
     try {
-        foreach ($graphCheck in $graphChecks) {
+        foreach ($graphCheck in $selectedGraphChecks) {
             $isBlocking = $true
             if ($graphCheck.PSObject.Properties['IsBlocking']) {
                 $isBlocking = [bool]$graphCheck.IsBlocking
@@ -3906,7 +3976,7 @@ function Test-AssessmentPermissionPreflight {
             & $invokeGraphProbe $graphCheck.Area $graphCheck.PermissionNames $graphCheck.NeededFor $graphCheck.Probe $isBlocking $trustClaimPresence
         }
 
-        foreach ($exchangeCheck in $exchangeChecks) {
+        foreach ($exchangeCheck in $selectedExchangeChecks) {
             & $updatePreflightProgress 'Exchange Online' $exchangeCheck.Requirement ([ref]$preflightProgressIndex)
             try {
                 & $exchangeCheck.Probe
@@ -3916,7 +3986,7 @@ function Test-AssessmentPermissionPreflight {
             }
         }
 
-        if ($script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies) {
+        if ($runPurviewCheck) {
             & $updatePreflightProgress 'Purview' 'Retention and DLP policy access' ([ref]$preflightProgressIndex)
             try {
                 if (-not (Ensure-PurviewComplianceSession)) {
@@ -3953,20 +4023,18 @@ function Test-AssessmentPermissionPreflight {
         Write-ProgressHelper -Total ([Math]::Max($preflightProgressTotal, 1)) -Id $preflightProgressId -Activity 'Permission preflight' -Completed
     }
 
-    $preflightSummary = & $formatPreflightSummary ($preflightProgressTotal - ($permissionFailures.Count + $permissionWarnings.Count)) $permissionFailures.Count $permissionWarnings.Count
+    $preflightSummary = & $formatPreflightSummary $summaryLabel ($preflightProgressTotal - ($permissionFailures.Count + $permissionWarnings.Count)) $permissionFailures.Count $permissionWarnings.Count
 
-    Write-Host ''
     Write-Host $preflightSummary.SummaryText -ForegroundColor Cyan
     Write-Log -Type INFO -Message $preflightSummary.SummaryText -ExportFileLocation $ExportDetails
 
     if ($permissionFailures.Count -gt 0) {
         $messageLines = New-Object System.Collections.Generic.List[string]
-        $messageLines.Add('Permission preflight failed. The assessment will not continue until the required access is available.') | Out-Null
+        $messageLines.Add($failureLead) | Out-Null
         $messageLines.Add($preflightSummary.SummaryText) | Out-Null
         $messageLines.Add('Required updates:') | Out-Null
 
-        Write-Host ''
-        Write-Host 'Permission preflight failed.' -ForegroundColor Red
+        Write-Host $failureHeading -ForegroundColor Red
 
         foreach ($failure in $permissionFailures) {
             $messageLines.Add((" - [{0}] {1}: needed for {2}. Current issue: {3}" -f $failure.Area, $failure.Requirement, $failure.NeededFor, $failure.Details)) | Out-Null
@@ -3982,10 +4050,9 @@ function Test-AssessmentPermissionPreflight {
 
     if ($permissionWarnings.Count -gt 0) {
         $warningLines = New-Object System.Collections.Generic.List[string]
-        $warningLines.Add('Permission preflight found non-blocking access gaps. The assessment will continue with validation notes for the affected fields.') | Out-Null
+        $warningLines.Add($warningLead) | Out-Null
         $warningLines.Add($preflightSummary.SummaryText) | Out-Null
-        Write-Host ''
-        Write-Host 'Permission preflight warnings:' -ForegroundColor Yellow
+        Write-Host $warningHeading -ForegroundColor Yellow
         foreach ($warning in $permissionWarnings) {
             $warningText = (" - [{0}] {1}: needed for {2}. Current issue: {3}" -f $warning.Area, $warning.Requirement, $warning.NeededFor, $warning.Details)
             $warningLines.Add($warningText) | Out-Null
@@ -4147,7 +4214,6 @@ function Invoke-AssessmentProgressStep {
     if (Test-ShowAssessmentProgress) {
         Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Status "[$current/$total] $Name" -PercentComplete $percent
     }
-    Write-Host ("Gathering {0} ..." -f $Name) -ForegroundColor Cyan
     try {
         Sync-CollectorModuleRuntimeContext
         $stepResult = & $ScriptBlock
@@ -4175,8 +4241,7 @@ function Invoke-AssessmentProgressStep {
             default { 'Red' }
         }
         $statusSuffix = if ([string]::IsNullOrWhiteSpace($stepMessage)) { '' } else { " - $stepMessage" }
-        Write-Host ("  {0} in {1}" -f $stepStatus, $elapsed.ToString('hh\:mm\:ss')) -ForegroundColor $statusColor
-        Write-Host ("  Overall progress: {0}/{1} ({2}%) - {3} [{4}]{5}" -f $current, $total, $percent, $Name, $stepStatus, $statusSuffix) -ForegroundColor Cyan
+        Write-Host ("  [{0}/{1} | {2}%] {3} - {4} in {5}{6}" -f $current, $total, $percent, $Name, $stepStatus, $elapsed.ToString('hh\:mm\:ss'), $statusSuffix) -ForegroundColor $statusColor
         $script:AssessmentStepMetrics.Add([PSCustomObject]@{
             StepName             = $Name
             StartedAt            = $stepStart
@@ -11811,6 +11876,7 @@ else {
     $connectionResult = Initialize-AssessmentAuthentication `
         -WorkloadPlan $assessmentAuthWorkloadPlan `
         -SkipAuth:$SkipAuth `
+        -SkipPermissionPreflight:$SkipPermissionPreflight `
         -TenantId $TenantId `
         -ClientId $ClientId `
         -CertificateThumbprint $CertificateThumbprint `
@@ -13373,30 +13439,7 @@ function Update-ExternalExposureSummaries {
 ########################################################
 # Main Execution (Main Block)
 ########################################################
-try {
-    if (
-        $Host.Name -eq 'ConsoleHost' -and
-        -not [Console]::IsInputRedirected -and
-        -not [Console]::IsOutputRedirected -and
-        -not [Console]::IsErrorRedirected
-    ) {
-        Clear-Host
-    }
-} catch {
-    Write-Verbose "Skipping Clear-Host in non-interactive session: $($_.Exception.Message)"
-}
 Write-Host "Microsoft 365 Tenant Assessment" -ForegroundColor Cyan
-Write-Host "Progress view: overall step completion is shown after each major task." -ForegroundColor DarkCyan
-
-if (-not $runExportOnly) {
-    if ($SkipPermissionPreflight) {
-        Write-Host "Skipping permission preflight by request. Collection will continue and may fail later where access is missing." -ForegroundColor Yellow
-    }
-    else {
-        Write-Host "Validating required permissions and service access..." -ForegroundColor Cyan
-        Test-AssessmentPermissionPreflight -ConnectionResult $connectionResult
-    }
-}
 
 $GraphTest = if ($runExportOnly) {
     'CACHE'
