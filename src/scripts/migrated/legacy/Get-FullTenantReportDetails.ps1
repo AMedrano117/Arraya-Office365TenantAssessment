@@ -3904,8 +3904,8 @@ function Test-AssessmentPermissionPreflight {
         }) | Out-Null
     }
 
-    $selectedGraphChecks = @()
-    $selectedExchangeChecks = @()
+    $selectedGraphChecks = New-Object System.Collections.Generic.List[object]
+    $selectedExchangeChecks = New-Object System.Collections.Generic.List[object]
     $runPurviewCheck = $false
     $summaryLabel = 'Permission preflight summary'
     $failureHeading = 'Permission preflight failed.'
@@ -3915,7 +3915,9 @@ function Test-AssessmentPermissionPreflight {
 
     switch ($Workload) {
         'Graph' {
-            $selectedGraphChecks = @($graphChecks)
+            foreach ($graphCheck in @($graphChecks)) {
+                $selectedGraphChecks.Add($graphCheck) | Out-Null
+            }
             $summaryLabel = 'Graph preflight summary'
             $failureHeading = 'Graph preflight failed.'
             $warningHeading = 'Graph preflight warnings:'
@@ -3923,7 +3925,9 @@ function Test-AssessmentPermissionPreflight {
             $warningLead = 'Graph preflight found non-blocking access gaps. The assessment will continue with validation notes for the affected fields.'
         }
         'ExchangeOnline' {
-            $selectedExchangeChecks = @($exchangeChecks)
+            foreach ($exchangeCheck in @($exchangeChecks)) {
+                $selectedExchangeChecks.Add($exchangeCheck) | Out-Null
+            }
             $summaryLabel = 'Exchange preflight summary'
             $failureHeading = 'Exchange preflight failed.'
             $warningHeading = 'Exchange preflight warnings:'
@@ -3939,8 +3943,12 @@ function Test-AssessmentPermissionPreflight {
             $warningLead = 'Purview preflight found non-blocking access gaps. The assessment will continue with validation notes for the affected fields.'
         }
         default {
-            $selectedGraphChecks = @($graphChecks)
-            $selectedExchangeChecks = @($exchangeChecks)
+            foreach ($graphCheck in @($graphChecks)) {
+                $selectedGraphChecks.Add($graphCheck) | Out-Null
+            }
+            foreach ($exchangeCheck in @($exchangeChecks)) {
+                $selectedExchangeChecks.Add($exchangeCheck) | Out-Null
+            }
             $runPurviewCheck = [bool]$script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies
         }
     }
