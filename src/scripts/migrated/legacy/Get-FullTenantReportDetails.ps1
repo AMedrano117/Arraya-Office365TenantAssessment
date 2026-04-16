@@ -184,6 +184,7 @@ $runExportOnly = $ExportOnly.IsPresent
 $runCollectionOnly = $DataCollectionOnly.IsPresent
 $script:LoadedTenantSnapshot = $null
 $script:CurrentGraphMode = 'UNKNOWN'
+$script:AssessmentAuthWorkloadPlan = $null
 
 if ($runCollectionOnly -and $runExportOnly) {
     throw "Data collection only mode and export only mode cannot be used together."
@@ -203,7 +204,6 @@ if (-not (Test-Path -Path $officeModuleLoaderPath)) {
 }
 . $officeModuleLoaderPath
 Import-Office365CustomLocal -RepoRoot $PSScriptRoot -RequiredCommands @(
-    'Connect-Office365',
     'Write-ProgressHelper',
     'Office365Custom\Write-Log',
     'Office365Custom\Capture-ErrorHelper',
@@ -471,6 +471,832 @@ function Normalize-ArrayaReportingMode {
     return ((Get-Culture).TextInfo.ToTitleCase($normalized))
 }
 
+function Resolve-AssessmentProfileCollectionPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$OutputProfile,
+        [Parameter(Mandatory = $true)]
+        [string]$EffectiveOutputProfileLabel,
+        [Parameter(Mandatory = $true)]
+        [bool]$GenerateTechnicalHtml,
+        [Parameter(Mandatory = $true)]
+        [bool]$GenerateWorkbook,
+        [Parameter(Mandatory = $true)]
+        [bool]$GenerateBestPracticesHtml,
+        [Parameter(Mandatory = $true)]
+        [bool]$GenerateJson,
+        [Parameter(Mandatory = $true)]
+        [bool]$GenerateQuestionnaire,
+        [Parameter(Mandatory = $true)]
+        [bool]$IsMergedOutputProfileSelection,
+        [Parameter(Mandatory = $true)]
+        [string]$ReportingMode
+    )
+
+    $plan = [ordered]@{
+        CollectExchangeRecipients        = $true
+        CollectEmailActivityDetails      = ($GenerateTechnicalHtml -or $GenerateWorkbook -or $GenerateJson)
+        CollectExchangeGroups            = $true
+        CollectMailFlowRulesConnectors   = $true
+        CollectPublicFolders             = $true
+        CollectThirdPartySpamFiltering   = $true
+        CollectSmtpRelayConfiguration    = $true
+        CollectGovernanceCompliancePolicies = ($GenerateTechnicalHtml -or $GenerateWorkbook -or $GenerateBestPracticesHtml -or $GenerateJson)
+        CollectTeamsDetails              = ($GenerateTechnicalHtml -or $GenerateWorkbook -or $GenerateBestPracticesHtml -or $GenerateJson)
+        CollectTeamsVoiceDetails         = $true
+        CollectUnifiedGroups             = $true
+        BuildOwnershipGovernanceTables   = ($GenerateTechnicalHtml -or $GenerateBestPracticesHtml -or $GenerateWorkbook -or $GenerateJson)
+        BuildAssessmentReportTables      = ($GenerateBestPracticesHtml -or $GenerateWorkbook -or $GenerateQuestionnaire -or $GenerateJson)
+        BuildConfigurationSummaryTables  = [bool]$GenerateJson
+        BuildLicenseClassificationMetadata = ($GenerateWorkbook -or $GenerateTechnicalHtml -or $GenerateBestPracticesHtml -or $GenerateQuestionnaire -or $GenerateJson)
+        BuildCombinedUserMailboxProjection = ($ReportingMode -eq 'all')
+    }
+
+    if (-not $IsMergedOutputProfileSelection) {
+        switch ($OutputProfile) {
+            'ExecutiveLevel' {
+                $plan.CollectExchangeRecipients = $false
+                $plan.CollectEmailActivityDetails = $true
+                $plan.CollectExchangeGroups = $false
+                $plan.CollectMailFlowRulesConnectors = $false
+                $plan.CollectPublicFolders = $false
+                $plan.CollectThirdPartySpamFiltering = $false
+                $plan.CollectSmtpRelayConfiguration = $false
+                $plan.CollectUnifiedGroups = $false
+            }
+        }
+    }
+
+    return $plan
+}
+
+function Resolve-AssessmentRequestedAuthMode {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$AuthMode,
+        [Parameter(Mandatory = $false)]
+        [string]$CertificateThumbprint,
+        [Parameter(Mandatory = $false)]
+        [string]$ClientSecret
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($AuthMode)) {
+        return $AuthMode
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
+        return 'Certificate'
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ClientSecret)) {
+        return 'ClientSecret'
+    }
+
+    return 'Interactive'
+}
+
+function Get-AssessmentGraphDelegatedScopes {
+    [CmdletBinding()]
+    param()
+
+    return @(
+        'Organization.Read.All',
+        'User.Read.All',
+        'AuditLog.Read.All',
+        'Group.Read.All',
+        'GroupMember.Read.All',
+        'RoleManagement.Read.Directory',
+        'Domain.Read.All',
+        'Device.Read.All',
+        'Reports.Read.All',
+        'ReportSettings.Read.All',
+        'Policy.Read.All',
+        'CrossTenantInformation.ReadBasic.All',
+        'SecurityEvents.Read.All',
+        'Application.Read.All',
+        'Sites.Read.All',
+        'SharePointTenantSettings.Read.All',
+        'Team.ReadBasic.All',
+        'Channel.ReadBasic.All',
+        'OnPremDirectorySynchronization.Read.All'
+    )
+}
+
+function Resolve-AssessmentAuthWorkloadPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
+        [string]$AuthMode,
+        [Parameter(Mandatory = $false)]
+        [bool]$NeedsGovernanceCompliancePolicies = $false,
+        [Parameter(Mandatory = $false)]
+        [bool]$NeedsTeamsInventory = $false,
+        [Parameter(Mandatory = $false)]
+        [bool]$NeedsTeamsVoice = $false,
+        [Parameter(Mandatory = $false)]
+        [bool]$NeedsSharePointData = $true
+    )
+
+    $requiredWorkloads = New-Object System.Collections.Generic.List[string]
+    $connectedWorkloads = New-Object System.Collections.Generic.List[string]
+    $skippedWorkloads = New-Object System.Collections.Generic.List[string]
+    $fallbackWorkloads = New-Object System.Collections.Generic.List[string]
+
+    $requiredWorkloads.Add('Graph') | Out-Null
+    $requiredWorkloads.Add('ExchangeOnline') | Out-Null
+    if ($NeedsGovernanceCompliancePolicies) {
+        $requiredWorkloads.Add('PurviewCompliance') | Out-Null
+    }
+
+    $sharePointMode = if ($AuthMode -eq 'Interactive' -and $NeedsSharePointData) { 'OptionalModuleConnect' } else { 'GraphFallback' }
+    $teamsMode = if ($AuthMode -eq 'Interactive' -and ($NeedsTeamsInventory -or $NeedsTeamsVoice)) { 'OptionalPowerShellConnect' } else { 'GraphOnly' }
+
+    if ($sharePointMode -eq 'GraphFallback') {
+        $fallbackWorkloads.Add('SharePointOnline') | Out-Null
+    }
+    if ($teamsMode -eq 'GraphOnly' -and ($NeedsTeamsInventory -or $NeedsTeamsVoice)) {
+        $fallbackWorkloads.Add('Teams') | Out-Null
+    }
+
+    return [pscustomobject][ordered]@{
+        AuthenticationType = $AuthMode
+        RequiredWorkloads  = @($requiredWorkloads)
+        ConnectedWorkloads = @($connectedWorkloads)
+        SkippedWorkloads   = @($skippedWorkloads)
+        FallbackWorkloads  = @($fallbackWorkloads)
+        Workloads          = [ordered]@{
+            Graph = [ordered]@{
+                Required = $true
+                Connect  = $true
+                Mode     = 'Required'
+            }
+            ExchangeOnline = [ordered]@{
+                Required = $true
+                Connect  = $true
+                Mode     = 'Required'
+            }
+            PurviewCompliance = [ordered]@{
+                Required = [bool]$NeedsGovernanceCompliancePolicies
+                Connect  = [bool]$NeedsGovernanceCompliancePolicies
+                Mode     = if ($NeedsGovernanceCompliancePolicies) { 'Required' } else { 'SkippedByProfile' }
+            }
+            SharePointOnline = [ordered]@{
+                Required = $false
+                Connect  = [bool]$NeedsSharePointData
+                Mode     = $sharePointMode
+            }
+            Teams = [ordered]@{
+                Required = $false
+                Connect  = [bool]($NeedsTeamsInventory -or $NeedsTeamsVoice)
+                Mode     = $teamsMode
+            }
+        }
+    }
+}
+
+function Test-IsAssessmentExchangeInteractiveAuthFailure {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [string]$Message
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        return $false
+    }
+
+    return (
+        $Message -like '*RuntimeBroker*' -or
+        $Message -like '*Object reference not set to an instance of an object*' -or
+        $Message -like '*Error Acquiring Token*' -or
+        $Message -like '*A window handle must be configured*' -or
+        $Message -like '*broker*' -or
+        $Message -like '*MSAL*'
+    )
+}
+
+function Invoke-AssessmentExchangeDelegatedConnect {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$BaseParameters,
+        [Parameter(Mandatory = $false)]
+        [string]$GraphAccount
+    )
+
+    $connectCommand = Get-Command -Name 'Connect-ExchangeOnline' -ErrorAction Stop
+    $attempts = New-Object System.Collections.Generic.List[hashtable]
+    $attempts.Add(@{
+        Label = 'interactive authentication'
+        Params = @{}
+    }) | Out-Null
+
+    if ($connectCommand.Parameters.ContainsKey('DisableWAM')) {
+        $attempts.Add(@{
+            Label = 'interactive authentication with -DisableWAM'
+            Params = @{ DisableWAM = $true }
+        }) | Out-Null
+    }
+
+    if ($connectCommand.Parameters.ContainsKey('Device')) {
+        $deviceParams = @{ Device = $true }
+        if (
+            -not [string]::IsNullOrWhiteSpace($GraphAccount) -and
+            $connectCommand.Parameters.ContainsKey('UserPrincipalName')
+        ) {
+            $deviceParams.UserPrincipalName = $GraphAccount
+        }
+
+        $attempts.Add(@{
+            Label = 'device code authentication'
+            Params = $deviceParams
+        }) | Out-Null
+    }
+
+    $lastErrorMessage = $null
+    foreach ($attempt in $attempts) {
+        $attemptParams = @{}
+        foreach ($key in $BaseParameters.Keys) {
+            $attemptParams[$key] = $BaseParameters[$key]
+        }
+        foreach ($key in $attempt.Params.Keys) {
+            $attemptParams[$key] = $attempt.Params[$key]
+        }
+
+        try {
+            Connect-ExchangeOnline @attemptParams | Out-Null
+            return
+        }
+        catch {
+            $lastErrorMessage = $_.Exception.Message
+            if (-not (Test-IsAssessmentExchangeInteractiveAuthFailure -Message $lastErrorMessage)) {
+                throw
+            }
+        }
+    }
+
+    throw "All delegated Exchange Online authentication attempts failed. Last error: $lastErrorMessage"
+}
+
+function Test-AssessmentExchangeCmdletsAvailable {
+    [CmdletBinding()]
+    param()
+
+    $hasExoMailboxCommand = [bool](Get-Command -Name 'Get-EXOMailbox' -ErrorAction SilentlyContinue)
+    $hasUnifiedGroupCommand = [bool](Get-Command -Name 'Get-UnifiedGroup' -ErrorAction SilentlyContinue)
+    return ($hasExoMailboxCommand -and $hasUnifiedGroupCommand)
+}
+
+function Test-AssessmentPurviewCmdletsAvailable {
+    [CmdletBinding()]
+    param()
+
+    return (
+        (Get-Command -Name 'Get-RetentionCompliancePolicy' -ErrorAction SilentlyContinue) -and
+        (Get-Command -Name 'Get-DlpCompliancePolicy' -ErrorAction SilentlyContinue)
+    )
+}
+
+function Test-AssessmentPurviewSessionReady {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [switch]$ProbeCommands
+    )
+
+    if (-not (Test-AssessmentPurviewCmdletsAvailable)) {
+        return $false
+    }
+
+    if (-not $ProbeCommands) {
+        return $true
+    }
+
+    foreach ($commandName in @('Get-RetentionCompliancePolicy', 'Get-DlpCompliancePolicy')) {
+        $errorCountBeforeProbe = $global:Error.Count
+        try {
+            switch ($commandName) {
+                'Get-RetentionCompliancePolicy' {
+                    @(Get-RetentionCompliancePolicy -ErrorAction Stop | Select-Object -First 1) | Out-Null
+                }
+                'Get-DlpCompliancePolicy' {
+                    @(Get-DlpCompliancePolicy -ErrorAction Stop | Select-Object -First 1) | Out-Null
+                }
+            }
+        }
+        catch {
+            while ($global:Error.Count -gt $errorCountBeforeProbe) {
+                $global:Error.RemoveAt(0)
+            }
+            return $false
+        }
+
+        while ($global:Error.Count -gt $errorCountBeforeProbe) {
+            $global:Error.RemoveAt(0)
+        }
+    }
+
+    return $true
+}
+
+function Get-AssessmentSharePointAdminUrl {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$InitialDomain
+    )
+
+    if ([string]::IsNullOrWhiteSpace($InitialDomain)) {
+        return $null
+    }
+
+    $tenantName = $InitialDomain
+    if ($tenantName -match '^(?<prefix>[^.]+)\.onmicrosoft\.com$') {
+        $tenantName = $Matches['prefix']
+    }
+
+    if ([string]::IsNullOrWhiteSpace($tenantName)) {
+        return $null
+    }
+
+    return ('https://{0}-admin.sharepoint.com' -f $tenantName)
+}
+
+function Connect-AssessmentGraph {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
+        [string]$AuthenticationType,
+        [Parameter(Mandatory = $false)]
+        [string]$TenantId,
+        [Parameter(Mandatory = $false)]
+        [string]$ClientId,
+        [Parameter(Mandatory = $false)]
+        [string]$CertificateThumbprint,
+        [Parameter(Mandatory = $false)]
+        [string]$ClientSecret
+    )
+
+    $existing = Get-MgContext -ErrorAction SilentlyContinue
+    if ($existing) {
+        Write-Host "Graph already connected for this session." -ForegroundColor Green
+        $org = Get-MgOrganization -ErrorAction Stop | Select-Object -First 1
+        $initialDomain = $null
+        if ($org -and $org.VerifiedDomains) {
+            $initialDomainObject = @($org.VerifiedDomains | Where-Object { $_.IsInitial -eq $true } | Select-Object -First 1)
+            if ($initialDomainObject.Count -gt 0) {
+                $initialDomain = [string](Get-ArrayaObjectValue -Object $initialDomainObject[0] -Names @('Name', 'Id'))
+            }
+        }
+
+        return [pscustomobject][ordered]@{
+            Graph         = $true
+            TenantName    = $org.DisplayName
+            InitialDomain = $initialDomain
+            Existing      = $true
+        }
+    }
+
+    Write-Host 'Connecting assessment Graph session...' -ForegroundColor Cyan
+    switch ($AuthenticationType) {
+        'Certificate' {
+            Connect-MgGraph -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -NoWelcome -ErrorAction Stop | Out-Null
+        }
+        'ClientSecret' {
+            $secureClientSecret = ConvertTo-SecureString -String $ClientSecret -AsPlainText -Force
+            $clientSecretCredential = [System.Management.Automation.PSCredential]::new($ClientId, $secureClientSecret)
+            Connect-MgGraph -TenantId $TenantId -ClientSecretCredential $clientSecretCredential -NoWelcome -ErrorAction Stop | Out-Null
+        }
+        default {
+            $graphConnectParams = @{
+                Scopes      = (Get-AssessmentGraphDelegatedScopes)
+                NoWelcome   = $true
+                ErrorAction = 'Stop'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
+                $graphConnectParams.TenantId = $TenantId
+            }
+
+            try {
+                Connect-MgGraph @graphConnectParams | Out-Null
+            }
+            catch {
+                $interactiveAuthError = $_.Exception.Message
+                if (
+                    $interactiveAuthError -like '*InteractiveBrowserCredential*' -and
+                    (Get-Command -Name 'Connect-MgGraph' -ErrorAction SilentlyContinue).Parameters.ContainsKey('UseDeviceCode')
+                ) {
+                    Write-Warning 'Interactive browser authentication failed. Retrying Microsoft Graph sign-in with device code.'
+                    $graphConnectParams.UseDeviceCode = $true
+                    Connect-MgGraph @graphConnectParams | Out-Null
+                }
+                else {
+                    throw
+                }
+            }
+        }
+    }
+
+    $org = Get-MgOrganization -ErrorAction Stop | Select-Object -First 1
+    $initialDomain = $null
+    if ($org -and $org.VerifiedDomains) {
+        $initialDomainObject = @($org.VerifiedDomains | Where-Object { $_.IsInitial -eq $true } | Select-Object -First 1)
+        if ($initialDomainObject.Count -gt 0) {
+            $initialDomain = [string](Get-ArrayaObjectValue -Object $initialDomainObject[0] -Names @('Name', 'Id'))
+        }
+    }
+
+    Write-Host 'Graph connected for assessment collection.' -ForegroundColor Green
+    return [pscustomobject][ordered]@{
+        Graph         = $true
+        TenantName    = $org.DisplayName
+        InitialDomain = $initialDomain
+        Existing      = $false
+    }
+}
+
+function Connect-AssessmentExchange {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
+        [string]$AuthenticationType,
+        [Parameter(Mandatory = $false)]
+        [string]$ClientId,
+        [Parameter(Mandatory = $false)]
+        [string]$CertificateThumbprint,
+        [Parameter(Mandatory = $false)]
+        [string]$InitialDomain
+    )
+
+    if (-not (Get-Module -ListAvailable -Name 'ExchangeOnlineManagement')) {
+        throw "Exchange Online: The module 'ExchangeOnlineManagement' is not installed. Please install it before proceeding."
+    }
+
+    if (-not (Get-Module -Name 'ExchangeOnlineManagement')) {
+        Import-Module 'ExchangeOnlineManagement' -ErrorAction Stop -WarningAction SilentlyContinue
+    }
+
+    $existingExchangeConnection = @()
+    if (Get-Command -Name 'Get-ConnectionInformation' -ErrorAction SilentlyContinue) {
+        try {
+            $existingExchangeConnection = @(Get-ConnectionInformation -ErrorAction Stop)
+        }
+        catch {}
+    }
+
+    if ($existingExchangeConnection.Count -gt 0 -and (Test-AssessmentExchangeCmdletsAvailable)) {
+        Write-Host "Exchange Online already connected for this session." -ForegroundColor Green
+        return [pscustomobject]@{
+            ExchangeOnline = $true
+            Existing       = $true
+        }
+    }
+
+    Write-Host 'Connecting assessment Exchange Online session...' -ForegroundColor Cyan
+    $exchangeConnectParams = @{
+        ShowBanner  = $false
+        ErrorAction = 'Stop'
+    }
+
+    if ($AuthenticationType -eq 'Certificate') {
+        if ([string]::IsNullOrWhiteSpace($ClientId)) {
+            throw 'Exchange Online certificate auth requires -ClientId.'
+        }
+        if ([string]::IsNullOrWhiteSpace($InitialDomain)) {
+            throw 'Exchange Online certificate auth requires the tenant initial domain.'
+        }
+
+        $exchangeConnectParams.AppId = $ClientId
+        $exchangeConnectParams.Organization = $InitialDomain
+        $exchangeConnectParams.CertificateThumbprint = $CertificateThumbprint
+        Connect-ExchangeOnline @exchangeConnectParams | Out-Null
+    }
+    else {
+        $graphAccount = $null
+        try {
+            $graphContext = Get-MgContext -ErrorAction Stop
+            $graphAccount = $graphContext.Account
+        }
+        catch {}
+
+        if ($AuthenticationType -eq 'ClientSecret') {
+            Write-Warning 'Exchange Online does not support client-secret-only app auth in this workflow. Falling back to delegated Exchange sign-in.'
+        }
+
+        Invoke-AssessmentExchangeDelegatedConnect -BaseParameters $exchangeConnectParams -GraphAccount $graphAccount
+    }
+
+    Write-Host 'Exchange Online connected for assessment collection.' -ForegroundColor Green
+    return [pscustomobject]@{
+        ExchangeOnline = $true
+        Existing       = $false
+    }
+}
+
+function Connect-AssessmentSharePoint {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
+        [string]$AuthenticationType,
+        [Parameter(Mandatory = $false)]
+        [string]$InitialDomain
+    )
+
+    if ($AuthenticationType -in @('Certificate', 'ClientSecret')) {
+        return [pscustomobject]@{
+            SharePointOnline = $false
+            Status           = 'GraphFallback'
+            Message          = 'SharePoint module login is skipped by design for app-based auth. Graph fallback remains active.'
+        }
+    }
+
+    if (-not (Get-Module -ListAvailable -Name 'Microsoft.Online.SharePoint.PowerShell')) {
+        return [pscustomobject]@{
+            SharePointOnline = $false
+            Status           = 'SkippedByDesign'
+            Message          = 'Microsoft.Online.SharePoint.PowerShell is not installed. Graph fallback remains active.'
+        }
+    }
+
+    if (-not (Get-Module -Name 'Microsoft.Online.SharePoint.PowerShell')) {
+        if ($PSVersionTable.PSVersion.Major -ge 7) {
+            Import-Module 'Microsoft.Online.SharePoint.PowerShell' -UseWindowsPowerShell -ErrorAction Stop
+        }
+        else {
+            Import-Module 'Microsoft.Online.SharePoint.PowerShell' -ErrorAction Stop
+        }
+    }
+
+    $spoAdminUrl = Get-AssessmentSharePointAdminUrl -InitialDomain $InitialDomain
+    if ([string]::IsNullOrWhiteSpace($spoAdminUrl)) {
+        return [pscustomobject]@{
+            SharePointOnline = $false
+            Status           = 'GraphFallback'
+            Message          = 'Unable to resolve the SharePoint admin URL. Graph fallback remains active.'
+        }
+    }
+
+    try {
+        Write-Host 'Connecting assessment SharePoint admin session...' -ForegroundColor Cyan
+        Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
+        Write-Host 'SharePoint admin session connected.' -ForegroundColor Green
+        return [pscustomobject]@{
+            SharePointOnline = $true
+            Status           = 'Connected'
+            Message          = 'Connected to SharePoint Online admin PowerShell.'
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            SharePointOnline = $false
+            Status           = 'GraphFallback'
+            Message          = $_.Exception.Message
+        }
+    }
+}
+
+function Connect-AssessmentTeams {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
+        [string]$AuthenticationType
+    )
+
+    if ($AuthenticationType -ne 'Interactive') {
+        return [pscustomobject]@{
+            Teams   = $false
+            Status  = 'GraphOnly'
+            Message = 'Teams PowerShell login is skipped by design for app-based auth.'
+        }
+    }
+
+    if (-not (Get-Module -ListAvailable -Name 'MicrosoftTeams')) {
+        return [pscustomobject]@{
+            Teams   = $false
+            Status  = 'GraphOnly'
+            Message = 'MicrosoftTeams module is not installed. Graph-only Teams collection remains active.'
+        }
+    }
+
+    if (-not (Get-Module -Name 'MicrosoftTeams')) {
+        if ($PSVersionTable.PSVersion.Major -ge 7) {
+            Import-Module 'MicrosoftTeams' -UseWindowsPowerShell -ErrorAction Stop
+        }
+        else {
+            Import-Module 'MicrosoftTeams' -ErrorAction Stop
+        }
+    }
+
+    try {
+        Write-Host 'Connecting assessment Teams PowerShell session...' -ForegroundColor Cyan
+        Connect-MicrosoftTeams -ErrorAction Stop | Out-Null
+        Write-Host 'Teams PowerShell connected.' -ForegroundColor Green
+        return [pscustomobject]@{
+            Teams   = $true
+            Status  = 'Connected'
+            Message = 'Connected to Microsoft Teams PowerShell.'
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            Teams   = $false
+            Status  = 'GraphOnly'
+            Message = $_.Exception.Message
+        }
+    }
+}
+
+function Connect-AssessmentPurview {
+    [CmdletBinding()]
+    param()
+
+    Write-Host 'Connecting assessment Purview compliance session...' -ForegroundColor Cyan
+    if (-not (Ensure-PurviewComplianceSession)) {
+        $purviewMessage = Get-PurviewComplianceDiagnosticMessage
+        if ([string]::IsNullOrWhiteSpace($purviewMessage)) {
+            $purviewMessage = 'Purview compliance PowerShell session could not be established.'
+        }
+        throw $purviewMessage
+    }
+
+    Write-Host 'Purview compliance session ready for assessment collection.' -ForegroundColor Green
+    return [pscustomobject]@{
+        PurviewCmdletsAvailable = [bool](Test-AssessmentPurviewCmdletsAvailable)
+    }
+}
+
+function Test-AssessmentExistingSessions {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [pscustomobject]$WorkloadPlan
+    )
+
+    $connectedWorkloads = New-Object System.Collections.Generic.List[string]
+    $skippedWorkloads = New-Object System.Collections.Generic.List[string]
+    $fallbackWorkloads = New-Object System.Collections.Generic.List[string]
+
+    $existingGraphContext = Get-MgContext -ErrorAction SilentlyContinue
+    if (-not $existingGraphContext) {
+        throw 'SkipAuth was requested, but no existing Microsoft Graph session was found. Connect first, then rerun with -SkipAuth.'
+    }
+    $connectedWorkloads.Add('Graph') | Out-Null
+
+    if (-not (Test-AssessmentExchangeCmdletsAvailable)) {
+        throw 'SkipAuth was requested, but Exchange Online cmdlets are not available in the current session. Connect to Exchange Online first, then rerun with -SkipAuth.'
+    }
+    $connectedWorkloads.Add('ExchangeOnline') | Out-Null
+
+    if ($WorkloadPlan.Workloads.PurviewCompliance.Required) {
+        if (-not (Test-AssessmentPurviewSessionReady -ProbeCommands)) {
+            throw 'SkipAuth was requested, but Purview compliance session is not usable in the current session. Connect to Purview compliance PowerShell first, confirm Get-RetentionCompliancePolicy and Get-DlpCompliancePolicy work, then rerun with -SkipAuth.'
+        }
+        $connectedWorkloads.Add('PurviewCompliance') | Out-Null
+    }
+    else {
+        $skippedWorkloads.Add('PurviewCompliance') | Out-Null
+    }
+
+    if ($WorkloadPlan.Workloads.SharePointOnline.Mode -eq 'GraphFallback') {
+        $fallbackWorkloads.Add('SharePointOnline') | Out-Null
+    }
+    else {
+        $skippedWorkloads.Add('SharePointOnline') | Out-Null
+    }
+
+    if ($WorkloadPlan.Workloads.Teams.Mode -eq 'GraphOnly') {
+        $fallbackWorkloads.Add('Teams') | Out-Null
+    }
+    else {
+        $skippedWorkloads.Add('Teams') | Out-Null
+    }
+
+    return [pscustomobject][ordered]@{
+        AuthenticationType       = 'ExistingSession'
+        RequiredWorkloads        = @($WorkloadPlan.RequiredWorkloads)
+        ConnectedWorkloads       = @($connectedWorkloads)
+        SkippedWorkloads         = @($skippedWorkloads)
+        FallbackWorkloads        = @($fallbackWorkloads)
+        InitialDomain            = $null
+        Graph                    = $true
+        GraphContextAvailable    = $true
+        ExchangeOnline           = $true
+        ExchangeCmdletsAvailable = $true
+        PurviewCmdletsAvailable  = [bool](Test-AssessmentPurviewCmdletsAvailable)
+        SharePointOnline         = $false
+        Teams                    = $false
+    }
+}
+
+function Initialize-AssessmentAuthentication {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [pscustomobject]$WorkloadPlan,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipAuth,
+        [Parameter(Mandatory = $false)]
+        [string]$TenantId,
+        [Parameter(Mandatory = $false)]
+        [string]$ClientId,
+        [Parameter(Mandatory = $false)]
+        [string]$CertificateThumbprint,
+        [Parameter(Mandatory = $false)]
+        [string]$ClientSecret
+    )
+
+    if ($SkipAuth) {
+        Write-Host 'Skipping assessment authentication bootstrap and validating existing workload sessions...' -ForegroundColor Cyan
+        return (Test-AssessmentExistingSessions -WorkloadPlan $WorkloadPlan)
+    }
+
+    $authResult = [ordered]@{
+        AuthenticationType       = $WorkloadPlan.AuthenticationType
+        RequiredWorkloads        = @($WorkloadPlan.RequiredWorkloads)
+        ConnectedWorkloads       = @()
+        SkippedWorkloads         = @()
+        FallbackWorkloads        = @($WorkloadPlan.FallbackWorkloads)
+        InitialDomain            = $null
+        Graph                    = $false
+        GraphContextAvailable    = $false
+        ExchangeOnline           = $false
+        ExchangeCmdletsAvailable = $false
+        PurviewCmdletsAvailable  = $false
+        SharePointOnline         = $false
+        Teams                    = $false
+    }
+
+    Write-Host ("Assessment login mode: {0}" -f $WorkloadPlan.AuthenticationType) -ForegroundColor Cyan
+    Write-Host ("Required auth workloads: {0}" -f ($WorkloadPlan.RequiredWorkloads -join ', ')) -ForegroundColor DarkCyan
+
+    $graphResult = Connect-AssessmentGraph -AuthenticationType $WorkloadPlan.AuthenticationType -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -ClientSecret $ClientSecret
+    $authResult.Graph = [bool]$graphResult.Graph
+    $authResult.GraphContextAvailable = [bool](Get-MgContext -ErrorAction SilentlyContinue)
+    $authResult.InitialDomain = $graphResult.InitialDomain
+    $authResult.ConnectedWorkloads += 'Graph'
+
+    $exchangeResult = Connect-AssessmentExchange -AuthenticationType $WorkloadPlan.AuthenticationType -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -InitialDomain $authResult.InitialDomain
+    $authResult.ExchangeOnline = [bool]$exchangeResult.ExchangeOnline
+    $authResult.ExchangeCmdletsAvailable = [bool](Test-AssessmentExchangeCmdletsAvailable)
+    $authResult.ConnectedWorkloads += 'ExchangeOnline'
+
+    if ($WorkloadPlan.Workloads.PurviewCompliance.Required) {
+        $purviewResult = Connect-AssessmentPurview
+        $authResult.PurviewCmdletsAvailable = [bool]$purviewResult.PurviewCmdletsAvailable
+        $authResult.ConnectedWorkloads += 'PurviewCompliance'
+    }
+    else {
+        $authResult.SkippedWorkloads += 'PurviewCompliance'
+    }
+
+    if ($WorkloadPlan.Workloads.SharePointOnline.Connect) {
+        $sharePointResult = Connect-AssessmentSharePoint -AuthenticationType $WorkloadPlan.AuthenticationType -InitialDomain $authResult.InitialDomain
+        $authResult.SharePointOnline = [bool]$sharePointResult.SharePointOnline
+        switch ($sharePointResult.Status) {
+            'Connected' { $authResult.ConnectedWorkloads += 'SharePointOnline' }
+            'GraphFallback' {
+                if ($authResult.FallbackWorkloads -notcontains 'SharePointOnline') { $authResult.FallbackWorkloads += 'SharePointOnline' }
+                Write-Host ("SharePoint module login not required for this run. {0}" -f $sharePointResult.Message) -ForegroundColor Yellow
+            }
+            default {
+                $authResult.SkippedWorkloads += 'SharePointOnline'
+                Write-Host ("Skipping SharePoint module login. {0}" -f $sharePointResult.Message) -ForegroundColor Yellow
+            }
+        }
+    }
+    else {
+        $authResult.SkippedWorkloads += 'SharePointOnline'
+    }
+
+    if ($WorkloadPlan.Workloads.Teams.Connect) {
+        $teamsResult = Connect-AssessmentTeams -AuthenticationType $WorkloadPlan.AuthenticationType
+        $authResult.Teams = [bool]$teamsResult.Teams
+        switch ($teamsResult.Status) {
+            'Connected' { $authResult.ConnectedWorkloads += 'Teams' }
+            'GraphOnly' {
+                if ($authResult.FallbackWorkloads -notcontains 'Teams') { $authResult.FallbackWorkloads += 'Teams' }
+                Write-Host ("Teams PowerShell login not required for this run. {0}" -f $teamsResult.Message) -ForegroundColor Yellow
+            }
+            default {
+                $authResult.SkippedWorkloads += 'Teams'
+                Write-Host ("Skipping Teams PowerShell login. {0}" -f $teamsResult.Message) -ForegroundColor Yellow
+            }
+        }
+    }
+    else {
+        $authResult.SkippedWorkloads += 'Teams'
+    }
+
+    return [pscustomobject]$authResult
+}
+
 Import-AssessmentCollectorModules -LegacyScriptRoot $PSScriptRoot
 $requiredCollectorCommands = @(
     'Get-AllRecipientDetails',
@@ -557,6 +1383,17 @@ $effectiveSkipQuestionnaire = (-not $effectiveGenerateQuestionnaire)
 $effectiveSkipHtmlReport = (-not $effectiveGenerateTechnicalHtml) -or $SkipHtmlReport.IsPresent
 $effectiveSkipPdfReport = (-not $effectiveGeneratePdf) -or $SkipPdfReport.IsPresent
 $effectiveSkipJsonReport = (-not $effectiveGenerateJson) -or $SkipJsonReport.IsPresent
+
+$script:ProfileCollectionPlan = Resolve-AssessmentProfileCollectionPlan `
+    -OutputProfile $OutputProfile `
+    -EffectiveOutputProfileLabel $effectiveOutputProfileLabel `
+    -GenerateTechnicalHtml ([bool]$effectiveGenerateTechnicalHtml) `
+    -GenerateWorkbook ([bool]$effectiveGenerateWorkbook) `
+    -GenerateBestPracticesHtml ([bool]$effectiveGenerateBestPracticesHtml) `
+    -GenerateJson ([bool]$effectiveGenerateJson) `
+    -GenerateQuestionnaire ([bool]$effectiveGenerateQuestionnaire) `
+    -IsMergedOutputProfileSelection ([bool]$isMergedOutputProfileSelection) `
+    -ReportingMode $reportingMode
 
 $tenantHtmlReportPath = Join-Path -Path $PSScriptRoot -ChildPath 'New-TenantHtmlReport.ps1'
 $tenantHtmlHelperFunctionsPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\assessments\HTML Scripts\Invoke-HTMLHelperFunctions.ps1'))
@@ -1935,6 +2772,8 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
     $coveredUserIdSet = @{}
     $userExclusionReasonLookup = @{}
     $userExclusionPolicyLookup = @{}
+    $userIncludedPolicyLookup = @{}
+    $userCoveredPolicyLookup = @{}
     $scopeReviewKeyLookup = @{}
 
     $groupRecords = @()
@@ -1983,6 +2822,22 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
         }
         if (-not [string]::IsNullOrWhiteSpace($PolicyName) -and -not $userExclusionPolicyLookup[$UserId].Contains($PolicyName)) {
             $userExclusionPolicyLookup[$UserId].Add($PolicyName) | Out-Null
+        }
+    }
+
+    $addUserPolicyState = {
+        param(
+            [Parameter(Mandatory = $true)][hashtable]$Lookup,
+            [Parameter(Mandatory = $true)][string]$UserId,
+            [Parameter(Mandatory = $true)][string]$PolicyName
+        )
+
+        if (-not $Lookup.ContainsKey($UserId)) {
+            $Lookup[$UserId] = New-Object System.Collections.Generic.List[string]
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($PolicyName) -and -not $Lookup[$UserId].Contains($PolicyName)) {
+            $Lookup[$UserId].Add($PolicyName) | Out-Null
         }
     }
 
@@ -2097,6 +2952,10 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
             continue
         }
 
+        foreach ($includedTargetUserId in @($policyTargetedUserIds.Keys)) {
+            & $addUserPolicyState -Lookup $userIncludedPolicyLookup -UserId ([string]$includedTargetUserId) -PolicyName $policyName
+        }
+
         if (@($excludedUsers | Where-Object { $_ -ieq 'All' }).Count -gt 0) {
             foreach ($currentlyTargetedUserId in @($policyTargetedUserIds.Keys)) {
                 & $addUserReason -UserId $currentlyTargetedUserId -PolicyName $policyName -Reason ("Excluded from enabled MFA policy '{0}' by an 'All users' exclusion." -f $policyName)
@@ -2154,6 +3013,9 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
             & $addScopeReviewRow -PolicyName $policyName -ScopeType 'Exclude' -ObjectType 'GuestOrExternal' -Identifier 'GuestsOrExternalUsers' -DisplayName 'Guests or external users' -AffectedEnabledUsers @($enabledGuestUserIdSet.Keys).Count -Notes 'Guest or external users are excluded from the enabled MFA enforcement policy scope.'
         }
 
+        foreach ($coveredUserId in @($policyTargetedUserIds.Keys)) {
+            & $addUserPolicyState -Lookup $userCoveredPolicyLookup -UserId ([string]$coveredUserId) -PolicyName $policyName
+        }
         Add-AssessmentUserIdsToSet -Set $coveredUserIdSet -UserIds @($policyTargetedUserIds.Keys)
     }
 
@@ -2189,16 +3051,18 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
             else {
                 $reportedUserType
             }
-            $relatedPolicies = if ($userExclusionPolicyLookup.ContainsKey($uncoveredUserId)) { @($userExclusionPolicyLookup[$uncoveredUserId]) -join '; ' } else { '' }
-            $gapReason = if ($userExclusionReasonLookup.ContainsKey($uncoveredUserId)) {
+            $includedByPolicies = if ($userIncludedPolicyLookup.ContainsKey($uncoveredUserId)) { @($userIncludedPolicyLookup[$uncoveredUserId]) } else { @() }
+            $excludedByPolicies = if ($userExclusionPolicyLookup.ContainsKey($uncoveredUserId)) { @($userExclusionPolicyLookup[$uncoveredUserId]) } else { @() }
+            $relatedPolicies = if ($excludedByPolicies.Count -gt 0) { $excludedByPolicies -join '; ' } elseif ($includedByPolicies.Count -gt 0) { $includedByPolicies -join '; ' } else { '' }
+            $gapReason = if ($includedByPolicies.Count -gt 0 -and $userExclusionReasonLookup.ContainsKey($uncoveredUserId)) {
                 @($userExclusionReasonLookup[$uncoveredUserId]) -join '; '
             }
             else {
                 'User is outside the include scope of all enabled Conditional Access policies that currently require MFA.'
             }
 
-            $gapCategory = if ($userExclusionReasonLookup.ContainsKey($uncoveredUserId)) {
-                'Excluded from enabled MFA CA policy'
+            $gapCategory = if ($includedByPolicies.Count -gt 0 -and $excludedByPolicies.Count -gt 0) {
+                'Excluded from all enabled MFA CA policies that otherwise target the user'
             }
             else {
                 'Outside enabled MFA CA include scope'
@@ -2212,6 +3076,8 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
                 GapCategory = $gapCategory
                 GapReason = $gapReason
                 RelatedPolicies = $relatedPolicies
+                IncludedPolicyCount = $includedByPolicies.Count
+                ExcludedPolicyCount = $excludedByPolicies.Count
                 AccountEnabled = Convert-ToAssessmentBoolean (Get-ArrayaObjectValue -Object $userRecord -Names @('AccountEnabled'))
                 LastSignInDateTime = Get-ArrayaObjectValue -Object $userRecord -Names @('LastSignInDateTime')
             }) | Out-Null
@@ -2225,6 +3091,283 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
     }
 
     return [pscustomobject]$coverageSummary
+}
+
+function Get-AssessmentAdminMfaReview {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [System.Collections.IDictionary]$Admins = $null,
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [System.Collections.IDictionary]$Users = $null,
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [System.Collections.IDictionary]$MfaRegistrationDetails = $null,
+        [Parameter(Mandatory = $false)]
+        $MfaCoverageAnalysis = $null,
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [bool]$SecurityDefaultsEnabled = $false,
+        [Parameter(Mandatory = $false)]
+        [int]$EnabledMfaPolicyCount = 0,
+        [Parameter(Mandatory = $false)]
+        [int]$ReportOnlyMfaPolicyCount = 0
+    )
+
+    $summary = [ordered]@{
+        TotalAdminUsersReviewed                 = 0
+        EnabledAdminUsersReviewed               = 0
+        AdminUsersMfaRegistrationValidated      = 0
+        AdminUsersRegisteredForMfa              = 0
+        AdminUsersNotRegisteredForMfa           = 0
+        AdminUsersMfaEnforcementReviewed        = 0
+        AdminUsersCoveredByMfaEnforcement       = 0
+        AdminUsersNotCoveredByMfaEnforcement    = 0
+        GuestAdminUsersReviewed                 = 0
+        GuestAdminUsersNotCoveredByMfaEnforcement = 0
+        CollectionState                         = 'Not validated from the reviewed data'
+    }
+
+    $registrationGapRows = New-Object System.Collections.Generic.List[object]
+    $enforcementGapRows = New-Object System.Collections.Generic.List[object]
+
+    if ($null -eq $Admins -or $Admins.Count -eq 0) {
+        return [pscustomobject]@{
+            Summary = [pscustomobject]$summary
+            RegistrationGaps = @()
+            EnforcementGaps = @()
+        }
+    }
+
+    $reviewedUserById = @{}
+    $reviewedUserByUpn = @{}
+    if ($null -ne $Users) {
+        $userRecords = if ($Users -is [System.Collections.IDictionary]) { @($Users.Values) } else { @($Users) }
+        foreach ($userRecord in $userRecords) {
+            if (-not $userRecord) { continue }
+            $userId = [string](Get-ArrayaObjectValue -Object $userRecord -Names @('Id', 'ID'))
+            $userUpn = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $userRecord -Names @('UserPrincipalName')) -Default ''
+            if (-not [string]::IsNullOrWhiteSpace($userId)) {
+                $reviewedUserById[$userId.Trim().ToLowerInvariant()] = $userRecord
+            }
+            if (-not [string]::IsNullOrWhiteSpace($userUpn)) {
+                $reviewedUserByUpn[$userUpn.Trim().ToLowerInvariant()] = $userRecord
+            }
+        }
+    }
+
+    $registrationByUpn = @{}
+    if ($null -ne $MfaRegistrationDetails) {
+        $registrationRecords = if ($MfaRegistrationDetails -is [System.Collections.IDictionary]) { @($MfaRegistrationDetails.Values) } else { @($MfaRegistrationDetails) }
+        foreach ($registrationRecord in $registrationRecords) {
+            if (-not $registrationRecord) { continue }
+            $registrationUpn = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $registrationRecord -Names @('UserPrincipalName')) -Default ''
+            if (-not [string]::IsNullOrWhiteSpace($registrationUpn)) {
+                $registrationByUpn[$registrationUpn.Trim().ToLowerInvariant()] = $registrationRecord
+            }
+        }
+    }
+
+    $gapUsers = if ($MfaCoverageAnalysis -and $MfaCoverageAnalysis.PSObject.Properties['GapUsers']) { @($MfaCoverageAnalysis.GapUsers) } else { @() }
+    $gapById = @{}
+    $gapByUpn = @{}
+    foreach ($gapUser in $gapUsers) {
+        if (-not $gapUser) { continue }
+        $gapId = [string](Get-ArrayaObjectValue -Object $gapUser -Names @('DirectoryObjectId'))
+        $gapUpn = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $gapUser -Names @('UserPrincipalName')) -Default ''
+        if (-not [string]::IsNullOrWhiteSpace($gapId)) {
+            $gapById[$gapId.Trim().ToLowerInvariant()] = $gapUser
+        }
+        if (-not [string]::IsNullOrWhiteSpace($gapUpn)) {
+            $gapByUpn[$gapUpn.Trim().ToLowerInvariant()] = $gapUser
+        }
+    }
+
+    $adminUserLookup = @{}
+    $adminRecords = if ($Admins -is [System.Collections.IDictionary]) { @($Admins.Values) } else { @($Admins) }
+    foreach ($adminRecord in $adminRecords) {
+        if (-not $adminRecord) { continue }
+        $adminUpn = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $adminRecord -Names @('UserPrincipalName')) -Default ''
+        $adminObjectType = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $adminRecord -Names @('ObjectType')) -Default ''
+        $adminObjectId = [string](Get-ArrayaObjectValue -Object $adminRecord -Names @('DirectoryObjectId', 'Id', 'ID'))
+        $isUserAdmin = (-not [string]::IsNullOrWhiteSpace($adminUpn)) -or ($adminObjectType -match '(?i)user')
+        if (-not $isUserAdmin) {
+            continue
+        }
+
+        $adminLookupKey = if (-not [string]::IsNullOrWhiteSpace($adminObjectId)) {
+            $adminObjectId.Trim().ToLowerInvariant()
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($adminUpn)) {
+            $adminUpn.Trim().ToLowerInvariant()
+        }
+        else {
+            continue
+        }
+
+        if (-not $adminUserLookup.ContainsKey($adminLookupKey)) {
+            $adminUserLookup[$adminLookupKey] = $adminRecord
+        }
+    }
+
+    $summary.TotalAdminUsersReviewed = $adminUserLookup.Count
+
+    foreach ($adminKey in @($adminUserLookup.Keys)) {
+        $adminRecord = $adminUserLookup[$adminKey]
+        $adminUpn = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $adminRecord -Names @('UserPrincipalName')) -Default ''
+        $adminDisplayName = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $adminRecord -Names @('DisplayName')) -Default 'Unnamed admin'
+        $adminRole = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $adminRecord -Names @('Role')) -Default 'Privileged role'
+        $adminObjectId = [string](Get-ArrayaObjectValue -Object $adminRecord -Names @('DirectoryObjectId', 'Id', 'ID'))
+        $accountEnabled = Convert-ToAssessmentBoolean (Get-ArrayaObjectValue -Object $adminRecord -Names @('AccountEnabled'))
+        $isGuestAdmin = (Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $adminRecord -Names @('UserType')) -Default '').ToLowerInvariant() -eq 'guest' -or $adminUpn -like '*#EXT#*'
+        $registrationRecord = $null
+        if (-not [string]::IsNullOrWhiteSpace($adminUpn) -and $registrationByUpn.ContainsKey($adminUpn.Trim().ToLowerInvariant())) {
+            $registrationRecord = $registrationByUpn[$adminUpn.Trim().ToLowerInvariant()]
+        }
+
+        $reviewedUserRecord = $null
+        if (-not [string]::IsNullOrWhiteSpace($adminObjectId) -and $reviewedUserById.ContainsKey($adminObjectId.Trim().ToLowerInvariant())) {
+            $reviewedUserRecord = $reviewedUserById[$adminObjectId.Trim().ToLowerInvariant()]
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($adminUpn) -and $reviewedUserByUpn.ContainsKey($adminUpn.Trim().ToLowerInvariant())) {
+            $reviewedUserRecord = $reviewedUserByUpn[$adminUpn.Trim().ToLowerInvariant()]
+        }
+
+        $coverageReviewed = $null -ne $reviewedUserRecord -and (Convert-ToAssessmentBoolean (Get-ArrayaObjectValue -Object $reviewedUserRecord -Names @('AccountEnabled'))) -ne $false
+        if ($accountEnabled -ne $false) {
+            $summary.EnabledAdminUsersReviewed++
+        }
+        if ($isGuestAdmin) {
+            $summary.GuestAdminUsersReviewed++
+        }
+
+        $isMfaRegistered = $null
+        $mfaRegistrationState = 'Not validated from registration report'
+        $methodsRegistered = $null
+        $defaultMfaMethod = $null
+        if ($null -ne $registrationRecord) {
+            $summary.AdminUsersMfaRegistrationValidated++
+            $isMfaRegistered = Convert-ToAssessmentBoolean (Get-ArrayaObjectValue -Object $registrationRecord -Names @('IsMfaRegistered'))
+            $methodsRegistered = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $registrationRecord -Names @('MethodsRegistered')) -Default $null
+            $defaultMfaMethod = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $registrationRecord -Names @('DefaultMfaMethod')) -Default $null
+            if ($isMfaRegistered -eq $true) {
+                $summary.AdminUsersRegisteredForMfa++
+                $mfaRegistrationState = 'Registered'
+            }
+            elseif ($isMfaRegistered -eq $false) {
+                $summary.AdminUsersNotRegisteredForMfa++
+                $mfaRegistrationState = 'Not registered'
+            }
+        }
+
+        $gapRecord = $null
+        if (-not [string]::IsNullOrWhiteSpace($adminObjectId) -and $gapById.ContainsKey($adminObjectId.Trim().ToLowerInvariant())) {
+            $gapRecord = $gapById[$adminObjectId.Trim().ToLowerInvariant()]
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($adminUpn) -and $gapByUpn.ContainsKey($adminUpn.Trim().ToLowerInvariant())) {
+            $gapRecord = $gapByUpn[$adminUpn.Trim().ToLowerInvariant()]
+        }
+
+        $mfaEnforcementState = 'Not validated from the reviewed MFA coverage set'
+        $mfaEnforced = $null
+        $gapCategory = $null
+        $gapReason = $null
+        $relatedPolicies = $null
+
+        if ($accountEnabled -eq $false) {
+            $mfaEnforcementState = 'Account is disabled'
+            $mfaEnforced = $false
+        }
+        elseif ($SecurityDefaultsEnabled -eq $true) {
+            $summary.AdminUsersMfaEnforcementReviewed++
+            $summary.AdminUsersCoveredByMfaEnforcement++
+            $mfaEnforcementState = 'Enforced by Security Defaults'
+            $mfaEnforced = $true
+        }
+        elseif ($coverageReviewed) {
+            $summary.AdminUsersMfaEnforcementReviewed++
+            if ($null -ne $gapRecord) {
+                $summary.AdminUsersNotCoveredByMfaEnforcement++
+                if ($isGuestAdmin) {
+                    $summary.GuestAdminUsersNotCoveredByMfaEnforcement++
+                }
+                $mfaEnforced = $false
+                $gapCategory = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $gapRecord -Names @('GapCategory')) -Default 'Not clearly enforced'
+                $gapReason = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $gapRecord -Names @('GapReason')) -Default 'Not validated from the reviewed data'
+                $relatedPolicies = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $gapRecord -Names @('RelatedPolicies')) -Default ''
+                $mfaEnforcementState = 'Not covered by the current enabled MFA enforcement baseline'
+            }
+            elseif ($EnabledMfaPolicyCount -gt 0) {
+                $summary.AdminUsersCoveredByMfaEnforcement++
+                $mfaEnforced = $true
+                $mfaEnforcementState = 'Covered by the current enabled MFA enforcement baseline'
+            }
+            else {
+                $summary.AdminUsersNotCoveredByMfaEnforcement++
+                if ($isGuestAdmin) {
+                    $summary.GuestAdminUsersNotCoveredByMfaEnforcement++
+                }
+                $mfaEnforced = $false
+                $gapCategory = 'Active MFA enforcement not clearly detected'
+                $gapReason = if ($ReportOnlyMfaPolicyCount -gt 0) {
+                    'MFA appears staged in report-only Conditional Access, but active enforcement was not clearly detected for this admin account.'
+                }
+                else {
+                    'Active MFA enforcement was not clearly detected in the reviewed policy baseline for this admin account.'
+                }
+                $mfaEnforcementState = 'Active MFA enforcement not clearly detected'
+            }
+        }
+
+        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaRegistered' -Value $isMfaRegistered -Force
+        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaRegistrationState' -Value $mfaRegistrationState -Force
+        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaMethodsRegistered' -Value $methodsRegistered -Force
+        $adminRecord | Add-Member -MemberType NoteProperty -Name 'DefaultMfaMethod' -Value $defaultMfaMethod -Force
+        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaEnforced' -Value $mfaEnforced -Force
+        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaEnforcementState' -Value $mfaEnforcementState -Force
+        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaCoverageReviewed' -Value $coverageReviewed -Force
+        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaGapCategory' -Value $gapCategory -Force
+        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaGapReason' -Value $gapReason -Force
+        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaRelatedPolicies' -Value $relatedPolicies -Force
+
+        if ($accountEnabled -ne $false -and $mfaRegistrationState -eq 'Not registered') {
+            $registrationGapRows.Add([pscustomobject]@{
+                DisplayName = $adminDisplayName
+                UserPrincipalName = $adminUpn
+                Role = $adminRole
+                AccountEnabled = $accountEnabled
+                UserType = $(if ($isGuestAdmin) { 'Guest' } else { 'Member' })
+                MfaRegistrationState = $mfaRegistrationState
+                MethodsRegistered = $methodsRegistered
+                DefaultMfaMethod = $defaultMfaMethod
+                LastSignInDateTime = Get-ArrayaObjectValue -Object $adminRecord -Names @('LastSignInDateTime')
+            }) | Out-Null
+        }
+
+        if ($accountEnabled -ne $false -and $mfaEnforced -eq $false -and -not [string]::Equals($mfaEnforcementState, 'Not validated from the reviewed MFA coverage set', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $enforcementGapRows.Add([pscustomobject]@{
+                DisplayName = $adminDisplayName
+                UserPrincipalName = $adminUpn
+                Role = $adminRole
+                AccountEnabled = $accountEnabled
+                UserType = $(if ($isGuestAdmin) { 'Guest' } else { 'Member' })
+                MfaEnforcementState = $mfaEnforcementState
+                GapCategory = $gapCategory
+                GapReason = $gapReason
+                RelatedPolicies = $relatedPolicies
+                LastSignInDateTime = Get-ArrayaObjectValue -Object $adminRecord -Names @('LastSignInDateTime')
+            }) | Out-Null
+        }
+    }
+
+    $summary.CollectionState = 'Collected'
+    return [pscustomobject]@{
+        Summary = [pscustomobject]$summary
+        RegistrationGaps = @($registrationGapRows | Sort-Object DisplayName, UserPrincipalName)
+        EnforcementGaps = @($enforcementGapRows | Sort-Object DisplayName, UserPrincipalName)
+    }
 }
 
 function ConvertFrom-AssessmentJwtPayload {
@@ -6314,13 +7457,14 @@ function Get-AllOffice365Admins {
                     $currentAdmin = New-Object PSObject -Property ([ordered]@{
                         # Default Values
                         Role = $roleName
+                        DirectoryObjectId = $roleMember.Id
                         ObjectType = $roleMember.AdditionalProperties['@odata.type']
                         DisplayName = $Name
                         Mail = $mail
                         CreatedDate = if ($CreatedDate) { $CreatedDate } else { $null }
                         # User Specific Values
                         UserPrincipalName = if ($UPN) { $UPN } else { $null }
-                        AccountEnabled = if ($AccountEnabled) { $AccountEnabled } else { $null }
+                        AccountEnabled = if ($null -ne $AccountEnabled) { $AccountEnabled } else { $null }
                         userType = if ($UserType) { $UserType } else { $null }
                         JobTitle = if ($jobTitle) { $jobTitle } else { $null }
                         LastSignInDateTime = if ($LastSignInDateTime) { $LastSignInDateTime } else { $null }
@@ -8053,6 +9197,132 @@ function Get-AuthenticationConfiguration {
             $script:tenantStatsHash["EnterpriseApplications"][$storageKey] = [pscustomobject]$mergedProperties
         }
 
+        function Get-AssessmentEnterpriseApplicationLatestSignInMap {
+            param(
+                [Parameter(Mandatory = $true)]
+                [object[]]$ServicePrincipals,
+                [Parameter(Mandatory = $false)]
+                [int]$ChunkSize = 12,
+                [Parameter(Mandatory = $false)]
+                [int]$PageSize = 25,
+                [Parameter(Mandatory = $false)]
+                [int]$MaxPagesPerChunk = 8
+            )
+
+            $signInMap = @{}
+            $appProfileLookup = @{}
+            foreach ($servicePrincipal in @($ServicePrincipals)) {
+                $identityProfile = Get-AssessmentEnterpriseApplicationIdentityProfile -ServicePrincipal $servicePrincipal
+                $appId = [string]$identityProfile.AppId
+                if ([string]::IsNullOrWhiteSpace($appId) -or $appProfileLookup.ContainsKey($appId)) {
+                    continue
+                }
+
+                $appProfileLookup[$appId] = [pscustomobject]@{
+                    DisplayName = [string]$identityProfile.DisplayName
+                }
+            }
+
+            $allAppIds = @($appProfileLookup.Keys | Sort-Object)
+            if ($allAppIds.Count -eq 0) {
+                return $signInMap
+            }
+
+            $truncatedAppIds = New-Object System.Collections.Generic.HashSet[string]
+            for ($index = 0; $index -lt $allAppIds.Count; $index += $ChunkSize) {
+                $chunkEndIndex = [Math]::Min(($index + $ChunkSize - 1), ($allAppIds.Count - 1))
+                $chunkAppIds = @($allAppIds[$index..$chunkEndIndex])
+                $pendingAppIds = New-Object 'System.Collections.Generic.HashSet[string]'
+                foreach ($chunkAppId in $chunkAppIds) {
+                    [void]$pendingAppIds.Add([string]$chunkAppId)
+                }
+
+                $filterExpression = @(
+                    $chunkAppIds |
+                        ForEach-Object { "appId eq '{0}'" -f (([string]$_).Replace("'", "''")) }
+                ) -join ' or '
+                $pageUri = "https://graph.microsoft.com/v1.0/auditLogs/signIns?`$filter=$([System.Uri]::EscapeDataString($filterExpression))&`$orderby=createdDateTime desc&`$top=$PageSize&`$select=createdDateTime,userDisplayName,userPrincipalName,conditionalAccessStatus,clientAppUsed,appDisplayName,appId"
+                $pageCount = 0
+
+                while ($pageUri -and $pendingAppIds.Count -gt 0 -and $pageCount -lt $MaxPagesPerChunk) {
+                    $response = Invoke-QuietRestMethod -Parameters @{
+                        Uri         = $pageUri
+                        Headers     = $global:GraphHeaders
+                        Method      = 'Get'
+                        ContentType = 'application/json'
+                        ErrorAction = 'Stop'
+                    }
+
+                    $signInRows = @()
+                    if ($response) {
+                        if ($response.PSObject.Properties['value']) {
+                            $signInRows = @($response.value)
+                        }
+                        else {
+                            $signInRows = @($response)
+                        }
+                    }
+
+                    foreach ($signInRow in @($signInRows)) {
+                        $signInAppId = [string](Get-ArrayaObjectValue -Object $signInRow -Names @('appId', 'AppId'))
+                        if ([string]::IsNullOrWhiteSpace($signInAppId) -or -not $pendingAppIds.Contains($signInAppId)) {
+                            continue
+                        }
+
+                        $signInMap[$signInAppId] = [pscustomobject]@{
+                            LastSignInDateTime          = $(if ($signInRow.PSObject.Properties['createdDateTime']) { $signInRow.createdDateTime } elseif ($signInRow.PSObject.Properties['CreatedDateTime']) { $signInRow.CreatedDateTime } else { $null })
+                            LastSignInUserDisplayName   = $(if ($signInRow.PSObject.Properties['userDisplayName']) { [string]$signInRow.userDisplayName } elseif ($signInRow.PSObject.Properties['UserDisplayName']) { [string]$signInRow.UserDisplayName } else { $null })
+                            LastSignInUserPrincipalName = $(if ($signInRow.PSObject.Properties['userPrincipalName']) { [string]$signInRow.userPrincipalName } elseif ($signInRow.PSObject.Properties['UserPrincipalName']) { [string]$signInRow.UserPrincipalName } else { $null })
+                            LastConditionalAccessStatus = $(if ($signInRow.PSObject.Properties['conditionalAccessStatus']) { [string]$signInRow.conditionalAccessStatus } elseif ($signInRow.PSObject.Properties['ConditionalAccessStatus']) { [string]$signInRow.ConditionalAccessStatus } else { $null })
+                            LastClientAppUsed           = $(if ($signInRow.PSObject.Properties['clientAppUsed']) { [string]$signInRow.clientAppUsed } elseif ($signInRow.PSObject.Properties['ClientAppUsed']) { [string]$signInRow.ClientAppUsed } else { $null })
+                        }
+                        [void]$pendingAppIds.Remove($signInAppId)
+                    }
+
+                    $pageCount++
+                    $pageUri = if ($response -and $response.PSObject.Properties['@odata.nextLink'] -and -not [string]::IsNullOrWhiteSpace([string]$response.'@odata.nextLink')) {
+                        [string]$response.'@odata.nextLink'
+                    }
+                    else {
+                        $null
+                    }
+                }
+
+                if ($pendingAppIds.Count -gt 0 -and $pageCount -ge $MaxPagesPerChunk) {
+                    foreach ($pendingAppId in $pendingAppIds) {
+                        [void]$truncatedAppIds.Add([string]$pendingAppId)
+                    }
+                }
+            }
+
+            foreach ($appId in $allAppIds) {
+                if ($signInMap.ContainsKey($appId)) {
+                    continue
+                }
+
+                $signInMap[$appId] = [pscustomobject]@{
+                    LastSignInDateTime          = $(if ($truncatedAppIds.Contains($appId)) { 'Latest sign-in not resolved from reviewed sign-in history' } else { 'No sign-ins found' })
+                    LastSignInUserDisplayName   = $null
+                    LastSignInUserPrincipalName = $null
+                    LastConditionalAccessStatus = $null
+                    LastClientAppUsed           = $null
+                }
+            }
+
+            if ($truncatedAppIds.Count -gt 0) {
+                $sampleApplications = @(
+                    $truncatedAppIds |
+                        ForEach-Object { if ($appProfileLookup.ContainsKey($_)) { [string]$appProfileLookup[$_].DisplayName } } |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                        Sort-Object -Unique |
+                        Select-Object -First 5
+                )
+                Write-Log -Type WARNING -Message "[Get-AuthenticationConfiguration] Some enterprise application sign-in lookups exceeded the reviewed sign-in history window. Those applications will note that the latest sign-in was not fully resolved. Examples: $($sampleApplications -join ', ')" -ExportFileLocation $ExportDetails
+            }
+
+            return $signInMap
+        }
+
         $servicePrincipals = @()
         if ($collectSsoAppDetails -or $collectExtendedIdentityTierB) {
             try {
@@ -8383,6 +9653,46 @@ function Get-AuthenticationConfiguration {
                 }
             } catch {
                 Write-Log -Type WARNING -Message "[Get-AuthenticationConfiguration] Unable to collect enterprise application permission posture: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+            }
+        }
+
+        if ($servicePrincipals.Count -gt 0 -and $detailLevel -ne 'minimum') {
+            $enterpriseApplicationSignInWarningLogged = $false
+            $latestEnterpriseApplicationSignIns = @{}
+            try {
+                $latestEnterpriseApplicationSignIns = Get-AssessmentEnterpriseApplicationLatestSignInMap -ServicePrincipals @($servicePrincipals)
+            }
+            catch {
+                Write-Log -Type WARNING -Message "[Get-AuthenticationConfiguration] Unable to retrieve batched enterprise application sign-in details. Application inventory will continue without sign-in enrichment: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+                $enterpriseApplicationSignInWarningLogged = $true
+            }
+
+            foreach ($servicePrincipal in @($servicePrincipals)) {
+                $identityProfile = Get-AssessmentEnterpriseApplicationIdentityProfile -ServicePrincipal $servicePrincipal
+                $servicePrincipalId = [string]$identityProfile.ServicePrincipalId
+                if ([string]::IsNullOrWhiteSpace($servicePrincipalId) -or -not $enterpriseApplicationKeyById.ContainsKey($servicePrincipalId)) {
+                    continue
+                }
+
+                $appId = [string]$identityProfile.AppId
+                if ([string]::IsNullOrWhiteSpace($appId)) {
+                    continue
+                }
+
+                if ($latestEnterpriseApplicationSignIns.ContainsKey($appId)) {
+                    $latestSignInDetails = $latestEnterpriseApplicationSignIns[$appId]
+                    Add-AssessmentEnterpriseApplicationRecord -ServicePrincipal $servicePrincipal -AdditionalProperties @{
+                        LastSignInDateTime          = $latestSignInDetails.LastSignInDateTime
+                        LastSignInUserDisplayName   = $latestSignInDetails.LastSignInUserDisplayName
+                        LastSignInUserPrincipalName = $latestSignInDetails.LastSignInUserPrincipalName
+                        LastConditionalAccessStatus = $latestSignInDetails.LastConditionalAccessStatus
+                        LastClientAppUsed           = $latestSignInDetails.LastClientAppUsed
+                    }
+                }
+                elseif (-not $enterpriseApplicationSignInWarningLogged) {
+                    Write-Log -Type WARNING -Message "[Get-AuthenticationConfiguration] Enterprise application sign-in enrichment completed without a result row for one or more applications. Application inventory will continue without sign-in enrichment for those rows." -ExportFileLocation $ExportDetails
+                    $enterpriseApplicationSignInWarningLogged = $true
+                }
             }
         }
 
@@ -9076,13 +10386,107 @@ function Ensure-PurviewComplianceSession {
     $connectParams = @{
         ErrorAction = 'Stop'
     }
-    $purviewAuthPath = 'Delegated'
+    $purviewAuthPath = 'Interactive'
     $organization = $null
     if ($connectCommand.Parameters.ContainsKey('CommandName')) {
         $connectParams.CommandName = @('Get-RetentionCompliancePolicy', 'Get-DlpCompliancePolicy')
     }
     if ($connectCommand.Parameters.ContainsKey('ShowBanner')) {
         $connectParams.ShowBanner = $false
+    }
+
+    function Invoke-PurviewComplianceDelegatedConnect {
+        param(
+            [Parameter(Mandatory = $true)]
+            [hashtable]$BaseParameters,
+            [Parameter(Mandatory = $true)]
+            $ConnectCommandMetadata,
+            [AllowNull()]
+            [string]$GraphAccount
+        )
+
+        $attempts = New-Object System.Collections.Generic.List[hashtable]
+        $initialInteractiveParams = @{}
+        if (
+            -not [string]::IsNullOrWhiteSpace($GraphAccount) -and
+            $ConnectCommandMetadata.Parameters.ContainsKey('UserPrincipalName')
+        ) {
+            $initialInteractiveParams.UserPrincipalName = $GraphAccount
+        }
+
+        $attempts.Add(@{
+            Label = 'interactive authentication'
+            AuthPath = 'Interactive'
+            Params = $initialInteractiveParams
+        }) | Out-Null
+
+        if ($ConnectCommandMetadata.Parameters.ContainsKey('DisableWAM')) {
+            $disableWamParams = @{ DisableWAM = $true }
+            if (
+                -not [string]::IsNullOrWhiteSpace($GraphAccount) -and
+                $ConnectCommandMetadata.Parameters.ContainsKey('UserPrincipalName')
+            ) {
+                $disableWamParams.UserPrincipalName = $GraphAccount
+            }
+
+            $attempts.Add(@{
+                Label = 'interactive authentication with -DisableWAM'
+                AuthPath = 'Interactive (DisableWAM)'
+                Params = $disableWamParams
+            }) | Out-Null
+        }
+
+        if ($ConnectCommandMetadata.Parameters.ContainsKey('Device')) {
+            $deviceParams = @{ Device = $true }
+            if (
+                -not [string]::IsNullOrWhiteSpace($GraphAccount) -and
+                $ConnectCommandMetadata.Parameters.ContainsKey('UserPrincipalName')
+            ) {
+                $deviceParams.UserPrincipalName = $GraphAccount
+            }
+
+            $attempts.Add(@{
+                Label = 'device code authentication'
+                AuthPath = 'Interactive (DeviceCode)'
+                Params = $deviceParams
+            }) | Out-Null
+        }
+
+        $lastFailure = $null
+        foreach ($attempt in $attempts) {
+            $attemptParams = @{}
+            foreach ($key in $BaseParameters.Keys) {
+                $attemptParams[$key] = $BaseParameters[$key]
+            }
+            foreach ($key in $attempt.Params.Keys) {
+                $attemptParams[$key] = $attempt.Params[$key]
+            }
+
+            try {
+                if ($attempt.Label -eq 'interactive authentication') {
+                    Write-Log -Type INFO -Message "[Ensure-PurviewComplianceSession] Attempting Purview compliance PowerShell connection with $($attempt.Label)." -ExportFileLocation $ExportDetails
+                }
+                else {
+                    Write-Log -Type WARNING -Message "[Ensure-PurviewComplianceSession] Purview compliance PowerShell connection failed. Retrying with $($attempt.Label)." -ExportFileLocation $ExportDetails
+                }
+
+                Connect-IPPSSession @attemptParams | Out-Null
+                return [pscustomobject]@{
+                    Success = $true
+                    AuthPath = $attempt.AuthPath
+                    LastError = $null
+                }
+            }
+            catch {
+                $lastFailure = $_
+            }
+        }
+
+        return [pscustomobject]@{
+            Success = $false
+            AuthPath = $(if ($attempts.Count -gt 0) { $attempts[$attempts.Count - 1].AuthPath } else { 'Interactive' })
+            LastError = $lastFailure
+        }
     }
 
     try {
@@ -9117,13 +10521,18 @@ function Ensure-PurviewComplianceSession {
         }
         else {
             $graphContext = Get-MgContext -ErrorAction SilentlyContinue
-            if ($graphContext -and -not [string]::IsNullOrWhiteSpace([string]$graphContext.Account) -and $connectCommand.Parameters.ContainsKey('UserPrincipalName')) {
-                $connectParams.UserPrincipalName = [string]$graphContext.Account
+            $graphAccount = if ($graphContext -and -not [string]::IsNullOrWhiteSpace([string]$graphContext.Account)) { [string]$graphContext.Account } else { $null }
+            $delegatedConnectResult = Invoke-PurviewComplianceDelegatedConnect -BaseParameters $connectParams -ConnectCommandMetadata $connectCommand -GraphAccount $graphAccount
+            if (-not $delegatedConnectResult.Success) {
+                if ($delegatedConnectResult.LastError) {
+                    throw $delegatedConnectResult.LastError
+                }
+                throw 'Purview delegated authentication did not complete successfully.'
             }
 
-            Connect-IPPSSession @connectParams | Out-Null
-            Set-PurviewComplianceDiagnosticState -Status 'Connected' -Message 'Connected to Purview compliance PowerShell using delegated authentication.' -AuthPath $purviewAuthPath -Organization $organization
-            Write-Log -Type INFO -Message "[Ensure-PurviewComplianceSession] Connected to Purview compliance PowerShell using delegated authentication." -ExportFileLocation $ExportDetails
+            $purviewAuthPath = [string]$delegatedConnectResult.AuthPath
+            Set-PurviewComplianceDiagnosticState -Status 'Connected' -Message ("Connected to Purview compliance PowerShell using {0} authentication." -f $purviewAuthPath) -AuthPath $purviewAuthPath -Organization $organization
+            Write-Log -Type INFO -Message ("[Ensure-PurviewComplianceSession] Connected to Purview compliance PowerShell using {0} authentication." -f $purviewAuthPath) -ExportFileLocation $ExportDetails
         }
     }
     catch {
@@ -9360,6 +10769,9 @@ function Get-MfaRegistrationDetails {
     $script:tenantStatsHash["MfaEnforcementSummary"] = $null
     $script:tenantStatsHash["MfaEnforcementGapUsers"] = @{}
     $script:tenantStatsHash["MfaEnforcementScopeReview"] = @{}
+    $script:tenantStatsHash["AdminMfaSummary"] = $null
+    $script:tenantStatsHash["AdminMfaRegistrationGaps"] = @{}
+    $script:tenantStatsHash["AdminMfaEnforcementGaps"] = @{}
     
     Write-Host "Gathering MFA registration details ..." -ForegroundColor Cyan -NoNewline
     Write-Log -Type INFO -Message "[Get-MfaRegistrationDetails] START: Gathering MFA registration details" -ExportFileLocation $ExportDetails
@@ -9542,6 +10954,28 @@ function Get-MfaRegistrationDetails {
             'Active MFA enforcement was not clearly detected in the reviewed policy baseline.'
         }
 
+        $guestUserEnforcementState = if ($securityDefaultsEnabled -eq $true) {
+            'Guest users are generally enforced through Security Defaults.'
+        }
+        elseif ((Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaCoverageSummary -Names @('EnabledGuestUsersReviewed'))) -eq 0) {
+            'No enabled guest users were present in the reviewed data.'
+        }
+        elseif ((Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaCoverageSummary -Names @('GuestUsersCoveredByEnabledMfaPolicies'))) -ge (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaCoverageSummary -Names @('EnabledGuestUsersReviewed')))) {
+            'Reviewed enabled guest users appear covered by the active MFA enforcement baseline.'
+        }
+        elseif ((Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaCoverageSummary -Names @('GuestUsersCoveredByEnabledMfaPolicies'))) -gt 0) {
+            'Guest users are partially covered by the active MFA enforcement baseline.'
+        }
+        elseif ($enabledMfaPolicies.Count -gt 0) {
+            'Guest users are not clearly covered by the active MFA enforcement baseline.'
+        }
+        elseif ($reportOnlyMfaPolicies.Count -gt 0) {
+            'Guest MFA appears staged in report-only Conditional Access, but active guest enforcement was not clearly detected.'
+        }
+        else {
+            'Guest MFA enforcement was not clearly detected in the reviewed policy baseline.'
+        }
+
         $conditionalAccessPoliciesReviewed = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('TotalPolicies'))
         if ($null -eq $conditionalAccessPoliciesReviewed) {
             $conditionalAccessPoliciesReviewed = @($conditionalAccessPolicies).Count
@@ -9569,6 +11003,7 @@ function Get-MfaRegistrationDetails {
             CoverageCalculationNote              = Get-ArrayaObjectValue -Object $mfaCoverageSummary -Names @('CoverageCalculationNote')
             SecurityDefaultsEnabled              = $securityDefaultsEnabled
             GuestOrExternalCoverage              = Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasGuestCoverage')
+            GuestUserEnforcementState            = $guestUserEnforcementState
             PrivilegedRoleCoverage               = Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasPrivilegedRoleCoverage')
             RiskBasedCoverage                    = Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasRiskBasedCoverage')
             CompliantDeviceRequirement           = Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasCompliantDeviceRequirement')
@@ -9588,6 +11023,30 @@ function Get-MfaRegistrationDetails {
             $scopeReviewIndex++
             $scopeRowKey = Convert-ToAssessmentPathComponent -Value (Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $scopeReviewRow -Names @('DisplayName', 'Identifier', 'PolicyName')) -Default ('ScopeReview{0:D3}' -f $scopeReviewIndex)) -Fallback ('ScopeReview{0:D3}' -f $scopeReviewIndex)
             $script:tenantStatsHash["MfaEnforcementScopeReview"][("{0:D3}-{1}" -f $scopeReviewIndex, $scopeRowKey)] = $scopeReviewRow
+        }
+
+        $adminMfaReview = Get-AssessmentAdminMfaReview `
+            -Admins $script:tenantStatsHash["Admins"] `
+            -Users $script:tenantStatsHash["Users"] `
+            -MfaRegistrationDetails $script:tenantStatsHash["MfaRegistrationDetails"] `
+            -MfaCoverageAnalysis $mfaCoverageAnalysis `
+            -SecurityDefaultsEnabled $securityDefaultsEnabled `
+            -EnabledMfaPolicyCount $enabledMfaPolicies.Count `
+            -ReportOnlyMfaPolicyCount $reportOnlyMfaPolicies.Count
+        if ($adminMfaReview) {
+            $script:tenantStatsHash["AdminMfaSummary"] = if ($adminMfaReview.PSObject.Properties['Summary']) { $adminMfaReview.Summary } else { $adminMfaReview }
+            $adminRegistrationGapIndex = 0
+            foreach ($adminRegistrationGap in @($adminMfaReview.RegistrationGaps)) {
+                $adminRegistrationGapIndex++
+                $adminRegistrationGapKey = Convert-ToAssessmentPathComponent -Value (Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $adminRegistrationGap -Names @('UserPrincipalName', 'DisplayName')) -Default ('AdminMfaRegistrationGap{0:D3}' -f $adminRegistrationGapIndex)) -Fallback ('AdminMfaRegistrationGap{0:D3}' -f $adminRegistrationGapIndex)
+                $script:tenantStatsHash["AdminMfaRegistrationGaps"][("{0:D3}-{1}" -f $adminRegistrationGapIndex, $adminRegistrationGapKey)] = $adminRegistrationGap
+            }
+            $adminEnforcementGapIndex = 0
+            foreach ($adminEnforcementGap in @($adminMfaReview.EnforcementGaps)) {
+                $adminEnforcementGapIndex++
+                $adminEnforcementGapKey = Convert-ToAssessmentPathComponent -Value (Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $adminEnforcementGap -Names @('UserPrincipalName', 'DisplayName')) -Default ('AdminMfaEnforcementGap{0:D3}' -f $adminEnforcementGapIndex)) -Fallback ('AdminMfaEnforcementGap{0:D3}' -f $adminEnforcementGapIndex)
+                $script:tenantStatsHash["AdminMfaEnforcementGaps"][("{0:D3}-{1}" -f $adminEnforcementGapIndex, $adminEnforcementGapKey)] = $adminEnforcementGap
+            }
         }
     } catch {
         Write-Log -Type WARNING -Message "[Get-MfaRegistrationDetails] Error: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
@@ -9990,6 +11449,19 @@ function Export-TenantStatsJson {
         ExportOnly         = [bool]$runExportOnly
     }
 
+    if ($script:AssessmentAuthWorkloadPlan -or $connectionResult) {
+        $metadata['Authentication'] = [ordered]@{
+            BootstrapMode       = if ($connectionResult -and $connectionResult.PSObject.Properties['AuthenticationType']) { [string]$connectionResult.AuthenticationType } else { $null }
+            RequiredWorkloads   = if ($connectionResult -and $connectionResult.PSObject.Properties['RequiredWorkloads']) { @($connectionResult.RequiredWorkloads) } else { @() }
+            ConnectedWorkloads  = if ($connectionResult -and $connectionResult.PSObject.Properties['ConnectedWorkloads']) { @($connectionResult.ConnectedWorkloads) } else { @() }
+            SkippedWorkloads    = if ($connectionResult -and $connectionResult.PSObject.Properties['SkippedWorkloads']) { @($connectionResult.SkippedWorkloads) } else { @() }
+            FallbackWorkloads   = if ($connectionResult -and $connectionResult.PSObject.Properties['FallbackWorkloads']) { @($connectionResult.FallbackWorkloads) } else { @() }
+            GraphContext        = if ($connectionResult -and $connectionResult.PSObject.Properties['GraphContextAvailable']) { [bool]$connectionResult.GraphContextAvailable } else { $false }
+            ExchangeCmdlets     = if ($connectionResult -and $connectionResult.PSObject.Properties['ExchangeCmdletsAvailable']) { [bool]$connectionResult.ExchangeCmdletsAvailable } else { $false }
+            PurviewCmdlets      = if ($connectionResult -and $connectionResult.PSObject.Properties['PurviewCmdletsAvailable']) { [bool]$connectionResult.PurviewCmdletsAvailable } else { $false }
+        }
+    }
+
     if ($TenantStatsHash.ContainsKey('TenantInfo') -and $TenantStatsHash['TenantInfo']) {
         $tenantInfo = $TenantStatsHash['TenantInfo']
         $metadata['Tenant'] = [ordered]@{
@@ -10327,62 +11799,28 @@ if ($runExportOnly) {
     }
 }
 else {
-    if ($SkipAuth) {
-        Write-Host "Skipping authentication bootstrap and validating existing sessions..." -ForegroundColor Cyan
-        $existingGraphContext = Get-MgContext -ErrorAction SilentlyContinue
-        if (-not $existingGraphContext) {
-            throw "SkipAuth was requested, but no existing Microsoft Graph session was found. Connect first, then rerun with -SkipAuth."
-        }
+    $resolvedAuthMode = Resolve-AssessmentRequestedAuthMode -AuthMode $AuthMode -CertificateThumbprint $CertificateThumbprint -ClientSecret $ClientSecret
+    $assessmentAuthWorkloadPlan = Resolve-AssessmentAuthWorkloadPlan `
+        -AuthMode $resolvedAuthMode `
+        -NeedsGovernanceCompliancePolicies ([bool]$script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies) `
+        -NeedsTeamsInventory ([bool]$script:ProfileCollectionPlan.CollectTeamsDetails) `
+        -NeedsTeamsVoice ([bool]$script:ProfileCollectionPlan.CollectTeamsVoiceDetails) `
+        -NeedsSharePointData $true
+    $script:AssessmentAuthWorkloadPlan = $assessmentAuthWorkloadPlan
 
-        $hasExoMailboxCommand = [bool](Get-Command -Name 'Get-EXOMailbox' -ErrorAction SilentlyContinue)
-        $hasUnifiedGroupCommand = [bool](Get-Command -Name 'Get-UnifiedGroup' -ErrorAction SilentlyContinue)
-        if (-not ($hasExoMailboxCommand -and $hasUnifiedGroupCommand)) {
-            throw "SkipAuth was requested, but Exchange Online cmdlets are not available in the current session. Connect to Exchange Online first, then rerun with -SkipAuth."
-        }
-
-        $connectionResult = [pscustomobject]@{
-            Graph          = $true
-            ExchangeOnline = $true
-            AuthenticationType = 'ExistingSession'
-            InitialDomain  = $null
-        }
-    }
-    else {
-        # Connect to Microsoft Office 365 Services
-        $resolvedAuthMode = if ($PSBoundParameters.ContainsKey('AuthMode') -and -not [string]::IsNullOrWhiteSpace($AuthMode)) {
-            $AuthMode
-        }
-        elseif (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
-            'Certificate'
-        }
-        elseif (-not [string]::IsNullOrWhiteSpace($ClientSecret)) {
-            'ClientSecret'
-        }
-        else {
-            'Interactive'
-        }
-
-        $connectOffice365Params = @{}
-        $connectOffice365Params.AuthMode = $resolvedAuthMode
-        if ($PSBoundParameters.ContainsKey('TenantId')) { $connectOffice365Params.TenantId = $TenantId }
-        if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $connectOffice365Params.CertificateThumbprint = $CertificateThumbprint }
-        if ($PSBoundParameters.ContainsKey('ClientId')) { $connectOffice365Params.ClientId = $ClientId }
-        if ($PSBoundParameters.ContainsKey('ClientSecret')) {
-            if ([string]::IsNullOrWhiteSpace($ClientId)) {
-                throw "Client secret authentication requires -ClientId."
-            }
-
-            $secureClientSecret = ConvertTo-SecureString -String $ClientSecret -AsPlainText -Force
-            $connectOffice365Params.ClientSecretCredential = [System.Management.Automation.PSCredential]::new($ClientId, $secureClientSecret)
-        }
-        $connectionResult = Connect-Office365 @connectOffice365Params -ErrorAction Stop
-        if (
-            -not $connectionResult -or
-            -not $connectionResult.Graph -or
-            -not $connectionResult.ExchangeOnline
-        ) {
-            throw "Authentication bootstrap did not complete successfully. Graph=$($connectionResult.Graph); ExchangeOnline=$($connectionResult.ExchangeOnline)"
-        }
+    $connectionResult = Initialize-AssessmentAuthentication `
+        -WorkloadPlan $assessmentAuthWorkloadPlan `
+        -SkipAuth:$SkipAuth `
+        -TenantId $TenantId `
+        -ClientId $ClientId `
+        -CertificateThumbprint $CertificateThumbprint `
+        -ClientSecret $ClientSecret
+    if (
+        -not $connectionResult -or
+        -not $connectionResult.Graph -or
+        -not $connectionResult.ExchangeOnline
+    ) {
+        throw "Authentication bootstrap did not complete successfully. Graph=$($connectionResult.Graph); ExchangeOnline=$($connectionResult.ExchangeOnline)"
     }
 
     # Get default tenant display name from live connection
@@ -10431,40 +11869,16 @@ if ($OutputProfile -eq 'TenantToTenantMigration' -or $effectiveOutputProfileLabe
     $script:CollectionDepthPolicy | Add-Member -MemberType NoteProperty -Name CollectExtendedGraphEnrichment -Value $true -Force
 }
 
-$script:ProfileCollectionPlan = [ordered]@{
-    CollectExchangeRecipients        = $true
-    CollectEmailActivityDetails      = ($effectiveGenerateTechnicalHtml -or $effectiveGenerateWorkbook -or $effectiveGenerateJson)
-    CollectExchangeGroups            = $true
-    CollectMailFlowRulesConnectors   = $true
-    CollectPublicFolders             = $true
-    CollectThirdPartySpamFiltering   = $true
-    CollectSmtpRelayConfiguration    = $true
-    CollectGovernanceCompliancePolicies = ($effectiveGenerateTechnicalHtml -or $effectiveGenerateWorkbook -or $effectiveGenerateBestPracticesHtml -or $effectiveGenerateJson)
-    CollectTeamsDetails              = ($effectiveGenerateTechnicalHtml -or $effectiveGenerateWorkbook -or $effectiveGenerateBestPracticesHtml -or $effectiveGenerateJson)
-    CollectTeamsVoiceDetails         = $true
-    CollectUnifiedGroups             = $true
-    BuildOwnershipGovernanceTables   = ($effectiveGenerateTechnicalHtml -or $effectiveGenerateBestPracticesHtml -or $effectiveGenerateWorkbook -or $effectiveGenerateJson)
-    BuildAssessmentReportTables      = ($effectiveGenerateBestPracticesHtml -or $effectiveGenerateWorkbook -or $effectiveGenerateQuestionnaire -or $effectiveGenerateJson)
-    BuildConfigurationSummaryTables  = [bool]$effectiveGenerateJson
-    BuildLicenseClassificationMetadata = ($effectiveGenerateWorkbook -or $effectiveGenerateTechnicalHtml -or $effectiveGenerateBestPracticesHtml -or $effectiveGenerateQuestionnaire -or $effectiveGenerateJson)
-    BuildCombinedUserMailboxProjection = ($reportingMode -eq 'all')
-}
-
-if (-not $isMergedOutputProfileSelection) {
-    switch ($OutputProfile) {
-        'ExecutiveLevel' {
-            # Best-practices only profile: trim technical/deep transport collectors.
-            $script:ProfileCollectionPlan.CollectExchangeRecipients = $false
-            $script:ProfileCollectionPlan.CollectEmailActivityDetails = $true
-            $script:ProfileCollectionPlan.CollectExchangeGroups = $false
-            $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors = $false
-            $script:ProfileCollectionPlan.CollectPublicFolders = $false
-            $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering = $false
-            $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration = $false
-            $script:ProfileCollectionPlan.CollectUnifiedGroups = $false
-        }
-    }
-}
+$script:ProfileCollectionPlan = Resolve-AssessmentProfileCollectionPlan `
+    -OutputProfile $OutputProfile `
+    -EffectiveOutputProfileLabel $effectiveOutputProfileLabel `
+    -GenerateTechnicalHtml ([bool]$effectiveGenerateTechnicalHtml) `
+    -GenerateWorkbook ([bool]$effectiveGenerateWorkbook) `
+    -GenerateBestPracticesHtml ([bool]$effectiveGenerateBestPracticesHtml) `
+    -GenerateJson ([bool]$effectiveGenerateJson) `
+    -GenerateQuestionnaire ([bool]$effectiveGenerateQuestionnaire) `
+    -IsMergedOutputProfileSelection ([bool]$isMergedOutputProfileSelection) `
+    -ReportingMode $reportingMode
 
 $script:SnapshotCollectionPlan = [ordered]@{
     Exchange = [ordered]@{

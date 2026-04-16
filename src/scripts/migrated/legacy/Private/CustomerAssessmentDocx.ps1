@@ -1458,6 +1458,17 @@ function New-CustomerAssessmentDocumentBlocks {
             -Value $Signals.MfaEnforcementScopeReview `
             -MarkerNames @('PolicyName', 'ScopeType', 'DisplayName')
     )
+    $adminMfaSummaryRecord = if ($Signals.AdminMfaSummary) { $Signals.AdminMfaSummary } else { $null }
+    $adminMfaRegistrationGapRows = @(
+        Convert-ToCustomerAssessmentCollectionRows `
+            -Value $Signals.AdminMfaRegistrationGaps `
+            -MarkerNames @('DisplayName', 'UserPrincipalName', 'MfaRegistrationState')
+    )
+    $adminMfaEnforcementGapRows = @(
+        Convert-ToCustomerAssessmentCollectionRows `
+            -Value $Signals.AdminMfaEnforcementGaps `
+            -MarkerNames @('DisplayName', 'UserPrincipalName', 'MfaEnforcementState')
+    )
     $securityDefaultsPolicyRecord = if ($Signals.SecurityDefaultsPolicy) { Get-ArrayaObjectValue -Object $Signals.SecurityDefaultsPolicy -Names @('Configuration', 'Summary') } else { $null }
     $passwordLifecycleSummaryRecord = $Signals.PasswordLifecycleSummary
     $externalSharingSiteOverrides = Convert-ArrayaObjectToArray $Signals.ExternalSharingSiteOverrides
@@ -1871,6 +1882,11 @@ function New-CustomerAssessmentDocumentBlocks {
                 $delegatedCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('DelegatedPermissionGrantCount'))
                 $applicationPermissionCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('ApplicationPermissionCount'))
                 $appRoleAssignmentRequired = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('AppRoleAssignmentRequired'))
+                $lastSignInDateTime = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('LastSignInDateTime')) -Default ''
+                $lastSignInUserDisplayName = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('LastSignInUserDisplayName')) -Default ''
+                $lastSignInUserPrincipalName = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('LastSignInUserPrincipalName')) -Default ''
+                $lastConditionalAccessStatus = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('LastConditionalAccessStatus')) -Default ''
+                $lastClientAppUsed = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('LastClientAppUsed')) -Default ''
 
                 $observationParts = New-Object System.Collections.Generic.List[string]
                 if ($ssoEnabled -eq $true) {
@@ -1883,6 +1899,28 @@ function New-CustomerAssessmentDocumentBlocks {
                 }
                 if ($appRoleAssignmentRequired -eq $true) {
                     $observationParts.Add('User assignment is required before access is granted.') | Out-Null
+                }
+                if (-not [string]::IsNullOrWhiteSpace($lastSignInDateTime)) {
+                    if ($lastSignInDateTime -eq 'No sign-ins found') {
+                        $observationParts.Add('No recent sign-in was surfaced for this application in the reviewed sign-in logs.') | Out-Null
+                    }
+                    else {
+                        $lastSignInObservation = "Latest sign-in seen on $lastSignInDateTime"
+                        if (-not [string]::IsNullOrWhiteSpace($lastSignInUserDisplayName) -and $lastSignInUserDisplayName -ne 'Not validated from the reviewed data') {
+                            $lastSignInObservation += " by $lastSignInUserDisplayName"
+                        }
+                        elseif (-not [string]::IsNullOrWhiteSpace($lastSignInUserPrincipalName) -and $lastSignInUserPrincipalName -ne 'Not validated from the reviewed data') {
+                            $lastSignInObservation += " by $lastSignInUserPrincipalName"
+                        }
+                        $lastSignInObservation += '.'
+                        $observationParts.Add($lastSignInObservation) | Out-Null
+                    }
+                }
+                if (-not [string]::IsNullOrWhiteSpace($lastConditionalAccessStatus) -and $lastConditionalAccessStatus -ne 'Not validated from the reviewed data') {
+                    $observationParts.Add("Latest sign-in Conditional Access status: $lastConditionalAccessStatus.") | Out-Null
+                }
+                if (-not [string]::IsNullOrWhiteSpace($lastClientAppUsed) -and $lastClientAppUsed -ne 'Not validated from the reviewed data') {
+                    $observationParts.Add("Latest client app used: $lastClientAppUsed.") | Out-Null
                 }
                 if ($observationParts.Count -eq 0) {
                     $observationParts.Add('Base application inventory was surfaced, but deeper permission usage was not validated from the reviewed data.') | Out-Null
@@ -2347,6 +2385,7 @@ function New-CustomerAssessmentDocumentBlocks {
     $mfaEnabledGuestUsersReviewed = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnforcementSummaryRecord -Names @('EnabledGuestUsersReviewed'))
     $mfaGuestUsersCoveredByEnabledPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnforcementSummaryRecord -Names @('GuestUsersCoveredByEnabledMfaPolicies'))
     $mfaGuestUserCoveragePercent = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnforcementSummaryRecord -Names @('GuestUserCoveragePercent'))
+    $guestUserEnforcementStateText = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $mfaEnforcementSummaryRecord -Names @('GuestUserEnforcementState')) -Default 'Not validated from the reviewed data'
     $mfaUsersNotCoveredByEnabledPolicies = if ($null -ne $mfaEnabledUsersReviewed -and $null -ne $mfaUsersCoveredByEnabledPolicies) { [math]::Max(($mfaEnabledUsersReviewed - $mfaUsersCoveredByEnabledPolicies), 0) } else { $null }
     $mfaCoverageCalculationNoteText = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $mfaEnforcementSummaryRecord -Names @('CoverageCalculationNote')) -Default 'Not validated from the reviewed data'
     $caSummaryTotalPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('TotalPolicies'))
@@ -2362,6 +2401,12 @@ function New-CustomerAssessmentDocumentBlocks {
     $privilegedCoverageStateText = Convert-ToCustomerAssessmentBooleanLabel -Value (Get-ArrayaObjectValue -Object $mfaEnforcementSummaryRecord -Names @('PrivilegedRoleCoverage')) -TrueText 'Detected' -FalseText 'Not detected' -Default 'Not validated from the reviewed data'
     $riskCoverageStateText = Convert-ToCustomerAssessmentBooleanLabel -Value (Get-ArrayaObjectValue -Object $mfaEnforcementSummaryRecord -Names @('RiskBasedCoverage')) -TrueText 'Detected' -FalseText 'Not detected' -Default 'Not validated from the reviewed data'
     $compliantDeviceRequirementStateText = Convert-ToCustomerAssessmentBooleanLabel -Value (Get-ArrayaObjectValue -Object $mfaEnforcementSummaryRecord -Names @('CompliantDeviceRequirement')) -TrueText 'Detected' -FalseText 'Not detected' -Default 'Not validated from the reviewed data'
+    $enabledAdminUsersReviewed = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $adminMfaSummaryRecord -Names @('EnabledAdminUsersReviewed'))
+    $adminUsersRegisteredForMfa = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $adminMfaSummaryRecord -Names @('AdminUsersRegisteredForMfa'))
+    $adminUsersNotRegisteredForMfa = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $adminMfaSummaryRecord -Names @('AdminUsersNotRegisteredForMfa'))
+    $adminUsersCoveredByMfaEnforcement = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $adminMfaSummaryRecord -Names @('AdminUsersCoveredByMfaEnforcement'))
+    $adminUsersNotCoveredByMfaEnforcement = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $adminMfaSummaryRecord -Names @('AdminUsersNotCoveredByMfaEnforcement'))
+    $adminUserCoveragePercent = if ($null -ne $enabledAdminUsersReviewed -and $enabledAdminUsersReviewed -gt 0 -and $null -ne $adminUsersCoveredByMfaEnforcement) { [math]::Round(($adminUsersCoveredByMfaEnforcement / $enabledAdminUsersReviewed) * 100, 1) } else { $null }
     $mfaGapRowsSorted = @(
         $mfaEnforcementGapUserRows |
             Sort-Object `
@@ -2574,6 +2619,13 @@ function New-CustomerAssessmentDocumentBlocks {
         @('Enabled guest users reviewed', $(if ($null -ne $mfaEnabledGuestUsersReviewed) { $mfaEnabledGuestUsersReviewed } else { 'Not validated from the reviewed data' })),
         @('Guest users covered by enabled MFA enforcement policies', $(if ($null -ne $mfaGuestUsersCoveredByEnabledPolicies) { $mfaGuestUsersCoveredByEnabledPolicies } else { 'Not validated from the reviewed data' })),
         @('Estimated guest-user CA MFA coverage', $(if ($null -ne $mfaGuestUserCoveragePercent) { "$mfaGuestUserCoveragePercent%" } else { 'Not validated from the reviewed data' })),
+        @('Guest-user MFA enforcement summary', $guestUserEnforcementStateText),
+        @('Enabled admin users reviewed', $(if ($null -ne $enabledAdminUsersReviewed) { $enabledAdminUsersReviewed } else { 'Not validated from the reviewed data' })),
+        @('Admin users registered for MFA', $(if ($null -ne $adminUsersRegisteredForMfa) { $adminUsersRegisteredForMfa } else { 'Not validated from the reviewed data' })),
+        @('Admin users not registered for MFA', $(if ($null -ne $adminUsersNotRegisteredForMfa) { $adminUsersNotRegisteredForMfa } else { 'Not validated from the reviewed data' })),
+        @('Admin users covered by enabled MFA enforcement policies', $(if ($null -ne $adminUsersCoveredByMfaEnforcement) { $adminUsersCoveredByMfaEnforcement } else { 'Not validated from the reviewed data' })),
+        @('Admin users not covered by enabled MFA enforcement policies', $(if ($null -ne $adminUsersNotCoveredByMfaEnforcement) { $adminUsersNotCoveredByMfaEnforcement } else { 'Not validated from the reviewed data' })),
+        @('Estimated admin-user CA MFA coverage', $(if ($null -ne $adminUserCoveragePercent) { "$adminUserCoveragePercent%" } else { 'Not validated from the reviewed data' })),
         @('Guest / external-user Conditional Access coverage', $guestCoverageStateText),
         @('Privileged-role Conditional Access coverage', $privilegedCoverageStateText),
         @('Risk-based Conditional Access coverage', $riskCoverageStateText),
@@ -2583,6 +2635,8 @@ function New-CustomerAssessmentDocumentBlocks {
         @('Coverage calculation note', $mfaCoverageCalculationNoteText)
     ))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("Enforcement shows whether users are actually being required to perform MFA, not just whether they have registered methods. In this review, the policy baseline shows {0} enabled Conditional Access policy/policies that require MFA and {1} still in report-only mode. Based on the reviewed enabled-user inventory, those enabled MFA policies appear to cover {2} of {3} enabled reviewed user(s), or {4}. Report-only policies do not count as enforced coverage. Detailed uncovered-user and policy-scope review rows are available in the workbook tabs MfaEnforcementGapUsers and MfaEnforcementScopeReview." -f $(if ($null -eq $enabledMfaEnforcementPolicies) { 'an unconfirmed number of' } else { $enabledMfaEnforcementPolicies }), $(if ($null -eq $reportOnlyMfaEnforcementPolicies) { 'an unconfirmed number of policies' } else { $reportOnlyMfaEnforcementPolicies }), $(if ($null -eq $mfaUsersCoveredByEnabledPolicies) { 'an unconfirmed number' } else { $mfaUsersCoveredByEnabledPolicies }), $(if ($null -eq $mfaEnabledUsersReviewed) { 'an unconfirmed number' } else { $mfaEnabledUsersReviewed }), $(if ($null -eq $mfaUserCoveragePercent) { 'an unconfirmed percentage' } else { "$mfaUserCoveragePercent%" })) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("Guest MFA should be read as its own design question, not as a side effect of employee-only policies. {0}" -f $guestUserEnforcementStateText) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("Privileged access should also be reviewed separately from the general population. In the reviewed enabled-admin set, {0} admin account(s) are not registered for MFA and {1} are not covered by the active MFA enforcement baseline. Detailed admin gap rows are available in the workbook tabs AdminMfaRegistrationGaps and AdminMfaEnforcementGaps." -f $(if ($null -eq $adminUsersNotRegisteredForMfa) { 'an unconfirmed number of' } else { $adminUsersNotRegisteredForMfa }), $(if ($null -eq $adminUsersNotCoveredByMfaEnforcement) { 'an unconfirmed number of' } else { $adminUsersNotCoveredByMfaEnforcement })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaUserExperienceText)) { $guestMfaUserExperienceText } else { 'Guest-user experience should be reviewed separately from enrollment counts because strong guest authentication can often rely on the guest home-tenant MFA rather than a separate registration in this tenant.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaDesiredStateText)) { $guestMfaDesiredStateText } else { 'The desired baseline is strong guest authentication with trusted home-tenant MFA where supported and approved, not a blanket requirement for every guest to register separately in the resource tenant.' })) -Style 'Normal')) | Out-Null
     if (-not [string]::IsNullOrWhiteSpace($guestMfaRecommendationStrategyText)) {
@@ -2618,6 +2672,8 @@ function New-CustomerAssessmentDocumentBlocks {
         @('Total admin accounts reviewed', $(if ($adminRows.Count -gt 0) { $adminRows.Count } else { 'Not surfaced in current source' })),
         @('Global Administrators', (Get-CustomerObservationState -Observation $identityObservation -Signal 'Global Administrator count')),
         @('Stale privileged admins (>180 days)', (Get-CustomerObservationState -Observation $identityObservation -Signal 'Stale privileged admins (>180 days)')),
+        @('Admin users not registered for MFA', $(if ($null -ne $adminUsersNotRegisteredForMfa) { $adminUsersNotRegisteredForMfa } else { 'Not validated from the reviewed data' })),
+        @('Admin users not covered by enabled MFA enforcement policies', $(if ($null -ne $adminUsersNotCoveredByMfaEnforcement) { $adminUsersNotCoveredByMfaEnforcement } else { 'Not validated from the reviewed data' })),
         @('Example stale privileged identities', (Get-CustomerObservationState -Observation $identityObservation -Signal 'Example stale privileged identities'))
     ))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Why This Matters' -Style 'Heading2')) | Out-Null

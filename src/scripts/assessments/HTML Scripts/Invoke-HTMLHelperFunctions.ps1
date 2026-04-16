@@ -2520,18 +2520,41 @@ function Convert-MailboxSizeToGB {
     }
 
     try {
-        if ($SizeValue -is [ValueType] -and -not ($SizeValue -is [bool]) -and -not ($SizeValue -is [datetime])) {
-            $numericValue = [double]$SizeValue
-            if ($numericValue -gt 1GB) {
-                return [math]::Round(($numericValue / 1GB), 3)
-            }
-            return [math]::Round($numericValue, 3)
+        if ($SizeValue.PSObject -and $SizeValue.PSObject.Properties['IsUnlimited'] -and [bool]$SizeValue.IsUnlimited) {
+            return 0
+        }
+    } catch {}
+
+    try {
+        if ($SizeValue.PSObject -and $SizeValue.PSObject.Properties['Value'] -and $null -ne $SizeValue.Value -and $SizeValue.Value -ne $SizeValue) {
+            return Convert-MailboxSizeToGB -SizeValue $SizeValue.Value
         }
     } catch {}
 
     try {
         if ($SizeValue.PSObject -and $SizeValue.PSObject.Methods['ToBytes']) {
             return [math]::Round(($SizeValue.ToBytes() / 1GB), 3)
+        }
+    } catch {}
+
+    try {
+        if (
+            $SizeValue -is [byte] -or
+            $SizeValue -is [int16] -or
+            $SizeValue -is [int32] -or
+            $SizeValue -is [int64] -or
+            $SizeValue -is [single] -or
+            $SizeValue -is [double] -or
+            $SizeValue -is [decimal] -or
+            $SizeValue -is [uint16] -or
+            $SizeValue -is [uint32] -or
+            $SizeValue -is [uint64]
+        ) {
+            $numericValue = [double]$SizeValue
+            if ($numericValue -gt 1GB) {
+                return [math]::Round(($numericValue / 1GB), 3)
+            }
+            return [math]::Round($numericValue, 3)
         }
     } catch {}
 

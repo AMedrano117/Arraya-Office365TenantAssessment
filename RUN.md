@@ -32,21 +32,25 @@ The assessment supports three authentication modes:
 Coverage is not identical across those modes:
 
 - `Interactive`: best choice for the fullest workload coverage.
-- `Certificate`: supports Microsoft Graph, Exchange Online app auth, and SharePoint Online certificate auth.
-- `ClientSecret`: Microsoft Graph supports app auth, but Exchange falls back to delegated auth, SharePoint Online admin cmdlets are not used with client secret auth, and Teams PowerShell is skipped.
+- `Certificate`: supports Microsoft Graph, Exchange Online app auth, and Purview certificate auth; SharePoint admin PowerShell is skipped by design and falls back to Microsoft Graph collection.
+- `ClientSecret`: Microsoft Graph supports app auth, Exchange falls back to delegated sign-in in this workflow, SharePoint admin cmdlets are skipped, and Teams PowerShell is skipped.
 
 If you are using app-based authentication, complete the setup guidance first:
 
 - [App Registration Setup](docs/runbooks/app-registration-setup.md)
 - [Certificate Auth Setup](docs/runbooks/certificate-auth-setup.md)
 
-If you already connected to Microsoft Graph and Exchange Online in the same PowerShell session, you can reuse those sessions with `-SkipAuth`.
+The assessment now uses an assessment-owned, staged login flow instead of a generic "connect everything" bootstrap. Graph and Exchange are the baseline live-collection workloads, Purview is only connected when the active run needs governance policy collection, and SharePoint/Teams PowerShell are attempted only when the active run can use them.
+
+If you already connected the required workloads for the active run in the same PowerShell session, you can reuse those sessions with `-SkipAuth`.
+If the active profile includes Purview retention or DLP collection, `-SkipAuth` requires a usable existing compliance PowerShell session, not only the presence of Purview cmdlet names in scope.
 The launcher also reuses the repo modules already loaded from this repository in the same PowerShell session, so repeat runs should not keep re-importing the assessment modules.
 If you want the assessment to continue without the startup permission gate, you can add `-SkipPermissionPreflight`. This skips the initial required-access validation and allows collection to continue on a best-effort basis, so missing permissions may still show up later as workload-specific warnings or failures.
 The permission preflight now shows the specific check being evaluated, then prints a short summary of how many checks succeeded and how many remain. It uses the current Graph token claims to fast-pass the clear-cut permissions and keeps live endpoint probes for the more ambiguous checks, so startup validation is usually faster while still catching real workload-specific access gaps. Non-blocking checks such as `OnPremDirectorySynchronization.Read.All` are surfaced as structured preflight warnings so the operator can see the remaining gap without relying on a raw Graph 403 line.
 Assessment progress output now uses plain-language governance step names instead of older internal `Tier B` terminology.
 
 Purview retention and DLP policy collection is a separate compliance PowerShell surface in this workflow. It uses `Connect-IPPSSession` and the compliance cmdlets `Get-RetentionCompliancePolicy` and `Get-DlpCompliancePolicy` rather than the main Graph collector path.
+In `Interactive` mode, the assessment now intentionally retries the Purview sign-in flow with device code if the first interactive attempt does not complete cleanly, so the operator can still complete the compliance login in sessions where browser-based auth is blocked or unstable.
 If that connection fails during permission preflight, the run now reports the auth path used, the tenant organization value when applicable, and a next-step message so the operator can tell whether the problem is missing module availability, unsupported auth mode, certificate/app access, or missing compliance cmdlets after connect.
 The same certificate and app registration can also behave differently across tenants: one tenant may expose the Purview retention/DLP cmdlets to the app session while another rejects that feature surface. When the compliance endpoint accepts the certificate sign-in but returns "No cmdlet assigned to the user have this feature enabled," treat it as a tenant-specific Purview/compliance access or licensing gap rather than a generic Graph auth failure.
 
@@ -60,7 +64,7 @@ For a reliable full `M365` run in delegated interactive mode, the operator accou
 
 - Microsoft Graph
 - Exchange Online PowerShell
-- SharePoint Online Admin PowerShell
+- SharePoint Online Admin PowerShell when delegated SharePoint admin connectivity is desired for the active run
 - Microsoft Teams PowerShell
 
 The practical role set for full coverage is:
@@ -155,6 +159,7 @@ For app-based operation beyond Graph:
 - SharePoint Online certificate and client-secret runs skip `Connect-SPOService` and rely on Microsoft Graph collection instead of SPO admin cmdlets.
 - Purview retention and DLP policy collection uses `Connect-IPPSSession` from `ExchangeOnlineManagement`.
 - Purview compliance PowerShell supports delegated auth and certificate auth in this workflow.
+- Delegated Purview auth now retries with device code in `Interactive` mode if the initial interactive prompt fails.
 - Purview compliance PowerShell does not support client-secret auth in this workflow.
 - Teams PowerShell in this workflow is still delegated-only, so app-based runs may have reduced Teams detail.
 - Teams member and guest counts are optional enrichment in app-based Graph runs. If `TeamMember.Read.All` or `TeamMember.ReadWrite.All` is not granted, the assessment continues with team and channel inventory only.
@@ -162,7 +167,8 @@ For app-based operation beyond Graph:
 ### Workload Notes
 
 - Exchange Online connectivity is required for the full `M365` assessment path. If Exchange auth fails, the run stops.
-- SharePoint Online admin connectivity is only used for delegated runs in this workflow. Certificate and client-secret runs skip the SharePoint module import and use Microsoft Graph for SharePoint and OneDrive collection.
+- SharePoint Online admin connectivity is optional and only attempted for delegated runs where the active assessment path can use SPO cmdlets. Certificate and client-secret runs skip the SharePoint module import and use Microsoft Graph for SharePoint and OneDrive collection.
+- Teams PowerShell connectivity is optional and only attempted for delegated runs where the active assessment path can use it; Graph remains the primary inventory source.
 - Purview retention/DLP collection depends on compliance PowerShell cmdlets being available after `Connect-IPPSSession`. If that connection cannot be established, governance/compliance policy sections will be skipped or can stop the run during permission preflight.
 - Teams connectivity is non-blocking in app-based auth modes, but some Teams-specific enrichment may be reduced or skipped.
 - Team and channel inventory remain part of the standard app-based path, but member-count and guest-count enrichment require the broader Teams member read scope set.

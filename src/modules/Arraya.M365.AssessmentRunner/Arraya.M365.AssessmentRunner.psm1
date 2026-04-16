@@ -156,15 +156,21 @@ function Resolve-AssessmentLatestManifestPath {
     $fullExportPath = [System.IO.Path]::GetFullPath($ExportPath)
     if (Test-Path -Path $fullExportPath -PathType Container) {
         $candidateManifestPaths.Add((Join-Path -Path $fullExportPath -ChildPath 'Support\Run.manifest.json'))
-        foreach ($manifest in @(Get-ChildItem -Path (Join-Path -Path $fullExportPath -ChildPath 'Support') -Filter '*-Run.manifest.json' -File -ErrorAction SilentlyContinue)) {
-            $candidateManifestPaths.Add($manifest.FullName)
+        $supportPath = Join-Path -Path $fullExportPath -ChildPath 'Support'
+        if (Test-Path -Path $supportPath -PathType Container) {
+            foreach ($manifest in @(Get-ChildItem -Path $supportPath -Filter '*-Run.manifest.json' -File -ErrorAction SilentlyContinue)) {
+                $candidateManifestPaths.Add($manifest.FullName)
+            }
         }
     }
     $fullExportPathParent = Split-Path -Path $fullExportPath -Parent
     if (-not [string]::IsNullOrWhiteSpace($fullExportPathParent)) {
         $candidateManifestPaths.Add((Join-Path -Path $fullExportPathParent -ChildPath 'Support\Run.manifest.json'))
-        foreach ($manifest in @(Get-ChildItem -Path (Join-Path -Path $fullExportPathParent -ChildPath 'Support') -Filter '*-Run.manifest.json' -File -ErrorAction SilentlyContinue)) {
-            $candidateManifestPaths.Add($manifest.FullName)
+        $parentSupportPath = Join-Path -Path $fullExportPathParent -ChildPath 'Support'
+        if (Test-Path -Path $parentSupportPath -PathType Container) {
+            foreach ($manifest in @(Get-ChildItem -Path $parentSupportPath -Filter '*-Run.manifest.json' -File -ErrorAction SilentlyContinue)) {
+                $candidateManifestPaths.Add($manifest.FullName)
+            }
         }
     }
 
