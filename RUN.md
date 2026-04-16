@@ -200,11 +200,22 @@ The main user entrypoint is:
 Running the script with no parameters opens a menu for the supported workflows:
 
 - `M365`
+- `M365Preflight`
 - `M365Collect`
 - `M365Export`
 - `AD`
 - `Improve`
 - `Compare`
+
+The current launcher menu order is:
+
+1. `M365`
+2. `M365Preflight` for Microsoft 365 connection and permission preflight only
+3. `M365Collect`
+4. `M365Export`
+5. `AD`
+6. `Improve`
+7. `Compare`
 
 For a workflow-by-workflow breakdown, including how the actions relate to each other and where maintainers may want to reduce overlap, see [docs/architecture/workflow-overview.md](docs/architecture/workflow-overview.md).
 
@@ -222,6 +233,17 @@ Run a full Microsoft 365 assessment with the default interactive sign-in flow:
 
 ```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365
+```
+
+Run only the Microsoft 365 connection and permission preflight, then exit without collection or export:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365Preflight `
+  -AuthMode Certificate `
+  -TenantId '<tenant-guid>' `
+  -ClientId '<app-id>' `
+  -CertificateThumbprint '<cert-thumbprint>'
 ```
 
 Run a full assessment and write outputs to a specific folder:
@@ -288,6 +310,8 @@ The following actions prompt you for additional inputs at runtime:
 - `M365Export`: asks for the saved JSON snapshot path.
 - `Improve`: asks for the tenant assessment JSON path or manifest path and optional output folder.
 - `Compare`: asks for baseline and current JSON snapshot paths.
+
+`M365Preflight` uses the same auth inputs as the main M365 workflow, including `-SkipAuth`, `-SkipPermissionPreflight`, `-AuthMode`, `-TenantId`, `-ClientId`, `-CertificateThumbprint`, and `-ClientSecret`.
 
 Generate artifacts from an existing JSON snapshot:
 

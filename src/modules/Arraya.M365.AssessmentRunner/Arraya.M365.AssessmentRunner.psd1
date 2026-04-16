@@ -8,6 +8,7 @@
     PowerShellVersion = '7.0'
     FunctionsToExport = @(
         'Invoke-M365TenantAssessment',
+        'Invoke-M365TenantConnectionPreflight',
         'Invoke-M365TenantDataCollection',
         'Invoke-M365TenantAssessmentExport',
         'Invoke-ADTenantAssessment',

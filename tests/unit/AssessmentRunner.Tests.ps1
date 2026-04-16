@@ -41,10 +41,12 @@ Describe 'Arraya.M365.AssessmentRunner' {
 
     It 'routes the M365 family through the internal mode-based workflow helper' {
         $runnerSource = Get-Content -Raw -Path $script:runnerPath
-        $runnerSource | Should -Match "ValidateSet\('Full', 'CollectOnly', 'ExportOnly'\)"
+        $runnerSource | Should -Match "ValidateSet\('Full', 'CollectOnly', 'ExportOnly', 'PreflightOnly'\)"
         $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode Full'
+        $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode PreflightOnly'
         $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode CollectOnly'
         $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode ExportOnly'
+        $runnerSource | Should -Match 'function Invoke-M365TenantConnectionPreflight'
         $runnerSource | Should -Match 'IncludeLegacyAssessmentArtifacts'
         $runnerSource | Should -Match 'Invoke-M365ImproveForAssessmentRun'
         $runnerSource | Should -Match 'Customer Assessment Report'
@@ -65,6 +67,7 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource = Get-Content -Raw -Path $script:runnerPath
         $runnerSource | Should -Match '\[ValidateSet\(''Interactive'', ''Certificate'', ''ClientSecret''\)\]\s*\[string\]\$AuthMode'
         $runnerSource | Should -Match '\$invokeParams\.AuthMode = \$AuthMode'
+        $runnerSource | Should -Match '\$invokeParams\.PreflightOnly = \$true'
         $runnerSource | Should -Match '\[switch\]\$SkipPermissionPreflight'
         $runnerSource | Should -Match '\$invokeParams\.SkipPermissionPreflight = \$SkipPermissionPreflight'
     }

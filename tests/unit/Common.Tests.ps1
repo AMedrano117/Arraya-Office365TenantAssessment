@@ -443,6 +443,9 @@ Describe 'Arraya.M365.Common' {
 
         $exportPath = Join-Path $TestDrive 'external-exposure.xlsx'
         $tenantStats = @{
+            TenantInfo = [pscustomobject]@{
+                DisplayName = 'Contoso'
+            }
             GuestSignInSummary = @{
                 Summary = [pscustomobject]@{
                     InactiveGuests90Days = 3
@@ -495,6 +498,41 @@ Describe 'Arraya.M365.Common' {
                     EnabledPolicies = 2
                 }
             }
+            AllRecipients = @(
+                [pscustomobject]@{
+                    DisplayName = 'Shared Mailbox'
+                }
+            )
+            MailFlowRules = @(
+                [pscustomobject]@{
+                    Name = 'Block External Auto Forwarding'
+                }
+            )
+            EmailActivityTopSenders = @(
+                [pscustomobject]@{
+                    UserPrincipalName = 'sender@contoso.com'
+                }
+            )
+            EmailActivityTopReceivers = @(
+                [pscustomobject]@{
+                    UserPrincipalName = 'receiver@contoso.com'
+                }
+            )
+            UnifiedGroups = @(
+                [pscustomobject]@{
+                    DisplayName = 'Projects'
+                }
+            )
+            DeviceDetails = @(
+                [pscustomobject]@{
+                    DeviceName = 'CONTOSO-LT-01'
+                }
+            )
+            SecuritySecureScore = @(
+                [pscustomobject]@{
+                    CurrentScore = 55
+                }
+            )
             ExternalSharingSummary = @{
                 Summary = [pscustomobject]@{
                     SharingDomainRestrictionMode = 'allowList'
@@ -528,6 +566,7 @@ Describe 'Arraya.M365.Common' {
         ($worksheetNames -contains 'ExternalSharingSummary') | Should -BeTrue
         ($worksheetNames -contains 'ExternalSharingSiteOverrides') | Should -BeTrue
         ($worksheetNames -contains 'ExternalExposureFindings') | Should -BeTrue
+        $worksheetNames.IndexOf('TenantInfo') | Should -BeLessThan $worksheetNames.IndexOf('GuestSignInSummary')
         $worksheetNames.IndexOf('GuestSignInSummary') | Should -BeLessThan $worksheetNames.IndexOf('GuestAccessConfiguration')
         $worksheetNames.IndexOf('AuthenticationConfig') | Should -BeLessThan $worksheetNames.IndexOf('MfaEnrollmentSummary')
         $worksheetNames.IndexOf('MfaEnrollmentSummary') | Should -BeLessThan $worksheetNames.IndexOf('MfaEnforcementSummary')
@@ -535,6 +574,12 @@ Describe 'Arraya.M365.Common' {
         $worksheetNames.IndexOf('MfaEnforcementGapUsers') | Should -BeLessThan $worksheetNames.IndexOf('MfaEnforcementScopeReview')
         $worksheetNames.IndexOf('MfaEnforcementScopeReview') | Should -BeLessThan $worksheetNames.IndexOf('ConditionalAccessPolicySummary')
         $worksheetNames.IndexOf('GuestAccessConfiguration') | Should -BeLessThan $worksheetNames.IndexOf('ExternalIdentityRestrictions')
+        $worksheetNames.IndexOf('AllRecipients') | Should -BeLessThan $worksheetNames.IndexOf('MailFlowRules')
+        $worksheetNames.IndexOf('MailFlowRules') | Should -BeLessThan $worksheetNames.IndexOf('EmailActivityTopSenders')
+        $worksheetNames.IndexOf('EmailActivityTopSenders') | Should -BeLessThan $worksheetNames.IndexOf('EmailActivityTopReceivers')
+        $worksheetNames.IndexOf('EmailActivityTopReceivers') | Should -BeLessThan $worksheetNames.IndexOf('UnifiedGroups')
+        $worksheetNames.IndexOf('SharePointSharingSummary') | Should -BeLessThan $worksheetNames.IndexOf('DeviceDetails')
+        $worksheetNames.IndexOf('DeviceDetails') | Should -BeLessThan $worksheetNames.IndexOf('SecuritySecureScore')
         $worksheetNames.IndexOf('SharePointSharingSummary') | Should -BeLessThan $worksheetNames.IndexOf('ExternalSharingSummary')
         $worksheetNames.IndexOf('ExternalSharingSummary') | Should -BeLessThan $worksheetNames.IndexOf('ExternalSharingSiteOverrides')
         $worksheetNames.IndexOf('ExternalSharingSiteOverrides') | Should -BeLessThan $worksheetNames.IndexOf('ExternalExposureFindings')

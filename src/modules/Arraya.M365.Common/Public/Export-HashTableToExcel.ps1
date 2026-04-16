@@ -114,36 +114,39 @@ function Export-HashTableToExcel {
     
     # === Sheet ordering ===
     $desiredOrder = @(
+        # Tenant Overview
+        "TenantInfo", "HybridConfiguration", "AdConnectConfiguration",
+
+        # Identity
+        "LicenseSKUs", "Users", "UserFullDetails", "Admins", "EntraIDGroups", "Domains",
+        "AuthenticationMethods", "AuthenticationSSOApplications", "EnterpriseApplications", "AuthenticationConfig",
+        "MfaEnrollmentSummary", "MfaEnforcementSummary", "MfaEnforcementGapUsers", "MfaEnforcementScopeReview",
+        "ConditionalAccessPolicySummary", "ConditionalAccessPolicies", "SecurityDefaultsPolicy", "GuestSignInSummary",
+        "GuestAccessConfiguration", "ExternalIdentityRestrictions", "PrivilegedAccessSummary",
+
+        # Exchange
+        "AllRecipients", "AllMailboxes", "PrimaryMailboxStats", "MailboxFullDetails", "NonUserMailboxes",
+        "ArchiveMailboxes", "ArchiveMailboxStats", "LitigationHoldMailboxes", "InactiveMailboxes", "InactiveMailboxDetails",
+        "AllExchangeGroups", "PublicFolderDetails", "PublicFolderPerms",
+        "MailFlowRules", "MailFlowConnectors", "RemoteDomains", "EmailActivityTopSenders", "EmailActivityTopReceivers",
+        "SMTPRelayConfig", "SMTPRelayServiceAccounts", "SpamFilteringConfig", "SharedMailboxGovernanceSummary",
+        "ForwardingPolicySummary", "InboxRuleForwardingSummary", "InboxRulesExternalForwarding",
+
+        # Collaboration
+        "UnifiedGroups", "AllTeams", "TeamsVoiceSummary", "SharePoint", "OneDrive",
+        "SharePointSharingSummary", "TeamsActivityTopUsers", "Office365GroupsActivityTopGroups",
+        "EmployeeExperienceInsightsSummary", "CollaborationActivitySummary",
+
+        # Endpoint
+        "DeviceDetails", "DeviceManagementSummary",
+
+        # Governance
+        "SecuritySecureScore", "SecureScoreActions", "SMTPRelaySummary", "RetentionPolicies", "DlpPolicies",
+        "PasswordLifecycleSummary", "ExternalSharingSummary", "ExternalSharingSiteOverrides", "ExternalExposureFindings",
+        "UnmanagedObjects", "OneDriveOwnerMismatches",
+
         # Assessment Outputs
-        "BestPractices", "BestPracticeFindings", "MigrationReadiness", "SecureScoreActions", "UnmanagedObjects", "OneDriveOwnerMismatches",
-
-        # Licensing & Tenant Info
-        "LicenseSKUs", "Domains", "AuthenticationMethods", "AuthenticationSSOApplications", "EnterpriseApplications", "AuthenticationConfig", "MfaEnrollmentSummary", "MfaEnforcementSummary", "MfaEnforcementGapUsers", "MfaEnforcementScopeReview", "ConditionalAccessPolicySummary", "SecurityDefaultsPolicy", "GuestSignInSummary", "GuestAccessConfiguration", "ExternalIdentityRestrictions", "PrivilegedAccessSummary", "Admins",
-
-        # Users
-        "Users", "UserFullDetails", "DeviceDetails",
-
-        # Mailboxes
-        "AllMailboxes", "PrimaryMailboxStats", "MailboxFullDetails", "SharedMailboxGovernanceSummary", "ForwardingPolicySummary", "InboxRuleForwardingSummary", "InboxRulesExternalForwarding", "ArchiveMailboxes", "ArchiveMailboxStats", "LitigationHoldMailboxes", "InactiveMailboxes", "InactiveMailboxDetails", "EmailActivityTopSenders", "EmailActivityTopReceivers", "TeamsActivityTopUsers", "Office365GroupsActivityTopGroups", "EmployeeExperienceInsightsSummary", "CollaborationActivitySummary", "NonUserMailboxes", "AllRecipients",
-
-        # Groups
-        "AllExchangeGroups", "UnifiedGroups", "AllTeams", "EntraIDGroups",
-
-        # Public Folders
-        "PublicFolderDetails", "PublicFolderPerms",
-
-        # Mail Flow
-        "MailFlowRules", "MailFlowConnectors", "RemoteDomains", "SMTPRelayConfig", "SMTPRelayServiceAccounts",
-
-        # Security & Compliance
-        "SecuritySecureScore", "ConditionalAccessPolicies", "SMTPRelaySummary", "TeamsVoiceSummary", "SpamFilteringConfig", "RetentionPolicies", "DlpPolicies", "PasswordLifecycleSummary",
-
-        # Cloud Services
-        "OneDrive",
-        "SharePoint", "SharePointSharingSummary", "ExternalSharingSummary", "ExternalSharingSiteOverrides", "ExternalExposureFindings",
-
-        # Hybrid / Infra
-        "HybridConfiguration", "TenantInfo", "DeviceManagementSummary"
+        "BestPractices", "BestPracticeFindings", "MigrationReadiness"
     )
 
     $orderedTables = @()

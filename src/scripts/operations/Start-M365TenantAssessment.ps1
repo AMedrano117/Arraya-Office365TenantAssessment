@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [ValidateSet('M365', 'M365Collect', 'M365Export', 'AD', 'Improve', 'Compare')]
+    [ValidateSet('M365', 'M365Preflight', 'M365Collect', 'M365Export', 'AD', 'Improve', 'Compare')]
     [string]$Action,
     [Parameter(Mandatory = $false)]
     [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
@@ -134,6 +134,7 @@ $resolvedRunnerManifestPath = (Resolve-Path -Path $runnerManifestPath).Path
 $loadedRunnerModule = Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction SilentlyContinue | Select-Object -First 1
 $requiredRunnerCommands = @(
     'Invoke-M365TenantAssessment',
+    'Invoke-M365TenantConnectionPreflight',
     'Invoke-M365TenantDataCollection',
     'Invoke-M365TenantAssessmentExport'
 )
@@ -366,21 +367,23 @@ if ([string]::IsNullOrWhiteSpace($Action)) {
     Write-Host ''
     Write-Host 'Tenant Assessment Launcher' -ForegroundColor Cyan
     Write-Host '1. Microsoft 365 Full Tenant Assessment + Improvement Plan'
-    Write-Host '2. Microsoft 365 Data Collection Only (JSON snapshot)'
-    Write-Host '3. Microsoft 365 Export from JSON Snapshot + Improvement Plan'
-    Write-Host '4. Active Directory Assessment'
-    Write-Host '5. Build Improvement Plan from Tenant JSON'
-    Write-Host '6. Compare Two Tenant JSON Snapshots'
+    Write-Host '2. Microsoft 365 Connection / Preflight Only'
+    Write-Host '3. Microsoft 365 Data Collection Only (JSON snapshot)'
+    Write-Host '4. Microsoft 365 Export from JSON Snapshot + Improvement Plan'
+    Write-Host '5. Active Directory Assessment'
+    Write-Host '6. Build Improvement Plan from Tenant JSON'
+    Write-Host '7. Compare Two Tenant JSON Snapshots'
     Write-Host ''
 
-    $choice = Read-Host 'Select an option (1-6)'
+    $choice = Read-Host 'Select an option (1-7)'
     switch ($choice) {
         '1' { $Action = 'M365' }
-        '2' { $Action = 'M365Collect' }
-        '3' { $Action = 'M365Export' }
-        '4' { $Action = 'AD' }
-        '5' { $Action = 'Improve' }
-        '6' { $Action = 'Compare' }
+        '2' { $Action = 'M365Preflight' }
+        '3' { $Action = 'M365Collect' }
+        '4' { $Action = 'M365Export' }
+        '5' { $Action = 'AD' }
+        '6' { $Action = 'Improve' }
+        '7' { $Action = 'Compare' }
         default { throw "Invalid selection: $choice" }
     }
 }
@@ -435,6 +438,25 @@ switch ($Action) {
         if (-not [string]::IsNullOrWhiteSpace($ClientSecret)) { $invokeParams.ClientSecret = $ClientSecret }
 
         Invoke-M365TenantAssessment @invokeParams
+    }
+    'M365Preflight' {
+        $selectedOutputProfiles = @($OutputProfile)
+        if (-not $selectedOutputProfiles -or $selectedOutputProfiles.Count -eq 0) {
+            $selectedOutputProfiles = @('SolutionsEngineer')
+        }
+
+        $invokeParams = @{}
+        $invokeParams.OutputProfile = $selectedOutputProfiles
+        if (-not [string]::IsNullOrWhiteSpace($ExportPath)) { $invokeParams.ExportPath = $ExportPath }
+        if ($SkipAuth) { $invokeParams.SkipAuth = $true }
+        if ($SkipPermissionPreflight) { $invokeParams.SkipPermissionPreflight = $true }
+        if (-not [string]::IsNullOrWhiteSpace($AuthMode)) { $invokeParams.AuthMode = $AuthMode }
+        if (-not [string]::IsNullOrWhiteSpace($TenantId)) { $invokeParams.TenantId = $TenantId }
+        if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
+        if (-not [string]::IsNullOrWhiteSpace($ClientId)) { $invokeParams.ClientId = $ClientId }
+        if (-not [string]::IsNullOrWhiteSpace($ClientSecret)) { $invokeParams.ClientSecret = $ClientSecret }
+
+        Invoke-M365TenantConnectionPreflight @invokeParams
     }
     'M365Collect' {
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
