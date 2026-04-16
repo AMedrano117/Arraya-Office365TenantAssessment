@@ -53,7 +53,7 @@ function Get-ExchangeGroupDetails {
         $metadataReusedFromUnifiedCacheCount = 0
         $metadataFetchedFromExoCount = 0
         
-        Write-Host "Getting all Exchange Online Groups ..." -ForegroundColor Cyan -nonewline
+        Write-ArrayaExchangeCollectorBanner -Message '[Get-ExchangeGroupDetails] START: Gathering all Exchange Online Groups' -ExportFileLocation $exportDetails
         Write-Log -Type INFO -Message "[Get-ExchangeGroupDetails] START: Gathering all Exchange Online Groups with $($detailLevel) details" -ExportFileLocation $exportDetails
         if (-not $collectExchangeGroupMetadataDetails) {
             if ($depthPolicy.IsMinimum) {
@@ -69,6 +69,10 @@ function Get-ExchangeGroupDetails {
 
         # gather All Exchange Online Groups
         $allMailGroups = $tenantStatsHash['AllRecipients'].Values | Where-Object { $_.RecipientTypeDetails -like "*group" } | Sort-Object DisplayName
+        Write-ArrayaExchangeCollectorSubstep -Message 'Exchange groups: inventory from Exchange recipient data'
+        if ($collectExchangeGroupMetadataDetails -or $collectExchangeGroupMemberExpansion) {
+            Write-ArrayaExchangeCollectorSubstep -Message 'Exchange groups: metadata and membership enrichment'
+        }
         
         Write-Log -Type INFO -Message "[Get-ExchangeGroupDetails] Gathering all Exchange Online Groups Details" -ExportFileLocation $exportDetails
         $totalCount = $allMailGroups.count
@@ -246,6 +250,6 @@ function Get-ExchangeGroupDetails {
         Write-ProgressHelper -Total $exchangeGroupProgressTotal -Id $exchangeGroupProgressId -Activity "Gathering All Exchange Online Group Details" -Completed
     }
     $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-    Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+    Write-ArrayaExchangeCollectorCompletionBanner -Message "[Get-ExchangeGroupDetails] COMPLETED: Gathering all Exchange Online Groups in $($CompletedTime)" -ExportFileLocation $exportDetails
     Write-Log -Type INFO -Message "[Get-ExchangeGroupDetails] COMPLETED: Gathering all Exchange Online Groups in $($CompletedTime)" -ExportFileLocation $exportDetails
 }

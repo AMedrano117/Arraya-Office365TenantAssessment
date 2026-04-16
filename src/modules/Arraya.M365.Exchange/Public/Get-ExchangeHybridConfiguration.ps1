@@ -14,7 +14,26 @@ function Get-ExchangeHybridConfiguration {
     $start = Get-Date
     $tenantStatsHash['HybridConfiguration'] = @{}
 
-    Write-Host 'Checking for Exchange Hybrid Configuration ...' -ForegroundColor Cyan -NoNewline
+    function Get-ConnectorIdentityValue {
+        param(
+            [Parameter(Mandatory = $false)]
+            $Connector
+        )
+
+        if ($null -eq $Connector) {
+            return $null
+        }
+
+        foreach ($propertyName in @('Identity', 'Guid', 'Name', 'Id')) {
+            if ($Connector.PSObject.Properties[$propertyName] -and -not [string]::IsNullOrWhiteSpace([string]$Connector.$propertyName)) {
+                return [string]$Connector.$propertyName
+            }
+        }
+
+        return $null
+    }
+
+    Write-ArrayaExchangeCollectorBanner -Message '[Get-ExchangeHybridConfiguration] START' -ExportFileLocation $exportDetails
     Write-Log -Type INFO -Message '[Get-ExchangeHybridConfiguration] START' -ExportFileLocation $exportDetails
 
     try {
@@ -40,11 +59,16 @@ function Get-ExchangeHybridConfiguration {
         $orgConfig = $null
         try { $orgConfig = Get-OrganizationConfig -ErrorAction SilentlyContinue } catch {}
 
-        $mailFlowConnectors = if ($tenantStatsHash.ContainsKey('MailFlowConnectors')) {
+        $usingCollectedMailFlowConnectors = ($tenantStatsHash.ContainsKey('MailFlowConnectors') -and $tenantStatsHash['MailFlowConnectors'])
+        $mailFlowConnectors = if ($usingCollectedMailFlowConnectors) {
             @($tenantStatsHash['MailFlowConnectors'].Values)
         }
         else {
-            @((Get-InboundConnector -ErrorAction SilentlyContinue), (Get-OutboundConnector -ErrorAction SilentlyContinue) | Where-Object { $_ })
+            Write-Log -Type INFO -Message '[Get-ExchangeHybridConfiguration] Reusing live connector queries because cached mail flow connectors are unavailable. Test-mode connectors may not be included in this fallback view.' -ExportFileLocation $exportDetails
+            @(
+                (Get-InboundConnector -ErrorAction SilentlyContinue -WarningAction SilentlyContinue),
+                (Get-OutboundConnector -ErrorAction SilentlyContinue -WarningAction SilentlyContinue) | Where-Object { $_ }
+            )
         }
 
         $onPremFlowConnectors = @($mailFlowConnectors | Where-Object {
@@ -58,7 +82,11 @@ function Get-ExchangeHybridConfiguration {
             MigrationEndpoints        = ($mig | Select-Object -ExpandProperty RemoteServer)
             HybridConfigurationObject = if ($hybridConfig) { $hybridConfig.Name } else { $null }
             HybridDomains             = if ($orgConfig -and $orgConfig.PSObject.Properties['HybridDomains']) { ($orgConfig.HybridDomains -join ', ') } else { $null }
-            MailFlowOnPremConnectors  = ($onPremFlowConnectors | Select-Object -ExpandProperty ID)
+            MailFlowOnPremConnectors  = @(
+                $onPremFlowConnectors |
+                    ForEach-Object { Get-ConnectorIdentityValue -Connector $_ } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
         }
 
         $evidence = New-Object System.Collections.Generic.List[string]
@@ -147,6 +175,6 @@ function Get-ExchangeHybridConfiguration {
     }
 
     $elapsed = ((Get-Date) - $start).ToString('hh\:mm\:ss')
-    Write-Host " Completed in $elapsed" -ForegroundColor Green
+    Write-ArrayaExchangeCollectorCompletionBanner -Message "[Get-ExchangeHybridConfiguration] COMPLETED in $elapsed" -ExportFileLocation $exportDetails
     Write-Log -Type INFO -Message "[Get-ExchangeHybridConfiguration] COMPLETED in $elapsed" -ExportFileLocation $exportDetails
 }

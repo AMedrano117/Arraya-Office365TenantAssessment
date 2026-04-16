@@ -1,7 +1,11 @@
 Describe 'Arraya.M365.Common' {
     BeforeAll {
+        $script:previousImportModuleWarningPreference = $PSDefaultParameterValues['Import-Module:WarningAction']
+        $PSDefaultParameterValues['Import-Module:WarningAction'] = 'SilentlyContinue'
         $script:repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
         $script:manifestPath = Join-Path $script:repoRoot 'src\modules\Arraya.M365.Common\Arraya.M365.Common.psd1'
+        $script:exportExcelPath = Join-Path $script:repoRoot 'src\modules\Arraya.M365.Common\Public\Export-HashTableToExcel.ps1'
+        $script:exportExcelSource = Get-Content -Raw -Path $script:exportExcelPath
         $script:expectedExports = @(
             'Convert-ArrayaLegacyTenantStatsToSnapshot'
             'Convert-ArrayaObjectToArray'
@@ -44,6 +48,15 @@ Describe 'Arraya.M365.Common' {
             'src\modules\Arraya.M365.Common\Public\Set-ArrayaAssessmentRuntimeState.ps1'
             'src\modules\Arraya.M365.Common\Public\Write-ArrayaLog.ps1'
         )
+    }
+
+    AfterAll {
+        if ($null -ne $script:previousImportModuleWarningPreference) {
+            $PSDefaultParameterValues['Import-Module:WarningAction'] = $script:previousImportModuleWarningPreference
+        }
+        else {
+            $null = $PSDefaultParameterValues.Remove('Import-Module:WarningAction')
+        }
     }
 
     It 'has a manifest' {
@@ -446,6 +459,18 @@ Describe 'Arraya.M365.Common' {
             TenantInfo = [pscustomobject]@{
                 DisplayName = 'Contoso'
             }
+            LicenseSKUs = @(
+                [pscustomobject]@{
+                    SkuPartNumber = 'ENTERPRISEPACK'
+                    ActiveUnits   = 100
+                    ConsumedUnits = 42
+                }
+            )
+            AdConnectConfiguration = @(
+                [pscustomobject]@{
+                    DirectorySyncEnabled = $true
+                }
+            )
             GuestSignInSummary = @{
                 Summary = [pscustomobject]@{
                     InactiveGuests90Days = 3
@@ -479,6 +504,11 @@ Describe 'Arraya.M365.Common' {
             MfaEnforcementSummary = [pscustomobject]@{
                 EnabledPoliciesRequiringMfa = 1
             }
+            AuthenticationConfig = @(
+                [pscustomobject]@{
+                    DefaultMfaState = 'Enabled'
+                }
+            )
             MfaEnforcementGapUsers = @(
                 [pscustomobject]@{
                     UserPrincipalName = 'uncovered.member@contoso.com'
@@ -501,6 +531,11 @@ Describe 'Arraya.M365.Common' {
             AllRecipients = @(
                 [pscustomobject]@{
                     DisplayName = 'Shared Mailbox'
+                }
+            )
+            HybridConfiguration = @(
+                [pscustomobject]@{
+                    HybridEnabled = $true
                 }
             )
             MailFlowRules = @(
@@ -566,7 +601,11 @@ Describe 'Arraya.M365.Common' {
         ($worksheetNames -contains 'ExternalSharingSummary') | Should -BeTrue
         ($worksheetNames -contains 'ExternalSharingSiteOverrides') | Should -BeTrue
         ($worksheetNames -contains 'ExternalExposureFindings') | Should -BeTrue
+        ($worksheetNames -contains 'LicenseSKUs') | Should -BeTrue
+        ($worksheetNames -contains 'HybridConfiguration') | Should -BeTrue
         $worksheetNames.IndexOf('TenantInfo') | Should -BeLessThan $worksheetNames.IndexOf('GuestSignInSummary')
+        $worksheetNames.IndexOf('TenantInfo') | Should -BeLessThan $worksheetNames.IndexOf('LicenseSKUs')
+        $worksheetNames.IndexOf('LicenseSKUs') | Should -BeLessThan $worksheetNames.IndexOf('GuestSignInSummary')
         $worksheetNames.IndexOf('GuestSignInSummary') | Should -BeLessThan $worksheetNames.IndexOf('GuestAccessConfiguration')
         $worksheetNames.IndexOf('AuthenticationConfig') | Should -BeLessThan $worksheetNames.IndexOf('MfaEnrollmentSummary')
         $worksheetNames.IndexOf('MfaEnrollmentSummary') | Should -BeLessThan $worksheetNames.IndexOf('MfaEnforcementSummary')
@@ -574,6 +613,7 @@ Describe 'Arraya.M365.Common' {
         $worksheetNames.IndexOf('MfaEnforcementGapUsers') | Should -BeLessThan $worksheetNames.IndexOf('MfaEnforcementScopeReview')
         $worksheetNames.IndexOf('MfaEnforcementScopeReview') | Should -BeLessThan $worksheetNames.IndexOf('ConditionalAccessPolicySummary')
         $worksheetNames.IndexOf('GuestAccessConfiguration') | Should -BeLessThan $worksheetNames.IndexOf('ExternalIdentityRestrictions')
+        $worksheetNames.IndexOf('HybridConfiguration') | Should -BeLessThan $worksheetNames.IndexOf('AllRecipients')
         $worksheetNames.IndexOf('AllRecipients') | Should -BeLessThan $worksheetNames.IndexOf('MailFlowRules')
         $worksheetNames.IndexOf('MailFlowRules') | Should -BeLessThan $worksheetNames.IndexOf('EmailActivityTopSenders')
         $worksheetNames.IndexOf('EmailActivityTopSenders') | Should -BeLessThan $worksheetNames.IndexOf('EmailActivityTopReceivers')
@@ -583,6 +623,13 @@ Describe 'Arraya.M365.Common' {
         $worksheetNames.IndexOf('SharePointSharingSummary') | Should -BeLessThan $worksheetNames.IndexOf('ExternalSharingSummary')
         $worksheetNames.IndexOf('ExternalSharingSummary') | Should -BeLessThan $worksheetNames.IndexOf('ExternalSharingSiteOverrides')
         $worksheetNames.IndexOf('ExternalSharingSiteOverrides') | Should -BeLessThan $worksheetNames.IndexOf('ExternalExposureFindings')
+    }
+
+    It 'uses a single workbook package session for faster Excel export' {
+        $script:exportExcelSource | Should -Match 'Open-ExcelPackage -Path \$ExportDetails -Create'
+        $script:exportExcelSource | Should -Match 'Export-Excel -ExcelPackage \$excelPackage'
+        $script:exportExcelSource | Should -Match 'Close-ExcelPackage -ExcelPackage \$excelPackage'
+        $script:exportExcelSource | Should -Match '\$autoSizeRowLimit = 1000'
     }
 
     It 'does not throw when Write-Log captures an error message without an ErrorRecordVar' {

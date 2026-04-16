@@ -19,7 +19,7 @@ function Get-AllPublicFolderDetails {
     # Collect permissions in all detail modes so combined-mode output keeps full public-folder governance visibility.
     $collectPublicFolderPermissions = $true
     $tenantStatsHash["PublicFolderDetails"] = @{}
-    Write-Host "Getting public folders, Stats and Perms ..." -ForegroundColor Cyan -nonewline
+    Write-ArrayaExchangeCollectorBanner -Message ("[Get-AllPublicFolderDetails] START: Gathering all public folder details with {0} details" -f $detailLevel) -ExportFileLocation $exportDetails
     Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] START: Gathering all public folder details with $($detailLevel) details" -ExportFileLocation $exportDetails
     
     try {
@@ -88,7 +88,7 @@ function Get-AllPublicFolderDetails {
             $PublicFolderPermissions = $allPublicFolders | get-publicfolderclientpermission -ErrorAction SilentlyContinue
             Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] Found $($PublicFolderPermissions.count) public folder permissions" -ExportFileLocation $exportDetails
             
-            Write-Host "Processing Public Folder Permissions..." -ForegroundColor Cyan -nonewline
+            Write-ArrayaExchangeCollectorSubstep -Message 'Public folders: permissions processing'
             Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] Processing all public folder permissions" -ExportFileLocation $exportDetails
             $totalCount = ($PublicFolderPermissions | Measure-Object).count
             $publicFolderPermProgressTotal = [Math]::Max($totalCount, 1)
@@ -141,6 +141,6 @@ function Get-AllPublicFolderDetails {
     }
 
     $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-    Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
+    Write-ArrayaExchangeCollectorCompletionBanner -Message "[Get-AllPublicFolderDetails] COMPLETED: Gathering all public folder details in $($CompletedTime)" -ExportFileLocation $exportDetails
     Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] COMPLETED: Gathering all public folder details in $($CompletedTime)" -ExportFileLocation $exportDetails
 }

@@ -11,7 +11,7 @@ function Get-SMTPRelayConfiguration {
     $start = Get-Date
     $tenantStatsHash['SMTPRelayConfig'] = @{}
 
-    Write-Host 'Checking SMTP Relay Configuration ...' -ForegroundColor Cyan -nonewline
+    Write-ArrayaExchangeCollectorBanner -Message '[Get-SMTPRelayConfiguration] START: Checking SMTP Relay Configuration' -ExportFileLocation $exportDetails
     Write-Log -Type INFO -Message '[Get-SMTPRelayConfiguration] START: Checking SMTP Relay Configuration' -ExportFileLocation $exportDetails
 
     try {
@@ -79,6 +79,6 @@ function Get-SMTPRelayConfiguration {
     }
 
     $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-    Write-Host "Completed in $CompletedTime" -ForegroundColor Green
+    Write-ArrayaExchangeCollectorCompletionBanner -Message "[Get-SMTPRelayConfiguration] COMPLETED: Checking SMTP Relay Configuration in $CompletedTime" -ExportFileLocation $exportDetails
     Write-Log -Type INFO -Message "[Get-SMTPRelayConfiguration] COMPLETED: Checking SMTP Relay Configuration in $CompletedTime" -ExportFileLocation $exportDetails
 }

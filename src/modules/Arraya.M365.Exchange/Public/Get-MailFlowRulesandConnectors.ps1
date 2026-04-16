@@ -47,7 +47,7 @@ function Get-MailFlowRulesandConnectors {
         }
     }
 
-    Write-Host 'Getting all Mail Flow Rules and Connectors ...' -ForegroundColor Cyan -nonewline
+    Write-ArrayaExchangeCollectorBanner -Message '[Get-MailFlowRulesandConnectors] START: Gathering all Mail Flow Rules and Connectors' -ExportFileLocation $exportDetails
     Write-Log -Type INFO -Message "[Get-MailFlowRulesandConnectors] START: Gathering all Mail Flow Rules and Connectors with $detailLevel details" -ExportFileLocation $exportDetails
     Write-Progress -Id $mailFlowProgressId -Activity 'Getting all Mail Flow Rules details' -Status (((Get-Date) - $initialStart).ToString('hh\:mm\:ss'))
 
@@ -140,7 +140,7 @@ function Get-MailFlowRulesandConnectors {
     finally {
         Write-Progress -Id $mailFlowProgressId -Activity 'Getting all Mail Flow Rules details' -Completed
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-        Write-Host "Completed in $CompletedTime" -ForegroundColor Green
+        Write-ArrayaExchangeCollectorCompletionBanner -Message "[Get-MailFlowRulesandConnectors] COMPLETED: Gathering All Mail Flow Rules and Connectors in $CompletedTime" -ExportFileLocation $exportDetails
         Write-Log -Type INFO -Message "[Get-MailFlowRulesandConnectors] COMPLETED: Gathering All Mail Flow Rules and Connectors in $CompletedTime" -ExportFileLocation $exportDetails
     }
 }

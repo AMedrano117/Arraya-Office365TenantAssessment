@@ -95,6 +95,7 @@ function Get-EntraIDGroups {
             return $lookups
         }
 
+        Write-Host '    > Entra groups: member and owner count prefetch' -ForegroundColor DarkCyan
         Write-Log -Type INFO -Message "[Get-EntraIDGroups] Prefetching group member/owner counts via Graph batch for $($Groups.Count) groups ($($requests.Count) count request(s))." -ExportFileLocation $exportDetails
         $responses = Invoke-ArrayaGraphBatchRequest -Requests $requests.ToArray() -GraphAuthType $GraphAuthType -Activity 'Group member/owner count prefetch' -ExportFileLocation $exportDetails
         foreach ($response in @($responses.Values)) {
@@ -218,6 +219,7 @@ function Get-EntraIDGroups {
 
     try {
         $groupsEndpoint = "https://graph.microsoft.com/v1.0/groups?`$select=$($groupSelectProperties -join ',')"
+        Write-Host '    > Entra groups: inventory retrieval' -ForegroundColor DarkCyan
         Write-Log -Type INFO -Message 'Fetching initial Entra Groups' -ExportFileLocation $exportDetails
         $groups = @(Office365Custom\Get-GraphData -PageSize 999 -Uri $groupsEndpoint -Id $groupFetchProgressId -Activity 'Gathering Group Details')
         if ($collectDeepGroupDetails -and ($collectGroupMemberCounts -or $collectGroupOwnerCounts) -and $groups.Count -gt 0) {
@@ -227,6 +229,7 @@ function Get-EntraIDGroups {
         }
 
         $totalGroups = $groups.Count
+        Write-Host '    > Entra groups: per-group detail enrichment' -ForegroundColor DarkCyan
         foreach ($group in $groups) {
             Write-ProgressHelper -Total ([Math]::Max($totalGroups, 1)) -Id $groupLoopProgressId -Activity 'Getting Group Details' -Operation "Processing Group: $($group.displayName)"
             Write-Log -Type INFO -Message "Checking group $($group.displayName)" -ExportFileLocation $exportDetails

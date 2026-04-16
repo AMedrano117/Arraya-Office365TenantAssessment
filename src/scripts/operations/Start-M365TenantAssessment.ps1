@@ -124,7 +124,7 @@ if (
     -not (Test-LauncherModuleMatchesManifestPath -Module $loadedCommonModule -ManifestPath $resolvedCommonManifestPath) -or
     $missingCommonCommands.Count -gt 0
 ) {
-    Import-Module -Name $resolvedCommonManifestPath -Force -DisableNameChecking -ErrorAction Stop
+    Import-Module -Name $resolvedCommonManifestPath -Force -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
 }
 
 if (-not (Test-Path -Path $runnerManifestPath)) {
@@ -146,7 +146,7 @@ if (
     -not (Test-LauncherModuleMatchesManifestPath -Module $loadedRunnerModule -ManifestPath $resolvedRunnerManifestPath) -or
     $missingRunnerCommands.Count -gt 0
 ) {
-    Import-Module -Name $resolvedRunnerManifestPath -Force -DisableNameChecking -ErrorAction Stop
+    Import-Module -Name $resolvedRunnerManifestPath -Force -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
 }
 
 function Test-LauncherOutputProfilesGenerateJson {
