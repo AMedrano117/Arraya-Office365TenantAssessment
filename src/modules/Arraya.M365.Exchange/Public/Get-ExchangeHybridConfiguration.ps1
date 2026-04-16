@@ -32,7 +32,10 @@ function Get-ExchangeHybridConfiguration {
         $mig = @(Get-MigrationEndpoint -ErrorAction SilentlyContinue | Where-Object { $_.EndpointType -in @('ExchangeRemote', 'ExchangeRemoteMove') })
 
         $hybridConfig = $null
-        try { $hybridConfig = Get-HybridConfiguration -ErrorAction SilentlyContinue } catch {}
+        $hybridConfigurationCommand = Get-Command -Name 'Get-HybridConfiguration' -ErrorAction Ignore
+        if ($hybridConfigurationCommand) {
+            try { $hybridConfig = Get-HybridConfiguration -ErrorAction SilentlyContinue } catch {}
+        }
 
         $orgConfig = $null
         try { $orgConfig = Get-OrganizationConfig -ErrorAction SilentlyContinue } catch {}

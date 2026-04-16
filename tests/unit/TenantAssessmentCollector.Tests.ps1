@@ -21,6 +21,50 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Join-Path -Path \$Module\.ModuleBase -ChildPath \(\[System\.IO\.Path\]::GetFileName\(\$resolvedManifestPath\)\)'
         $script:collectorSource | Should -Not -Match '\$loadedCommonModule\.Path -ne \$resolvedCommonManifestPath'
         $script:collectorSource | Should -Not -Match '\$loadedReportingModule\.Path -ne \$resolvedReportingManifestPath'
+        $script:collectorSource | Should -Not -Match 'Connect-Office365 @connectOffice365Params'
+    }
+
+    It 'uses an assessment-owned auth orchestrator instead of the generic Office365 connector bootstrap' {
+        $script:collectorSource | Should -Match 'function Resolve-AssessmentProfileCollectionPlan'
+        $script:collectorSource | Should -Match 'function Resolve-AssessmentRequestedAuthMode'
+        $script:collectorSource | Should -Match 'function Get-AssessmentGraphDelegatedScopes'
+        $script:collectorSource | Should -Match 'function Resolve-AssessmentAuthWorkloadPlan'
+        $script:collectorSource | Should -Match 'function Connect-AssessmentGraph'
+        $script:collectorSource | Should -Match 'function Connect-AssessmentExchange'
+        $script:collectorSource | Should -Match 'function Connect-AssessmentPurview'
+        $script:collectorSource | Should -Match 'function Connect-AssessmentSharePoint'
+        $script:collectorSource | Should -Match 'function Connect-AssessmentTeams'
+        $script:collectorSource | Should -Match 'function Test-AssessmentExistingSessions'
+        $script:collectorSource | Should -Match 'function Initialize-AssessmentAuthentication'
+        $script:collectorSource | Should -Match 'Assessment login mode:'
+        $script:collectorSource | Should -Match 'Required auth workloads:'
+        $script:collectorSource | Should -Match 'Resolve-AssessmentProfileCollectionPlan `'
+        $script:collectorSource | Should -Match 'Resolve-AssessmentAuthWorkloadPlan'
+        $script:collectorSource | Should -Match 'Initialize-AssessmentAuthentication'
+        $script:collectorSource | Should -Not -Match "'Connect-Office365',"
+    }
+
+    It 'makes auth workload planning profile-driven with explicit fallback/skipped workload states' {
+        $script:collectorSource | Should -Match 'RequiredWorkloads'
+        $script:collectorSource | Should -Match 'ConnectedWorkloads'
+        $script:collectorSource | Should -Match 'SkippedWorkloads'
+        $script:collectorSource | Should -Match 'FallbackWorkloads'
+        $script:collectorSource | Should -Match 'PurviewCompliance'
+        $script:collectorSource | Should -Match 'SharePointOnline'
+        $script:collectorSource | Should -Match 'GraphFallback'
+        $script:collectorSource | Should -Match 'SkippedByDesign'
+        $script:collectorSource | Should -Match 'GraphOnly'
+        $script:collectorSource | Should -Match 'OptionalModuleConnect'
+        $script:collectorSource | Should -Match 'OptionalPowerShellConnect'
+    }
+
+    It 'validates only the required workload sessions when SkipAuth is used' {
+        $script:collectorSource | Should -Match 'Skipping assessment authentication bootstrap and validating existing workload sessions'
+        $script:collectorSource | Should -Match 'SkipAuth was requested, but no existing Microsoft Graph session was found'
+        $script:collectorSource | Should -Match 'SkipAuth was requested, but Exchange Online cmdlets are not available in the current session'
+        $script:collectorSource | Should -Match 'function Test-AssessmentPurviewSessionReady'
+        $script:collectorSource | Should -Match 'SkipAuth was requested, but Purview compliance session is not usable in the current session'
+        $script:collectorSource | Should -Match 'Test-AssessmentExistingSessions -WorkloadPlan \$WorkloadPlan'
     }
 
     It 'uses plain-language governance progress labels instead of legacy Tier B terminology' {
@@ -64,12 +108,15 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'function Set-PurviewComplianceDiagnosticState'
         $script:collectorSource | Should -Match 'function Get-PurviewComplianceDiagnosticMessage'
         $script:collectorSource | Should -Match 'Ensure-PurviewComplianceSession'
+        $script:collectorSource | Should -Match 'function Invoke-PurviewComplianceDelegatedConnect'
         $script:collectorSource | Should -Match 'Get-RetentionCompliancePolicy'
         $script:collectorSource | Should -Match 'Get-DlpCompliancePolicy'
         $script:collectorSource | Should -Match 'ExchangeOnlineManagement'
         $script:collectorSource | Should -Match "Import-Module 'ExchangeOnlineManagement'"
         $script:collectorSource | Should -Match 'Connect-IPPSSession'
         $script:collectorSource | Should -Match 'Connected to Purview compliance PowerShell using certificate authentication'
+        $script:collectorSource | Should -Match 'interactive authentication with -DisableWAM'
+        $script:collectorSource | Should -Match 'device code authentication'
         $script:collectorSource | Should -Match 'Client secret authentication is not supported for Purview compliance PowerShell in this workflow'
         $script:collectorSource | Should -Match 'Purview compliance PowerShell session could not be established\. Underlying error:'
         $script:collectorSource | Should -Match 'Organization used:'
@@ -186,8 +233,23 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'ScopeReview'
         $script:collectorSource | Should -Match 'MfaEnforcementGapUsers'
         $script:collectorSource | Should -Match 'MfaEnforcementScopeReview'
-        $script:collectorSource | Should -Match 'Excluded from enabled MFA CA policy'
+        $script:collectorSource | Should -Match 'Excluded from all enabled MFA CA policies that otherwise target the user'
         $script:collectorSource | Should -Match 'Outside enabled MFA CA include scope'
+    }
+
+    It 'persists admin-specific MFA registration and enforcement review outputs' {
+        $script:collectorSource | Should -Match 'Get-AssessmentAdminMfaReview'
+        $script:collectorSource | Should -Match 'AdminMfaSummary'
+        $script:collectorSource | Should -Match 'AdminMfaRegistrationGaps'
+        $script:collectorSource | Should -Match 'AdminMfaEnforcementGaps'
+        $script:collectorSource | Should -Match 'GuestUserEnforcementState'
+    }
+
+    It 'batches enterprise application sign-in enrichment instead of making one Graph call per app' {
+        $script:collectorSource | Should -Match 'function Get-AssessmentEnterpriseApplicationLatestSignInMap'
+        $script:collectorSource | Should -Match 'Some enterprise application sign-in lookups exceeded the reviewed sign-in history window'
+        $script:collectorSource | Should -Match 'Unable to retrieve batched enterprise application sign-in details'
+        $script:collectorSource | Should -Not -Match 'Get-AssessmentEnterpriseApplicationLatestSignIn -AppId'
     }
 
     It 'maps the broader SharePoint tenant settings surface used by the sharing review' {
@@ -213,9 +275,14 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     It 'builds a lightweight enterprise application inventory and SSO subset for non-minimum profiles' {
         $script:collectorSource | Should -Match 'function Test-AssessmentAppUsesSso'
         $script:collectorSource | Should -Match 'function Get-AssessmentEnterpriseApplicationIdentityProfile'
+        $script:collectorSource | Should -Match 'function Get-AssessmentEnterpriseApplicationLatestSignIn'
         $script:collectorSource | Should -Match 'function Test-AssessmentEnterpriseApplicationValidRow'
         $script:collectorSource | Should -Match 'function Test-AssessmentEnterpriseApplicationCustomerRelevant'
         $script:collectorSource | Should -Match 'function Add-AssessmentEnterpriseApplicationRecord'
+        $script:collectorSource | Should -Match 'auditLogs/signIns'
+        $script:collectorSource | Should -Match 'LastSignInUserDisplayName'
+        $script:collectorSource | Should -Match 'LastConditionalAccessStatus'
+        $script:collectorSource | Should -Match 'LastClientAppUsed'
         $script:collectorSource | Should -Match 'PreferredSingleSignOnMode'
         $script:collectorSource | Should -Match 'SsoEnabled'
         $script:collectorSource | Should -Match 'SSOMode'

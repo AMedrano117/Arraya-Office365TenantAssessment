@@ -140,6 +140,11 @@ Describe 'Improve workflow' {
                             ApplicationPermissionCount    = 1
                             DelegatedPermissionGrantCount = 1
                             AppRoleAssignmentRequired     = $true
+                            LastSignInDateTime            = '2026-04-12T09:15:00Z'
+                            LastSignInUserDisplayName     = 'Adele Vance'
+                            LastSignInUserPrincipalName   = 'adele.vance@contoso.com'
+                            LastConditionalAccessStatus   = 'success'
+                            LastClientAppUsed             = 'Browser'
                         }
                     }
                     EnterpriseApplicationSummary = @{
@@ -216,6 +221,7 @@ Describe 'Improve workflow' {
                         CompliantDeviceRequirement          = $false
                         SecurityDefaultsEnabled             = $false
                         EnforcementState                    = 'MFA enforcement is active through enabled Conditional Access policies.'
+                        GuestUserEnforcementState           = 'Guest users are partially covered by the active MFA enforcement baseline.'
                     }
                     MfaEnforcementGapUsers = @(
                         [pscustomobject]@{
@@ -240,6 +246,40 @@ Describe 'Improve workflow' {
                             AffectedEnabledUsers = 2
                             DirectoryMemberCount = 2
                             Notes                = 'Members of this group are excluded from the enabled MFA enforcement policy scope.'
+                        }
+                    )
+                    AdminMfaSummary = [pscustomobject]@{
+                        EnabledAdminUsersReviewed            = 6
+                        AdminUsersRegisteredForMfa           = 4
+                        AdminUsersNotRegisteredForMfa        = 2
+                        AdminUsersCoveredByMfaEnforcement    = 5
+                        AdminUsersNotCoveredByMfaEnforcement = 1
+                    }
+                    AdminMfaRegistrationGaps = @(
+                        [pscustomobject]@{
+                            DisplayName          = 'Stale Global Admin'
+                            UserPrincipalName    = 'stale.admin@contoso.com'
+                            Role                 = 'Global Administrator'
+                            AccountEnabled       = $true
+                            UserType             = 'Member'
+                            MfaRegistrationState = 'Not registered'
+                            MethodsRegistered    = ''
+                            DefaultMfaMethod     = ''
+                            LastSignInDateTime   = '2026-01-02T00:00:00Z'
+                        }
+                    )
+                    AdminMfaEnforcementGaps = @(
+                        [pscustomobject]@{
+                            DisplayName         = 'Excluded Global Admin'
+                            UserPrincipalName   = 'excluded.admin@contoso.com'
+                            Role                = 'Global Administrator'
+                            AccountEnabled      = $true
+                            UserType            = 'Member'
+                            MfaEnforcementState = 'Not covered by the current enabled MFA enforcement baseline'
+                            GapCategory         = 'Excluded from all enabled MFA CA policies that otherwise target the user'
+                            GapReason           = 'Excluded through group ''Break Glass Exclusions'' in enabled MFA policy ''Baseline MFA''.'
+                            RelatedPolicies     = 'Baseline MFA'
+                            LastSignInDateTime  = '2026-01-03T00:00:00Z'
                         }
                     )
                 }
@@ -631,6 +671,9 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'Users with weak default MFA method'
         $customerReportDocument | Should -Match 'Enabled MFA enforcement policies'
         $customerReportDocument | Should -Match 'Report-only MFA enforcement policies'
+        $customerReportDocument | Should -Match 'Guest-user MFA enforcement summary'
+        $customerReportDocument | Should -Match 'Admin users not registered for MFA'
+        $customerReportDocument | Should -Match 'Admin users not covered by enabled MFA enforcement policies'
         $customerReportDocument | Should -Match 'Users not covered by enabled MFA enforcement policies'
         $customerReportDocument | Should -Match 'MFA enforcement state'
         $customerReportDocument | Should -Match 'MFA Enforcement Gap Summary'
@@ -756,6 +799,7 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match 'Admins and approved guest inviters can invite guests'
         $customerReportMarkdown | Should -Match 'Guest MFA enforcement matters because guest identities are external accounts with access into this tenant''s resources'
         $customerReportMarkdown | Should -Match 'home tenant instead of registering separately in this tenant'
+        $customerReportMarkdown | Should -Match 'Detailed admin gap rows are available in the workbook tabs AdminMfaRegistrationGaps and AdminMfaEnforcementGaps'
         $customerReportMarkdown | Should -Match '## 6\.0 Authentication Methods, MFA Enrollment, and MFA Enforcement'
         $customerReportMarkdown | Should -Match '### MFA Enrollment'
         $customerReportMarkdown | Should -Match '### MFA Enforcement'
@@ -767,6 +811,9 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match '\| Estimated enabled-user CA MFA coverage \| 75% \|'
         $customerReportMarkdown | Should -Match '\| Estimated member-user CA MFA coverage \| 80% \|'
         $customerReportMarkdown | Should -Match '\| Estimated guest-user CA MFA coverage \| 40% \|'
+        $customerReportMarkdown | Should -Match 'Guest-user MFA enforcement summary'
+        $customerReportMarkdown | Should -Match '\| Admin users not registered for MFA \| 2 \|'
+        $customerReportMarkdown | Should -Match '\| Admin users not covered by enabled MFA enforcement policies \| 1 \|'
         $customerReportMarkdown | Should -Match '#### MFA Enforcement Gap Summary'
         $customerReportMarkdown | Should -Match '\| Coverage Gap Signal \| Current State \|'
         $customerReportMarkdown | Should -Match '\| Users outside enabled MFA CA include scope \| 1 \|'
@@ -788,6 +835,9 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match '\| Application \| SSO Enabled \| SSO Mode \| Observation \|'
         $customerReportMarkdown | Should -Match '\| High Priv App \| Enabled \| saml \|'
         $customerReportMarkdown | Should -Match 'SSO is configured via saml'
+        $customerReportMarkdown | Should -Match 'Latest sign-in seen on .+ by Adele Vance'
+        $customerReportMarkdown | Should -Match 'Latest sign-in Conditional Access status: success'
+        $customerReportMarkdown | Should -Match 'Latest client app used: Browser'
         $customerReportMarkdown | Should -Match '\| Users with weak MFA methods only \|'
         $customerReportMarkdown | Should -Match '\| Enabled MFA enforcement policies \|'
         $customerReportMarkdown | Should -Match 'MfaEnforcementGapUsers'

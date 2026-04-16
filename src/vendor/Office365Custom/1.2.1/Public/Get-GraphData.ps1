@@ -212,7 +212,7 @@ function Get-GraphData {
                                     $UseRestMethod = $true
                                     $RetryCount++
                                 } else {
-                                    Write-Error "Graph API request failed: $($_.Exception.Message)"
+                                    Write-Verbose "Graph API request failed: $($_.Exception.Message)"
                                     throw $_
                                 }
                             }
@@ -222,8 +222,7 @@ function Get-GraphData {
 
                 # Check if max retries exceeded
                 if (-not $Success) {
-                    Write-Error "Failed to retrieve data after $MaxRetries attempts from: $CurrentUri"
-                    break
+                    throw "Failed to retrieve data after $MaxRetries attempts from: $CurrentUri"
                 }
 
                 # Process results

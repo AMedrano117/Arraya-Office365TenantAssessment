@@ -53,15 +53,25 @@ function Get-MailFlowRulesandConnectors {
 
     try {
         Write-Log -Type INFO -Message 'Gathering all Mail Flow Rules' -ExportFileLocation $exportDetails
+        $transportRuleCommand = Get-Command -Name 'Get-TransportRule' -ErrorAction Ignore
+        $supportsTransportRuleTestModeConnectors = $transportRuleCommand -and $transportRuleCommand.Parameters.ContainsKey('IncludeTestModeConnectors')
         switch ($detailLevel) {
             { $_ -in 'minimum', 'operator', 'combined', 'automation', 'all' } {
                 $desiredProperties = @('Name', 'State', 'Mode', 'Priority', 'Description')
-                try { $mailFlowRules = Get-TransportRule -IncludeTestModeConnectors -ErrorAction Continue | Select-Object $desiredProperties }
-                catch { $mailFlowRules = Get-TransportRule -ErrorAction Continue | Select-Object $desiredProperties }
+                if ($supportsTransportRuleTestModeConnectors) {
+                    $mailFlowRules = Get-TransportRule -IncludeTestModeConnectors -ErrorAction Continue | Select-Object $desiredProperties
+                }
+                else {
+                    $mailFlowRules = Get-TransportRule -ErrorAction Continue | Select-Object $desiredProperties
+                }
             }
             default {
-                try { $mailFlowRules = Get-TransportRule -IncludeTestModeConnectors -ErrorAction Continue }
-                catch { $mailFlowRules = Get-TransportRule -ErrorAction Continue }
+                if ($supportsTransportRuleTestModeConnectors) {
+                    $mailFlowRules = Get-TransportRule -IncludeTestModeConnectors -ErrorAction Continue
+                }
+                else {
+                    $mailFlowRules = Get-TransportRule -ErrorAction Continue
+                }
             }
         }
 
@@ -84,7 +94,13 @@ function Get-MailFlowRulesandConnectors {
         Write-Log -Type INFO -Message "[Get-MailFlowRulesandConnectors] Found $(($mailFlowInboundConnectors | Measure-Object).Count) Inbound Mail Connectors" -ExportFileLocation $exportDetails
 
         Write-Log -Type INFO -Message '[Get-MailFlowRulesandConnectors] Gathering all Outbound Mail Connectors' -ExportFileLocation $exportDetails
-        $mailFlowOutboundConnectors = Get-OutboundConnector -IncludeTestModeConnectors $true -ErrorAction Stop
+        $outboundConnectorCommand = Get-Command -Name 'Get-OutboundConnector' -ErrorAction Ignore
+        if ($outboundConnectorCommand -and $outboundConnectorCommand.Parameters.ContainsKey('IncludeTestModeConnectors')) {
+            $mailFlowOutboundConnectors = Get-OutboundConnector -IncludeTestModeConnectors $true -ErrorAction Stop
+        }
+        else {
+            $mailFlowOutboundConnectors = Get-OutboundConnector -ErrorAction Stop
+        }
         Write-Log -Type INFO -Message "[Get-MailFlowRulesandConnectors] Found $(($mailFlowOutboundConnectors | Measure-Object).Count) Outbound Mail Connectors" -ExportFileLocation $exportDetails
 
         if ($detailLevel -in @('minimum', 'operator', 'combined', 'automation', 'all')) {

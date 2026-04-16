@@ -136,4 +136,17 @@ Describe 'Arraya.M365.AssessmentRunner' {
 
         $resolvedManifest | Should -Be (Resolve-Path -Path $manifestPath).Path
     }
+
+    It 'does not throw when the inferred Support folder does not exist yet' {
+        $missingRunRoot = Join-Path $TestDrive 'Missing Run Root'
+        $workbookPath = Join-Path $missingRunRoot 'Contoso Ltd - Tenant Details.xlsx'
+
+        $module = Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction Stop | Select-Object -First 1
+        {
+            & $module {
+                param($Path)
+                Resolve-AssessmentLatestManifestPath -ExportPath $Path
+            } $workbookPath
+        } | Should -Not -Throw
+    }
 }

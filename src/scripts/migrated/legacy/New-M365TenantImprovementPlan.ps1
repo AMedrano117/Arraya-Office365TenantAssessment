@@ -4708,6 +4708,17 @@ $mfaEnforcementScopeReview = @(
         -Value (Get-ArrayaObjectValue -Object $tenantData -Names @('MfaEnforcementScopeReview')) `
         -MarkerNames @('PolicyName', 'ScopeType', 'DisplayName')
 )
+$adminMfaSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('AdminMfaSummary')
+$adminMfaRegistrationGaps = @(
+    Convert-ToImprovementCollectionRows `
+        -Value (Get-ArrayaObjectValue -Object $tenantData -Names @('AdminMfaRegistrationGaps')) `
+        -MarkerNames @('DisplayName', 'UserPrincipalName', 'MfaRegistrationState')
+)
+$adminMfaEnforcementGaps = @(
+    Convert-ToImprovementCollectionRows `
+        -Value (Get-ArrayaObjectValue -Object $tenantData -Names @('AdminMfaEnforcementGaps')) `
+        -MarkerNames @('DisplayName', 'UserPrincipalName', 'MfaEnforcementState')
+)
 $ownershipSummary = Get-ArrayaObjectValue -Object $snapshotDerived -Names @('OwnershipGovernanceSummary')
 $unmanagedObjects = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $snapshotDerived -Names @('UnmanagedObjects'))
 $oneDriveOwnerMismatches = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $snapshotDerived -Names @('OneDriveOwnerMismatches'))
@@ -5516,6 +5527,9 @@ $customerAssessmentSignals = [pscustomobject]@{
     MfaEnforcementSummary      = $mfaEnforcementSummary
     MfaEnforcementGapUsers     = $mfaEnforcementGapUsers
     MfaEnforcementScopeReview  = $mfaEnforcementScopeReview
+    AdminMfaSummary            = $adminMfaSummary
+    AdminMfaRegistrationGaps   = $adminMfaRegistrationGaps
+    AdminMfaEnforcementGaps    = $adminMfaEnforcementGaps
     EnterpriseApplications     = $enterpriseApplications
     EnterpriseApplicationSummary = $enterpriseApplicationSummary
     GuestSignInSummary         = $guestSignInSummary

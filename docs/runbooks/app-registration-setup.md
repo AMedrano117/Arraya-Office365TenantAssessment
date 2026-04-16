@@ -33,6 +33,12 @@ Add these core Microsoft Graph application permissions and grant admin consent f
 - `Team.ReadBasic.All`
 - `User.Read.All`
 
+Optional for deeper Teams membership enrichment:
+
+- `TeamMember.Read.All`
+  or
+- `TeamMember.ReadWrite.All`
+
 Keep delegated `User.Read` available for interactive sign-in scenarios, but the app-based baseline above is the primary collector requirement.
 
 If you want optional extended enrichment beyond the standard assessment path, add these only when needed:
@@ -55,6 +61,7 @@ If you want optional extended enrichment beyond the standard assessment path, ad
 - Exchange Online app-only access must be configured for certificate-based Exchange collection.
 - SharePoint and OneDrive standard collection use Microsoft Graph in the current app-based workflow.
 - Teams PowerShell remains reduced in app-based auth modes, so treat Teams detail as best-effort when running non-interactively.
+- Without `TeamMember.Read.All` or `TeamMember.ReadWrite.All`, the assessment still collects team and channel inventory but skips member-count and guest-count enrichment.
 
 ## Recommended operator/admin roles for setup
 - `Application Administrator`

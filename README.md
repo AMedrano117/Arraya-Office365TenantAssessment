@@ -18,7 +18,7 @@ Run the launcher and pick an action from the menu:
 .\src\scripts\operations\Start-M365TenantAssessment.ps1
 ```
 
-Users do not need to manually import modules. The launcher imports `Arraya.M365.AssessmentRunner`, which then loads `Office365Custom` only when needed and only if it is not already imported.
+Users do not need to manually import modules. The launcher imports `Arraya.M365.AssessmentRunner`, and the tenant assessment now owns its own workload-aware login flow. `Office365Custom` remains available for shared helpers and legacy scripts, but the main assessment no longer relies on `Connect-Office365` as its startup bootstrap.
 
 ## Auth Modes
 - `Delegated`: interactive sign-in for full module compatibility.
@@ -26,7 +26,9 @@ Users do not need to manually import modules. The launcher imports `Arraya.M365.
 - `Client secret`: noninteractive app auth for Graph and Exchange app-only; Teams PowerShell remains limited in app-secret mode.
 
 If you do not pass `-AuthMode`, the assessment defaults to delegated interactive sign-in. For backward compatibility, supplying `-CertificateThumbprint` still switches the run to certificate auth, and supplying `-ClientSecret` still switches the run to client-secret auth.
-If you already connected to Microsoft Graph and Exchange Online in the current session, you can run with `-SkipAuth` to reuse those sessions and bypass the repo's authentication bootstrap.
+The assessment now stages authentication by workload instead of trying to connect every possible Microsoft 365 surface up front. Graph and Exchange remain the baseline live-collection dependencies. Purview is only connected when the active run needs retention/DLP collection. SharePoint admin PowerShell and Teams PowerShell are treated as optional workload-specific connections with explicit fallback behavior.
+If you already connected the required workloads for the current run in the current session, you can run with `-SkipAuth` to reuse those sessions and bypass the assessment's authentication bootstrap. `-SkipAuth` now validates only the workloads the active profile actually needs.
+When the active profile includes Purview retention or DLP collection, `-SkipAuth` expects an already-usable compliance PowerShell session, not just imported cmdlet names.
 The launcher now also reuses the repo modules already loaded from this repository in the current PowerShell session instead of force-reimporting them on every run.
 If you want the assessment to continue without the startup permission gate, you can add `-SkipPermissionPreflight`. This skips the required-access validation at the beginning of the run and allows collection to continue on a best-effort basis, which means missing permissions may still surface later as individual workload failures.
 The permission preflight now shows the specific check in progress, then prints a short summary of how many checks succeeded and how many access gaps remain. It fast-passes core Graph permissions from the current token claims and reserves live probes for the more ambiguous endpoints, so startup validation stays more accurate without making every Graph scope wait on a network call. Non-blocking checks such as `OnPremDirectorySynchronization.Read.All` are reported as structured warnings in the preflight summary instead of only surfacing as raw Graph 403 noise.
@@ -36,13 +38,14 @@ App-based Teams collection now keeps team and channel inventory as part of the s
 
 Retention and DLP policy collection uses Purview compliance PowerShell through `Connect-IPPSSession`, not the main Graph collector path. In this workflow:
 - delegated auth is supported
+- interactive delegated auth now retries with device code if the initial Purview sign-in flow does not complete cleanly
 - certificate auth is supported using `AppId + Organization + CertificateThumbprint`
 - client-secret auth is not supported for Purview compliance collection
 - `ExchangeOnlineManagement` must be available because it provides `Connect-IPPSSession`
 - when Purview compliance connection fails, the assessment now reports the auth path, tenant organization value, and next-step guidance in the preflight output so the operator can see what still needs to be corrected
 - a certificate/app combination can succeed in one tenant and fail in another if the target tenant does not expose the Purview retention/DLP cmdlets to that app session; the preflight now calls that out explicitly when the compliance endpoint accepts auth but does not assign those cmdlets
 
-For SharePoint and OneDrive collection, certificate-based and client-secret runs now skip importing the `Microsoft.Online.SharePoint.PowerShell` module entirely. Those app-based runs rely on Microsoft Graph collection instead of `Connect-SPOService`.
+For SharePoint and OneDrive collection, certificate-based and client-secret runs now skip importing the `Microsoft.Online.SharePoint.PowerShell` module entirely. Those app-based runs rely on Microsoft Graph collection instead of `Connect-SPOService`. Interactive runs only attempt SharePoint admin PowerShell when the active assessment run can benefit from it.
 
 Examples:
 

@@ -245,6 +245,19 @@ Describe 'Arraya.M365.Common' {
         (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile TenantToTenantMigration).GenerateJson | Should -BeTrue
     }
 
+    It 'normalizes Exchange mailbox-size wrapper values without throwing' {
+        $htmlHelperPath = Join-Path $script:repoRoot 'src\scripts\assessments\HTML Scripts\Invoke-HTMLHelperFunctions.ps1'
+        . $htmlHelperPath
+
+        $wrappedSize = [pscustomobject]@{
+            IsUnlimited = $false
+            Value       = '33.47 KB (34,275 bytes)'
+        }
+
+        { Convert-MailboxSizeToGB -SizeValue $wrappedSize } | Should -Not -Throw
+        (Convert-MailboxSizeToGB -SizeValue $wrappedSize) | Should -BeGreaterOrEqual 0
+    }
+
     It 'maps governance and password lifecycle signals into the snapshot domains' {
         Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
 
@@ -552,6 +565,16 @@ Describe 'Arraya.M365.Common' {
         Remove-Item Function:\Capture-ErrorHelper -ErrorAction SilentlyContinue
     }
 
+    It 'does not emit a redundant Write-Error before rethrowing Graph request failures' {
+        $graphDataPath = Join-Path $script:repoRoot 'src\vendor\Office365Custom\1.2.1\Public\Get-GraphData.ps1'
+        Test-Path $graphDataPath | Should -BeTrue
+
+        $graphDataSource = Get-Content -Raw -Path $graphDataPath
+        $graphDataSource | Should -Not -Match 'Write-Error "Graph API request failed:'
+        $graphDataSource | Should -Match 'Write-Verbose "Graph API request failed:'
+        $graphDataSource | Should -Match 'throw "Failed to retrieve data after \$MaxRetries attempts from: \$CurrentUri"'
+    }
+
     It 'skips SharePoint module import for app-based auth and relies on Graph collection instead' {
         $connectOffice365Path = Join-Path $script:repoRoot 'src\vendor\Office365Custom\1.2.1\Public\Connect-Office365.ps1'
         Test-Path $connectOffice365Path | Should -BeTrue
@@ -583,5 +606,29 @@ Describe 'Arraya.M365.Common' {
         $connectOffice365Source | Should -Not -Match 'Files\.Read\.All'
         $graphSdkHelperSource | Should -Match 'SharePointTenantSettings\.Read\.All'
         $graphSdkHelperSource | Should -Not -Match 'Files\.Read\.All'
+    }
+
+    It 'loads the common module cleanly even when the Private folder is absent' {
+        $commonModulePath = Join-Path $script:repoRoot 'src\modules\Arraya.M365.Common\Arraya.M365.Common.psm1'
+        Test-Path $commonModulePath | Should -BeTrue
+
+        $commonModuleSource = Get-Content -Raw -Path $commonModulePath
+        $commonModuleSource | Should -Match '\$privatePath = Join-Path \$PSScriptRoot ''Private'''
+        $commonModuleSource | Should -Match 'if \(Test-Path -Path \$privatePath -PathType Container\)'
+    }
+
+    It 'guards Exchange compatibility differences before using hybrid and test-mode connector parameters' {
+        $hybridPath = Join-Path $script:repoRoot 'src\modules\Arraya.M365.Exchange\Public\Get-ExchangeHybridConfiguration.ps1'
+        $mailFlowPath = Join-Path $script:repoRoot 'src\modules\Arraya.M365.Exchange\Public\Get-MailFlowRulesandConnectors.ps1'
+        Test-Path $hybridPath | Should -BeTrue
+        Test-Path $mailFlowPath | Should -BeTrue
+
+        $hybridSource = Get-Content -Raw -Path $hybridPath
+        $mailFlowSource = Get-Content -Raw -Path $mailFlowPath
+
+        $hybridSource | Should -Match "Get-Command -Name 'Get-HybridConfiguration' -ErrorAction Ignore"
+        $mailFlowSource | Should -Match "Get-Command -Name 'Get-TransportRule' -ErrorAction Ignore"
+        $mailFlowSource | Should -Match 'Parameters\.ContainsKey\(''IncludeTestModeConnectors''\)'
+        $mailFlowSource | Should -Match "Get-Command -Name 'Get-OutboundConnector' -ErrorAction Ignore"
     }
 }
