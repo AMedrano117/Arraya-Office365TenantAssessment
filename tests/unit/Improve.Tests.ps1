@@ -200,6 +200,28 @@ Describe 'Improve workflow' {
                         UsersWithWeakDefaultMethod        = 1
                         UsersWithPhishingResistantMethods = 1
                     }
+                    MfaRegistrationDetails = @(
+                        [pscustomobject]@{
+                            UserPrincipalName             = 'registered.member@contoso.com'
+                            IsMfaRegistered               = $true
+                            IsMfaCapable                  = $true
+                            MethodsRegistered             = @('Microsoft Authenticator', 'SMS / phone')
+                            DefaultMfaMethod              = 'Microsoft Authenticator'
+                            HasWeakMethod                 = $true
+                            HasStrongMethod               = $true
+                            HasPhishingResistantMethod    = $false
+                        },
+                        [pscustomobject]@{
+                            UserPrincipalName             = 'unregistered.member@contoso.com'
+                            IsMfaRegistered               = $false
+                            IsMfaCapable                  = $false
+                            MethodsRegistered             = @()
+                            DefaultMfaMethod              = ''
+                            HasWeakMethod                 = $false
+                            HasStrongMethod               = $false
+                            HasPhishingResistantMethod    = $false
+                        }
+                    )
                     MfaEnforcementSummary = [pscustomobject]@{
                         ConditionalAccessPoliciesReviewed   = 2
                         EnabledPoliciesRequiringMfa         = 1
@@ -587,7 +609,9 @@ Describe 'Improve workflow' {
         $result.SupportFolderPath | Should -Be (Join-Path $TestDrive 'Support')
 
         $payload = Get-Content -Raw $result.JsonPath | ConvertFrom-Json -Depth 20
+        $roadmapActionTitles = @($payload.RoadmapActions | ForEach-Object { [string]$_.ActionTitle } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $payload.Findings.Count | Should -BeGreaterThan 0
+        $roadmapActionTitles.Count | Should -Be (@($roadmapActionTitles | Select-Object -Unique).Count)
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'Source'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'PriorityBand'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'OwnerTeam'
@@ -903,5 +927,106 @@ Describe 'Improve workflow' {
 
         $snippetContent = Get-Content -Raw $result.RemediationPs1Path
         $snippetContent | Should -Match '\$gaRole = Get-MgDirectoryRole'
+    }
+
+    It 'derives MFA enrollment output from registration details when summary objects are missing' {
+        $snapshot = New-ArrayaTenantSnapshot `
+            -Data @{
+                Identity = @{
+                    Admins = @(
+                        [pscustomobject]@{
+                            Role                  = 'Global Administrator'
+                            AccountEnabled        = $true
+                            OnPremisesSyncEnabled = $false
+                            LastSignInDateTime    = (Get-Date).AddDays(-10).ToString('o')
+                            UserPrincipalName     = 'admin@contoso.com'
+                        }
+                    )
+                    Users = @(
+                        [pscustomobject]@{
+                            UserType                 = 'Member'
+                            AccountEnabled           = $true
+                            UserPrincipalName        = 'member.one@contoso.com'
+                            DisplayName              = 'Member One'
+                            AssignedLicensesFriendly = @('Microsoft 365 E3')
+                            LastSignInDateTime       = (Get-Date).AddDays(-5).ToString('o')
+                        },
+                        [pscustomobject]@{
+                            UserType                 = 'Member'
+                            AccountEnabled           = $true
+                            UserPrincipalName        = 'member.two@contoso.com'
+                            DisplayName              = 'Member Two'
+                            AssignedLicensesFriendly = @('Microsoft 365 E3')
+                            LastSignInDateTime       = (Get-Date).AddDays(-7).ToString('o')
+                        }
+                    )
+                    ConditionalAccessPolicies = @(
+                        [pscustomobject]@{
+                            DisplayName = 'Baseline MFA'
+                            State       = 'enabled'
+                        }
+                    )
+                    ConditionalAccessPolicySummary = @{
+                        Summary = [pscustomobject]@{
+                            TotalPolicies                 = 1
+                            EnabledPolicies               = 1
+                            ReportOnlyPolicies            = 0
+                            HasGuestCoverage              = $false
+                            HasPrivilegedRoleCoverage     = $true
+                            HasCompliantDeviceRequirement = $false
+                            HasRiskBasedCoverage          = $false
+                            PoliciesWithExclusions        = 0
+                        }
+                    }
+                    SecurityDefaultsPolicy = @{
+                        Summary = [pscustomobject]@{
+                            IsEnabled = $false
+                        }
+                    }
+                    MfaRegistrationDetails = @(
+                        [pscustomobject]@{
+                            UserPrincipalName          = 'member.one@contoso.com'
+                            IsMfaRegistered            = $true
+                            IsMfaCapable               = $true
+                            MethodsRegistered          = @('Microsoft Authenticator')
+                            DefaultMfaMethod           = 'Microsoft Authenticator'
+                            HasWeakMethod              = $false
+                            HasStrongMethod            = $true
+                            HasPhishingResistantMethod = $false
+                        },
+                        [pscustomobject]@{
+                            UserPrincipalName          = 'member.two@contoso.com'
+                            IsMfaRegistered            = $false
+                            IsMfaCapable               = $false
+                            MethodsRegistered          = @()
+                            DefaultMfaMethod           = ''
+                            HasWeakMethod              = $false
+                            HasStrongMethod            = $false
+                            HasPhishingResistantMethod = $false
+                        }
+                    )
+                }
+            }
+
+        $snapshotPath = Join-Path $TestDrive 'mfa-fallback-assessment.json'
+        Export-ArrayaTenantSnapshot -Snapshot $snapshot -Path $snapshotPath
+
+        $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
+
+        Test-Path $result.CustomerAssessmentReportMarkdownPath | Should -BeTrue
+        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
+
+        $customerReportMarkdown | Should -Match '## 6\.0 Authentication Methods, MFA Enrollment, and MFA Enforcement'
+        $customerReportMarkdown | Should -Match '\| Users reviewed \| 2 \|'
+        $customerReportMarkdown | Should -Match '\| Registered for MFA \| 1 \|'
+        $customerReportMarkdown | Should -Match '\| Not registered for MFA \| 1 \|'
+        $customerReportMarkdown | Should -Match '\| MFA enrollment rate \| 50% \|'
+        $customerReportMarkdown | Should -Match '\| Registered method mix \|'
+        $customerReportMarkdown | Should -Match '\| Enabled users reviewed \| 2 \|'
+        $customerReportMarkdown | Should -Match '\| Enabled member users reviewed \| 2 \|'
+        $customerReportMarkdown | Should -Match 'The reviewed enabled-user inventory included 2 enabled account\(s\), but the current source did not surface a complete covered-user total\.'
+        $customerReportMarkdown | Should -Match 'Enrollment shows readiness, not enforcement\. In the reviewed data, MFA enrollment is 50%'
+        $customerReportMarkdown | Should -Not -Match '\| MFA enrollment rate \| Not validated from the reviewed data \|'
+        $customerReportMarkdown | Should -Not -Match 'an unconfirmed number of an unconfirmed number'
     }
 }

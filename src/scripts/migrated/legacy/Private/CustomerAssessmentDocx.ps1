@@ -58,6 +58,60 @@ function New-CustomerWordBlankCell {
     return '__ARRAYA_BLANK__'
 }
 
+function Get-CustomerDistinctRoadmapActions {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $false)][object[]]$RoadmapActions = @())
+
+    $priorityRanks = @{
+        'Critical' = 0
+        'High'     = 1
+        'Medium'   = 2
+        'Low'      = 3
+        'Info'     = 4
+    }
+    $phaseRanks = @{
+        'Near Term' = 0
+        'Planned'   = 1
+        'Monitor'   = 2
+    }
+
+    $groupedActions = @(
+        @($RoadmapActions | Where-Object { $null -ne $_ }) |
+            Group-Object {
+                $actionTitle = ([string]$_.ActionTitle).Trim().ToLowerInvariant()
+                if ([string]::IsNullOrWhiteSpace($actionTitle)) {
+                    $actionTitle = ([string]$_.Theme).Trim().ToLowerInvariant()
+                }
+
+                if ([string]::IsNullOrWhiteSpace($actionTitle)) {
+                    $actionTitle = ([string]$_.Recommendation).Trim().ToLowerInvariant()
+                }
+
+                $actionTitle
+            }
+    )
+
+    $distinct = foreach ($group in $groupedActions) {
+        if ([string]::IsNullOrWhiteSpace([string]$group.Name)) {
+            continue
+        }
+
+        $bestAction = @($group.Group | Sort-Object `
+            @{ Expression = { if ($priorityRanks.ContainsKey([string]$_.Priority)) { $priorityRanks[[string]$_.Priority] } else { 99 } } }, `
+            @{ Expression = { if ($phaseRanks.ContainsKey([string]$_.RoadmapPhase)) { $phaseRanks[[string]$_.RoadmapPhase] } else { 99 } } }, `
+            @{ Expression = { [string]$_.ActionTitle } }) | Select-Object -First 1
+
+        if ($null -ne $bestAction) {
+            $bestAction
+        }
+    }
+
+    return @($distinct | Sort-Object `
+        @{ Expression = { if ($phaseRanks.ContainsKey([string]$_.RoadmapPhase)) { $phaseRanks[[string]$_.RoadmapPhase] } else { 99 } } }, `
+        @{ Expression = { if ($priorityRanks.ContainsKey([string]$_.Priority)) { $priorityRanks[[string]$_.Priority] } else { 99 } } }, `
+        @{ Expression = { [string]$_.ActionTitle } })
+}
+
 function Convert-ToCustomerAssessmentMarkdownHeadingPrefix {
     [CmdletBinding()]
     param([AllowNull()][string]$Style)
@@ -698,7 +752,7 @@ function Get-CustomerLeadershipDecisionRows {
     param([Parameter(Mandatory = $false)][object[]]$RoadmapActions = @())
 
     $rows = New-Object System.Collections.Generic.List[object]
-    foreach ($action in @($RoadmapActions | Select-Object -First 3)) {
+    foreach ($action in @(Get-CustomerDistinctRoadmapActions -RoadmapActions $RoadmapActions | Select-Object -First 3)) {
         $rows.Add((New-CustomerWordTableRow -Cells @(
             (Convert-ToCustomerAssessmentDisplayText -Value $action.ActionTitle -Default 'Priority work item'),
             (Get-CustomerLeadershipDecisionText -Action $action),
@@ -726,7 +780,7 @@ function Get-CustomerRelevantRoadmapActions {
         [Parameter(Mandatory = $false)][int]$Max = 3
     )
 
-    $filtered = @($RoadmapActions)
+    $filtered = @(Get-CustomerDistinctRoadmapActions -RoadmapActions $RoadmapActions)
     if (@($Workstreams).Count -gt 0) {
         $filtered = @($filtered | Where-Object { $Workstreams -contains [string]$_.Workstream })
     }
@@ -1387,7 +1441,7 @@ function New-CustomerAssessmentDocumentBlocks {
     $tenantName = [string]$SourceModel.TenantName
     $assessmentVersion = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $SourceModel -Names @('AssessmentVersion')) -Default '3.x'
     $findings = @($SourceModel.Findings)
-    $roadmapActions = @($SourceModel.RoadmapActions)
+    $roadmapActions = @(Get-CustomerDistinctRoadmapActions -RoadmapActions $SourceModel.RoadmapActions)
     $workstreamSummaries = @($SourceModel.WorkstreamSummaries)
     $executiveThemes = @($SourceModel.ExecutiveThemes)
     $sourceSummaryRows = @($SourceModel.SummaryRows)
@@ -1448,6 +1502,11 @@ function New-CustomerAssessmentDocumentBlocks {
     $authenticationConfigRecord = if ($Signals.AuthenticationConfig) { Get-ArrayaObjectValue -Object $Signals.AuthenticationConfig -Names @('Configuration') } else { $null }
     $mfaEnrollmentSummaryRecord = if ($Signals.MfaEnrollmentSummary) { $Signals.MfaEnrollmentSummary } elseif ($Signals.MfaRegistrationSummary) { $Signals.MfaRegistrationSummary } else { $null }
     $mfaEnforcementSummaryRecord = if ($Signals.MfaEnforcementSummary) { $Signals.MfaEnforcementSummary } else { $null }
+    $mfaRegistrationDetailRows = @(
+        Convert-ToCustomerAssessmentCollectionRows `
+            -Value $Signals.MfaRegistrationDetails `
+            -MarkerNames @('UserPrincipalName', 'IsMfaRegistered')
+    )
     $mfaEnforcementGapUserRows = @(
         Convert-ToCustomerAssessmentCollectionRows `
             -Value $Signals.MfaEnforcementGapUsers `
@@ -1478,7 +1537,10 @@ function New-CustomerAssessmentDocumentBlocks {
 
     $guestUsers = @($userRows | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('UserType'))).ToLowerInvariant() -eq 'guest' })
     $memberUsers = @($userRows | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('UserType'))).ToLowerInvariant() -ne 'guest' })
+    $enabledUsers = @($userRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false })
+    $enabledGuestUsers = @($guestUsers | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false })
     $enabledMemberUsers = @($memberUsers | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false })
+    $enabledAdminRows = @($adminRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false })
     $inactiveMemberUsers = @(
         $enabledMemberUsers | Where-Object {
             $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime', 'SignInActivityLastSignInDateTime'))
@@ -1807,6 +1869,18 @@ function New-CustomerAssessmentDocumentBlocks {
             )
         }
     )
+    if ($recommendationRows.Count -eq 0) {
+        $recommendationRows = @(
+            New-CustomerWordTableRow -Cells @(
+                'Priority work item not clearly surfaced',
+                @('Monitor', 'Impact: Info'),
+                'Validate the current state behind this work item before scheduling remediation.',
+                'The agreed target state should be validated in the relevant detailed section.',
+                (New-CustomerWordBlankCell)
+            )
+        )
+    }
+
     $recommendationImpactRows = @(
         foreach ($action in @($roadmapActions)) {
             New-CustomerWordTableRow -Cells @(
@@ -1815,7 +1889,26 @@ function New-CustomerAssessmentDocumentBlocks {
             )
         }
     )
-    $overallFindingsSummaryRows = Get-CustomerOverallFindingsSummaryRows -WorkstreamSummaries $workstreamSummaries -Findings $findings
+    if ($recommendationImpactRows.Count -eq 0) {
+        $recommendationImpactRows = @(
+            New-CustomerWordTableRow -Cells @(
+                'Priority work item not clearly surfaced',
+                'User impact should be confirmed from the detailed findings before remediation is scheduled.'
+            )
+        )
+    }
+
+    $overallFindingsSummaryRows = @(Get-CustomerOverallFindingsSummaryRows -WorkstreamSummaries $workstreamSummaries -Findings $findings)
+    if ($overallFindingsSummaryRows.Count -eq 0) {
+        $overallFindingsSummaryRows = @(
+            New-CustomerWordTableRow -Cells @(
+                'Assessment summary not clearly surfaced',
+                'Info',
+                '0',
+                'The current source did not include workstream summary rows, so the detailed findings inventory should be used as the primary crosswalk.'
+            )
+        )
+    }
     $fullFindingsInventoryRows = if ($findings.Count -gt 0) {
         @(
             foreach ($finding in @($findings)) {
@@ -2460,6 +2553,117 @@ function New-CustomerAssessmentDocumentBlocks {
         $userPrincipalName = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserPrincipalName')) -Default ''
         ($userTypeText -eq 'guest' -or $userPrincipalName -like '*#EXT#*')
     }).Count
+
+    $mfaReviewedPopulationWasDerived = $false
+    $mfaCoverageWasEstimated = $false
+    $adminCoverageWasEstimated = $false
+    $adminRegistrationWasEstimated = $false
+
+    if ($null -eq $mfaEnabledUsersReviewed -and $enabledUsers.Count -gt 0) {
+        $mfaEnabledUsersReviewed = $enabledUsers.Count
+        $mfaReviewedPopulationWasDerived = $true
+    }
+    if ($null -eq $mfaEnabledMemberUsersReviewed -and $enabledMemberUsers.Count -gt 0) {
+        $mfaEnabledMemberUsersReviewed = $enabledMemberUsers.Count
+        $mfaReviewedPopulationWasDerived = $true
+    }
+    if ($null -eq $mfaEnabledGuestUsersReviewed -and $enabledGuestUsers.Count -gt 0) {
+        $mfaEnabledGuestUsersReviewed = $enabledGuestUsers.Count
+        $mfaReviewedPopulationWasDerived = $true
+    }
+
+    if ($mfaGapRowsSorted.Count -gt 0) {
+        if ($null -eq $mfaUsersCoveredByEnabledPolicies -and $null -ne $mfaEnabledUsersReviewed) {
+            $mfaUsersCoveredByEnabledPolicies = [math]::Max(($mfaEnabledUsersReviewed - $mfaGapRowsSorted.Count), 0)
+            $mfaCoverageWasEstimated = $true
+        }
+        if ($null -eq $mfaMemberUsersCoveredByEnabledPolicies -and $null -ne $mfaEnabledMemberUsersReviewed) {
+            $mfaMemberUsersCoveredByEnabledPolicies = [math]::Max(($mfaEnabledMemberUsersReviewed - $mfaUncoveredMemberCount), 0)
+            $mfaCoverageWasEstimated = $true
+        }
+        if ($null -eq $mfaGuestUsersCoveredByEnabledPolicies -and $null -ne $mfaEnabledGuestUsersReviewed) {
+            $mfaGuestUsersCoveredByEnabledPolicies = [math]::Max(($mfaEnabledGuestUsersReviewed - $mfaUncoveredGuestCount), 0)
+            $mfaCoverageWasEstimated = $true
+        }
+    }
+
+    if ($null -eq $mfaUsersNotCoveredByEnabledPolicies -and $null -ne $mfaEnabledUsersReviewed -and $null -ne $mfaUsersCoveredByEnabledPolicies) {
+        $mfaUsersNotCoveredByEnabledPolicies = [math]::Max(($mfaEnabledUsersReviewed - $mfaUsersCoveredByEnabledPolicies), 0)
+    }
+    if ($null -eq $mfaUserCoveragePercent -and $null -ne $mfaEnabledUsersReviewed -and $mfaEnabledUsersReviewed -gt 0 -and $null -ne $mfaUsersCoveredByEnabledPolicies) {
+        $mfaUserCoveragePercent = [math]::Round(($mfaUsersCoveredByEnabledPolicies / $mfaEnabledUsersReviewed) * 100, 1)
+        $mfaCoverageWasEstimated = $true
+    }
+    if ($null -eq $mfaMemberUserCoveragePercent -and $null -ne $mfaEnabledMemberUsersReviewed -and $mfaEnabledMemberUsersReviewed -gt 0 -and $null -ne $mfaMemberUsersCoveredByEnabledPolicies) {
+        $mfaMemberUserCoveragePercent = [math]::Round(($mfaMemberUsersCoveredByEnabledPolicies / $mfaEnabledMemberUsersReviewed) * 100, 1)
+        $mfaCoverageWasEstimated = $true
+    }
+    if ($null -eq $mfaGuestUserCoveragePercent -and $null -ne $mfaEnabledGuestUsersReviewed -and $mfaEnabledGuestUsersReviewed -gt 0 -and $null -ne $mfaGuestUsersCoveredByEnabledPolicies) {
+        $mfaGuestUserCoveragePercent = [math]::Round(($mfaGuestUsersCoveredByEnabledPolicies / $mfaEnabledGuestUsersReviewed) * 100, 1)
+        $mfaCoverageWasEstimated = $true
+    }
+
+    if ($null -eq $enabledAdminUsersReviewed -and $enabledAdminRows.Count -gt 0) {
+        $enabledAdminUsersReviewed = $enabledAdminRows.Count
+        $adminCoverageWasEstimated = $true
+    }
+    if ($null -eq $adminUsersNotCoveredByMfaEnforcement -and $adminMfaEnforcementGapRows.Count -gt 0) {
+        $adminUsersNotCoveredByMfaEnforcement = $adminMfaEnforcementGapRows.Count
+        $adminCoverageWasEstimated = $true
+    }
+    if ($null -eq $adminUsersCoveredByMfaEnforcement -and $null -ne $enabledAdminUsersReviewed -and $null -ne $adminUsersNotCoveredByMfaEnforcement) {
+        $adminUsersCoveredByMfaEnforcement = [math]::Max(($enabledAdminUsersReviewed - $adminUsersNotCoveredByMfaEnforcement), 0)
+        $adminCoverageWasEstimated = $true
+    }
+    if ($null -eq $adminUserCoveragePercent -and $null -ne $enabledAdminUsersReviewed -and $enabledAdminUsersReviewed -gt 0 -and $null -ne $adminUsersCoveredByMfaEnforcement) {
+        $adminUserCoveragePercent = [math]::Round(($adminUsersCoveredByMfaEnforcement / $enabledAdminUsersReviewed) * 100, 1)
+        $adminCoverageWasEstimated = $true
+    }
+
+    $mfaRegistrationByUpn = @{}
+    foreach ($registrationRow in @($mfaRegistrationDetailRows)) {
+        $upn = (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $registrationRow -Names @('UserPrincipalName')) -Default '').Trim().ToLowerInvariant()
+        if (-not [string]::IsNullOrWhiteSpace($upn) -and -not $mfaRegistrationByUpn.ContainsKey($upn)) {
+            $mfaRegistrationByUpn[$upn] = $registrationRow
+        }
+    }
+    if (($null -eq $adminUsersRegisteredForMfa -or $null -eq $adminUsersNotRegisteredForMfa) -and $enabledAdminRows.Count -gt 0 -and $mfaRegistrationByUpn.Count -gt 0) {
+        $matchedAdminRegistrationRows = @(
+            $enabledAdminRows |
+                ForEach-Object {
+                    $adminUpn = (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserPrincipalName')) -Default '').Trim().ToLowerInvariant()
+                    if (-not [string]::IsNullOrWhiteSpace($adminUpn) -and $mfaRegistrationByUpn.ContainsKey($adminUpn)) {
+                        $mfaRegistrationByUpn[$adminUpn]
+                    }
+                } |
+                Where-Object { $null -ne $_ }
+        )
+        if ($matchedAdminRegistrationRows.Count -eq $enabledAdminRows.Count) {
+            if ($null -eq $adminUsersRegisteredForMfa) {
+                $adminUsersRegisteredForMfa = @($matchedAdminRegistrationRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsMfaRegistered'))) -eq $true }).Count
+                $adminRegistrationWasEstimated = $true
+            }
+            if ($null -eq $adminUsersNotRegisteredForMfa) {
+                $adminUsersNotRegisteredForMfa = @($matchedAdminRegistrationRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsMfaRegistered'))) -ne $true }).Count
+                $adminRegistrationWasEstimated = $true
+            }
+        }
+    }
+    if ($null -eq $adminUsersNotRegisteredForMfa -and $adminMfaRegistrationGapRows.Count -gt 0) {
+        $adminUsersNotRegisteredForMfa = $adminMfaRegistrationGapRows.Count
+        $adminRegistrationWasEstimated = $true
+    }
+    if ($null -eq $adminUsersRegisteredForMfa -and $null -ne $enabledAdminUsersReviewed -and $null -ne $adminUsersNotRegisteredForMfa) {
+        $adminUsersRegisteredForMfa = [math]::Max(($enabledAdminUsersReviewed - $adminUsersNotRegisteredForMfa), 0)
+        $adminRegistrationWasEstimated = $true
+    }
+
+    if ($mfaCoverageWasEstimated) {
+        $mfaCoverageCalculationNoteText = 'Coverage counts are estimated from the enabled account inventory and surfaced uncovered-user gap rows in the reviewed data.'
+    }
+    elseif ($mfaReviewedPopulationWasDerived -and [string]::IsNullOrWhiteSpace(($mfaCoverageCalculationNoteText -replace 'Not validated from the reviewed data', '').Trim())) {
+        $mfaCoverageCalculationNoteText = 'Enabled-user review counts are derived from the enabled account inventory. The current source did not surface a complete MFA coverage count.'
+    }
     $mfaGapSummaryRows = if ($mfaGapRowsSorted.Count -gt 0) {
         @(
             New-CustomerWordTableRow -Cells @('Users outside enabled MFA CA include scope', $mfaOutsideIncludeUserCount)
@@ -2643,9 +2847,30 @@ function New-CustomerAssessmentDocumentBlocks {
         @('MFA enforcement state', $mfaEnforcementStateText),
         @('Coverage calculation note', $mfaCoverageCalculationNoteText)
     ))) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ("Enforcement shows whether users are actually being required to perform MFA, not just whether they have registered methods. In this review, the policy baseline shows {0} enabled Conditional Access policy/policies that require MFA and {1} still in report-only mode. Based on the reviewed enabled-user inventory, those enabled MFA policies appear to cover {2} of {3} enabled reviewed user(s), or {4}. Report-only policies do not count as enforced coverage. Detailed uncovered-user and policy-scope review rows are available in the workbook tabs MfaEnforcementGapUsers and MfaEnforcementScopeReview." -f $(if ($null -eq $enabledMfaEnforcementPolicies) { 'an unconfirmed number of' } else { $enabledMfaEnforcementPolicies }), $(if ($null -eq $reportOnlyMfaEnforcementPolicies) { 'an unconfirmed number of policies' } else { $reportOnlyMfaEnforcementPolicies }), $(if ($null -eq $mfaUsersCoveredByEnabledPolicies) { 'an unconfirmed number' } else { $mfaUsersCoveredByEnabledPolicies }), $(if ($null -eq $mfaEnabledUsersReviewed) { 'an unconfirmed number' } else { $mfaEnabledUsersReviewed }), $(if ($null -eq $mfaUserCoveragePercent) { 'an unconfirmed percentage' } else { "$mfaUserCoveragePercent%" })) -Style 'Normal')) | Out-Null
+    $mfaCoverageNarrativeText = if ($null -ne $mfaUsersCoveredByEnabledPolicies -and $null -ne $mfaEnabledUsersReviewed -and $null -ne $mfaUserCoveragePercent) {
+        "Based on the reviewed enabled-user inventory, those enabled MFA policies appear to cover $mfaUsersCoveredByEnabledPolicies of $mfaEnabledUsersReviewed enabled reviewed user(s), or $mfaUserCoveragePercent%."
+    }
+    elseif ($null -ne $mfaEnabledUsersReviewed) {
+        "The reviewed enabled-user inventory included $mfaEnabledUsersReviewed enabled account(s), but the current source did not surface a complete covered-user total."
+    }
+    else {
+        'The current source did not surface enough enabled-user detail to calculate a reliable MFA coverage total.'
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("Enforcement shows whether users are actually being required to perform MFA, not just whether they have registered methods. In this review, the policy baseline shows {0} enabled Conditional Access policy/policies that require MFA and {1} still in report-only mode. {2} Report-only policies do not count as enforced coverage. Detailed uncovered-user and policy-scope review rows are available in the workbook tabs MfaEnforcementGapUsers and MfaEnforcementScopeReview." -f $(if ($null -eq $enabledMfaEnforcementPolicies) { 'an unconfirmed number of' } else { $enabledMfaEnforcementPolicies }), $(if ($null -eq $reportOnlyMfaEnforcementPolicies) { 'an unconfirmed number of policies' } else { $reportOnlyMfaEnforcementPolicies }), $mfaCoverageNarrativeText) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("Guest MFA should be read as its own design question, not as a side effect of employee-only policies. {0}" -f $guestUserEnforcementStateText) -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ("Privileged access should also be reviewed separately from the general population. In the reviewed enabled-admin set, {0} admin account(s) are not registered for MFA and {1} are not covered by the active MFA enforcement baseline. Detailed admin gap rows are available in the workbook tabs AdminMfaRegistrationGaps and AdminMfaEnforcementGaps." -f $(if ($null -eq $adminUsersNotRegisteredForMfa) { 'an unconfirmed number of' } else { $adminUsersNotRegisteredForMfa }), $(if ($null -eq $adminUsersNotCoveredByMfaEnforcement) { 'an unconfirmed number of' } else { $adminUsersNotCoveredByMfaEnforcement })) -Style 'Normal')) | Out-Null
+    $adminRegistrationNarrativeText = if ($null -ne $adminUsersNotRegisteredForMfa) {
+        "$adminUsersNotRegisteredForMfa admin account(s) are not registered for MFA"
+    }
+    else {
+        'the current source did not confirm how many admin accounts are not registered for MFA'
+    }
+    $adminCoverageNarrativeText = if ($null -ne $adminUsersNotCoveredByMfaEnforcement) {
+        "$adminUsersNotCoveredByMfaEnforcement are not covered by the active MFA enforcement baseline"
+    }
+    else {
+        'the current source did not confirm how many admin accounts are outside the active MFA enforcement baseline'
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("Privileged access should also be reviewed separately from the general population. In the reviewed enabled-admin set, {0}, and {1}. Detailed admin gap rows are available in the workbook tabs AdminMfaRegistrationGaps and AdminMfaEnforcementGaps." -f $adminRegistrationNarrativeText, $adminCoverageNarrativeText) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaUserExperienceText)) { $guestMfaUserExperienceText } else { 'Guest-user experience should be reviewed separately from enrollment counts because strong guest authentication can often rely on the guest home-tenant MFA rather than a separate registration in this tenant.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaDesiredStateText)) { $guestMfaDesiredStateText } else { 'The desired baseline is strong guest authentication with trusted home-tenant MFA where supported and approved, not a blanket requirement for every guest to register separately in the resource tenant.' })) -Style 'Normal')) | Out-Null
     if (-not [string]::IsNullOrWhiteSpace($guestMfaRecommendationStrategyText)) {
@@ -2653,11 +2878,29 @@ function New-CustomerAssessmentDocumentBlocks {
     }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'MFA Enforcement Gap Summary' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Coverage Gap Signal', 'Current State') -Rows $mfaGapSummaryRows)) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ("Of the {0} enabled reviewed user(s) not currently covered by active MFA enforcement, {1} appear explicitly excluded while {2} fall outside the active include scope. The table below highlights the first {3} uncovered internal member identities so the team can see whether the current employee-focused gap is being driven by exclusions, narrow targeting, or both." -f $(if ($null -eq $mfaUsersNotCoveredByEnabledPolicies) { 'unconfirmed' } else { $mfaUsersNotCoveredByEnabledPolicies }), $mfaExcludedUserCount, $mfaOutsideIncludeUserCount, [math]::Min($mfaGapInternalMemberRowsSorted.Count, 15)) -Style 'Normal')) | Out-Null
+    $mfaGapNarrativeText = if ($null -ne $mfaUsersNotCoveredByEnabledPolicies) {
+        "Of the $mfaUsersNotCoveredByEnabledPolicies enabled reviewed user(s) not currently covered by active MFA enforcement, $mfaExcludedUserCount appear explicitly excluded while $mfaOutsideIncludeUserCount fall outside the active include scope."
+    }
+    elseif ($mfaGapRowsSorted.Count -gt 0) {
+        "The current source surfaced $($mfaGapRowsSorted.Count) uncovered reviewed user(s); $mfaExcludedUserCount appear explicitly excluded while $mfaOutsideIncludeUserCount fall outside the active include scope."
+    }
+    else {
+        'The current source did not surface uncovered-user totals, so the table below should be treated as representative evidence rather than a complete uncovered-user census.'
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("{0} The table below highlights the first {1} uncovered internal member identities so the team can see whether the current employee-focused gap is being driven by exclusions, narrow targeting, or both." -f $mfaGapNarrativeText, [math]::Min($mfaGapInternalMemberRowsSorted.Count, 15)) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Top Internal Member Users Not Covered by Enabled MFA Enforcement' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Display Name', 'User Principal Name', 'User Type', 'Gap Category', 'Related Policy / Scope') -Rows $mfaGapDetailRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Guest MFA Coverage Drivers' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ("Guest users currently show {0} covered and {1} uncovered account(s) in the reviewed enabled-user inventory. {2} There are {3} guest or external-focused include row(s) and {4} guest or external-focused exclusion row(s) surfaced in the reviewed policy scope. {5}" -f $(if ($null -eq $mfaGuestUsersCoveredByEnabledPolicies) { 'an unconfirmed number of' } else { $mfaGuestUsersCoveredByEnabledPolicies }), $mfaUncoveredGuestCount, $mfaScopeDriverText, $guestRelevantIncludeCount, $guestRelevantExcludeCount, $mfaScopeInterpretationText) -Style 'Normal')) | Out-Null
+    $guestCoverageInterpretationText = if ($null -ne $mfaGuestUsersCoveredByEnabledPolicies) {
+        "Guest users currently show $mfaGuestUsersCoveredByEnabledPolicies covered and $mfaUncoveredGuestCount uncovered account(s) in the reviewed enabled-user inventory."
+    }
+    elseif ($null -ne $mfaEnabledGuestUsersReviewed) {
+        "The reviewed data included $mfaEnabledGuestUsersReviewed enabled guest account(s), but a complete guest covered-count total was not surfaced."
+    }
+    else {
+        'The reviewed data did not surface a complete guest MFA coverage count.'
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("{0} {1} There are {2} guest or external-focused include row(s) and {3} guest or external-focused exclusion row(s) surfaced in the reviewed policy scope. {4}" -f $guestCoverageInterpretationText, $mfaScopeDriverText, $guestRelevantIncludeCount, $guestRelevantExcludeCount, $mfaScopeInterpretationText) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Representative MFA Scope Examples' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Policy', 'Scope Type', 'Scope Signal', 'Why It Matters') -Rows $mfaScopeExampleRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $identityConsultativeSummary) { $identityConsultativeSummary.RecommendationSupport } else { 'This section supports the identity and access recommendations in 4.0.' })) -Style 'Normal')) | Out-Null

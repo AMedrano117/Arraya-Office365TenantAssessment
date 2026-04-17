@@ -400,6 +400,20 @@ function Get-RoadmapPhase {
     }
 }
 
+function Get-RoadmapPhaseRank {
+    [CmdletBinding()]
+    param([AllowNull()][string]$Phase)
+
+    switch (([string]$Phase).Trim().ToLowerInvariant()) {
+        'immediate' { return 1 }
+        'near term' { return 2 }
+        'near-term' { return 2 }
+        'planned' { return 3 }
+        'monitor' { return 4 }
+        default { return 5 }
+    }
+}
+
 function New-CustomerSummary {
     [CmdletBinding()]
     param(
@@ -1306,8 +1320,8 @@ function Get-DerivedWorkstreamTopSignals {
 function Resolve-VisibleWorkstreamSummaries {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)][object[]]$Summaries,
-        [Parameter(Mandatory = $true)][object[]]$Findings
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Summaries,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Findings
     )
 
     $visibleSummaries = New-Object System.Collections.Generic.List[object]
@@ -1872,61 +1886,80 @@ function Get-CustomerRoadmapActions {
     )
 
     $actions = New-Object System.Collections.Generic.List[object]
-    foreach ($phaseName in @('Immediate', 'Near Term', 'Planned', 'Monitor')) {
-        $phaseRows = @($Findings | Where-Object { $_.RoadmapPhase -eq $phaseName })
-        if ($phaseRows.Count -eq 0) { continue }
+    $themeGroups = @(
+        $Findings |
+            Group-Object { (Get-CustomerThemeProfile -Finding $_).Key } |
+            Sort-Object `
+                @{ Expression = { (@($_.Group | ForEach-Object { Get-RoadmapPhaseRank -Phase ([string]$_.RoadmapPhase) }) | Measure-Object -Minimum).Minimum }; Descending = $false }, `
+                @{ Expression = { ($_.Group | ForEach-Object { Get-SeverityWeight -Severity $_.Severity } | Measure-Object -Maximum).Maximum }; Descending = $true }, `
+                @{ Expression = { $_.Count }; Descending = $true }, `
+                Name
+    )
 
-        $phaseGroups = @(
-            $phaseRows |
-                Group-Object { (Get-CustomerThemeProfile -Finding $_).Key } |
+    foreach ($group in @($themeGroups)) {
+        $orderedRows = @(
+            $group.Group |
                 Sort-Object `
-                    @{ Expression = { ($_.Group | ForEach-Object { Get-SeverityWeight -Severity $_.Severity } | Measure-Object -Maximum).Maximum }; Descending = $true }, `
-                    @{ Expression = { $_.Count }; Descending = $true }, `
-                    Name
+                    @{ Expression = { Get-SeverityWeight -Severity $_.Severity }; Descending = $true }, `
+                    @{ Expression = { Get-RoadmapPhaseRank -Phase ([string]$_.RoadmapPhase) }; Descending = $false }, `
+                    RuleId
         )
+        if ($orderedRows.Count -eq 0) { continue }
 
-        foreach ($group in $phaseGroups | Select-Object -First $MaxPerPhase) {
-            $orderedRows = @(
-                $group.Group |
-                    Sort-Object `
-                        @{ Expression = { Get-SeverityWeight -Severity $_.Severity }; Descending = $true }, `
-                        @{ Expression = { switch ($_.PriorityBand) { 'Immediate' { 1 } 'Near Term' { 2 } 'Planned' { 3 } default { 4 } } } }, `
-                        RuleId
-            )
-            if ($orderedRows.Count -eq 0) { continue }
+        $leadFinding = $orderedRows[0]
+        $profile = Get-CustomerThemeProfile -Finding $leadFinding
+        $areas = @(
+            $orderedRows |
+                ForEach-Object { [string]$_.Area } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Select-Object -Unique |
+                Select-Object -First 4
+        )
+        $workstreams = @(
+            $orderedRows |
+                ForEach-Object { [string]$_.OwnerTeam } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Select-Object -Unique
+        )
+        $roadmapPhase = [string](@(
+            $orderedRows |
+                Sort-Object @{ Expression = { Get-RoadmapPhaseRank -Phase ([string]$_.RoadmapPhase) }; Descending = $false } |
+                Select-Object -First 1
+        )[0].RoadmapPhase)
+        $highestSeverity = [string](@(
+            $orderedRows |
+                Sort-Object @{ Expression = { Get-SeverityWeight -Severity $_.Severity }; Descending = $true } |
+                Select-Object -First 1
+        )[0].Severity)
 
-            $leadFinding = $orderedRows[0]
-            $profile = Get-CustomerThemeProfile -Finding $leadFinding
-            $areas = @(
-                $orderedRows |
-                    ForEach-Object { [string]$_.Area } |
-                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-                    Select-Object -Unique |
-                    Select-Object -First 3
-            )
-
-            $actions.Add([pscustomobject]@{
-                RoadmapPhase        = $phaseName
-                ActionTitle         = $profile.ActionTitle
-                Theme               = $profile.Theme
-                Workstream          = [string]$leadFinding.OwnerTeam
-                HighestSeverity     = [string]$leadFinding.Severity
-                FindingCount        = $orderedRows.Count
-                WhatThisAddresses   = $(if ($areas.Count -gt 0) { 'This work item addresses {0} related findings across {1}.' -f $orderedRows.Count, (Join-ArrayaReadableList -Items $areas) } else { 'This work item addresses {0} related findings in the same control area.' -f $orderedRows.Count })
-                StandoutReason      = Get-CustomerStandoutSentence -LeadFinding $leadFinding -FindingCount $orderedRows.Count -Areas $areas
-                ExampleText         = Get-CustomerFindingExampleText -Finding $leadFinding -MaxItems 2
-                WhyItMatters        = $(if ([string]::IsNullOrWhiteSpace([string](Convert-ToArrayaSentenceFragment -Text $leadFinding.WhyFlagged))) { 'This indicates that the tenant is carrying a repeat control pattern that will remain visible until this workstream is addressed.' } else { 'This matters because ' + (Convert-ToArrayaSentenceFragment -Text $leadFinding.WhyFlagged) + '.' })
-                RecommendedNextStep = Get-ArrayaLeadSentence -Text $leadFinding.Recommendation
-                BusinessValue       = $(if ([string]::IsNullOrWhiteSpace([string](Convert-ToArrayaOutcomeSentence -Text $leadFinding.BusinessValue))) { 'If it remains open, the tenant will continue to carry the same exposure and operational friction reflected in the current findings.' } else { (Convert-ToArrayaOutcomeSentence -Text $leadFinding.BusinessValue) + '.' })
-                PrimaryOwner        = Get-CustomerActionPrimaryOwnerLabel -Finding $leadFinding
-                FirstValidationStep = Get-CustomerActionFirstValidationStep -LeadFinding $leadFinding -Areas $areas
-                SuccessCheck        = Get-CustomerActionSuccessCheck -LeadFinding $leadFinding
-                RelatedSection      = Get-CustomerActionReferenceSection -LeadFinding $leadFinding
-            }) | Out-Null
-        }
+        $actions.Add([pscustomobject]@{
+            RoadmapPhase        = $roadmapPhase
+            ActionTitle         = $profile.ActionTitle
+            Theme               = $profile.Theme
+            Workstream          = $(if ($workstreams.Count -gt 0) { $workstreams[0] } else { [string]$leadFinding.OwnerTeam })
+            HighestSeverity     = $highestSeverity
+            FindingCount        = $orderedRows.Count
+            WhatThisAddresses   = $(if ($areas.Count -gt 0) { 'This work item addresses {0} related findings across {1}.' -f $orderedRows.Count, (Join-ArrayaReadableList -Items $areas) } else { 'This work item addresses {0} related findings in the same control area.' -f $orderedRows.Count })
+            StandoutReason      = Get-CustomerStandoutSentence -LeadFinding $leadFinding -FindingCount $orderedRows.Count -Areas $areas
+            ExampleText         = Get-CustomerFindingExampleText -Finding $leadFinding -MaxItems 2
+            WhyItMatters        = $(if ([string]::IsNullOrWhiteSpace([string](Convert-ToArrayaSentenceFragment -Text $leadFinding.WhyFlagged))) { 'This indicates that the tenant is carrying a repeat control pattern that will remain visible until this workstream is addressed.' } else { 'This matters because ' + (Convert-ToArrayaSentenceFragment -Text $leadFinding.WhyFlagged) + '.' })
+            RecommendedNextStep = Get-ArrayaLeadSentence -Text $leadFinding.Recommendation
+            BusinessValue       = $(if ([string]::IsNullOrWhiteSpace([string](Convert-ToArrayaOutcomeSentence -Text $leadFinding.BusinessValue))) { 'If it remains open, the tenant will continue to carry the same exposure and operational friction reflected in the current findings.' } else { (Convert-ToArrayaOutcomeSentence -Text $leadFinding.BusinessValue) + '.' })
+            PrimaryOwner        = Get-CustomerActionPrimaryOwnerLabel -Finding $leadFinding
+            FirstValidationStep = Get-CustomerActionFirstValidationStep -LeadFinding $leadFinding -Areas $areas
+            SuccessCheck        = Get-CustomerActionSuccessCheck -LeadFinding $leadFinding
+            RelatedSection      = Get-CustomerActionReferenceSection -LeadFinding $leadFinding
+        }) | Out-Null
     }
 
-    return @($actions.ToArray())
+    return @(
+        $actions.ToArray() |
+            Sort-Object `
+                @{ Expression = { Get-RoadmapPhaseRank -Phase ([string]$_.RoadmapPhase) }; Descending = $false }, `
+                @{ Expression = { Get-SeverityWeight -Severity ([string]$_.HighestSeverity) }; Descending = $true }, `
+                @{ Expression = { [int]$_.FindingCount }; Descending = $true }, `
+                ActionTitle
+    )
 }
 
 function Get-CustomerExecutiveSummaryNarrative {
@@ -2339,20 +2372,147 @@ function Get-CustomerMfaEnrollmentSummary {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)]$ExistingSummary,
-        [Parameter(Mandatory = $false)]$MfaSummary
+        [Parameter(Mandatory = $false)]$MfaSummary,
+        [Parameter(Mandatory = $false)][object[]]$MfaRegistrationDetails = @()
     )
 
     $source = if ($ExistingSummary) { $ExistingSummary } else { $MfaSummary }
-    if (-not $source) {
+    $detailRows = @($MfaRegistrationDetails | Where-Object { $null -ne $_ })
+    if (-not $source -and $detailRows.Count -eq 0) {
         return $null
+    }
+
+    $detailMethodCounts = @{}
+    $detailWeakMethodCounts = @{}
+    $detailStrongMethodCounts = @{}
+    $detailPhishingResistantMethodCounts = @{}
+    $detailDefaultMethodCounts = @{}
+    $detailTotalUsers = $detailRows.Count
+    $detailRegisteredUsers = 0
+    $detailUsersWithWeakMethodsOnly = 0
+    $detailUsersWithWeakDefaultMethod = 0
+    $detailUsersWithStrongMethods = 0
+    $detailUsersWithPhishingResistantMethods = 0
+    foreach ($detailRow in $detailRows) {
+        $isRegistered = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $detailRow -Names @('IsMfaRegistered'))
+        if ($isRegistered -eq $true) {
+            $detailRegisteredUsers++
+        }
+
+        $methodsRegisteredSource = if ($detailRow.PSObject -and ($detailRow.PSObject.Properties.Name -contains 'MethodsRegistered')) {
+            $detailRow.MethodsRegistered
+        }
+        else {
+            Get-ArrayaObjectValue -Object $detailRow -Names @('MethodsRegistered')
+        }
+        $methodsRegistered = @()
+        if ($methodsRegisteredSource -is [System.Collections.IEnumerable] -and -not ($methodsRegisteredSource -is [string]) -and -not ($methodsRegisteredSource -is [System.Collections.IDictionary])) {
+            $methodsRegistered = @(
+                @($methodsRegisteredSource) |
+                    ForEach-Object { Convert-ToArrayaDisplayText -Value $_ -Default '' } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+        }
+        else {
+            $methodsRegistered = Convert-ToArrayaStringList $methodsRegisteredSource
+        }
+        foreach ($methodName in @($methodsRegistered | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })) {
+            if (-not $detailMethodCounts.ContainsKey($methodName)) { $detailMethodCounts[$methodName] = 0 }
+            $detailMethodCounts[$methodName]++
+        }
+
+        $defaultMethodSource = if ($detailRow.PSObject -and ($detailRow.PSObject.Properties.Name -contains 'DefaultMfaMethod')) {
+            $detailRow.DefaultMfaMethod
+        }
+        else {
+            Get-ArrayaObjectValue -Object $detailRow -Names @('DefaultMfaMethod')
+        }
+        $defaultMethod = Convert-ToArrayaDisplayText -Value $defaultMethodSource -Default ''
+        if (-not [string]::IsNullOrWhiteSpace($defaultMethod)) {
+            if (-not $detailDefaultMethodCounts.ContainsKey($defaultMethod)) { $detailDefaultMethodCounts[$defaultMethod] = 0 }
+            $detailDefaultMethodCounts[$defaultMethod]++
+        }
+
+        $hasWeakMethod = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $detailRow -Names @('HasWeakMethod'))
+        $hasStrongMethod = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $detailRow -Names @('HasStrongMethod'))
+        $hasPhishingResistantMethod = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $detailRow -Names @('HasPhishingResistantMethod'))
+        if ($isRegistered -eq $true -and $hasWeakMethod -eq $true -and $hasStrongMethod -ne $true) {
+            $detailUsersWithWeakMethodsOnly++
+        }
+        if ($isRegistered -eq $true -and $hasStrongMethod -eq $true) {
+            $detailUsersWithStrongMethods++
+            foreach ($methodName in @($methodsRegistered | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })) {
+                if (-not $detailStrongMethodCounts.ContainsKey($methodName)) { $detailStrongMethodCounts[$methodName] = 0 }
+                $detailStrongMethodCounts[$methodName]++
+            }
+        }
+        if ($isRegistered -eq $true -and $hasPhishingResistantMethod -eq $true) {
+            $detailUsersWithPhishingResistantMethods++
+            foreach ($methodName in @($methodsRegistered | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })) {
+                if (-not $detailPhishingResistantMethodCounts.ContainsKey($methodName)) { $detailPhishingResistantMethodCounts[$methodName] = 0 }
+                $detailPhishingResistantMethodCounts[$methodName]++
+            }
+        }
+        if ($isRegistered -eq $true -and $hasWeakMethod -eq $true -and -not [string]::IsNullOrWhiteSpace($defaultMethod)) {
+            if (-not $detailWeakMethodCounts.ContainsKey($defaultMethod)) { $detailWeakMethodCounts[$defaultMethod] = 0 }
+            $detailWeakMethodCounts[$defaultMethod]++
+            $detailUsersWithWeakDefaultMethod++
+        }
     }
 
     $totalUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('TotalUsers', 'UserCount', 'TotalUserCount'))
     $registeredUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('RegisteredUsers', 'RegisteredUserCount', 'MfaRegisteredUsers'))
     $notRegisteredUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('NotRegisteredUsers'))
     $registrationPercent = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('RegistrationPercent', 'RegisteredPercent', 'MfaRegistrationPercent'))
+    if ($null -eq $totalUsers -and $detailTotalUsers -gt 0) {
+        $totalUsers = $detailTotalUsers
+    }
+    if ($null -eq $registeredUsers -and $detailTotalUsers -gt 0) {
+        $registeredUsers = $detailRegisteredUsers
+    }
+    if ($null -eq $notRegisteredUsers -and $detailTotalUsers -gt 0) {
+        $notRegisteredUsers = ($detailTotalUsers - $detailRegisteredUsers)
+    }
     if ($null -eq $registrationPercent -and $null -ne $registeredUsers -and $null -ne $totalUsers -and $totalUsers -gt 0) {
         $registrationPercent = [math]::Round(($registeredUsers / $totalUsers) * 100, 1)
+    }
+
+    $registeredMethodBreakdownText = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('RegisteredMethodBreakdown')) -Default ''
+    $weakMethodBreakdownText = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('WeakMethodBreakdown')) -Default ''
+    $strongMethodBreakdownText = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('StrongMethodBreakdown')) -Default ''
+    $phishingResistantMethodBreakdownText = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('PhishingResistantMethodBreakdown')) -Default ''
+    $defaultMethodBreakdownText = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('DefaultMethodBreakdown')) -Default ''
+
+    $methodCounts = Get-ArrayaObjectValue -Object $source -Names @('MethodCounts')
+    if ($detailMethodCounts.Count -gt 0 -and [string]::IsNullOrWhiteSpace($registeredMethodBreakdownText)) { $methodCounts = $detailMethodCounts }
+    elseif ($null -eq $methodCounts -and $detailMethodCounts.Count -gt 0) { $methodCounts = $detailMethodCounts }
+
+    $weakMethodCounts = Get-ArrayaObjectValue -Object $source -Names @('WeakMethodCounts')
+    if ($detailWeakMethodCounts.Count -gt 0 -and [string]::IsNullOrWhiteSpace($weakMethodBreakdownText)) { $weakMethodCounts = $detailWeakMethodCounts }
+    elseif ($null -eq $weakMethodCounts -and $detailWeakMethodCounts.Count -gt 0) { $weakMethodCounts = $detailWeakMethodCounts }
+
+    $strongMethodCounts = Get-ArrayaObjectValue -Object $source -Names @('StrongMethodCounts')
+    if ($detailStrongMethodCounts.Count -gt 0 -and [string]::IsNullOrWhiteSpace($strongMethodBreakdownText)) { $strongMethodCounts = $detailStrongMethodCounts }
+    elseif ($null -eq $strongMethodCounts -and $detailStrongMethodCounts.Count -gt 0) { $strongMethodCounts = $detailStrongMethodCounts }
+
+    $phishingResistantMethodCounts = Get-ArrayaObjectValue -Object $source -Names @('PhishingResistantMethodCounts')
+    if ($detailPhishingResistantMethodCounts.Count -gt 0 -and [string]::IsNullOrWhiteSpace($phishingResistantMethodBreakdownText)) { $phishingResistantMethodCounts = $detailPhishingResistantMethodCounts }
+    elseif ($null -eq $phishingResistantMethodCounts -and $detailPhishingResistantMethodCounts.Count -gt 0) { $phishingResistantMethodCounts = $detailPhishingResistantMethodCounts }
+
+    $defaultMethodCounts = Get-ArrayaObjectValue -Object $source -Names @('DefaultMethodCounts')
+    if ($detailDefaultMethodCounts.Count -gt 0 -and [string]::IsNullOrWhiteSpace($defaultMethodBreakdownText)) { $defaultMethodCounts = $detailDefaultMethodCounts }
+    elseif ($null -eq $defaultMethodCounts -and $detailDefaultMethodCounts.Count -gt 0) { $defaultMethodCounts = $detailDefaultMethodCounts }
+    $usersWithWeakMethodsOnly = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('UsersWithWeakMethodsOnly'))
+    if ($null -eq $usersWithWeakMethodsOnly -and $detailTotalUsers -gt 0) { $usersWithWeakMethodsOnly = $detailUsersWithWeakMethodsOnly }
+    $usersWithWeakDefaultMethod = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('UsersWithWeakDefaultMethod'))
+    if ($null -eq $usersWithWeakDefaultMethod -and $detailTotalUsers -gt 0) { $usersWithWeakDefaultMethod = $detailUsersWithWeakDefaultMethod }
+    $usersWithStrongMethods = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('UsersWithStrongMethods'))
+    if ($null -eq $usersWithStrongMethods -and $detailTotalUsers -gt 0) { $usersWithStrongMethods = $detailUsersWithStrongMethods }
+    $usersWithPhishingResistantMethods = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('UsersWithPhishingResistantMethods'))
+    if ($null -eq $usersWithPhishingResistantMethods -and $detailTotalUsers -gt 0) { $usersWithPhishingResistantMethods = $detailUsersWithPhishingResistantMethods }
+    $collectionState = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('CollectionState')) -Default ''
+    if ([string]::IsNullOrWhiteSpace($collectionState) -or $collectionState -eq 'N/A') {
+        $collectionState = if ($detailTotalUsers -gt 0) { 'Derived from MFA registration details' } else { 'Not validated from the reviewed data' }
     }
 
     return [pscustomobject]@{
@@ -2360,17 +2520,59 @@ function Get-CustomerMfaEnrollmentSummary {
         RegisteredUsers                   = $registeredUsers
         NotRegisteredUsers                = $(if ($null -ne $notRegisteredUsers) { $notRegisteredUsers } elseif ($null -ne $totalUsers -and $null -ne $registeredUsers) { $totalUsers - $registeredUsers } else { $null })
         RegistrationPercent               = $registrationPercent
-        RegisteredMethodBreakdown         = Convert-ToCustomerMfaMethodBreakdownText (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('RegisteredMethodBreakdown')) -Default (Convert-ToArrayaCountBreakdownText (Get-ArrayaObjectValue -Object $source -Names @('MethodCounts'))))
-        WeakMethodBreakdown               = Convert-ToCustomerMfaMethodBreakdownText (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('WeakMethodBreakdown')) -Default (Convert-ToArrayaCountBreakdownText (Get-ArrayaObjectValue -Object $source -Names @('WeakMethodCounts'))))
-        StrongMethodBreakdown             = Convert-ToCustomerMfaMethodBreakdownText (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('StrongMethodBreakdown')) -Default (Convert-ToArrayaCountBreakdownText (Get-ArrayaObjectValue -Object $source -Names @('StrongMethodCounts'))))
-        PhishingResistantMethodBreakdown  = Convert-ToCustomerMfaMethodBreakdownText (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('PhishingResistantMethodBreakdown')) -Default (Convert-ToArrayaCountBreakdownText (Get-ArrayaObjectValue -Object $source -Names @('PhishingResistantMethodCounts'))))
-        DefaultMethodBreakdown            = Convert-ToCustomerMfaMethodBreakdownText (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('DefaultMethodBreakdown')) -Default (Convert-ToArrayaCountBreakdownText (Get-ArrayaObjectValue -Object $source -Names @('DefaultMethodCounts'))))
-        UsersWithWeakMethodsOnly          = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('UsersWithWeakMethodsOnly'))
-        UsersWithWeakDefaultMethod        = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('UsersWithWeakDefaultMethod'))
-        UsersWithStrongMethods            = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('UsersWithStrongMethods'))
-        UsersWithPhishingResistantMethods = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $source -Names @('UsersWithPhishingResistantMethods'))
-        CollectionState                   = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $source -Names @('CollectionState')) -Default 'Not validated from the reviewed data'
+        RegisteredMethodBreakdown         = Convert-ToCustomerMfaMethodBreakdownText $(if (-not [string]::IsNullOrWhiteSpace($registeredMethodBreakdownText)) { $registeredMethodBreakdownText } else { Convert-ToArrayaCountBreakdownText $methodCounts })
+        WeakMethodBreakdown               = Convert-ToCustomerMfaMethodBreakdownText $(if (-not [string]::IsNullOrWhiteSpace($weakMethodBreakdownText)) { $weakMethodBreakdownText } else { Convert-ToArrayaCountBreakdownText $weakMethodCounts })
+        StrongMethodBreakdown             = Convert-ToCustomerMfaMethodBreakdownText $(if (-not [string]::IsNullOrWhiteSpace($strongMethodBreakdownText)) { $strongMethodBreakdownText } else { Convert-ToArrayaCountBreakdownText $strongMethodCounts })
+        PhishingResistantMethodBreakdown  = Convert-ToCustomerMfaMethodBreakdownText $(if (-not [string]::IsNullOrWhiteSpace($phishingResistantMethodBreakdownText)) { $phishingResistantMethodBreakdownText } else { Convert-ToArrayaCountBreakdownText $phishingResistantMethodCounts })
+        DefaultMethodBreakdown            = Convert-ToCustomerMfaMethodBreakdownText $(if (-not [string]::IsNullOrWhiteSpace($defaultMethodBreakdownText)) { $defaultMethodBreakdownText } else { Convert-ToArrayaCountBreakdownText $defaultMethodCounts })
+        UsersWithWeakMethodsOnly          = $usersWithWeakMethodsOnly
+        UsersWithWeakDefaultMethod        = $usersWithWeakDefaultMethod
+        UsersWithStrongMethods            = $usersWithStrongMethods
+        UsersWithPhishingResistantMethods = $usersWithPhishingResistantMethods
+        CollectionState                   = $collectionState
     }
+}
+
+function Get-CustomerGuestUserEnforcementState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]$ExistingSummary,
+        [Parameter(Mandatory = $false)][object[]]$ConditionalAccessPolicies = @(),
+        [Parameter(Mandatory = $false)]$ConditionalAccessSummary
+    )
+
+    $existingState = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('GuestUserEnforcementState')) -Default ''
+    if (-not [string]::IsNullOrWhiteSpace($existingState) -and $existingState -ne 'N/A') {
+        return $existingState
+    }
+
+    $guestCoverage = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('GuestOrExternalCoverage'))
+    if ($null -eq $guestCoverage -and $ConditionalAccessSummary) {
+        $guestCoverage = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object (Get-ArrayaObjectValue -Object $ConditionalAccessSummary -Names @('Summary')) -Names @('HasGuestCoverage'))
+    }
+    $enabledPoliciesRequiringMfa = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnabledPoliciesRequiringMfa'))
+    $reportOnlyPoliciesRequiringMfa = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('ReportOnlyPoliciesRequiringMfa'))
+    $enabledGuestUsersReviewed = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnabledGuestUsersReviewed'))
+    $guestUsersCovered = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('GuestUsersCoveredByEnabledMfaPolicies'))
+    $guestCoveragePercent = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('GuestUserCoveragePercent'))
+
+    if ($null -ne $enabledGuestUsersReviewed -and $enabledGuestUsersReviewed -eq 0) {
+        return 'No enabled guest users were available for guest MFA coverage review.'
+    }
+    if ($null -ne $enabledGuestUsersReviewed -and $enabledGuestUsersReviewed -gt 0 -and $null -ne $guestUsersCovered -and $guestUsersCovered -ge $enabledGuestUsersReviewed) {
+        return 'Reviewed enabled guest users appear covered by the active MFA enforcement baseline.'
+    }
+    if ($null -ne $guestCoveragePercent -and $guestCoveragePercent -gt 0) {
+        return 'Guest users are partially covered by the active MFA enforcement baseline.'
+    }
+    if ($guestCoverage -eq $true -and (($null -ne $enabledPoliciesRequiringMfa -and $enabledPoliciesRequiringMfa -gt 0) -or @($ConditionalAccessPolicies).Count -gt 0)) {
+        return 'Guest users are partially covered by the active MFA enforcement baseline.'
+    }
+    if ($guestCoverage -eq $true -and $null -ne $reportOnlyPoliciesRequiringMfa -and $reportOnlyPoliciesRequiringMfa -gt 0) {
+        return 'Guest MFA appears staged in report-only Conditional Access, but active guest enforcement was not clearly detected.'
+    }
+
+    return 'Guest MFA enforcement was not clearly detected in the reviewed policy baseline.'
 }
 
 function Test-ArrayaMeaningfulNestedValue {
@@ -2511,6 +2713,7 @@ function Get-CustomerMfaEnforcementSummary {
         elseif (($null -eq $reviewedPolicies) -and $ConditionalAccessPolicies.Count -gt 0) {
             $reviewedPolicies = $ConditionalAccessPolicies.Count
         }
+        $guestUserEnforcementState = Get-CustomerGuestUserEnforcementState -ExistingSummary $ExistingSummary -ConditionalAccessPolicies $ConditionalAccessPolicies -ConditionalAccessSummary $ConditionalAccessSummary
 
         return [pscustomobject]@{
             ConditionalAccessPoliciesReviewed   = $reviewedPolicies
@@ -2537,6 +2740,7 @@ function Get-CustomerMfaEnforcementSummary {
             PrivilegedRoleCoverage              = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('PrivilegedRoleCoverage'))
             RiskBasedCoverage                   = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('RiskBasedCoverage'))
             CompliantDeviceRequirement          = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('CompliantDeviceRequirement'))
+            GuestUserEnforcementState           = $guestUserEnforcementState
             EnforcementState                    = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnforcementState')) -Default 'Not validated from the reviewed data'
             CollectionState                     = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('CollectionState')) -Default 'Not validated from the reviewed data'
         }
@@ -2565,6 +2769,11 @@ function Get-CustomerMfaEnforcementSummary {
     else {
         'Active MFA enforcement was not clearly detected in the reviewed policy baseline.'
     }
+    $guestUserEnforcementState = Get-CustomerGuestUserEnforcementState -ExistingSummary ([pscustomobject]@{
+        GuestOrExternalCoverage        = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasGuestCoverage'))
+        EnabledPoliciesRequiringMfa    = $enabledMfaPolicies.Count
+        ReportOnlyPoliciesRequiringMfa = $reportOnlyMfaPolicies.Count
+    }) -ConditionalAccessPolicies $ConditionalAccessPolicies -ConditionalAccessSummary $ConditionalAccessSummary
 
     return [pscustomobject]@{
         ConditionalAccessPoliciesReviewed   = $(if ($null -ne $summaryTotalPolicies) { $summaryTotalPolicies } else { $ConditionalAccessPolicies.Count })
@@ -2591,6 +2800,7 @@ function Get-CustomerMfaEnforcementSummary {
         PrivilegedRoleCoverage              = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasPrivilegedRoleCoverage'))
         RiskBasedCoverage                   = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasRiskBasedCoverage'))
         CompliantDeviceRequirement          = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasCompliantDeviceRequirement'))
+        GuestUserEnforcementState           = $guestUserEnforcementState
         EnforcementState                    = $enforcementState
         CollectionState                     = 'Derived'
     }
@@ -2861,7 +3071,7 @@ function Get-CustomerTechnicalObservations {
     $caSummaryRecord = if ($Signals.ConditionalAccessSummary) { Get-ArrayaObjectValue -Object $Signals.ConditionalAccessSummary -Names @('Summary') } else { $null }
     $authConfig = $Signals.AuthenticationConfig
     $mfaSummary = $Signals.MfaRegistrationSummary
-    $mfaEnrollmentSummaryRecord = Get-CustomerMfaEnrollmentSummary -ExistingSummary $Signals.MfaEnrollmentSummary -MfaSummary $mfaSummary
+    $mfaEnrollmentSummaryRecord = Get-CustomerMfaEnrollmentSummary -ExistingSummary $Signals.MfaEnrollmentSummary -MfaSummary $mfaSummary -MfaRegistrationDetails (Convert-ArrayaObjectToArray $Signals.MfaRegistrationDetails)
     $mfaEnforcementSummaryRecord = Get-CustomerMfaEnforcementSummary -ExistingSummary $Signals.MfaEnforcementSummary -ConditionalAccessPolicies $caPolicies -ConditionalAccessSummary $Signals.ConditionalAccessSummary -SecurityDefaultsPolicy $Signals.SecurityDefaultsPolicy
     $enterpriseApps = Convert-ArrayaObjectToArray $Signals.EnterpriseApplications
     $enterpriseAppSummaryRecord = if ($Signals.EnterpriseApplicationSummary) { Get-ArrayaObjectValue -Object $Signals.EnterpriseApplicationSummary -Names @('Summary') } else { $null }
@@ -3363,7 +3573,7 @@ function Get-CustomerConsultativeSummaries {
     $privilegedSummaryRecord = if ($Signals.PrivilegedAccessSummary) { Get-ArrayaObjectValue -Object $Signals.PrivilegedAccessSummary -Names @('Summary') } else { $null }
     $mfaSummary = $Signals.MfaRegistrationSummary
     $caPolicies = Convert-ArrayaObjectToArray $Signals.ConditionalAccessPolicies
-    $mfaEnrollmentSummaryRecord = Get-CustomerMfaEnrollmentSummary -ExistingSummary $Signals.MfaEnrollmentSummary -MfaSummary $mfaSummary
+    $mfaEnrollmentSummaryRecord = Get-CustomerMfaEnrollmentSummary -ExistingSummary $Signals.MfaEnrollmentSummary -MfaSummary $mfaSummary -MfaRegistrationDetails (Convert-ArrayaObjectToArray $Signals.MfaRegistrationDetails)
     $mfaEnforcementSummaryRecord = Get-CustomerMfaEnforcementSummary -ExistingSummary $Signals.MfaEnforcementSummary -ConditionalAccessPolicies $caPolicies -ConditionalAccessSummary $Signals.ConditionalAccessSummary -SecurityDefaultsPolicy $Signals.SecurityDefaultsPolicy
     $caSummaryRecord = if ($Signals.ConditionalAccessSummary) { Get-ArrayaObjectValue -Object $Signals.ConditionalAccessSummary -Names @('Summary') } else { $null }
     $recipientRows = Convert-ArrayaObjectToArray $Signals.AllRecipients
@@ -4696,6 +4906,11 @@ $smtpRelaySummary = Get-ArrayaObjectValue -Object $tenantData -Names @('SMTPRela
 $smtpRelayConfig = Get-ArrayaObjectValue -Object $tenantData -Names @('SMTPRelayConfig')
 $authConfig = Get-ArrayaObjectValue -Object $tenantData -Names @('AuthenticationConfig')
 $mfaSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('MfaRegistrationSummary', 'MFARegistrationSummary', 'MfaRegistration', 'MFARegistration')
+$mfaRegistrationDetails = @(
+    Convert-ToImprovementCollectionRows `
+        -Value (Get-ArrayaObjectValue -Object $tenantData -Names @('MfaRegistrationDetails', 'MFARegistrationDetails')) `
+        -MarkerNames @('UserPrincipalName', 'Id', 'DisplayName')
+)
 $mfaEnrollmentSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('MfaEnrollmentSummary')
 $mfaEnforcementSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('MfaEnforcementSummary')
 $mfaEnforcementGapUsers = @(
@@ -4880,7 +5095,7 @@ if (-not $mfaSummary) {
     $mfaSummary = $mfaDerivedSummary
 }
 
-$mfaEnrollmentSummary = Get-CustomerMfaEnrollmentSummary -ExistingSummary $mfaEnrollmentSummary -MfaSummary $mfaSummary
+$mfaEnrollmentSummary = Get-CustomerMfaEnrollmentSummary -ExistingSummary $mfaEnrollmentSummary -MfaSummary $mfaSummary -MfaRegistrationDetails $mfaRegistrationDetails
 $mfaEnforcementSummary = Get-CustomerMfaEnforcementSummary -ExistingSummary $mfaEnforcementSummary -ConditionalAccessPolicies $caPolicies -ConditionalAccessSummary $conditionalAccessSummary -SecurityDefaultsPolicy $securityDefaultsPolicy
 
 if ($retentionPolicyRows.Count -eq 0 -and $mailboxRows.Count -gt 0) {
@@ -5515,7 +5730,28 @@ foreach ($finding in $sortedFindings) {
     if ([string]::IsNullOrWhiteSpace([string]$finding.PriorityBand)) { $finding.PriorityBand = 'Monitor' }
     if ([string]::IsNullOrWhiteSpace([string]$finding.RoadmapPhase)) { $finding.RoadmapPhase = 'Monitor' }
 }
-$sortedWorkstreamSummaries = Get-SortedWorkstreamSummaries -Summaries (Resolve-VisibleWorkstreamSummaries -Summaries $workstreamSummaries.ToArray() -Findings $sortedFindings)
+$resolvedWorkstreamSummaryRows = [object[]]@()
+if ($null -ne $workstreamSummaries) {
+    if ($workstreamSummaries.PSObject.Methods.Name -contains 'ToArray') {
+        $resolvedWorkstreamSummaryRows = @($workstreamSummaries.ToArray())
+    }
+    else {
+        $resolvedWorkstreamSummaryRows = @($workstreamSummaries)
+    }
+}
+
+$resolvedFindingRows = [object[]]@()
+if ($null -ne $sortedFindings) {
+    if ($sortedFindings.PSObject.Methods.Name -contains 'ToArray') {
+        $resolvedFindingRows = @($sortedFindings.ToArray())
+    }
+    else {
+        $resolvedFindingRows = @($sortedFindings)
+    }
+}
+
+$visibleWorkstreamSummaries = [object[]]@(Resolve-VisibleWorkstreamSummaries -Summaries $resolvedWorkstreamSummaryRows -Findings $resolvedFindingRows)
+$sortedWorkstreamSummaries = Get-SortedWorkstreamSummaries -Summaries @($visibleWorkstreamSummaries)
 $tenantName = Get-TenantDisplayName -TenantInfoSummary $(if ($tenantInfoSummary) { Get-ArrayaObjectValue -Object $tenantInfoSummary -Names @('Summary') } else { $null }) -LegacyData $tenantData -OutputPrefix $OutputPrefix
 $customerAssessmentSignals = [pscustomobject]@{
     Admins                     = $adminRows
@@ -5523,6 +5759,7 @@ $customerAssessmentSignals = [pscustomobject]@{
     ConditionalAccessSummary   = $conditionalAccessSummary
     AuthenticationConfig       = $authConfig
     MfaRegistrationSummary     = $mfaSummary
+    MfaRegistrationDetails     = $mfaRegistrationDetails
     MfaEnrollmentSummary       = $mfaEnrollmentSummary
     MfaEnforcementSummary      = $mfaEnforcementSummary
     MfaEnforcementGapUsers     = $mfaEnforcementGapUsers
