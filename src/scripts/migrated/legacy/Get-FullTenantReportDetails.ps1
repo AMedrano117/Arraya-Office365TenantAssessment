@@ -2515,6 +2515,11 @@ function Test-AssessmentConditionalAccessRequiresMfa {
         return $false
     }
 
+    $precomputedRequiresMfa = Convert-ToAssessmentBoolean (Get-ArrayaObjectValue -Object $Policy -Names @('RequiresMfaEnforcement'))
+    if ($precomputedRequiresMfa -eq $true) {
+        return $true
+    }
+
     $grantControls = Get-ArrayaObjectValue -Object $Policy -Names @('GrantControls')
     $builtInControls = Convert-ToAssessmentStringArray -Value (Get-ArrayaObjectValue -Object $Policy -Names @('GrantControls_BuiltInControls'))
     if ($builtInControls.Count -eq 0 -and $grantControls) {
@@ -2522,6 +2527,11 @@ function Test-AssessmentConditionalAccessRequiresMfa {
     }
 
     if (@($builtInControls | Where-Object { $_ -match '^(?i)mfa$' }).Count -gt 0) {
+        return $true
+    }
+
+    $usesAuthenticationStrengthForMfa = Convert-ToAssessmentBoolean (Get-ArrayaObjectValue -Object $Policy -Names @('UsesAuthenticationStrengthForMfa'))
+    if ($usesAuthenticationStrengthForMfa -eq $true) {
         return $true
     }
 
@@ -2619,6 +2629,32 @@ function Add-AssessmentUserIdsToSet {
     }
 }
 
+function Add-AssessmentNotePropertyIfPossible {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Object,
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Value
+    )
+
+    if ($null -eq $Object -or [string]::IsNullOrWhiteSpace($Name)) {
+        return
+    }
+
+    try {
+        $Object | Add-Member -MemberType NoteProperty -Name $Name -Value $Value -Force
+    }
+    catch {
+        # Some deserialized Graph/admin objects do not support mutation cleanly.
+        # The admin MFA review should still complete without losing the summary rows.
+    }
+}
+
 function Get-AssessmentConditionalAccessGroupUserIds {
     [CmdletBinding()]
     param(
@@ -2681,7 +2717,16 @@ function Get-AssessmentConditionalAccessRoleUserIds {
         [string]$OperationName = 'Conditional Access coverage expansion'
     )
 
-    if (@($RoleTemplateIds).Count -eq 0) {
+    $resolvedRoleTemplateIds = @(
+        Convert-ToAssessmentStringArray -Value $RoleTemplateIds |
+            Where-Object {
+                -not [string]::IsNullOrWhiteSpace([string]$_) -and
+                [string]$_ -notmatch '^(?i)(all|none|null|\[\]|\{\})$' -and
+                [string]$_ -match '^[0-9a-fA-F-]{8,}$'
+            }
+    )
+
+    if ($resolvedRoleTemplateIds.Count -eq 0) {
         return @()
     }
 
@@ -2689,7 +2734,7 @@ function Get-AssessmentConditionalAccessRoleUserIds {
         $errorCountBeforeRoleLookup = $global:Error.Count
         try {
             $directoryRoles = @(
-                Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/directoryRoles?`$select=id,displayName,roleTemplateId' -Activity "${OperationName}: loading active directory roles"
+                Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/directoryRoles?`$select=id,displayName,roleTemplateId' -PageSize 0 -Activity "${OperationName}: loading active directory roles"
             )
             foreach ($directoryRole in $directoryRoles) {
                 $roleTemplateId = [string](Get-ArrayaObjectValue -Object $directoryRole -Names @('roleTemplateId', 'RoleTemplateId'))
@@ -2714,7 +2759,7 @@ function Get-AssessmentConditionalAccessRoleUserIds {
     }
 
     $resolvedUserIds = New-Object System.Collections.Generic.List[string]
-    foreach ($roleTemplateId in @(Convert-ToAssessmentStringArray -Value $RoleTemplateIds)) {
+    foreach ($roleTemplateId in $resolvedRoleTemplateIds) {
         $normalizedTemplateId = $roleTemplateId.Trim().ToLowerInvariant()
         if ([string]::IsNullOrWhiteSpace($normalizedTemplateId)) {
             continue
@@ -2734,7 +2779,7 @@ function Get-AssessmentConditionalAccessRoleUserIds {
 
                 try {
                     $roleMembers = @(
-                        Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/directoryRoles/{0}/members/microsoft.graph.user?`$select=id" -f $directoryRoleId) -Activity "${OperationName}: expanding role scope [$directoryRoleId]"
+                        Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/directoryRoles/{0}/members/microsoft.graph.user?`$select=id" -f $directoryRoleId) -PageSize 0 -Activity "${OperationName}: expanding role scope [$directoryRoleId]"
                     )
                     foreach ($roleMember in $roleMembers) {
                         $roleMemberId = [string](Get-ArrayaObjectValue -Object $roleMember -Names @('id', 'Id'))
@@ -3133,21 +3178,22 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
 
     $coveredMemberUsers = @(@($coveredUserIdSet.Keys) | Where-Object { $enabledMemberUserIdSet.ContainsKey([string]$_) })
     $coveredGuestUsers = @(@($coveredUserIdSet.Keys) | Where-Object { $enabledGuestUserIdSet.ContainsKey([string]$_) })
-    $guestCoveredPolicyNameSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $guestCoveredPolicyNameLookup = @{}
     foreach ($coveredGuestUserId in $coveredGuestUsers) {
         if (-not $userCoveredPolicyLookup.ContainsKey([string]$coveredGuestUserId)) {
             continue
         }
 
         foreach ($policyName in @($userCoveredPolicyLookup[[string]$coveredGuestUserId])) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$policyName)) {
-                $null = $guestCoveredPolicyNameSet.Add([string]$policyName)
+            $policyNameText = Convert-ToAssessmentDisplayText -Value $policyName -Default ''
+            if (-not [string]::IsNullOrWhiteSpace($policyNameText) -and -not $guestCoveredPolicyNameLookup.ContainsKey($policyNameText)) {
+                $guestCoveredPolicyNameLookup[$policyNameText] = $true
             }
         }
     }
 
-    $guestExplicitScopePolicyNameSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($scopeReviewRow in @($scopeReviewRows)) {
+    $guestExplicitScopePolicyNameLookup = @{}
+    foreach ($scopeReviewRow in @($scopeReviewRows | Where-Object { $null -ne $_ })) {
         $scopeType = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $scopeReviewRow -Names @('ScopeType')) -Default ''
         $objectType = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $scopeReviewRow -Names @('ObjectType')) -Default ''
         if ($scopeType -ne 'Include' -or $objectType -ne 'GuestOrExternal') {
@@ -3155,8 +3201,8 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
         }
 
         $scopePolicyName = Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $scopeReviewRow -Names @('PolicyName')) -Default ''
-        if (-not [string]::IsNullOrWhiteSpace($scopePolicyName)) {
-            $null = $guestExplicitScopePolicyNameSet.Add($scopePolicyName)
+        if (-not [string]::IsNullOrWhiteSpace($scopePolicyName) -and -not $guestExplicitScopePolicyNameLookup.ContainsKey($scopePolicyName)) {
+            $guestExplicitScopePolicyNameLookup[$scopePolicyName] = $true
         }
     }
 
@@ -3166,10 +3212,10 @@ function Get-AssessmentMfaEnforcementCoverageSummary {
     $coverageSummary.MemberUserCoveragePercent = if ($enabledMemberUsers.Count -gt 0) { [math]::Round(($coveredMemberUsers.Count / $enabledMemberUsers.Count) * 100, 1) } else { $null }
     $coverageSummary.GuestUsersCoveredByEnabledMfaPolicies = $coveredGuestUsers.Count
     $coverageSummary.GuestUserCoveragePercent = if ($enabledGuestUsers.Count -gt 0) { [math]::Round(($coveredGuestUsers.Count / $enabledGuestUsers.Count) * 100, 1) } else { $null }
-    $coverageSummary.GuestCoveredPolicyCount = $guestCoveredPolicyNameSet.Count
-    $coverageSummary.GuestCoveredPolicyNames = @($guestCoveredPolicyNameSet | Sort-Object)
-    $coverageSummary.GuestExplicitScopePolicyCount = $guestExplicitScopePolicyNameSet.Count
-    $coverageSummary.GuestExplicitScopePolicyNames = @($guestExplicitScopePolicyNameSet | Sort-Object)
+    $coverageSummary.GuestCoveredPolicyCount = @($guestCoveredPolicyNameLookup.Keys).Count
+    $coverageSummary.GuestCoveredPolicyNames = @($guestCoveredPolicyNameLookup.Keys | Sort-Object)
+    $coverageSummary.GuestExplicitScopePolicyCount = @($guestExplicitScopePolicyNameLookup.Keys).Count
+    $coverageSummary.GuestExplicitScopePolicyNames = @($guestExplicitScopePolicyNameLookup.Keys | Sort-Object)
     $coverageSummary.CoverageCalculationNote = 'Estimate is based on enabled reviewed users and enabled Conditional Access policies that require MFA, whether through built-in MFA or authentication strength, expanded across direct users, targeted groups, targeted roles, and guest/external-user scope where supported.'
 
     if ($IncludeDetails) {
@@ -3463,16 +3509,16 @@ function Get-AssessmentAdminMfaReview {
             }
         }
 
-        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaRegistered' -Value $isMfaRegistered -Force
-        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaRegistrationState' -Value $mfaRegistrationState -Force
-        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaMethodsRegistered' -Value $methodsRegistered -Force
-        $adminRecord | Add-Member -MemberType NoteProperty -Name 'DefaultMfaMethod' -Value $defaultMfaMethod -Force
-        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaEnforced' -Value $mfaEnforced -Force
-        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaEnforcementState' -Value $mfaEnforcementState -Force
-        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaCoverageReviewed' -Value $coverageReviewed -Force
-        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaGapCategory' -Value $gapCategory -Force
-        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaGapReason' -Value $gapReason -Force
-        $adminRecord | Add-Member -MemberType NoteProperty -Name 'MfaRelatedPolicies' -Value $relatedPolicies -Force
+        Add-AssessmentNotePropertyIfPossible -Object $adminRecord -Name 'MfaRegistered' -Value $isMfaRegistered
+        Add-AssessmentNotePropertyIfPossible -Object $adminRecord -Name 'MfaRegistrationState' -Value $mfaRegistrationState
+        Add-AssessmentNotePropertyIfPossible -Object $adminRecord -Name 'MfaMethodsRegistered' -Value $methodsRegistered
+        Add-AssessmentNotePropertyIfPossible -Object $adminRecord -Name 'DefaultMfaMethod' -Value $defaultMfaMethod
+        Add-AssessmentNotePropertyIfPossible -Object $adminRecord -Name 'MfaEnforced' -Value $mfaEnforced
+        Add-AssessmentNotePropertyIfPossible -Object $adminRecord -Name 'MfaEnforcementState' -Value $mfaEnforcementState
+        Add-AssessmentNotePropertyIfPossible -Object $adminRecord -Name 'MfaCoverageReviewed' -Value $coverageReviewed
+        Add-AssessmentNotePropertyIfPossible -Object $adminRecord -Name 'MfaGapCategory' -Value $gapCategory
+        Add-AssessmentNotePropertyIfPossible -Object $adminRecord -Name 'MfaGapReason' -Value $gapReason
+        Add-AssessmentNotePropertyIfPossible -Object $adminRecord -Name 'MfaRelatedPolicies' -Value $relatedPolicies
 
         if ($accountEnabled -ne $false -and $mfaRegistrationState -eq 'Not registered') {
             $registrationGapRows.Add([pscustomobject]@{
@@ -11283,31 +11329,55 @@ function Get-MfaRegistrationDetails {
             $script:tenantStatsHash["MfaEnforcementScopeReview"][("{0:D3}-{1}" -f $scopeReviewIndex, $scopeRowKey)] = $scopeReviewRow
         }
 
-        $adminMfaReview = Get-AssessmentAdminMfaReview `
-            -Admins $script:tenantStatsHash["Admins"] `
-            -Users $script:tenantStatsHash["Users"] `
-            -MfaRegistrationDetails $script:tenantStatsHash["MfaRegistrationDetails"] `
-            -MfaCoverageAnalysis $mfaCoverageAnalysis `
-            -SecurityDefaultsEnabled $securityDefaultsEnabled `
-            -EnabledMfaPolicyCount $enabledMfaPolicies.Count `
-            -ReportOnlyMfaPolicyCount $reportOnlyMfaPolicies.Count
-        if ($adminMfaReview) {
-            $script:tenantStatsHash["AdminMfaSummary"] = if ($adminMfaReview.PSObject.Properties['Summary']) { $adminMfaReview.Summary } else { $adminMfaReview }
-            $adminRegistrationGapIndex = 0
-            foreach ($adminRegistrationGap in @($adminMfaReview.RegistrationGaps)) {
-                $adminRegistrationGapIndex++
-                $adminRegistrationGapKey = Convert-ToAssessmentPathComponent -Value (Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $adminRegistrationGap -Names @('UserPrincipalName', 'DisplayName')) -Default ('AdminMfaRegistrationGap{0:D3}' -f $adminRegistrationGapIndex)) -Fallback ('AdminMfaRegistrationGap{0:D3}' -f $adminRegistrationGapIndex)
-                $script:tenantStatsHash["AdminMfaRegistrationGaps"][("{0:D3}-{1}" -f $adminRegistrationGapIndex, $adminRegistrationGapKey)] = $adminRegistrationGap
-            }
-            $adminEnforcementGapIndex = 0
-            foreach ($adminEnforcementGap in @($adminMfaReview.EnforcementGaps)) {
-                $adminEnforcementGapIndex++
-                $adminEnforcementGapKey = Convert-ToAssessmentPathComponent -Value (Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $adminEnforcementGap -Names @('UserPrincipalName', 'DisplayName')) -Default ('AdminMfaEnforcementGap{0:D3}' -f $adminEnforcementGapIndex)) -Fallback ('AdminMfaEnforcementGap{0:D3}' -f $adminEnforcementGapIndex)
-                $script:tenantStatsHash["AdminMfaEnforcementGaps"][("{0:D3}-{1}" -f $adminEnforcementGapIndex, $adminEnforcementGapKey)] = $adminEnforcementGap
+        try {
+            $adminMfaReview = Get-AssessmentAdminMfaReview `
+                -Admins $script:tenantStatsHash["Admins"] `
+                -Users $script:tenantStatsHash["Users"] `
+                -MfaRegistrationDetails $script:tenantStatsHash["MfaRegistrationDetails"] `
+                -MfaCoverageAnalysis $mfaCoverageAnalysis `
+                -SecurityDefaultsEnabled $securityDefaultsEnabled `
+                -EnabledMfaPolicyCount $enabledMfaPolicies.Count `
+                -ReportOnlyMfaPolicyCount $reportOnlyMfaPolicies.Count
+            if ($adminMfaReview) {
+                $script:tenantStatsHash["AdminMfaSummary"] = if ($adminMfaReview.PSObject.Properties['Summary']) { $adminMfaReview.Summary } else { $adminMfaReview }
+                $adminRegistrationGapIndex = 0
+                foreach ($adminRegistrationGap in @($adminMfaReview.RegistrationGaps)) {
+                    $adminRegistrationGapIndex++
+                    $adminRegistrationGapKey = Convert-ToAssessmentPathComponent -Value (Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $adminRegistrationGap -Names @('UserPrincipalName', 'DisplayName')) -Default ('AdminMfaRegistrationGap{0:D3}' -f $adminRegistrationGapIndex)) -Fallback ('AdminMfaRegistrationGap{0:D3}' -f $adminRegistrationGapIndex)
+                    $script:tenantStatsHash["AdminMfaRegistrationGaps"][("{0:D3}-{1}" -f $adminRegistrationGapIndex, $adminRegistrationGapKey)] = $adminRegistrationGap
+                }
+                $adminEnforcementGapIndex = 0
+                foreach ($adminEnforcementGap in @($adminMfaReview.EnforcementGaps)) {
+                    $adminEnforcementGapIndex++
+                    $adminEnforcementGapKey = Convert-ToAssessmentPathComponent -Value (Convert-ToAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $adminEnforcementGap -Names @('UserPrincipalName', 'DisplayName')) -Default ('AdminMfaEnforcementGap{0:D3}' -f $adminEnforcementGapIndex)) -Fallback ('AdminMfaEnforcementGap{0:D3}' -f $adminEnforcementGapIndex)
+                    $script:tenantStatsHash["AdminMfaEnforcementGaps"][("{0:D3}-{1}" -f $adminEnforcementGapIndex, $adminEnforcementGapKey)] = $adminEnforcementGap
+                }
             }
         }
+        catch {
+            Write-Log -Type WARNING -Message "[Get-MfaRegistrationDetails] Admin MFA review enrichment did not complete, but MFA enforcement summary data was retained. $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        }
     } catch {
-        Write-Log -Type WARNING -Message "[Get-MfaRegistrationDetails] Error: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        $failureLine = $null
+        if ($_.InvocationInfo -and $_.InvocationInfo.ScriptLineNumber) {
+            $failureLine = "Line $($_.InvocationInfo.ScriptLineNumber)"
+        }
+        $failureCommand = $null
+        if ($_.InvocationInfo -and $_.InvocationInfo.Line) {
+            $failureCommand = $_.InvocationInfo.Line.Trim()
+        }
+        $failureContext = @($failureLine, $failureCommand | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join ' | '
+        $stackSuffix = if (-not [string]::IsNullOrWhiteSpace($_.ScriptStackTrace)) {
+            " Stack: $($_.ScriptStackTrace)"
+        }
+        else {
+            ''
+        }
+        $message = "[Get-MfaRegistrationDetails] Error: $($_.Exception.Message)"
+        if (-not [string]::IsNullOrWhiteSpace($failureContext)) {
+            $message = "$message ($failureContext)"
+        }
+        Write-Log -Type WARNING -Message ($message + $stackSuffix) -ExportFileLocation $ExportDetails
     }
     
     $elapsed = ((Get-Date) - $start).ToString('hh\:mm\:ss')

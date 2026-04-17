@@ -398,6 +398,23 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Resolve-DnsName -Name \("\{0\}\._domainkey\.\{1\}" -f \$selector, \$domainName\) -Server 1\.1\.1\.1 -Type CNAME -ErrorAction Ignore'
     }
 
+    It 'keeps MFA enforcement collection resilient when admin enrichment or flattened CA rows are imperfect' {
+        $script:collectorSource | Should -Match 'Add-AssessmentNotePropertyIfPossible'
+        $script:collectorSource | Should -Match 'Admin MFA review enrichment did not complete, but MFA enforcement summary data was retained'
+        $script:collectorSource | Should -Match 'RequiresMfaEnforcement'
+        $script:collectorSource | Should -Match 'UsesAuthenticationStrengthForMfa'
+        $script:collectorSource | Should -Match 'guestCoveredPolicyNameLookup'
+        $script:collectorSource | Should -Match 'guestExplicitScopePolicyNameLookup'
+    }
+
+    It 'avoids injecting unsupported $top paging into directory role expansion endpoints' {
+        $script:collectorSource | Should -Match 'directoryRoles\?\`\$select=id,displayName,roleTemplateId'' -PageSize 0'
+        $script:collectorSource | Should -Match 'members/microsoft\.graph\.user\?\`\$select=id'
+        $script:collectorSource | Should -Match 'members/microsoft\.graph\.user\?\`\$select=id" -f \$directoryRoleId\) -PageSize 0'
+        $script:collectorSource | Should -Match 'resolvedRoleTemplateIds'
+        $script:collectorSource | Should -Match '\(\?i\)\(all\|none\|null\|\\\[\\\]\|\\\{\\\}\)'
+    }
+
     It 'guards version-specific B2B and Teams activity calls with supported command names and cleanup' {
         $script:collectorSource | Should -Match 'Get-Command -Name ''Get-MgPolicyB2BManagementPolicy'' -ErrorAction Ignore'
         $script:collectorSource | Should -Match '\$b2bPolicyErrorCountBeforeLookup = \$global:Error\.Count'
