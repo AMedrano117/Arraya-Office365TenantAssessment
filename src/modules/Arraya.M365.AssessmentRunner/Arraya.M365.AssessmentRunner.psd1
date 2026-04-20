@@ -11,6 +11,8 @@
         'Invoke-M365TenantConnectionPreflight',
         'Invoke-M365TenantDataCollection',
         'Invoke-M365TenantAssessmentExport',
+        'Invoke-M365TenantPipeline',
+        'Resume-M365TenantPipeline',
         'Invoke-ADTenantAssessment',
         'Invoke-GraphActivityAssessment',
         'Invoke-M365ImprovementPlan',

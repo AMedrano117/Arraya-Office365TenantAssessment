@@ -150,7 +150,26 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$ExportOnly,
     [Parameter(Mandatory = $false)]
-    [string]$TenantStatsJsonPath
+    [string]$TenantStatsJsonPath,
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('Connection', 'TenantOverview', 'Identity', 'Exchange', 'Collaboration', 'Endpoint', 'Governance', 'Export')]
+    [string]$PipelinePhase,
+    [Parameter(Mandatory = $false)]
+    [string]$PipelineInputSnapshotPath,
+    [Parameter(Mandatory = $false)]
+    [string]$PipelineCheckpointPath,
+    [Parameter(Mandatory = $false)]
+    [switch]$PipelineSkipConnectionBootstrap,
+    [Parameter(Mandatory = $false)]
+    [string[]]$PipelinePhaseSteps,
+    [Parameter(Mandatory = $false)]
+    [int]$PipelineProgressTotalSteps,
+    [Parameter(Mandatory = $false)]
+    [int]$PipelineProgressStartingStep,
+    [Parameter(Mandatory = $false)]
+    [switch]$PipelineSuppressPhaseHeader,
+    [Parameter(Mandatory = $false)]
+    [switch]$PipelinePassThru
 )
 
 # Strict-mode safety: ensure legacy Graph globals exist even when SDK auth is used.
@@ -185,17 +204,38 @@ $isMergedOutputProfileSelection = $false
 $runExportOnly = $ExportOnly.IsPresent
 $runCollectionOnly = $DataCollectionOnly.IsPresent
 $runPreflightOnly = $PreflightOnly.IsPresent
+$script:IsPipelinePhaseExecution = -not [string]::IsNullOrWhiteSpace($PipelinePhase)
+$script:PipelinePhaseName = if ($script:IsPipelinePhaseExecution) { [string]$PipelinePhase } else { $null }
+$script:PipelineCheckpointPath = if ([string]::IsNullOrWhiteSpace($PipelineCheckpointPath)) { $null } else { [System.IO.Path]::GetFullPath($PipelineCheckpointPath) }
+$script:PipelineInputSnapshotPath = if ([string]::IsNullOrWhiteSpace($PipelineInputSnapshotPath)) { $null } else { [System.IO.Path]::GetFullPath($PipelineInputSnapshotPath) }
+$script:IsPipelineExportPhase = ($script:IsPipelinePhaseExecution -and $script:PipelinePhaseName -eq 'Export')
+$script:IsPipelineConnectionPhase = ($script:IsPipelinePhaseExecution -and $script:PipelinePhaseName -eq 'Connection')
+$script:PipelineUsesSnapshotInput = ($script:IsPipelinePhaseExecution -and -not [string]::IsNullOrWhiteSpace($script:PipelineInputSnapshotPath))
+$script:RunExportDataMode = ($runExportOnly -or $script:IsPipelineExportPhase)
+$script:RunConnectionOnlyMode = ($runPreflightOnly -or $script:IsPipelineConnectionPhase)
 $script:LoadedTenantSnapshot = $null
 $script:CurrentGraphMode = 'UNKNOWN'
 $script:AssessmentAuthWorkloadPlan = $null
 $script:SuppressCollectorCompletionBanners = $true
+$script:PipelinePhaseSteps = @($PipelinePhaseSteps)
+$script:PipelineProgressTotalSteps = if ($PipelineProgressTotalSteps -gt 0) { [int]$PipelineProgressTotalSteps } else { 0 }
+$script:PipelineProgressStartingStep = if ($PipelineProgressStartingStep -gt 0) { [int]$PipelineProgressStartingStep } else { 0 }
+$script:PipelineSuppressPhaseHeader = [bool]$PipelineSuppressPhaseHeader
 
 if ((@($runCollectionOnly, $runExportOnly, $runPreflightOnly) | Where-Object { $_ }).Count -gt 1) {
     throw "Data collection only mode, preflight only mode, and export only mode cannot be used together."
 }
 
+if ($script:IsPipelinePhaseExecution -and ((@($runCollectionOnly, $runExportOnly, $runPreflightOnly) | Where-Object { $_ }).Count -gt 0)) {
+    throw "Pipeline phase execution cannot be combined with legacy collection-only, preflight-only, or export-only switches."
+}
+
 if ($runExportOnly -and [string]::IsNullOrWhiteSpace($TenantStatsJsonPath)) {
     throw "Export only mode requires -TenantStatsJsonPath."
+}
+
+if ($script:IsPipelineExportPhase -and [string]::IsNullOrWhiteSpace($script:PipelineInputSnapshotPath)) {
+    throw "Pipeline export phase requires -PipelineInputSnapshotPath."
 }
 
 if ($runCollectionOnly -and $SkipJsonReport.IsPresent) {
@@ -4319,18 +4359,21 @@ function Initialize-AssessmentProgress {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [int]$TotalSteps
+        [int]$TotalSteps,
+        [Parameter(Mandatory = $false)]
+        [int]$StartCurrent = 0
     )
 
     $script:AssessmentProgressId = 90
     $script:AssessmentProgressState = [ordered]@{
         Total   = [Math]::Max($TotalSteps, 1)
-        Current = 0
+        Current = [Math]::Max($StartCurrent, 0)
     }
     $script:AssessmentStepMetrics = New-Object System.Collections.Generic.List[object]
 
     if (Test-ShowAssessmentProgress) {
-        Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Status "[0/$($script:AssessmentProgressState.Total)] Starting" -PercentComplete 0
+        $startingPercent = [math]::Round(($script:AssessmentProgressState.Current / $script:AssessmentProgressState.Total) * 100, 2)
+        Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Status "[$($script:AssessmentProgressState.Current)/$($script:AssessmentProgressState.Total)] Starting" -PercentComplete $startingPercent
     }
 }
 
@@ -11873,6 +11916,572 @@ function Import-TenantStatsJson {
     return $snapshotContext.LegacyData
 }
 
+function Get-AssessmentPhaseStepCounts {
+    [CmdletBinding()]
+    param()
+
+    return [ordered]@{
+        TenantOverview = 3
+        Identity       = 8
+        Exchange       = 10
+        Collaboration  = 4
+        Endpoint       = 2
+        Governance     = 8
+    }
+}
+
+function Publish-AssessmentTenantStatsGlobal {
+    [CmdletBinding()]
+    param()
+
+    if (-not $StoreTenantStatsGlobal) {
+        return
+    }
+
+    $resolvedTenantStatsVariableName = if ([string]::IsNullOrWhiteSpace($TenantStatsVariableName)) { 'ArrayaTenantStats' } else { $TenantStatsVariableName }
+    Set-Variable -Scope Global -Name $resolvedTenantStatsVariableName -Value $script:tenantStatsHash -Force
+    Write-Host ("Published tenant stats to global variable `${0}" -f $resolvedTenantStatsVariableName) -ForegroundColor DarkCyan
+    Write-Log -Type INFO -Message ("Published tenant stats to global variable '{0}' for interactive inspection." -f $resolvedTenantStatsVariableName) -ExportFileLocation $ExportDetails
+}
+
+function Complete-AssessmentPipelinePhase {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PhaseName,
+        [Parameter(Mandatory = $false)]
+        [string[]]$EmittedDataKeys = @()
+    )
+
+    $checkpointPath = $null
+    if (-not [string]::IsNullOrWhiteSpace($script:PipelineCheckpointPath) -and $PhaseName -ne 'Export') {
+        $checkpointDirectory = Split-Path -Path $script:PipelineCheckpointPath -Parent
+        if (-not [string]::IsNullOrWhiteSpace($checkpointDirectory) -and -not (Test-Path -Path $checkpointDirectory -PathType Container)) {
+            $null = New-Item -Path $checkpointDirectory -ItemType Directory -Force
+        }
+
+        Export-TenantStatsJson -TenantStatsHash $script:tenantStatsHash -Path $script:PipelineCheckpointPath
+        $checkpointPath = $script:PipelineCheckpointPath
+        Write-Log -Type INFO -Message ("[Pipeline] Saved {0} checkpoint: {1}" -f $PhaseName, $checkpointPath) -ExportFileLocation $ExportDetails
+    }
+
+    Publish-AssessmentTenantStatsGlobal
+
+    return [pscustomobject]@{
+        Phase              = $PhaseName
+        CheckpointPath     = $checkpointPath
+        ExportFileLocation = $ExportDetails
+        OutputProfile      = $OutputProfile
+        OutputProfileLabel = $script:EffectiveOutputProfileLabel
+        ReportingMode      = $reportingMode
+        GraphMode          = $script:CurrentGraphMode
+        EmittedDataKeys    = @($EmittedDataKeys)
+    }
+}
+
+function Invoke-AssessmentSnapshotDerivedPreparation {
+    [CmdletBinding()]
+    param()
+
+    Write-Host ("Loaded tenant data snapshot for export: {0}" -f ([System.IO.Path]::GetFullPath($resolvedTenantStatsJsonPath))) -ForegroundColor DarkCyan
+    if ($script:ProfileCollectionPlan.BuildOwnershipGovernanceTables) {
+        Update-OwnershipGovernanceTables -TenantStatsHash $script:tenantStatsHash
+    }
+    if ($script:ProfileCollectionPlan.BuildLicenseClassificationMetadata) {
+        Update-LicenseClassificationMetadata -TenantStatsHash $script:tenantStatsHash
+    }
+    if ($script:ProfileCollectionPlan.BuildAssessmentReportTables) {
+        Update-AssessmentReportTables -TenantStatsHash $script:tenantStatsHash
+    }
+    if ($script:ProfileCollectionPlan.BuildConfigurationSummaryTables) {
+        Update-ConfigurationSummaryTables -TenantStatsHash $script:tenantStatsHash
+    }
+}
+
+function Invoke-AssessmentTenantOverviewPhase {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [switch]$StandaloneProgress
+    )
+
+    $phaseCounts = Get-AssessmentPhaseStepCounts
+    if ($StandaloneProgress) {
+        Initialize-AssessmentProgress -TotalSteps $phaseCounts.TenantOverview
+    }
+
+    Write-ConsoleSection -Step '1/6' -Title 'Tenant Overview'
+    Invoke-AssessmentProgressStep -Name 'Tenant overview' -ScriptBlock { Get-TenantOverviewInfo }
+    if ($GraphTest -eq 'REST') {
+        Invoke-AssessmentProgressStep -Name 'License SKUs' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+    }
+    else {
+        Invoke-AssessmentProgressStep -Name 'License SKUs' -ScriptBlock { Get-AllLicenseSKUs }
+    }
+    Invoke-AssessmentProgressStep -Name 'AD Connect sync details' -ScriptBlock { Get-AdConnectSyncDetails }
+
+    if ($StandaloneProgress) {
+        Complete-AssessmentProgress
+    }
+}
+
+function Invoke-AssessmentIdentityPhase {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [switch]$StandaloneProgress,
+        [Parameter(Mandatory = $false)]
+        [string[]]$SelectedSteps = @($script:PipelinePhaseSteps),
+        [Parameter(Mandatory = $false)]
+        [switch]$SuppressSectionHeader = $script:PipelineSuppressPhaseHeader,
+        [Parameter(Mandatory = $false)]
+        [int]$ProgressTotalOverride = $script:PipelineProgressTotalSteps,
+        [Parameter(Mandatory = $false)]
+        [int]$ProgressStartingStep = $script:PipelineProgressStartingStep
+    )
+
+    $allSteps = @(
+        [pscustomobject]@{
+            Name      = 'Users'
+            RestBlock = { Get-GraphUserStats -Context $script:AssessmentContext }
+            SdkBlock  = { Get-AllUserDetails -detailLevel $reportingMode }
+        }
+        [pscustomobject]@{
+            Name      = 'Admins'
+            RestBlock = { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+            SdkBlock  = { Get-AllOffice365Admins }
+        }
+        [pscustomobject]@{
+            Name      = 'Entra groups'
+            RestBlock = { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType REST -Context $script:AssessmentContext }
+            SdkBlock  = { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType SDK -Context $script:AssessmentContext }
+        }
+        [pscustomobject]@{
+            Name      = 'Domains'
+            RestBlock = { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+            SdkBlock  = { Get-AllOffice365Domains }
+        }
+        [pscustomobject]@{
+            Name      = 'Authentication/SSO configuration'
+            RestBlock = { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+            SdkBlock  = { Get-AuthenticationConfiguration -detailLevel $reportingMode }
+        }
+        [pscustomobject]@{
+            Name      = 'Federation/cross-tenant configuration'
+            RestBlock = { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+            SdkBlock  = { Get-FederationAndCrossTenantConfiguration }
+        }
+        [pscustomobject]@{
+            Name      = 'Conditional Access policies'
+            RestBlock = { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+            SdkBlock  = { Get-ConditionalAccessPoliciesReport -detailLevel $reportingMode }
+        }
+        [pscustomobject]@{
+            Name      = 'MFA registration details'
+            RestBlock = { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+            SdkBlock  = { Get-MfaRegistrationDetails }
+        }
+    )
+
+    $selectedStepLookup = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($selectedStep in @($SelectedSteps | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })) {
+        $null = $selectedStepLookup.Add([string]$selectedStep)
+    }
+    $stepsToRun = if ($selectedStepLookup.Count -gt 0) {
+        @($allSteps | Where-Object { $selectedStepLookup.Contains([string]$_.Name) })
+    }
+    else {
+        $allSteps
+    }
+
+    $phaseCounts = Get-AssessmentPhaseStepCounts
+    if ($StandaloneProgress) {
+        $resolvedTotalSteps = if ($ProgressTotalOverride -gt 0) { $ProgressTotalOverride } else { [Math]::Max($stepsToRun.Count, 1) }
+        Initialize-AssessmentProgress -TotalSteps $resolvedTotalSteps -StartCurrent $ProgressStartingStep
+    }
+
+    if (-not $SuppressSectionHeader) {
+        Write-ConsoleSection -Step '2/6' -Title 'Identity'
+    }
+
+    switch ($GraphTest) {
+        'REST' { Write-Verbose 'Attempting to use Microsoft Graph REST API for tenant identity details' }
+        default { Write-Verbose 'Attempting to use Microsoft Graph SDK for tenant identity details' }
+    }
+
+    foreach ($step in @($stepsToRun)) {
+        $stepScriptBlock = if ($GraphTest -eq 'REST') { $step.RestBlock } else { $step.SdkBlock }
+        Invoke-AssessmentProgressStep -Name $step.Name -ScriptBlock $stepScriptBlock
+    }
+
+    if ($StandaloneProgress) {
+        Complete-AssessmentProgress
+    }
+}
+
+function Invoke-AssessmentExchangePhase {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [switch]$StandaloneProgress,
+        [Parameter(Mandatory = $false)]
+        [string[]]$SelectedSteps = @($script:PipelinePhaseSteps),
+        [Parameter(Mandatory = $false)]
+        [switch]$SuppressSectionHeader = $script:PipelineSuppressPhaseHeader,
+        [Parameter(Mandatory = $false)]
+        [int]$ProgressTotalOverride = $script:PipelineProgressTotalSteps,
+        [Parameter(Mandatory = $false)]
+        [int]$ProgressStartingStep = $script:PipelineProgressStartingStep
+    )
+
+    $allSteps = @(
+        [pscustomobject]@{
+            Name   = 'Exchange recipients'
+            Action = { Invoke-ProfileAwareAssessmentStep -Name 'Exchange recipients' -Enabled $script:ProfileCollectionPlan.CollectExchangeRecipients -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllRecipientDetails -detailLevel $reportingMode -Context $script:AssessmentContext } }
+        }
+        [pscustomobject]@{
+            Name   = 'Exchange mailboxes'
+            Action = { Invoke-AssessmentProgressStep -Name 'Exchange mailboxes' -ScriptBlock { Get-AllExchangeMailboxDetails -detailLevel $reportingMode -Context $script:AssessmentContext } }
+        }
+        [pscustomobject]@{
+            Name   = 'Exchange groups'
+            Action = { Invoke-ProfileAwareAssessmentStep -Name 'Exchange groups' -Enabled $script:ProfileCollectionPlan.CollectExchangeGroups -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-ExchangeGroupDetails -detailLevel $reportingMode -Context $script:AssessmentContext } }
+        }
+        [pscustomobject]@{
+            Name   = 'Public folders'
+            Action = { Invoke-ProfileAwareAssessmentStep -Name 'Public folders' -Enabled $script:ProfileCollectionPlan.CollectPublicFolders -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllPublicFolderDetails -detailLevel $reportingMode -Context $script:AssessmentContext } }
+        }
+        [pscustomobject]@{
+            Name   = 'Exchange hybrid configuration'
+            Action = { Invoke-AssessmentProgressStep -Name 'Exchange hybrid configuration' -ScriptBlock { Get-ExchangeHybridConfiguration -detailLevel $reportingMode -Context $script:AssessmentContext } }
+        }
+        [pscustomobject]@{
+            Name   = 'Mail flow rules/connectors'
+            Action = { Invoke-ProfileAwareAssessmentStep -Name 'Mail flow rules/connectors' -Enabled $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors -SkipReason 'Skipped in best-practices-only profile to reduce runtime.' -ScriptBlock { Get-MailFlowRulesandConnectors -detailLevel $reportingMode -Context $script:AssessmentContext } }
+        }
+        [pscustomobject]@{
+            Name   = 'Email activity insights'
+            Action = { Invoke-ProfileAwareAssessmentStep -Name 'Email activity insights' -Enabled $script:ProfileCollectionPlan.CollectEmailActivityDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-EmailActivityInsights -detailLevel $reportingMode } }
+        }
+        [pscustomobject]@{
+            Name   = 'Third-party spam filtering configuration'
+            Action = { Invoke-ProfileAwareAssessmentStep -Name 'Third-party spam filtering configuration' -Enabled $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering -SkipReason 'Requires mail flow connector/rule collection, which is disabled for this profile.' -ScriptBlock { Get-ThirdPartySpamFilteringConfig -Context $script:AssessmentContext } }
+        }
+        [pscustomobject]@{
+            Name   = 'SMTP relay configuration'
+            Action = { Invoke-ProfileAwareAssessmentStep -Name 'SMTP relay configuration' -Enabled $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration -SkipReason 'Requires mail flow connector collection, which is disabled for this profile.' -ScriptBlock { Get-SMTPRelayConfiguration -Context $script:AssessmentContext } }
+        }
+        [pscustomobject]@{
+            Name   = 'Exchange governance summaries'
+            Action = { Invoke-AssessmentProgressStep -Name 'Exchange governance summaries' -ScriptBlock { Update-ExchangeGovernanceTables -TenantStatsHash $script:tenantStatsHash -DetailLevel $reportingMode } }
+        }
+    )
+
+    $selectedStepLookup = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($selectedStep in @($SelectedSteps | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })) {
+        $null = $selectedStepLookup.Add([string]$selectedStep)
+    }
+    $stepsToRun = if ($selectedStepLookup.Count -gt 0) {
+        @($allSteps | Where-Object { $selectedStepLookup.Contains([string]$_.Name) })
+    }
+    else {
+        $allSteps
+    }
+
+    $phaseCounts = Get-AssessmentPhaseStepCounts
+    if ($StandaloneProgress) {
+        $resolvedTotalSteps = if ($ProgressTotalOverride -gt 0) { $ProgressTotalOverride } else { [Math]::Max($stepsToRun.Count, 1) }
+        Initialize-AssessmentProgress -TotalSteps $resolvedTotalSteps -StartCurrent $ProgressStartingStep
+    }
+
+    if (-not $SuppressSectionHeader) {
+        Write-ConsoleSection -Step '3/6' -Title 'Exchange'
+    }
+
+    foreach ($step in @($stepsToRun)) {
+        & $step.Action
+    }
+
+    if ($StandaloneProgress) {
+        Complete-AssessmentProgress
+    }
+}
+
+function Invoke-AssessmentCollaborationPhase {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [switch]$StandaloneProgress,
+        [Parameter(Mandatory = $false)]
+        [string[]]$SelectedSteps = @($script:PipelinePhaseSteps),
+        [Parameter(Mandatory = $false)]
+        [switch]$SuppressSectionHeader = $script:PipelineSuppressPhaseHeader,
+        [Parameter(Mandatory = $false)]
+        [int]$ProgressTotalOverride = $script:PipelineProgressTotalSteps,
+        [Parameter(Mandatory = $false)]
+        [int]$ProgressStartingStep = $script:PipelineProgressStartingStep
+    )
+
+    $sharePointDiscoveryService = if ($GraphTest -in @('REST', 'SDK')) {
+        'API'
+    }
+    elseif ($connectionResult -and $connectionResult.SharePointOnline) {
+        'SPO'
+    }
+    else {
+        'API'
+    }
+    $teamsDiscoveryService = if ($GraphTest -in @('SDK', 'REST')) { 'MGGraph' } else { 'Teams' }
+
+    $allSteps = @(
+        [pscustomobject]@{
+            Name   = 'Unified groups'
+            Action = { Invoke-ProfileAwareAssessmentStep -Name 'Unified groups' -Enabled $script:ProfileCollectionPlan.CollectUnifiedGroups -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllUnifiedGroups -detailLevel $reportingMode } }
+        }
+        [pscustomobject]@{
+            Name   = "SharePoint/OneDrive sites ($sharePointDiscoveryService)"
+            Action = { Invoke-AssessmentProgressStep -Name "SharePoint/OneDrive sites ($sharePointDiscoveryService)" -ScriptBlock { Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName $sharePointDiscoveryService } }
+        }
+        [pscustomobject]@{
+            Name   = 'Teams voice details'
+            Action = { Invoke-ProfileAwareAssessmentStep -Name 'Teams voice details' -Enabled $script:ProfileCollectionPlan.CollectTeamsVoiceDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-TeamsVoiceDetails } }
+        }
+        [pscustomobject]@{
+            Name   = "Teams inventory ($teamsDiscoveryService)"
+            Action = { Invoke-ProfileAwareAssessmentStep -Name "Teams inventory ($teamsDiscoveryService)" -Enabled $script:ProfileCollectionPlan.CollectTeamsDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-TeamsDetails -detailLevel $reportingMode -ServiceName $teamsDiscoveryService } }
+        }
+    )
+
+    $selectedStepLookup = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($selectedStep in @($SelectedSteps | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })) {
+        $null = $selectedStepLookup.Add([string]$selectedStep)
+    }
+    $stepsToRun = if ($selectedStepLookup.Count -gt 0) {
+        @($allSteps | Where-Object { $selectedStepLookup.Contains([string]$_.Name) })
+    }
+    else {
+        $allSteps
+    }
+
+    $phaseCounts = Get-AssessmentPhaseStepCounts
+    if ($StandaloneProgress) {
+        $resolvedTotalSteps = if ($ProgressTotalOverride -gt 0) { $ProgressTotalOverride } else { [Math]::Max($stepsToRun.Count, 1) }
+        Initialize-AssessmentProgress -TotalSteps $resolvedTotalSteps -StartCurrent $ProgressStartingStep
+    }
+
+    if (-not $SuppressSectionHeader) {
+        Write-ConsoleSection -Step '4/6' -Title 'Collaboration'
+    }
+
+    foreach ($step in @($stepsToRun)) {
+        & $step.Action
+    }
+
+    if ($StandaloneProgress) {
+        Complete-AssessmentProgress
+    }
+}
+
+function Invoke-AssessmentEndpointPhase {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [switch]$StandaloneProgress,
+        [Parameter(Mandatory = $false)]
+        [string[]]$SelectedSteps = @($script:PipelinePhaseSteps),
+        [Parameter(Mandatory = $false)]
+        [switch]$SuppressSectionHeader = $script:PipelineSuppressPhaseHeader,
+        [Parameter(Mandatory = $false)]
+        [int]$ProgressTotalOverride = $script:PipelineProgressTotalSteps,
+        [Parameter(Mandatory = $false)]
+        [int]$ProgressStartingStep = $script:PipelineProgressStartingStep
+    )
+
+    $allSteps = @(
+        [pscustomobject]@{
+            Name   = 'Devices'
+            Action = {
+                if ($GraphTest -eq 'REST') {
+                    Invoke-AssessmentProgressStep -Name 'Devices' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+                }
+                else {
+                    Invoke-AssessmentProgressStep -Name 'Devices' -ScriptBlock { Get-AllDevicesReport -detailLevel $reportingMode }
+                }
+            }
+        }
+        [pscustomobject]@{
+            Name   = 'Endpoint operational summaries'
+            Action = { Invoke-AssessmentProgressStep -Name 'Endpoint operational summaries' -ScriptBlock { Update-DeviceManagementSummary -TenantStatsHash $script:tenantStatsHash } }
+        }
+    )
+
+    $selectedStepLookup = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($selectedStep in @($SelectedSteps | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })) {
+        $null = $selectedStepLookup.Add([string]$selectedStep)
+    }
+    $stepsToRun = if ($selectedStepLookup.Count -gt 0) {
+        @($allSteps | Where-Object { $selectedStepLookup.Contains([string]$_.Name) })
+    }
+    else {
+        $allSteps
+    }
+
+    $phaseCounts = Get-AssessmentPhaseStepCounts
+    if ($StandaloneProgress) {
+        $resolvedTotalSteps = if ($ProgressTotalOverride -gt 0) { $ProgressTotalOverride } else { [Math]::Max($stepsToRun.Count, 1) }
+        Initialize-AssessmentProgress -TotalSteps $resolvedTotalSteps -StartCurrent $ProgressStartingStep
+    }
+
+    if (-not $SuppressSectionHeader) {
+        Write-ConsoleSection -Step '5/6' -Title 'Endpoint'
+    }
+
+    foreach ($step in @($stepsToRun)) {
+        & $step.Action
+    }
+
+    if ($StandaloneProgress) {
+        Complete-AssessmentProgress
+    }
+}
+
+function Invoke-AssessmentGovernancePhase {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [switch]$StandaloneProgress
+    )
+
+    $phaseCounts = Get-AssessmentPhaseStepCounts
+    if ($StandaloneProgress) {
+        Initialize-AssessmentProgress -TotalSteps $phaseCounts.Governance
+    }
+
+    Write-ConsoleSection -Step '6/6' -Title 'Governance'
+    if ($GraphTest -eq 'REST') {
+        Invoke-AssessmentProgressStep -Name 'Secure Score report' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+    }
+    else {
+        Invoke-AssessmentProgressStep -Name 'Secure Score report' -ScriptBlock { Get-SecuritySecureScoreReport -detailLevel $reportingMode -MostRecent }
+    }
+    Invoke-ProfileAwareAssessmentStep -Name 'Purview retention/DLP policies' -Enabled $script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies -SkipReason 'Governance compliance collection is disabled for this profile.' -ScriptBlock { Get-PurviewCompliancePolicies }
+    Invoke-AssessmentProgressStep -Name 'Operational governance summaries' -ScriptBlock { Update-TierBOperationalSummaries -TenantStatsHash $script:tenantStatsHash }
+    Invoke-AssessmentProgressStep -Name 'External sharing and guest access summaries' -ScriptBlock { Update-ExternalExposureSummaries -TenantStatsHash $script:tenantStatsHash }
+    Invoke-ProfileAwareAssessmentStep -Name 'Ownership governance tables' -Enabled $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables -SkipReason 'Ownership governance table build is disabled for this profile.' -ScriptBlock { Update-OwnershipGovernanceTables -TenantStatsHash $script:tenantStatsHash }
+    Invoke-ProfileAwareAssessmentStep -Name 'License classification metadata' -Enabled $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata -SkipReason 'License classification metadata is disabled for this profile.' -ScriptBlock { Update-LicenseClassificationMetadata -TenantStatsHash $script:tenantStatsHash }
+    Invoke-ProfileAwareAssessmentStep -Name 'Best-practice assessment tables' -Enabled $script:ProfileCollectionPlan.BuildAssessmentReportTables -SkipReason 'Best-practice table build is disabled for this profile.' -ScriptBlock { Update-AssessmentReportTables -TenantStatsHash $script:tenantStatsHash }
+    Invoke-ProfileAwareAssessmentStep -Name 'Configuration summary tables' -Enabled $script:ProfileCollectionPlan.BuildConfigurationSummaryTables -SkipReason 'Configuration summary tables are disabled for this profile.' -ScriptBlock { Update-ConfigurationSummaryTables -TenantStatsHash $script:tenantStatsHash }
+
+    if ($StandaloneProgress) {
+        Complete-AssessmentProgress
+    }
+}
+
+function Invoke-AssessmentExportPhase {
+    [CmdletBinding()]
+    param()
+
+    Write-ConsoleSection -Step 'Export' -Title 'Exporting results'
+    $requiresFilteredExportSnapshot = (-not $effectiveSkipWorkbook)
+    $ExportTenantStatsHash = $null
+    Prepare-AssessmentExportData `
+        -BuildCombinedUserMailboxProjection ([bool]$script:ProfileCollectionPlan.BuildCombinedUserMailboxProjection) `
+        -RequiresFilteredExportSnapshot ([bool]$requiresFilteredExportSnapshot)
+    if ($requiresFilteredExportSnapshot) {
+        $ExportTenantStatsHash = Filter-TenantStatsHash -TenantStatsStore $script:tenantStatsHash -reportingMode $reportingMode -GraphTest $GraphTest
+    }
+    else {
+        Write-Log -Type INFO -Message "Skipping filtered export snapshot build because workbook output is disabled for this profile." -ExportFileLocation $ExportDetails
+    }
+    $generatedArtifacts = [ordered]@{}
+    try {
+        if (Test-Path -Path $tenantExportPipelinePath) {
+            . $tenantExportPipelinePath
+        }
+        else {
+            throw "Export pipeline script was not found: $tenantExportPipelinePath"
+        }
+
+        if (-not (Get-Command -Name Invoke-M365TenantAssessmentExportPipeline -ErrorAction SilentlyContinue)) {
+            throw "Export pipeline function is unavailable. Expected loader path: $tenantExportPipelinePath"
+        }
+
+        $generatedArtifacts = Invoke-M365TenantAssessmentExportPipeline `
+            -TenantStatsHash $script:tenantStatsHash `
+            -ExportTenantStatsHash $ExportTenantStatsHash `
+            -ExportDetails $ExportDetails `
+            -SkipWorkbook $effectiveSkipWorkbook `
+            -SkipBestPracticesHtml $effectiveSkipBestPracticesHtml `
+            -SkipQuestionnaire $effectiveSkipQuestionnaire `
+            -SkipHtmlReport $effectiveSkipHtmlReport `
+            -SkipPdfReport $effectiveSkipPdfReport `
+            -SkipJsonReport $effectiveSkipJsonReport `
+            -OutputProfileLabel $effectiveOutputProfileLabel `
+            -ReportingMode $reportingMode `
+            -CollectionOnly ([bool]$runCollectionOnly) `
+            -ExportOnly ([bool]$script:RunExportDataMode) `
+            -LegacyScriptRoot $PSScriptRoot
+    }
+    catch {
+        Write-Log -Type ERROR -Message "Export pipeline execution failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
+        $generatedArtifacts = [ordered]@{}
+    }
+
+    $runLogDirectory = [System.IO.Path]::GetDirectoryName($ExportDetails)
+    if ([string]::IsNullOrWhiteSpace($runLogDirectory)) {
+        $runLogDirectory = (Get-Location).Path
+    }
+    $runLogDirectory = Join-Path -Path $runLogDirectory -ChildPath 'Debugging'
+    $runLogBaseName = [System.IO.Path]::GetFileNameWithoutExtension($ExportDetails)
+    if (-not [string]::IsNullOrWhiteSpace($runLogBaseName)) {
+        $runLogPath = Join-Path -Path $runLogDirectory -ChildPath ($runLogBaseName + '-FullReportLog.txt')
+        if (Test-Path -Path $runLogPath) {
+            $generatedArtifacts['Run Log'] = $runLogPath
+        }
+    }
+
+    Write-Host ""
+    if ($global:AllDiscoveryErrors.Count -gt 0) {
+        try {
+            $errorReportSummary = Export-ArrayaErrorReports -ExportFileLocation $ExportDetails -ErrorData $global:AllDiscoveryErrors -LogReportDirectory $ExportDetails
+            if ($errorReportSummary -and -not [string]::IsNullOrWhiteSpace([string]$errorReportSummary.JsonPath)) {
+                $generatedArtifacts['Error Report'] = $errorReportSummary.JsonPath
+            }
+        }
+        catch {
+            Write-Log -Type ERROR -Message "An error occurred in Exporting the Error Reports. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
+        }
+    }
+
+    $scriptEndTime = Get-Date
+    $totalTime = $scriptEndTime - $global:InitialStart
+    $totalHours = [math]::Floor($totalTime.TotalHours)
+    $totalMinutes = $totalTime.Minutes
+    $totalSeconds = $totalTime.Seconds
+    $timeString = if ($totalHours -gt 0) {
+        "$totalHours hour(s), $totalMinutes minute(s), $totalSeconds second(s)"
+    } elseif ($totalMinutes -gt 0) {
+        "$totalMinutes minute(s), $totalSeconds second(s)"
+    } else {
+        "$totalSeconds second(s)"
+    }
+
+    Write-ConsoleArtifactSummary -Artifacts $generatedArtifacts -DurationText $timeString -CapturedErrorCount $global:AllDiscoveryErrors.Count
+
+    $finalMemory = Get-CurrentProcessMemorySnapshot
+    Write-Log -Type INFO -Message ("Final process memory snapshot: WorkingSetMB={0}; PrivateMB={1}; PagedMB={2}; ManagedHeapMB={3}" -f $finalMemory.WorkingSetMB, $finalMemory.PrivateMB, $finalMemory.PagedMB, $finalMemory.HeapMB) -ExportFileLocation $ExportDetails
+
+    Publish-AssessmentTenantStatsGlobal
+    Write-Log -Type INFO -Message "COMPLETED: Gathered Tenant Details. Completed Time: $($timeString)" -ExportFileLocation $ExportDetails
+
+    $ExportTenantStatsHash = $null
+    $script:AssessmentStepMetrics = $null
+    [GC]::Collect()
+    [GC]::WaitForPendingFinalizers()
+
+    return $generatedArtifacts
+}
+
 #region HTML Report Helpers
 # HTML helper implementations are maintained in New-TenantHtmlReport.ps1
 #region Configuration and Defaults
@@ -12094,15 +12703,24 @@ function Ensure-AssessmentServiceContext {
 
 $connectionResult = $null
 $defaultTenantDisplayName = 'Tenant'
+$resolvedPipelineInputSnapshotPath = $null
 
-if ($runExportOnly) {
-    $resolvedTenantStatsJsonPath = [System.IO.Path]::GetFullPath($TenantStatsJsonPath)
+if ($script:RunExportDataMode -or $script:PipelineUsesSnapshotInput) {
+    $resolvedTenantStatsJsonPath = if ($script:IsPipelineExportPhase -or $script:PipelineUsesSnapshotInput) {
+        $resolvedPipelineInputSnapshotPath = $script:PipelineInputSnapshotPath
+        $resolvedPipelineInputSnapshotPath
+    }
+    else {
+        [System.IO.Path]::GetFullPath($TenantStatsJsonPath)
+    }
     $loadedTenantStats = Import-TenantStatsJson -Path $resolvedTenantStatsJsonPath
     if (-not $loadedTenantStats) {
-        throw "Export only mode could not load tenant data snapshot: $resolvedTenantStatsJsonPath"
+        $loadModeLabel = if ($script:IsPipelinePhaseExecution) { "Pipeline phase '$($script:PipelinePhaseName)'" } else { 'Export only mode' }
+        throw "$loadModeLabel could not load tenant data snapshot: $resolvedTenantStatsJsonPath"
     }
     if (-not ($loadedTenantStats -is [hashtable])) {
-        throw "Export only mode requires a hashtable-compatible tenant data snapshot. Snapshot format was not compatible: $resolvedTenantStatsJsonPath"
+        $loadModeLabel = if ($script:IsPipelinePhaseExecution) { "Pipeline phase '$($script:PipelinePhaseName)'" } else { 'Export only mode' }
+        throw "$loadModeLabel requires a hashtable-compatible tenant data snapshot. Snapshot format was not compatible: $resolvedTenantStatsJsonPath"
     }
 
     $script:tenantStatsHash = $loadedTenantStats
@@ -12126,7 +12744,8 @@ if ($runExportOnly) {
         $defaultTenantDisplayName = [string]$script:tenantStatsHash['TenantInfo'].DisplayName
     }
 }
-else {
+
+if (-not $script:RunExportDataMode -and -not $PipelineSkipConnectionBootstrap) {
     $resolvedAuthMode = Resolve-AssessmentRequestedAuthMode -AuthMode $AuthMode -CertificateThumbprint $CertificateThumbprint -ClientSecret $ClientSecret
     $assessmentAuthWorkloadPlan = Resolve-AssessmentAuthWorkloadPlan `
         -AuthMode $resolvedAuthMode `
@@ -12167,9 +12786,27 @@ else {
     Ensure-AssessmentServiceContext -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -ClientSecret $ClientSecret -InitialDomain $initialDomainForContext
     Write-ConnectionPreflightSummary -ConnectionResult ([pscustomobject]$connectionResult) -PermissionPreflightSkipped:$SkipPermissionPreflight
 
-    if ($runPreflightOnly) {
+    if ($script:RunConnectionOnlyMode) {
+        if ($script:IsPipelineConnectionPhase) {
+            return Complete-AssessmentPipelinePhase -PhaseName 'Connection'
+        }
+
         return
     }
+}
+elseif (-not $script:RunExportDataMode) {
+    try {
+        $defaultOrganization = Get-AssessmentTenantOrganization
+    }
+    catch {
+        $defaultOrganization = $null
+    }
+
+    if ($defaultOrganization -and $defaultOrganization.DisplayName) {
+        $defaultTenantDisplayName = [string]$defaultOrganization.DisplayName
+    }
+
+    Write-Log -Type INFO -Message "[Pipeline] Reusing current assessment session context and skipping connection bootstrap in legacy phase bridge." -ExportFileLocation $ExportDetails
 }
 
 #Get Export Path
@@ -12190,7 +12827,9 @@ $ExportDetails = Get-ExportPath -FileName $defaultReportFileName -UserInputPath 
 $global:AllDiscoveryErrors = New-Object System.Collections.Generic.List[pscustomobject]
 
 # Resolve collection depth and output behavior from the selected profile.
-Write-Host "Output profile: $effectiveOutputProfileLabel (scope: $reportingMode)" -ForegroundColor Green
+if (-not $script:PipelineSuppressPhaseHeader) {
+    Write-Host "Output profile: $effectiveOutputProfileLabel (scope: $reportingMode)" -ForegroundColor Green
+}
 
 $script:CollectionDepthPolicy = Get-ArrayaCollectionDepthPolicy -ReportingMode ((Get-Culture).TextInfo.ToTitleCase($reportingMode))
 
@@ -13737,9 +14376,11 @@ function Update-ExternalExposureSummaries {
 ########################################################
 # Main Execution (Main Block)
 ########################################################
-Write-Host "Microsoft 365 Tenant Assessment" -ForegroundColor Cyan
+if (-not $script:PipelineSuppressPhaseHeader) {
+    Write-Host "Microsoft 365 Tenant Assessment" -ForegroundColor Cyan
+}
 
-$GraphTest = if ($runExportOnly) {
+$GraphTest = if ($script:RunExportDataMode) {
     'CACHE'
 }
 elseif (Get-MgContext -ErrorAction SilentlyContinue) {
@@ -13753,233 +14394,69 @@ else {
 }
 $script:CurrentGraphMode = $GraphTest
 
-if ($runExportOnly) {
-    Write-Host ("Loaded tenant data snapshot for export: {0}" -f ([System.IO.Path]::GetFullPath($TenantStatsJsonPath))) -ForegroundColor DarkCyan
-    if ($script:ProfileCollectionPlan.BuildOwnershipGovernanceTables) {
-        Update-OwnershipGovernanceTables -TenantStatsHash $script:tenantStatsHash
-    }
-    if ($script:ProfileCollectionPlan.BuildLicenseClassificationMetadata) {
-        Update-LicenseClassificationMetadata -TenantStatsHash $script:tenantStatsHash
-    }
-    if ($script:ProfileCollectionPlan.BuildAssessmentReportTables) {
-        Update-AssessmentReportTables -TenantStatsHash $script:tenantStatsHash
-    }
-    if ($script:ProfileCollectionPlan.BuildConfigurationSummaryTables) {
-        Update-ConfigurationSummaryTables -TenantStatsHash $script:tenantStatsHash
+if ($script:IsPipelinePhaseExecution) {
+    switch ($script:PipelinePhaseName) {
+        'Connection' {
+            return Complete-AssessmentPipelinePhase -PhaseName 'Connection'
+        }
+        'TenantOverview' {
+            Invoke-AssessmentTenantOverviewPhase -StandaloneProgress
+            return Complete-AssessmentPipelinePhase -PhaseName 'TenantOverview' -EmittedDataKeys @('TenantInfo', 'LicenseSKUs', 'AdConnectConfiguration')
+        }
+        'Identity' {
+            Invoke-AssessmentIdentityPhase -StandaloneProgress
+            return Complete-AssessmentPipelinePhase -PhaseName 'Identity' -EmittedDataKeys @('Users', 'Admins', 'EntraGroups', 'Domains', 'AuthenticationConfiguration', 'FederationConfiguration', 'ConditionalAccess', 'MfaRegistrationDetails')
+        }
+        'Exchange' {
+            Invoke-AssessmentExchangePhase -StandaloneProgress
+            return Complete-AssessmentPipelinePhase -PhaseName 'Exchange' -EmittedDataKeys @('AllRecipients', 'MailboxFullDetails', 'ExchangeGroups', 'PublicFolders', 'HybridConfiguration', 'MailFlowConnectors', 'MailFlowRules', 'EmailActivity', 'ExchangeGovernanceSummaries')
+        }
+        'Collaboration' {
+            Invoke-AssessmentCollaborationPhase -StandaloneProgress
+            return Complete-AssessmentPipelinePhase -PhaseName 'Collaboration' -EmittedDataKeys @('UnifiedGroups', 'SharePoint', 'OneDrive', 'AllTeams', 'TeamsVoice')
+        }
+        'Endpoint' {
+            Invoke-AssessmentEndpointPhase -StandaloneProgress
+            return Complete-AssessmentPipelinePhase -PhaseName 'Endpoint' -EmittedDataKeys @('DeviceDetails', 'DeviceManagementSummary')
+        }
+        'Governance' {
+            Invoke-AssessmentGovernancePhase -StandaloneProgress
+            return Complete-AssessmentPipelinePhase -PhaseName 'Governance' -EmittedDataKeys @('SecuritySecureScore', 'PurviewCompliancePolicies', 'OperationalGovernanceSummaries', 'ExternalExposureFindings', 'OwnershipGovernance', 'AssessmentReportTables', 'ConfigurationSummaryTables')
+        }
+        'Export' {
+            Invoke-AssessmentSnapshotDerivedPreparation
+            $generatedArtifacts = Invoke-AssessmentExportPhase
+            return [pscustomobject]@{
+                Phase              = 'Export'
+                CheckpointPath     = $null
+                ExportFileLocation = $ExportDetails
+                OutputProfile      = $OutputProfile
+                OutputProfileLabel = $script:EffectiveOutputProfileLabel
+                ReportingMode      = $reportingMode
+                GraphMode          = $script:CurrentGraphMode
+                GeneratedArtifacts = $generatedArtifacts
+            }
+        }
     }
 }
+
+if ($script:RunExportDataMode) {
+    Invoke-AssessmentSnapshotDerivedPreparation
+}
 else {
-    $tenantOverviewSteps = 3
-    $identitySteps = 8
-    $exchangeSteps = 10
-    $collaborationSteps = 4
-    $endpointSteps = 2
-    $governanceSteps = 8
-    $overallCollectionSteps = $tenantOverviewSteps + $identitySteps + $exchangeSteps + $collaborationSteps + $endpointSteps + $governanceSteps
+    $phaseCounts = Get-AssessmentPhaseStepCounts
+    $overallCollectionSteps = $phaseCounts.TenantOverview + $phaseCounts.Identity + $phaseCounts.Exchange + $phaseCounts.Collaboration + $phaseCounts.Endpoint + $phaseCounts.Governance
     Initialize-AssessmentProgress -TotalSteps $overallCollectionSteps
 
-    Write-ConsoleSection -Step '1/6' -Title 'Tenant Overview'
-    Invoke-AssessmentProgressStep -Name 'Tenant overview' -ScriptBlock { Get-TenantOverviewInfo }
-    if ($GraphTest -eq 'REST') {
-        Invoke-AssessmentProgressStep -Name 'License SKUs' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-    }
-    else {
-        Invoke-AssessmentProgressStep -Name 'License SKUs' -ScriptBlock { Get-AllLicenseSKUs }
-    }
-    Invoke-AssessmentProgressStep -Name 'AD Connect sync details' -ScriptBlock { Get-AdConnectSyncDetails }
-
-    Write-ConsoleSection -Step '2/6' -Title 'Identity'
-    switch ($GraphTest) {
-        'REST' {
-            Write-Verbose 'Attempting to use Microsoft Graph REST API for tenant identity details'
-            Invoke-AssessmentProgressStep -Name 'Users' -ScriptBlock { Get-GraphUserStats -Context $script:AssessmentContext }
-            Invoke-AssessmentProgressStep -Name 'Admins' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-            Invoke-AssessmentProgressStep -Name 'Entra groups' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType REST -Context $script:AssessmentContext }
-            Invoke-AssessmentProgressStep -Name 'Domains' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-            Invoke-AssessmentProgressStep -Name 'Authentication/SSO configuration' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-            Invoke-AssessmentProgressStep -Name 'Federation/cross-tenant configuration' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-            Invoke-AssessmentProgressStep -Name 'Conditional Access policies' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-            Invoke-AssessmentProgressStep -Name 'MFA registration details' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-        }
-        default {
-            Write-Verbose 'Attempting to use Microsoft Graph SDK for tenant identity details'
-            Invoke-AssessmentProgressStep -Name 'Users' -ScriptBlock { Get-AllUserDetails -detailLevel $reportingMode }
-            Invoke-AssessmentProgressStep -Name 'Admins' -ScriptBlock { Get-AllOffice365Admins }
-            Invoke-AssessmentProgressStep -Name 'Entra groups' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType SDK -Context $script:AssessmentContext }
-            Invoke-AssessmentProgressStep -Name 'Domains' -ScriptBlock { Get-AllOffice365Domains }
-            Invoke-AssessmentProgressStep -Name 'Authentication/SSO configuration' -ScriptBlock { Get-AuthenticationConfiguration -detailLevel $reportingMode }
-            Invoke-AssessmentProgressStep -Name 'Federation/cross-tenant configuration' -ScriptBlock { Get-FederationAndCrossTenantConfiguration }
-            Invoke-AssessmentProgressStep -Name 'Conditional Access policies' -ScriptBlock { Get-ConditionalAccessPoliciesReport -detailLevel $reportingMode }
-            Invoke-AssessmentProgressStep -Name 'MFA registration details' -ScriptBlock { Get-MfaRegistrationDetails }
-        }
-    }
-
-    Write-ConsoleSection -Step '3/6' -Title 'Exchange'
-    Invoke-ProfileAwareAssessmentStep -Name 'Exchange recipients' -Enabled $script:ProfileCollectionPlan.CollectExchangeRecipients -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllRecipientDetails -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-AssessmentProgressStep -Name 'Exchange mailboxes' -ScriptBlock { Get-AllExchangeMailboxDetails -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'Exchange groups' -Enabled $script:ProfileCollectionPlan.CollectExchangeGroups -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-ExchangeGroupDetails -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'Public folders' -Enabled $script:ProfileCollectionPlan.CollectPublicFolders -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllPublicFolderDetails -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-AssessmentProgressStep -Name 'Exchange hybrid configuration' -ScriptBlock { Get-ExchangeHybridConfiguration -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'Mail flow rules/connectors' -Enabled $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors -SkipReason 'Skipped in best-practices-only profile to reduce runtime.' -ScriptBlock { Get-MailFlowRulesandConnectors -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'Email activity insights' -Enabled $script:ProfileCollectionPlan.CollectEmailActivityDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-EmailActivityInsights -detailLevel $reportingMode }
-    Invoke-ProfileAwareAssessmentStep -Name 'Third-party spam filtering configuration' -Enabled $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering -SkipReason 'Requires mail flow connector/rule collection, which is disabled for this profile.' -ScriptBlock { Get-ThirdPartySpamFilteringConfig -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'SMTP relay configuration' -Enabled $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration -SkipReason 'Requires mail flow connector collection, which is disabled for this profile.' -ScriptBlock { Get-SMTPRelayConfiguration -Context $script:AssessmentContext }
-    Invoke-AssessmentProgressStep -Name 'Exchange governance summaries' -ScriptBlock { Update-ExchangeGovernanceTables -TenantStatsHash $script:tenantStatsHash -DetailLevel $reportingMode }
-
-    Write-ConsoleSection -Step '4/6' -Title 'Collaboration'
-    Invoke-ProfileAwareAssessmentStep -Name 'Unified groups' -Enabled $script:ProfileCollectionPlan.CollectUnifiedGroups -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllUnifiedGroups -detailLevel $reportingMode }
-    $sharePointDiscoveryService = if ($GraphTest -in @('REST', 'SDK')) {
-        'API'
-    }
-    elseif ($connectionResult -and $connectionResult.SharePointOnline) {
-        'SPO'
-    }
-    else {
-        'API'
-    }
-    Invoke-AssessmentProgressStep -Name "SharePoint/OneDrive sites ($sharePointDiscoveryService)" -ScriptBlock { Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName $sharePointDiscoveryService }
-    $teamsDiscoveryService = if ($GraphTest -in @('SDK', 'REST')) { 'MGGraph' } else { 'Teams' }
-    Invoke-ProfileAwareAssessmentStep -Name 'Teams voice details' -Enabled $script:ProfileCollectionPlan.CollectTeamsVoiceDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-TeamsVoiceDetails }
-    Invoke-ProfileAwareAssessmentStep -Name "Teams inventory ($teamsDiscoveryService)" -Enabled $script:ProfileCollectionPlan.CollectTeamsDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-TeamsDetails -detailLevel $reportingMode -ServiceName $teamsDiscoveryService }
-
-    Write-ConsoleSection -Step '5/6' -Title 'Endpoint'
-    if ($GraphTest -eq 'REST') {
-        Invoke-AssessmentProgressStep -Name 'Devices' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-    }
-    else {
-        Invoke-AssessmentProgressStep -Name 'Devices' -ScriptBlock { Get-AllDevicesReport -detailLevel $reportingMode }
-    }
-    Invoke-AssessmentProgressStep -Name 'Endpoint operational summaries' -ScriptBlock { Update-DeviceManagementSummary -TenantStatsHash $script:tenantStatsHash }
-
-    Write-ConsoleSection -Step '6/6' -Title 'Governance'
-    if ($GraphTest -eq 'REST') {
-        Invoke-AssessmentProgressStep -Name 'Secure Score report' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-    }
-    else {
-        Invoke-AssessmentProgressStep -Name 'Secure Score report' -ScriptBlock { Get-SecuritySecureScoreReport -detailLevel $reportingMode -MostRecent }
-    }
-    Invoke-ProfileAwareAssessmentStep -Name 'Purview retention/DLP policies' -Enabled $script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies -SkipReason 'Governance compliance collection is disabled for this profile.' -ScriptBlock { Get-PurviewCompliancePolicies }
-    Invoke-AssessmentProgressStep -Name 'Operational governance summaries' -ScriptBlock { Update-TierBOperationalSummaries -TenantStatsHash $script:tenantStatsHash }
-    Invoke-AssessmentProgressStep -Name 'External sharing and guest access summaries' -ScriptBlock { Update-ExternalExposureSummaries -TenantStatsHash $script:tenantStatsHash }
-    Invoke-ProfileAwareAssessmentStep -Name 'Ownership governance tables' -Enabled $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables -SkipReason 'Ownership governance table build is disabled for this profile.' -ScriptBlock { Update-OwnershipGovernanceTables -TenantStatsHash $script:tenantStatsHash }
-    Invoke-ProfileAwareAssessmentStep -Name 'License classification metadata' -Enabled $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata -SkipReason 'License classification metadata is disabled for this profile.' -ScriptBlock { Update-LicenseClassificationMetadata -TenantStatsHash $script:tenantStatsHash }
-    Invoke-ProfileAwareAssessmentStep -Name 'Best-practice assessment tables' -Enabled $script:ProfileCollectionPlan.BuildAssessmentReportTables -SkipReason 'Best-practice table build is disabled for this profile.' -ScriptBlock { Update-AssessmentReportTables -TenantStatsHash $script:tenantStatsHash }
-    Invoke-ProfileAwareAssessmentStep -Name 'Configuration summary tables' -Enabled $script:ProfileCollectionPlan.BuildConfigurationSummaryTables -SkipReason 'Configuration summary tables are disabled for this profile.' -ScriptBlock { Update-ConfigurationSummaryTables -TenantStatsHash $script:tenantStatsHash }
+    Invoke-AssessmentTenantOverviewPhase
+    Invoke-AssessmentIdentityPhase
+    Invoke-AssessmentExchangePhase
+    Invoke-AssessmentCollaborationPhase
+    Invoke-AssessmentEndpointPhase
+    Invoke-AssessmentGovernancePhase
     Complete-AssessmentProgress
     Write-CollectorInventoryMatrix -TenantStatsHash $script:tenantStatsHash -ExportFileLocation $ExportDetails
     Write-AssessmentStepMetricsSummary -ExportFileLocation $ExportDetails
 }
 
-
-########################################################
-### Export Reports ###
-########################################################
-
-#Exclude specific reports from Export
-Write-ConsoleSection -Step 'Export' -Title 'Exporting results'
-$requiresFilteredExportSnapshot = (-not $effectiveSkipWorkbook)
-$ExportTenantStatsHash = $null
-Prepare-AssessmentExportData `
-    -BuildCombinedUserMailboxProjection ([bool]$script:ProfileCollectionPlan.BuildCombinedUserMailboxProjection) `
-    -RequiresFilteredExportSnapshot ([bool]$requiresFilteredExportSnapshot)
-if ($requiresFilteredExportSnapshot) {
-    $ExportTenantStatsHash = Filter-TenantStatsHash -TenantStatsStore $script:tenantStatsHash -reportingMode $reportingMode -GraphTest $GraphTest
-} else {
-    Write-Log -Type INFO -Message "Skipping filtered export snapshot build because workbook output is disabled for this profile." -ExportFileLocation $ExportDetails
-}
-$generatedArtifacts = [ordered]@{}
-try {
-    if (Test-Path -Path $tenantExportPipelinePath) {
-        . $tenantExportPipelinePath
-    }
-    else {
-        throw "Export pipeline script was not found: $tenantExportPipelinePath"
-    }
-
-    if (-not (Get-Command -Name Invoke-M365TenantAssessmentExportPipeline -ErrorAction SilentlyContinue)) {
-        throw "Export pipeline function is unavailable. Expected loader path: $tenantExportPipelinePath"
-    }
-
-    $generatedArtifacts = Invoke-M365TenantAssessmentExportPipeline `
-        -TenantStatsHash $script:tenantStatsHash `
-        -ExportTenantStatsHash $ExportTenantStatsHash `
-        -ExportDetails $ExportDetails `
-        -SkipWorkbook $effectiveSkipWorkbook `
-        -SkipBestPracticesHtml $effectiveSkipBestPracticesHtml `
-        -SkipQuestionnaire $effectiveSkipQuestionnaire `
-        -SkipHtmlReport $effectiveSkipHtmlReport `
-        -SkipPdfReport $effectiveSkipPdfReport `
-        -SkipJsonReport $effectiveSkipJsonReport `
-        -OutputProfileLabel $effectiveOutputProfileLabel `
-        -ReportingMode $reportingMode `
-        -CollectionOnly ([bool]$runCollectionOnly) `
-        -ExportOnly ([bool]$runExportOnly) `
-        -LegacyScriptRoot $PSScriptRoot
-}
-catch {
-    Write-Log -Type ERROR -Message "Export pipeline execution failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
-    $generatedArtifacts = [ordered]@{}
-}
-
-$runLogDirectory = [System.IO.Path]::GetDirectoryName($ExportDetails)
-if ([string]::IsNullOrWhiteSpace($runLogDirectory)) {
-    $runLogDirectory = (Get-Location).Path
-}
-$runLogDirectory = Join-Path -Path $runLogDirectory -ChildPath 'Debugging'
-$runLogBaseName = [System.IO.Path]::GetFileNameWithoutExtension($ExportDetails)
-if (-not [string]::IsNullOrWhiteSpace($runLogBaseName)) {
-    $runLogPath = Join-Path -Path $runLogDirectory -ChildPath ($runLogBaseName + '-FullReportLog.txt')
-    if (Test-Path -Path $runLogPath) {
-        $generatedArtifacts['Run Log'] = $runLogPath
-    }
-}
-
-Write-Host ""
-if ($global:AllDiscoveryErrors.Count -gt 0) {
-    try {
-        $errorReportSummary = Export-ArrayaErrorReports -ExportFileLocation $ExportDetails -ErrorData $global:AllDiscoveryErrors -LogReportDirectory $ExportDetails
-        if ($errorReportSummary -and -not [string]::IsNullOrWhiteSpace([string]$errorReportSummary.JsonPath)) {
-            $generatedArtifacts['Error Report'] = $errorReportSummary.JsonPath
-        }
-    }
-    catch {
-        Write-Log -Type ERROR -Message "An error occurred in Exporting the Error Reports. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
-    }
-}
-
-$scriptEndTime = Get-Date
-$totalTime = $scriptEndTime - $global:InitialStart
-$totalHours = [math]::Floor($totalTime.TotalHours)
-$totalMinutes = $totalTime.Minutes
-$totalSeconds = $totalTime.Seconds
-$timeString = if ($totalHours -gt 0) {
-    "$totalHours hour(s), $totalMinutes minute(s), $totalSeconds second(s)"
-} elseif ($totalMinutes -gt 0) {
-    "$totalMinutes minute(s), $totalSeconds second(s)"
-} else {
-    "$totalSeconds second(s)"
-}
-
-Write-ConsoleArtifactSummary -Artifacts $generatedArtifacts -DurationText $timeString -CapturedErrorCount $global:AllDiscoveryErrors.Count
-
-$finalMemory = Get-CurrentProcessMemorySnapshot
-Write-Log -Type INFO -Message ("Final process memory snapshot: WorkingSetMB={0}; PrivateMB={1}; PagedMB={2}; ManagedHeapMB={3}" -f $finalMemory.WorkingSetMB, $finalMemory.PrivateMB, $finalMemory.PagedMB, $finalMemory.HeapMB) -ExportFileLocation $ExportDetails
-
-if ($StoreTenantStatsGlobal) {
-    $resolvedTenantStatsVariableName = if ([string]::IsNullOrWhiteSpace($TenantStatsVariableName)) { 'ArrayaTenantStats' } else { $TenantStatsVariableName }
-    Set-Variable -Scope Global -Name $resolvedTenantStatsVariableName -Value $script:tenantStatsHash -Force
-    Write-Host ("Published tenant stats to global variable `${0}" -f $resolvedTenantStatsVariableName) -ForegroundColor DarkCyan
-    Write-Log -Type INFO -Message ("Published tenant stats to global variable '{0}' for interactive inspection." -f $resolvedTenantStatsVariableName) -ExportFileLocation $ExportDetails
-}
-
-########################################################
-### End of HTML Report Integration ###
-########################################################
-
-Write-Log -Type INFO -Message "COMPLETED: Gathered Tenant Details. Completed Time: $($timeString)" -ExportFileLocation $ExportDetails
-
-# Encourage GC after large export/report generation to reduce retained working set in long-lived shells.
-$ExportTenantStatsHash = $null
-$script:AssessmentStepMetrics = $null
-[GC]::Collect()
-[GC]::WaitForPendingFinalizers()
+Invoke-AssessmentExportPhase | Out-Null

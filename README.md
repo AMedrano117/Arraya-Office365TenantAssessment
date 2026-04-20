@@ -6,6 +6,7 @@ For operator-focused setup and execution guidance, use [RUN.md](RUN.md).
 
 ## Operator References
 - [RUN.md](RUN.md)
+- [Assessment Pipeline Redesign](docs/architecture/assessment-pipeline-redesign.md)
 - [Tenant Assessment Quick Start](docs/runbooks/tenant-assessment-quick-start.md)
 - [App Registration Setup](docs/runbooks/app-registration-setup.md)
 - [Certificate Auth Setup](docs/runbooks/certificate-auth-setup.md)
@@ -205,6 +206,8 @@ If a supported browser is unavailable, the remediation HTML and markdown outputs
 - `src/scripts/operations/Start-M365TenantAssessment.ps1`
 - `src/scripts/assessments/tenant-wide/Invoke-M365FullTenantAssessment.ps1`
 - `src/scripts/assessments/tenant-wide/Invoke-M365TenantDataCollection.ps1`
+- `src/scripts/assessments/tenant-wide/Invoke-M365TenantPipeline.ps1`
+- `src/scripts/assessments/tenant-wide/Resume-M365TenantPipeline.ps1`
 - `src/scripts/assessments/identity/Invoke-ActiveDirectoryTenantAssessment.ps1`
 - `src/scripts/reporting/Invoke-M365TenantAssessmentExport.ps1`
 - `src/scripts/reporting/Invoke-M365TenantImprovementPlan.ps1`
@@ -213,6 +216,7 @@ If a supported browser is unavailable, the remediation HTML and markdown outputs
 ## Repo Layout
 - `docs`: user-facing templates and questionnaires. The tenant-to-tenant questionnaire template lives under `docs/templates`.
 - `src/modules/Arraya.M365.Common`: shared helpers and Office365Custom local import function.
+- `src/modules/Arraya.M365.AssessmentPipeline`: phase runner contracts, checkpoint orchestration, and resume support for the redesign branch.
 - `src/modules/Arraya.M365.AssessmentRunner`: user-facing commands that execute assessment/report scripts.
 - `src/scripts/migrated/legacy`: migrated legacy scripts kept for compatibility, including the core M365 assessment engine, HTML/PDF helper, and questionnaire exporter.
 - `src/vendor/Office365Custom/1.2.0`: vendored module used as shared function source.

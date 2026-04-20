@@ -1,6 +1,7 @@
 Set-StrictMode -Version Latest
 
 $script:RepoRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..\..\..')).Path
+$script:AssessmentPipelineManifestPath = Join-Path $script:RepoRoot 'src\modules\Arraya.M365.AssessmentPipeline\Arraya.M365.AssessmentPipeline.psd1'
 $script:AssessmentScriptRoots = @(
     (Join-Path $script:RepoRoot 'src\scripts\reporting'),
     (Join-Path $script:RepoRoot 'src\scripts\migrated\legacy')
@@ -105,6 +106,27 @@ function Import-AssessmentRunnerDependencies {
         $missingCommonCommands.Count -gt 0
     ) {
         Import-Module -Name $resolvedCommonManifestPath -Force -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
+    }
+
+    if (-not (Test-Path -Path $script:AssessmentPipelineManifestPath)) {
+        throw "Assessment pipeline module manifest not found: $script:AssessmentPipelineManifestPath"
+    }
+
+    $resolvedPipelineManifestPath = (Resolve-Path -Path $script:AssessmentPipelineManifestPath).Path
+    $loadedPipelineModule = Get-Module -Name 'Arraya.M365.AssessmentPipeline' -ErrorAction SilentlyContinue | Select-Object -First 1
+    $requiredPipelineCommands = @(
+        'Invoke-ArrayaAssessmentPipeline',
+        'Resume-ArrayaAssessmentPipeline'
+    )
+    $missingPipelineCommands = @(
+        $requiredPipelineCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
+    )
+    if (
+        -not $loadedPipelineModule -or
+        -not (Test-AssessmentRunnerModuleMatchesManifestPath -Module $loadedPipelineModule -ManifestPath $resolvedPipelineManifestPath) -or
+        $missingPipelineCommands.Count -gt 0
+    ) {
+        Import-Module -Name $resolvedPipelineManifestPath -Force -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
     }
 
     Import-ArrayaOffice365CustomLocal -RepoRoot $script:RepoRoot -RequiredCommands $RequiredCommands | Out-Null
@@ -564,6 +586,165 @@ function Resolve-M365OutputProfileExecutionPlan {
     }
 }
 
+function Invoke-M365TenantPipelineExecution {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Full', 'CollectOnly', 'ExportOnly', 'PreflightOnly')]
+        [string]$Mode,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Connection', 'TenantOverview', 'Identity', 'Exchange', 'Collaboration', 'Endpoint', 'Governance', 'Export')]
+        [string]$ThroughPhase,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Connection', 'TenantOverview', 'Identity', 'Exchange', 'Collaboration', 'Endpoint', 'Governance', 'Export')]
+        [string]$Phase,
+        [Parameter(Mandatory = $false)]
+        [string]$CheckpointRoot,
+        [Parameter(Mandatory = $false)]
+        [string]$ResumeFromCheckpointRoot,
+        [Parameter(Mandatory = $false)]
+        [string]$ExportPath,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
+        [string[]]$OutputProfile = @('SolutionsEngineer'),
+        [Parameter(Mandatory = $false)]
+        [string]$AssessmentJsonPath,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipHtmlReport,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipPdfReport,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipJsonReport,
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeLegacyAssessmentArtifacts,
+        [Parameter(Mandatory = $false)]
+        [switch]$StoreTenantStatsGlobal,
+        [Parameter(Mandatory = $false)]
+        [string]$TenantStatsVariableName = 'ArrayaTenantStats',
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipAuth,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipPermissionPreflight,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
+        [string]$AuthMode,
+        [Parameter(Mandatory = $false)]
+        [string]$TenantId,
+        [Parameter(Mandatory = $false)]
+        [string]$CertificateThumbprint,
+        [Parameter(Mandatory = $false)]
+        [string]$ClientId,
+        [Parameter(Mandatory = $false)]
+        [string]$ClientSecret
+    )
+
+    Import-AssessmentRunnerDependencies
+    $plan = Resolve-M365OutputProfileExecutionPlan -OutputProfile $OutputProfile
+
+    if ($plan.IsMergedSelection) {
+        $modeLabel = switch ($Mode) {
+            'CollectOnly' { 'collection pass' }
+            'ExportOnly' { 'export pass' }
+            'PreflightOnly' { 'preflight pass' }
+            default { 'pass' }
+        }
+        Write-Host ("Running merged profile {0} for: {1}" -f $modeLabel, ($plan.SelectedOutputProfiles -join ', ')) -ForegroundColor Cyan
+        Write-Host ("Merged reporting mode: {0}" -f $plan.ReportingMode) -ForegroundColor DarkCyan
+    }
+
+    $invokeParams = @{}
+    if ($PSBoundParameters.ContainsKey('ResumeFromCheckpointRoot')) { $invokeParams.ResumeFromCheckpointRoot = $ResumeFromCheckpointRoot }
+    if ($PSBoundParameters.ContainsKey('CheckpointRoot')) { $invokeParams.CheckpointRoot = $CheckpointRoot }
+    if ($PSBoundParameters.ContainsKey('Phase')) { $invokeParams.Phase = $Phase }
+    if ($PSBoundParameters.ContainsKey('ThroughPhase')) { $invokeParams.ThroughPhase = $ThroughPhase }
+    $invokeParams.Mode = $Mode
+    $invokeParams.ExportPath = Resolve-AssessmentExportPathInput -ExportPath $ExportPath
+    $invokeParams.OutputProfile = $plan.PrimaryProfile
+    $invokeParams.OutputProfileLabel = $plan.ProfileLabel
+    $invokeParams.ReportingMode = $plan.ReportingMode
+
+    switch ($Mode) {
+        'Full' {
+            $invokeParams.GenerateWorkbook = [bool]$plan.GenerateWorkbook
+            $invokeParams.GenerateTechnicalHtml = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateTechnicalHtml } else { $false }
+            $invokeParams.GenerateBestPracticesHtml = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateBestPracticesHtml } else { $false }
+            $invokeParams.GenerateQuestionnaire = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateQuestionnaire } else { $false }
+            $invokeParams.GenerateJson = [bool]$plan.GenerateJson
+            if (-not $invokeParams.GenerateJson) {
+                $invokeParams.GenerateJson = $true
+            }
+            $invokeParams.GeneratePdf = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GeneratePdf } else { $false }
+            if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
+            if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
+            if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
+            if ($PSBoundParameters.ContainsKey('StoreTenantStatsGlobal')) { $invokeParams.StoreTenantStatsGlobal = $StoreTenantStatsGlobal }
+            if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
+            if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
+            if ($PSBoundParameters.ContainsKey('SkipPermissionPreflight')) { $invokeParams.SkipPermissionPreflight = $SkipPermissionPreflight }
+            if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
+            if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
+            if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
+            if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
+            if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
+        }
+        'CollectOnly' {
+            $invokeParams.OutputProfileLabel = "Collection-$($plan.ProfileLabel)"
+            $invokeParams.GenerateWorkbook = $false
+            $invokeParams.GenerateTechnicalHtml = $false
+            $invokeParams.GenerateBestPracticesHtml = $false
+            $invokeParams.GenerateQuestionnaire = $false
+            $invokeParams.GenerateJson = $true
+            $invokeParams.GeneratePdf = $false
+            if ($PSBoundParameters.ContainsKey('StoreTenantStatsGlobal')) { $invokeParams.StoreTenantStatsGlobal = $StoreTenantStatsGlobal }
+            if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
+            if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
+            if ($PSBoundParameters.ContainsKey('SkipPermissionPreflight')) { $invokeParams.SkipPermissionPreflight = $SkipPermissionPreflight }
+            if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
+            if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
+            if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
+            if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
+            if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
+        }
+        'ExportOnly' {
+            if ([string]::IsNullOrWhiteSpace($AssessmentJsonPath)) {
+                throw 'AssessmentJsonPath is required when Mode is ExportOnly.'
+            }
+            $invokeParams.OutputProfileLabel = "Export-$($plan.ProfileLabel)"
+            $invokeParams.GenerateWorkbook = [bool]$plan.GenerateWorkbook
+            $invokeParams.GenerateTechnicalHtml = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateTechnicalHtml } else { $false }
+            $invokeParams.GenerateBestPracticesHtml = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateBestPracticesHtml } else { $false }
+            $invokeParams.GenerateQuestionnaire = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateQuestionnaire } else { $false }
+            $invokeParams.GenerateJson = [bool]$plan.GenerateJson
+            if (-not $invokeParams.GenerateJson) {
+                $invokeParams.GenerateJson = $true
+            }
+            $invokeParams.GeneratePdf = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GeneratePdf } else { $false }
+            $invokeParams.AssessmentJsonPath = $AssessmentJsonPath
+            if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
+            if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
+            if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
+        }
+        'PreflightOnly' {
+            $invokeParams.OutputProfileLabel = "Preflight-$($plan.ProfileLabel)"
+            $invokeParams.GenerateWorkbook = $false
+            $invokeParams.GenerateTechnicalHtml = $false
+            $invokeParams.GenerateBestPracticesHtml = $false
+            $invokeParams.GenerateQuestionnaire = $false
+            $invokeParams.GenerateJson = $false
+            $invokeParams.GeneratePdf = $false
+            if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
+            if ($PSBoundParameters.ContainsKey('SkipPermissionPreflight')) { $invokeParams.SkipPermissionPreflight = $SkipPermissionPreflight }
+            if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
+            if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
+            if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
+            if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
+            if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
+        }
+    }
+
+    Invoke-ArrayaAssessmentPipeline @invokeParams
+}
+
 function Invoke-M365TenantWorkflow {
     [CmdletBinding()]
     param(
@@ -606,109 +787,98 @@ function Invoke-M365TenantWorkflow {
         [string]$ClientSecret
     )
 
-    $plan = Resolve-M365OutputProfileExecutionPlan -OutputProfile $OutputProfile
-    $scriptPath = Resolve-AssessmentScriptPath -Name 'Get-FullTenantReportDetails.ps1'
-
-    if ($plan.IsMergedSelection) {
-        $modeLabel = switch ($Mode) {
-            'CollectOnly' { 'collection pass' }
-            'ExportOnly' { 'export pass' }
-            'PreflightOnly' { 'preflight pass' }
-            default { 'pass' }
-        }
-        Write-Host ("Running merged profile {0} for: {1}" -f $modeLabel, ($plan.SelectedOutputProfiles -join ', ')) -ForegroundColor Cyan
-        Write-Host ("Merged reporting mode: {0}" -f $plan.ReportingMode) -ForegroundColor DarkCyan
+    $invokeParams = @{}
+    foreach ($key in $PSBoundParameters.Keys) {
+        $invokeParams[$key] = $PSBoundParameters[$key]
     }
+
+    Invoke-M365TenantPipelineExecution @invokeParams
+}
+
+function Invoke-M365TenantPipeline {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Full', 'CollectOnly', 'ExportOnly', 'PreflightOnly')]
+        [string]$Mode = 'Full',
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Connection', 'TenantOverview', 'Identity', 'Exchange', 'Collaboration', 'Endpoint', 'Governance', 'Export')]
+        [string]$ThroughPhase,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Connection', 'TenantOverview', 'Identity', 'Exchange', 'Collaboration', 'Endpoint', 'Governance', 'Export')]
+        [string]$Phase,
+        [Parameter(Mandatory = $false)]
+        [string]$CheckpointRoot,
+        [Parameter(Mandatory = $false)]
+        [string]$ResumeFromCheckpointRoot,
+        [Parameter(Mandatory = $false)]
+        [string]$ExportPath,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
+        [string[]]$OutputProfile = @('SolutionsEngineer'),
+        [Parameter(Mandatory = $false)]
+        [string]$AssessmentJsonPath,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipHtmlReport,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipPdfReport,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipJsonReport,
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeLegacyAssessmentArtifacts,
+        [Parameter(Mandatory = $false)]
+        [switch]$StoreTenantStatsGlobal,
+        [Parameter(Mandatory = $false)]
+        [string]$TenantStatsVariableName = 'ArrayaTenantStats',
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipAuth,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipPermissionPreflight,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
+        [string]$AuthMode,
+        [Parameter(Mandatory = $false)]
+        [string]$TenantId,
+        [Parameter(Mandatory = $false)]
+        [string]$CertificateThumbprint,
+        [Parameter(Mandatory = $false)]
+        [string]$ClientId,
+        [Parameter(Mandatory = $false)]
+        [string]$ClientSecret
+    )
 
     $invokeParams = @{}
-    $invokeParams.ExportPath = Resolve-AssessmentExportPathInput -ExportPath $ExportPath
-    $invokeParams.OutputProfile = $plan.PrimaryProfile
-    $invokeParams.ReportingModeOverride = $plan.ReportingMode
-
-    switch ($Mode) {
-        'Full' {
-            $invokeParams.OutputProfileLabel = $plan.ProfileLabel
-            $invokeParams.GenerateWorkbookOverride = [bool]$plan.GenerateWorkbook
-            $invokeParams.GenerateTechnicalHtmlOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateTechnicalHtml } else { $false }
-            $invokeParams.GenerateBestPracticesHtmlOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateBestPracticesHtml } else { $false }
-            $invokeParams.GenerateQuestionnaireOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateQuestionnaire } else { $false }
-            $invokeParams.GenerateJsonOverride = [bool]$plan.GenerateJson
-            if (-not $invokeParams.GenerateJsonOverride) {
-                $invokeParams.GenerateJsonOverride = $true
-            }
-            $invokeParams.GeneratePdfOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GeneratePdf } else { $false }
-            if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
-            if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
-            if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
-            if ($PSBoundParameters.ContainsKey('StoreTenantStatsGlobal')) { $invokeParams.StoreTenantStatsGlobal = $StoreTenantStatsGlobal }
-            if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
-            if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
-            if ($PSBoundParameters.ContainsKey('SkipPermissionPreflight')) { $invokeParams.SkipPermissionPreflight = $SkipPermissionPreflight }
-            if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
-            if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
-            if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
-            if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
-            if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
-        }
-        'CollectOnly' {
-            $invokeParams.OutputProfileLabel = "Collection-$($plan.ProfileLabel)"
-            $invokeParams.GenerateWorkbookOverride = $false
-            $invokeParams.GenerateTechnicalHtmlOverride = $false
-            $invokeParams.GenerateBestPracticesHtmlOverride = $false
-            $invokeParams.GenerateQuestionnaireOverride = $false
-            $invokeParams.GenerateJsonOverride = $true
-            $invokeParams.GeneratePdfOverride = $false
-            $invokeParams.DataCollectionOnly = $true
-            if ($PSBoundParameters.ContainsKey('StoreTenantStatsGlobal')) { $invokeParams.StoreTenantStatsGlobal = $StoreTenantStatsGlobal }
-            if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
-            if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
-            if ($PSBoundParameters.ContainsKey('SkipPermissionPreflight')) { $invokeParams.SkipPermissionPreflight = $SkipPermissionPreflight }
-            if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
-            if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
-            if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
-            if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
-            if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
-        }
-        'ExportOnly' {
-            if ([string]::IsNullOrWhiteSpace($AssessmentJsonPath)) {
-                throw 'AssessmentJsonPath is required when Mode is ExportOnly.'
-            }
-            $invokeParams.OutputProfileLabel = "Export-$($plan.ProfileLabel)"
-            $invokeParams.GenerateWorkbookOverride = [bool]$plan.GenerateWorkbook
-            $invokeParams.GenerateTechnicalHtmlOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateTechnicalHtml } else { $false }
-            $invokeParams.GenerateBestPracticesHtmlOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateBestPracticesHtml } else { $false }
-            $invokeParams.GenerateQuestionnaireOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateQuestionnaire } else { $false }
-            $invokeParams.GenerateJsonOverride = [bool]$plan.GenerateJson
-            if (-not $invokeParams.GenerateJsonOverride) {
-                $invokeParams.GenerateJsonOverride = $true
-            }
-            $invokeParams.GeneratePdfOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GeneratePdf } else { $false }
-            $invokeParams.ExportOnly = $true
-            $invokeParams.TenantStatsJsonPath = $AssessmentJsonPath
-            if ($PSBoundParameters.ContainsKey('SkipHtmlReport')) { $invokeParams.SkipHtmlReport = $SkipHtmlReport }
-            if ($PSBoundParameters.ContainsKey('SkipPdfReport')) { $invokeParams.SkipPdfReport = $SkipPdfReport }
-            if ($PSBoundParameters.ContainsKey('SkipJsonReport')) { $invokeParams.SkipJsonReport = $SkipJsonReport }
-        }
-        'PreflightOnly' {
-            $invokeParams.OutputProfileLabel = "Preflight-$($plan.ProfileLabel)"
-            $invokeParams.GenerateWorkbookOverride = $false
-            $invokeParams.GenerateTechnicalHtmlOverride = $false
-            $invokeParams.GenerateBestPracticesHtmlOverride = $false
-            $invokeParams.GenerateQuestionnaireOverride = $false
-            $invokeParams.GenerateJsonOverride = $false
-            $invokeParams.GeneratePdfOverride = $false
-            $invokeParams.PreflightOnly = $true
-            if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
-            if ($PSBoundParameters.ContainsKey('SkipPermissionPreflight')) { $invokeParams.SkipPermissionPreflight = $SkipPermissionPreflight }
-            if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
-            if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
-            if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
-            if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
-            if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
-        }
+    foreach ($key in $PSBoundParameters.Keys) {
+        $invokeParams[$key] = $PSBoundParameters[$key]
+    }
+    if (-not $invokeParams.ContainsKey('Mode')) {
+        $invokeParams.Mode = $Mode
     }
 
-    Invoke-AssessmentScript -ScriptPath $scriptPath -Parameters $invokeParams
+    Invoke-M365TenantPipelineExecution @invokeParams
+}
+
+function Resume-M365TenantPipeline {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CheckpointRoot,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Connection', 'TenantOverview', 'Identity', 'Exchange', 'Collaboration', 'Endpoint', 'Governance', 'Export')]
+        [string]$ThroughPhase,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Connection', 'TenantOverview', 'Identity', 'Exchange', 'Collaboration', 'Endpoint', 'Governance', 'Export')]
+        [string]$Phase
+    )
+
+    Import-AssessmentRunnerDependencies
+    $invokeParams = @{
+        CheckpointRoot = $CheckpointRoot
+    }
+    if ($PSBoundParameters.ContainsKey('ThroughPhase')) { $invokeParams.ThroughPhase = $ThroughPhase }
+    if ($PSBoundParameters.ContainsKey('Phase')) { $invokeParams.Phase = $Phase }
+
+    Resume-ArrayaAssessmentPipeline @invokeParams
 }
 
 function Invoke-M365TenantAssessment {
@@ -1023,6 +1193,8 @@ Export-ModuleMember -Function @(
     'Invoke-M365TenantConnectionPreflight',
     'Invoke-M365TenantDataCollection',
     'Invoke-M365TenantAssessmentExport',
+    'Invoke-M365TenantPipeline',
+    'Resume-M365TenantPipeline',
     'Invoke-ADTenantAssessment',
     'Invoke-GraphActivityAssessment',
     'Invoke-M365ImprovementPlan',

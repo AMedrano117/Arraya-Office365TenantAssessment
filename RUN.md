@@ -219,6 +219,21 @@ The current launcher menu order is:
 
 For a workflow-by-workflow breakdown, including how the actions relate to each other and where maintainers may want to reduce overlap, see [docs/architecture/workflow-overview.md](docs/architecture/workflow-overview.md).
 
+## Phase Pipeline Entry Points
+
+The redesign branch also includes explicit phase-runner entry points for checkpoint-backed debugging and resume:
+
+- `src/scripts/assessments/tenant-wide/Invoke-M365TenantPipeline.ps1`
+- `src/scripts/assessments/tenant-wide/Resume-M365TenantPipeline.ps1`
+
+Use these when you want to:
+
+- run only through a named phase
+- rerun one phase against a saved checkpoint chain
+- resume a stopped assessment from `Support\Pipeline`
+
+The redesign architecture and branch strategy are documented in [docs/architecture/assessment-pipeline-redesign.md](docs/architecture/assessment-pipeline-redesign.md).
+
 For operator guidance on reading `Improve` findings and understanding rule IDs, see [docs/runbooks/improvement-plan-rule-taxonomy.md](docs/runbooks/improvement-plan-rule-taxonomy.md).
 
 ## Common Commands

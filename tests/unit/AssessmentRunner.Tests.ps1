@@ -12,6 +12,8 @@ Describe 'Arraya.M365.AssessmentRunner' {
             'src\scripts\operations\Start-M365TenantAssessment.ps1'
             'src\scripts\assessments\tenant-wide\Invoke-M365FullTenantAssessment.ps1'
             'src\scripts\assessments\tenant-wide\Invoke-M365TenantDataCollection.ps1'
+            'src\scripts\assessments\tenant-wide\Invoke-M365TenantPipeline.ps1'
+            'src\scripts\assessments\tenant-wide\Resume-M365TenantPipeline.ps1'
             'src\scripts\assessments\tenant-wide\Invoke-M365GraphActivityReport.ps1'
             'src\scripts\reporting\Invoke-M365TenantAssessmentExport.ps1'
             'src\scripts\reporting\Invoke-M365TenantImprovementPlan.ps1'
@@ -27,9 +29,14 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource = Get-Content -Raw -Path $script:runnerPath
         $runnerSource | Should -Match 'function Invoke-AssessmentScript'
         $runnerSource | Should -Match 'function Invoke-M365TenantWorkflow'
+        $runnerSource | Should -Match 'function Invoke-M365TenantPipeline'
+        $runnerSource | Should -Match 'function Resume-M365TenantPipeline'
         $runnerSource | Should -Match 'function Resolve-AssessmentScriptPath'
         $runnerSource | Should -Match 'function Test-AssessmentRunnerModuleMatchesManifestPath'
         $runnerSource | Should -Match 'function Resolve-AssessmentExportPathInput'
+        $runnerSource | Should -Match 'Invoke-ArrayaAssessmentPipeline'
+        $runnerSource | Should -Match 'Resume-ArrayaAssessmentPipeline'
+        $runnerSource | Should -Match 'Arraya\.M365\.AssessmentPipeline'
         $runnerSource | Should -Match 'Get-ArrayaAssessmentOutputRoot -FallbackPath \$script:RepoRoot'
         $runnerSource | Should -Match 'src\\scripts\\reporting'
         $runnerSource | Should -Match 'src\\scripts\\migrated\\legacy'
@@ -46,6 +53,8 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode PreflightOnly'
         $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode CollectOnly'
         $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode ExportOnly'
+        $runnerSource | Should -Match 'function Invoke-M365TenantPipelineExecution'
+        $runnerSource | Should -Match 'function Invoke-M365TenantPipeline'
         $runnerSource | Should -Match 'function Invoke-M365TenantConnectionPreflight'
         $runnerSource | Should -Match 'IncludeLegacyAssessmentArtifacts'
         $runnerSource | Should -Match 'Invoke-M365ImproveForAssessmentRun'
@@ -53,7 +62,7 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match 'Customer Assessment Report Markdown'
         $runnerSource | Should -Not -Match 'Customer Remediation HTML'
         $runnerSource | Should -Not -Match 'Customer Remediation Markdown'
-        $runnerSource | Should -Match '\$invokeParams\.GenerateWorkbookOverride = \[bool\]\$plan\.GenerateWorkbook'
+        $runnerSource | Should -Match '\$invokeParams\.GenerateWorkbook = \[bool\]\$plan\.GenerateWorkbook'
     }
 
     It 'normalizes improve outputs back into the assessment run when a broad export root is supplied' {
@@ -67,7 +76,7 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource = Get-Content -Raw -Path $script:runnerPath
         $runnerSource | Should -Match '\[ValidateSet\(''Interactive'', ''Certificate'', ''ClientSecret''\)\]\s*\[string\]\$AuthMode'
         $runnerSource | Should -Match '\$invokeParams\.AuthMode = \$AuthMode'
-        $runnerSource | Should -Match '\$invokeParams\.PreflightOnly = \$true'
+        $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode PreflightOnly'
         $runnerSource | Should -Match '\[switch\]\$SkipPermissionPreflight'
         $runnerSource | Should -Match '\$invokeParams\.SkipPermissionPreflight = \$SkipPermissionPreflight'
     }
