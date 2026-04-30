@@ -24,10 +24,11 @@ The assessment also now validates required access as each workload connects, ins
 ## Auth Modes
 - `Delegated`: interactive sign-in for full module compatibility.
 - `Certificate`: noninteractive app auth for Graph and Exchange, with Graph-based SharePoint fallback in PowerShell 7.
-- `Client secret`: noninteractive app auth for Graph and Exchange app-only; Teams PowerShell remains limited in app-secret mode.
+- `Client secret`: compatibility mode for Graph app auth. In this workflow it is not equivalent to certificate auth: Exchange Online falls back to delegated sign-in, Purview compliance app auth is unsupported, and certificate auth remains the recommended production path.
 
 If you do not pass `-AuthMode`, the assessment defaults to delegated interactive sign-in. For backward compatibility, supplying `-CertificateThumbprint` still switches the run to certificate auth, and supplying `-ClientSecret` still switches the run to client-secret auth.
-The assessment now stages authentication by workload instead of trying to connect every possible Microsoft 365 surface up front. Graph and Exchange remain the baseline live-collection dependencies. Purview is only connected when the active run needs retention/DLP collection. SharePoint admin PowerShell and Teams PowerShell are treated as optional workload-specific connections with explicit fallback behavior.
+For safer secret handling, the launcher and runner also accept `-ClientSecretSecure` or `-ClientSecretCredential` so the secret does not need to stay as a plain string in shell history.
+The assessment now stages authentication by workload instead of trying to connect every possible Microsoft 365 surface up front. Graph and Exchange remain the baseline live-collection dependencies. Purview is only connected when the active run needs retention/DLP collection. SharePoint admin PowerShell and Teams PowerShell are treated as optional workload-specific connections with explicit fallback behavior. In interactive mode, the assessment now intentionally connects Exchange Online and Purview before Microsoft Graph so Exchange-family auth gets a clean session before Graph interactive auth runs.
 If you already connected the required workloads for the current run in the current session, you can run with `-SkipAuth` to reuse those sessions and bypass the assessment's authentication bootstrap. `-SkipAuth` now validates only the workloads the active profile actually needs.
 When the active profile includes Purview retention or DLP collection, `-SkipAuth` expects an already-usable compliance PowerShell session, not just imported cmdlet names.
 Use `-SkipPermissionPreflight` if you want to bypass the staged workload access checks during startup and let the collection continue until a later collector hits missing access.
@@ -40,11 +41,13 @@ App-based Teams collection now keeps team and channel inventory as part of the s
 
 Retention and DLP policy collection uses Purview compliance PowerShell through `Connect-IPPSSession`, not the main Graph collector path. In this workflow:
 - delegated auth is supported
-- interactive delegated auth now retries with device code if the initial Purview sign-in flow does not complete cleanly
+- interactive delegated auth first uses a normal `Connect-IPPSSession` attempt, then retries with `-DisableWAM` when supported
+- device-code fallback for Purview is only available when the installed `ExchangeOnlineManagement` module exposes `Connect-IPPSSession -Device`
 - certificate auth is supported using `AppId + Organization + CertificateThumbprint`
 - client-secret auth is not supported for Purview compliance collection
 - `ExchangeOnlineManagement` must be available because it provides `Connect-IPPSSession`
 - when Purview compliance connection fails, the assessment now reports the auth path, tenant organization value, and next-step guidance in the preflight output so the operator can see what still needs to be corrected
+- if Microsoft Graph interactive auth has already broken later Exchange or Purview auth in the current shell, start a fresh PowerShell session before retrying the assessment
 - a certificate/app combination can succeed in one tenant and fail in another if the target tenant does not expose the Purview retention/DLP cmdlets to that app session; the preflight now calls that out explicitly when the compliance endpoint accepts auth but does not assign those cmdlets
 
 For SharePoint and OneDrive collection, certificate-based and client-secret runs now skip importing the `Microsoft.Online.SharePoint.PowerShell` module entirely. Those app-based runs rely on Microsoft Graph collection instead of `Connect-SPOService`. Interactive runs only attempt SharePoint admin PowerShell when the active assessment run can benefit from it.
@@ -82,7 +85,15 @@ Examples:
   -AuthMode ClientSecret `
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
-  -ClientSecret '<client-secret>'
+  -ClientSecret $env:ARRAYA_M365_CLIENT_SECRET
+
+$clientSecret = Read-Host 'Client secret' -AsSecureString
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365 `
+  -AuthMode ClientSecret `
+  -TenantId '<tenant-guid>' `
+  -ClientId '<app-id>' `
+  -ClientSecretSecure $clientSecret
 
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
   -Action M365 `
@@ -214,7 +225,7 @@ If a supported browser is unavailable, the remediation HTML and markdown outputs
 - `docs`: user-facing templates and questionnaires. The tenant-to-tenant questionnaire template lives under `docs/templates`.
 - `src/modules/Arraya.M365.Common`: shared helpers and Office365Custom local import function.
 - `src/modules/Arraya.M365.AssessmentRunner`: user-facing commands that execute assessment/report scripts.
-- `src/scripts/migrated/legacy`: migrated legacy scripts kept for compatibility, including the core M365 assessment engine, HTML/PDF helper, and questionnaire exporter.
+- `src/scripts/migrated/legacy`: migrated legacy scripts kept for compatibility, including the core M365 assessment engine, HTML/PDF helper, and questionnaire exporter. The standalone `Invoke-EntraAppReport.ps1` file is retained as an unsupported reference script and now requires explicit opt-in to run.
 - `src/vendor/Office365Custom/1.2.0`: vendored module used as shared function source.
 
 ## Development

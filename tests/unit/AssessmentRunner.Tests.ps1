@@ -3,6 +3,7 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $script:repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
         $script:manifestPath = Join-Path $script:repoRoot 'src\modules\Arraya.M365.AssessmentRunner\Arraya.M365.AssessmentRunner.psd1'
         $script:runnerPath = Join-Path $script:repoRoot 'src\modules\Arraya.M365.AssessmentRunner\Arraya.M365.AssessmentRunner.psm1'
+        $script:launcherPath = Join-Path $script:repoRoot 'src\scripts\operations\Start-M365TenantAssessment.ps1'
         Import-Module -Name $script:manifestPath -Force -DisableNameChecking
     }
 
@@ -54,6 +55,33 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Not -Match 'Customer Remediation HTML'
         $runnerSource | Should -Not -Match 'Customer Remediation Markdown'
         $runnerSource | Should -Match '\$invokeParams\.GenerateWorkbookOverride = \[bool\]\$plan\.GenerateWorkbook'
+        $runnerSource | Should -Match 'WorkbookExportPolicy'
+        $runnerSource | Should -Match 'TechnicalHtmlPolicy'
+        $runnerSource | Should -Match 'GenerateMigrationPack'
+        $runnerSource | Should -Match 'CollectionScopePolicy'
+        $runnerSource | Should -Match '\$invokeParams\.WorkbookExportPolicyOverride = \[string\]\$plan\.WorkbookExportPolicy'
+        $runnerSource | Should -Match '\$invokeParams\.TechnicalHtmlPolicyOverride = \[string\]\$plan\.TechnicalHtmlPolicy'
+        $runnerSource | Should -Match '\$invokeParams\.GenerateMigrationPackOverride = \[bool\]\$plan\.GenerateMigrationPack'
+        $runnerSource | Should -Match '\$invokeParams\.CollectionScopePolicyOverride = \[string\]\$plan\.CollectionScopePolicy'
+        $runnerSource | Should -Match '\$shouldEnablePolicyTechnicalHtml = \(\[string\]\$plan\.TechnicalHtmlPolicy -eq ''TenantToTenantCutover''\)'
+        $runnerSource | Should -Match 'if \(\$IncludeLegacyAssessmentArtifacts -or \$shouldEnablePolicyTechnicalHtml\)'
+        $runnerSource | Should -Match 'function Test-AssessmentPlanSkipsImproveByDefault'
+        $runnerSource | Should -Match 'SkipImproveByDefault'
+        $runnerSource | Should -Match 'Tenant-to-tenant migration profile defaults to workbook, cutover pack, technical HTML, and JSON snapshot output\. Skipping Improve/customer-style follow-up artifacts unless requested separately\.'
+    }
+
+    It 'validates the manifest contains a usable snapshot before launching Improve from a completed run' {
+        $runnerSource = Get-Content -Raw -Path $script:runnerPath
+        $runnerSource | Should -Match 'Import-ArrayaTenantSnapshotContext -Path \$manifestPath -Purpose ImprovementPlan'
+        $runnerSource | Should -Match 'The completed assessment run did not produce a usable JSON snapshot, so Improve cannot continue from the manifest'
+        $runnerSource | Should -Match 'This usually means snapshot export failed earlier in the run even if the workbook was created'
+    }
+
+    It 'uses the same usable-snapshot manifest guard in the launcher handoff' {
+        $launcherSource = Get-Content -Raw -Path $script:launcherPath
+        $launcherSource | Should -Match 'function Test-LauncherManifestHasSnapshotArtifact'
+        $launcherSource | Should -Match 'Import-ArrayaTenantSnapshotContext -Path \$manifestPath -Purpose ImprovementPlan'
+        $launcherSource | Should -Match 'The completed assessment run did not produce a usable JSON snapshot, so Improve cannot continue from the manifest'
     }
 
     It 'normalizes improve outputs back into the assessment run when a broad export root is supplied' {
@@ -63,6 +91,29 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match '\[string\]::Equals\(\$resolvedOutputFolder, \$resolvedExportPath, \[System\.StringComparison\]::OrdinalIgnoreCase\)'
     }
 
+    It 'uses the primary profile for workbook and HTML policy, but falls back to default collection scope for merged selections' {
+        $module = Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction Stop | Select-Object -First 1
+
+        $singlePlan = & $module {
+            Resolve-M365OutputProfileExecutionPlan -OutputProfile 'TenantToTenantMigration'
+        }
+        $singlePlan.WorkbookExportPolicy | Should -Be 'TenantToTenantCutover'
+        $singlePlan.TechnicalHtmlPolicy | Should -Be 'TenantToTenantCutover'
+        $singlePlan.GenerateMigrationPack | Should -BeTrue
+        $singlePlan.CollectionScopePolicy | Should -Be 'TenantToTenantCutover'
+        $singlePlan.SkipImproveByDefault | Should -BeTrue
+
+        $mergedPlan = & $module {
+            Resolve-M365OutputProfileExecutionPlan -OutputProfile @('TenantToTenantMigration', 'SolutionsEngineer')
+        }
+        $mergedPlan.PrimaryProfile | Should -Be 'TenantToTenantMigration'
+        $mergedPlan.WorkbookExportPolicy | Should -Be 'TenantToTenantCutover'
+        $mergedPlan.TechnicalHtmlPolicy | Should -Be 'TenantToTenantCutover'
+        $mergedPlan.GenerateMigrationPack | Should -BeTrue
+        $mergedPlan.CollectionScopePolicy | Should -Be 'Default'
+        $mergedPlan.SkipImproveByDefault | Should -BeFalse
+    }
+
     It 'surfaces auth and permission-preflight controls on tenant assessment entrypoints' {
         $runnerSource = Get-Content -Raw -Path $script:runnerPath
         $runnerSource | Should -Match '\[ValidateSet\(''Interactive'', ''Certificate'', ''ClientSecret''\)\]\s*\[string\]\$AuthMode'
@@ -70,6 +121,28 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match '\$invokeParams\.PreflightOnly = \$true'
         $runnerSource | Should -Match '\[switch\]\$SkipPermissionPreflight'
         $runnerSource | Should -Match '\$invokeParams\.SkipPermissionPreflight = \$SkipPermissionPreflight'
+        $runnerSource | Should -Match '\[pscredential\]\$ClientSecretCredential'
+        $runnerSource | Should -Match '\[securestring\]\$ClientSecretSecure'
+        $runnerSource | Should -Match '\$invokeParams\.ClientSecretCredential = \$ClientSecretCredential'
+        $runnerSource | Should -Match '\$invokeParams\.ClientSecretSecure = \$ClientSecretSecure'
+
+        $launcherSource = Get-Content -Raw -Path $script:launcherPath
+        $launcherSource | Should -Match '\[pscredential\]\$ClientSecretCredential'
+        $launcherSource | Should -Match '\[securestring\]\$ClientSecretSecure'
+        $launcherSource | Should -Match '\$invokeParams\.ClientSecretCredential = \$ClientSecretCredential'
+        $launcherSource | Should -Match '\$invokeParams\.ClientSecretSecure = \$ClientSecretSecure'
+    }
+
+    It 'treats client secret auth as a compatibility path and gates the unsupported Entra reference script' {
+        $launcherSource = Get-Content -Raw -Path $script:launcherPath
+        $launcherSource | Should -Match 'Client secret auth is a compatibility path in this workflow'
+
+        $legacyEntraReportPath = Join-Path $script:repoRoot 'src\scripts\migrated\legacy\Invoke-EntraAppReport.ps1'
+        Test-Path $legacyEntraReportPath | Should -BeTrue
+
+        $legacyEntraReportSource = Get-Content -Raw -Path $legacyEntraReportPath
+        $legacyEntraReportSource | Should -Match '\[switch\]\$AllowUnsupportedLegacyExecution'
+        $legacyEntraReportSource | Should -Match 'unsupported legacy reference script'
     }
 
     It 'updates the assessment manifest with improve artifacts including the markdown companion' {
@@ -138,6 +211,45 @@ Describe 'Arraya.M365.AssessmentRunner' {
         } $workbookPath
 
         $resolvedManifest | Should -Be (Resolve-Path -Path $manifestPath).Path
+    }
+
+    It 'prefers a manifest with an existing assessment snapshot when multiple run manifests are present' {
+        $runRoot = Join-Path $TestDrive 'Contoso SE With Snapshot'
+        $supportPath = Join-Path $runRoot 'Support'
+        $null = New-Item -ItemType Directory -Path $supportPath -Force
+
+        $invalidManifestPath = Join-Path $supportPath 'Run.manifest.json'
+        [pscustomobject]@{
+            SchemaVersion = 2
+            Artifacts     = @(
+                [pscustomobject]@{
+                    Type = 'Workbook'
+                    Path = (Join-Path $runRoot 'Contoso.xlsx')
+                }
+            )
+        } | ConvertTo-Json -Depth 10 | Set-Content -Path $invalidManifestPath -Encoding UTF8
+
+        $snapshotPath = Join-Path $supportPath 'Contoso-Snap.json'
+        Set-Content -Path $snapshotPath -Value '{}' -Encoding UTF8
+
+        $validManifestPath = Join-Path $supportPath 'Contoso-Run.manifest.json'
+        [pscustomobject]@{
+            SchemaVersion = 2
+            Artifacts     = @(
+                [pscustomobject]@{
+                    Type = 'Assessment Snapshot JSON'
+                    Path = $snapshotPath
+                }
+            )
+        } | ConvertTo-Json -Depth 10 | Set-Content -Path $validManifestPath -Encoding UTF8
+
+        $module = Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction Stop | Select-Object -First 1
+        $resolvedManifest = & $module {
+            param($Path)
+            Resolve-AssessmentLatestManifestPath -ExportPath $Path
+        } $runRoot
+
+        $resolvedManifest | Should -Be (Resolve-Path -Path $validManifestPath).Path
     }
 
     It 'does not throw when the inferred Support folder does not exist yet' {

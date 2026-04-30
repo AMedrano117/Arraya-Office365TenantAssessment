@@ -17,6 +17,10 @@ function Get-ArrayaAssessmentOutputProfilePolicy {
                 GenerateQuestionnaire      = $true
                 GenerateJson               = $false
                 GeneratePdf                = $false
+                WorkbookExportPolicy       = 'Default'
+                TechnicalHtmlPolicy        = 'Default'
+                GenerateMigrationPack      = $false
+                CollectionScopePolicy      = 'Default'
             }
         }
         'SolutionsEngineer' {
@@ -29,6 +33,10 @@ function Get-ArrayaAssessmentOutputProfilePolicy {
                 GenerateQuestionnaire      = $false
                 GenerateJson               = $true
                 GeneratePdf                = $false
+                WorkbookExportPolicy       = 'Default'
+                TechnicalHtmlPolicy        = 'Default'
+                GenerateMigrationPack      = $false
+                CollectionScopePolicy      = 'Default'
             }
         }
         'ExecutiveLevel' {
@@ -41,6 +49,10 @@ function Get-ArrayaAssessmentOutputProfilePolicy {
                 GenerateQuestionnaire      = $false
                 GenerateJson               = $false
                 GeneratePdf                = $false
+                WorkbookExportPolicy       = 'Default'
+                TechnicalHtmlPolicy        = 'Default'
+                GenerateMigrationPack      = $false
+                CollectionScopePolicy      = 'Default'
             }
         }
         'TenantToTenantMigration' {
@@ -50,9 +62,13 @@ function Get-ArrayaAssessmentOutputProfilePolicy {
                 GenerateWorkbook           = $true
                 GenerateTechnicalHtml      = $true
                 GenerateBestPracticesHtml  = $false
-                GenerateQuestionnaire      = $true
+                GenerateQuestionnaire      = $false
                 GenerateJson               = $true
                 GeneratePdf                = $false
+                WorkbookExportPolicy       = 'TenantToTenantCutover'
+                TechnicalHtmlPolicy        = 'TenantToTenantCutover'
+                GenerateMigrationPack      = $true
+                CollectionScopePolicy      = 'TenantToTenantCutover'
             }
         }
         'Geek' {
@@ -65,6 +81,10 @@ function Get-ArrayaAssessmentOutputProfilePolicy {
                 GenerateQuestionnaire      = $true
                 GenerateJson               = $true
                 GeneratePdf                = $false
+                WorkbookExportPolicy       = 'Default'
+                TechnicalHtmlPolicy        = 'Default'
+                GenerateMigrationPack      = $false
+                CollectionScopePolicy      = 'Default'
             }
         }
         'Machine' {
@@ -77,6 +97,10 @@ function Get-ArrayaAssessmentOutputProfilePolicy {
                 GenerateQuestionnaire      = $false
                 GenerateJson               = $true
                 GeneratePdf                = $false
+                WorkbookExportPolicy       = 'Default'
+                TechnicalHtmlPolicy        = 'Default'
+                GenerateMigrationPack      = $false
+                CollectionScopePolicy      = 'Default'
             }
         }
     }

@@ -337,6 +337,226 @@ function Convert-ToCustomerAssessmentNarrativeText {
     return $normalized
 }
 
+function Get-CustomerEnterpriseApplicationSignalState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        $ApplicationRow,
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $false)]
+        [string]$Default = 'Unavailable'
+    )
+
+    $state = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $ApplicationRow -Names @($Name)) -Default $Default
+    if ([string]::IsNullOrWhiteSpace($state)) {
+        return $Default
+    }
+
+    return $state
+}
+
+function Test-CustomerEnterpriseApplicationSsoEnabled {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        $ApplicationRow
+    )
+
+    $preferredSingleSignOnMode = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('SSOMode', 'PreferredSingleSignOnMode')) -Default ''
+    $explicitSsoEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('SsoEnabled'))
+    return (
+        ($explicitSsoEnabled -eq $true) -or
+        (-not [string]::IsNullOrWhiteSpace($preferredSingleSignOnMode) -and $preferredSingleSignOnMode -ne 'notSupported')
+    )
+}
+
+function Get-CustomerEnterpriseApplicationCoverageState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$TotalCount,
+        [Parameter(Mandatory = $false)]
+        [int]$CollectedCount = 0,
+        [Parameter(Mandatory = $false)]
+        [int]$PartialCount = 0,
+        [Parameter(Mandatory = $false)]
+        [int]$UnavailableCount = 0,
+        [Parameter(Mandatory = $false)]
+        [int]$NotApplicableCount = 0,
+        [Parameter(Mandatory = $false)]
+        [switch]$SupportsNotApplicable
+    )
+
+    if ($TotalCount -eq 0) {
+        return 'Unavailable'
+    }
+
+    if ($SupportsNotApplicable -and (($CollectedCount + $PartialCount + $UnavailableCount) -eq 0) -and $NotApplicableCount -gt 0) {
+        return 'NotApplicable'
+    }
+
+    if (($PartialCount + $UnavailableCount) -eq 0) {
+        return 'Collected'
+    }
+
+    if (($CollectedCount + $PartialCount) -gt 0) {
+        return 'Partial'
+    }
+
+    return 'Unavailable'
+}
+
+function Get-CustomerEnterpriseApplicationSummaryFromRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [object[]]$ApplicationRows = @()
+    )
+
+    $rows = @($ApplicationRows)
+    $applicationSourceCollectedCount = @($rows | Where-Object { (Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ApplicationSourceState') -eq 'Collected' }).Count
+    $applicationSourceUnavailableCount = @($rows | Where-Object { (Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ApplicationSourceState') -eq 'Unavailable' }).Count
+    $ownerSignalCollectedCount = @($rows | Where-Object { (Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'OwnerSignalState') -eq 'Collected' }).Count
+    $ownerSignalUnavailableCount = @($rows | Where-Object { (Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'OwnerSignalState') -eq 'Unavailable' }).Count
+    $ownerSignalNotApplicableCount = @($rows | Where-Object { (Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'OwnerSignalState') -eq 'NotApplicable' }).Count
+    $redirectUriSignalCollectedCount = @($rows | Where-Object { (Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'RedirectUriSignalState') -eq 'Collected' }).Count
+    $redirectUriSignalPartialCount = @($rows | Where-Object { (Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'RedirectUriSignalState') -eq 'Partial' }).Count
+    $redirectUriSignalUnavailableCount = @($rows | Where-Object { (Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'RedirectUriSignalState') -eq 'Unavailable' }).Count
+    $activitySignalCollectedCount = @($rows | Where-Object { (Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ActivitySignalState') -eq 'Collected' }).Count
+    $activitySignalPartialCount = @($rows | Where-Object { (Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ActivitySignalState') -eq 'Partial' }).Count
+    $activitySignalUnavailableCount = @($rows | Where-Object { (Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ActivitySignalState') -eq 'Unavailable' }).Count
+
+    return [pscustomobject]@{
+        TotalEnterpriseApplications      = $rows.Count
+        FirstPartyApplications           = @($rows | Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('ApplicationSource')) -eq 'First Party' }).Count
+        ThirdPartyApplications           = @($rows | Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('ApplicationSource')) -eq 'Third Party' }).Count
+        UnknownSourceApplications        = @($rows | Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('ApplicationSource')) -eq 'Unknown' }).Count
+        ApplicationsWithHighPrivilege    = @($rows | Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('HighPrivilegePermissionCount'))) -gt 0 }).Count
+        ApplicationsWithDelegatedGrants  = @($rows | Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('DelegatedPermissionGrantCount'))) -gt 0 }).Count
+        ApplicationsWithApplicationPerms = @($rows | Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('ApplicationPermissionCount'))) -gt 0 }).Count
+        FirstPartyAppsWithoutOwners      = @($rows | Where-Object {
+            ([string](Get-ArrayaObjectValue -Object $_ -Names @('ApplicationSource')) -eq 'First Party') -and
+            ((Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'OwnerSignalState') -eq 'Collected') -and
+            ((Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('OwnerCount'))) -le 0)
+        }).Count
+        ThirdPartyAppsWithApplicationPerms = @($rows | Where-Object {
+            ([string](Get-ArrayaObjectValue -Object $_ -Names @('ApplicationSource')) -eq 'Third Party') -and
+            ((Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('ApplicationPermissionCount'))) -gt 0)
+        }).Count
+        ApplicationsWithNoRecentActivity = @($rows | Where-Object {
+            ((Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ActivitySignalState') -eq 'Collected') -and
+            ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))) -eq $false)
+        }).Count
+        ApplicationsWithInsecureRedirectUris = @($rows | Where-Object {
+            $redirectSignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'RedirectUriSignalState'
+            (($redirectSignalState -eq 'Collected') -or ($redirectSignalState -eq 'Partial')) -and
+            ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasInsecureRedirectUris'))) -eq $true)
+        }).Count
+        SsoEnabledApplications           = @($rows | Where-Object { Test-CustomerEnterpriseApplicationSsoEnabled -ApplicationRow $_ }).Count
+        ApplicationSourceCoverageState   = Get-CustomerEnterpriseApplicationCoverageState -TotalCount $rows.Count -CollectedCount $applicationSourceCollectedCount -UnavailableCount $applicationSourceUnavailableCount
+        ApplicationSourceCollectedCount  = $applicationSourceCollectedCount
+        ApplicationSourceUnavailableCount = $applicationSourceUnavailableCount
+        OwnerSignalCoverageState         = Get-CustomerEnterpriseApplicationCoverageState -TotalCount $rows.Count -CollectedCount $ownerSignalCollectedCount -UnavailableCount $ownerSignalUnavailableCount -NotApplicableCount $ownerSignalNotApplicableCount -SupportsNotApplicable
+        OwnerSignalCollectedCount        = $ownerSignalCollectedCount
+        OwnerSignalUnavailableCount      = $ownerSignalUnavailableCount
+        OwnerSignalNotApplicableCount    = $ownerSignalNotApplicableCount
+        RedirectUriSignalCoverageState   = Get-CustomerEnterpriseApplicationCoverageState -TotalCount $rows.Count -CollectedCount $redirectUriSignalCollectedCount -PartialCount $redirectUriSignalPartialCount -UnavailableCount $redirectUriSignalUnavailableCount
+        RedirectUriSignalCollectedCount  = $redirectUriSignalCollectedCount
+        RedirectUriSignalPartialCount    = $redirectUriSignalPartialCount
+        RedirectUriSignalUnavailableCount = $redirectUriSignalUnavailableCount
+        ActivitySignalCoverageState      = Get-CustomerEnterpriseApplicationCoverageState -TotalCount $rows.Count -CollectedCount $activitySignalCollectedCount -PartialCount $activitySignalPartialCount -UnavailableCount $activitySignalUnavailableCount
+        ActivitySignalCollectedCount     = $activitySignalCollectedCount
+        ActivitySignalPartialCount       = $activitySignalPartialCount
+        ActivitySignalUnavailableCount   = $activitySignalUnavailableCount
+    }
+}
+
+function Test-CustomerEnterpriseApplicationNoteworthy {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        $ApplicationRow
+    )
+
+    $highPrivilegeCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HighPrivilegePermissionCount'))
+    $applicationPermissionCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('ApplicationPermissionCount'))
+    $delegatedPermissionGrantCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('DelegatedPermissionGrantCount'))
+    $applicationSource = [string](Get-ArrayaObjectValue -Object $ApplicationRow -Names @('ApplicationSource'))
+    $ownerSignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $ApplicationRow -Name 'OwnerSignalState'
+    $ownerCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('OwnerCount'))
+    $redirectSignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $ApplicationRow -Name 'RedirectUriSignalState'
+    $hasInsecureRedirectUris = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasInsecureRedirectUris'))
+    $activitySignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $ApplicationRow -Name 'ActivitySignalState'
+    $hasRecentActivity = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasRecentActivity'))
+    $appRoleAssignmentRequired = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('AppRoleAssignmentRequired'))
+
+    return (
+        (($null -ne $highPrivilegeCount) -and ($highPrivilegeCount -gt 0)) -or
+        (($null -ne $applicationPermissionCount) -and ($applicationPermissionCount -gt 0)) -or
+        (($null -ne $delegatedPermissionGrantCount) -and ($delegatedPermissionGrantCount -gt 0)) -or
+        (Test-CustomerEnterpriseApplicationSsoEnabled -ApplicationRow $ApplicationRow) -or
+        (($applicationSource -eq 'First Party') -and ($ownerSignalState -eq 'Collected') -and ($null -ne $ownerCount) -and ($ownerCount -le 0)) -or
+        ((($redirectSignalState -eq 'Collected') -or ($redirectSignalState -eq 'Partial')) -and ($hasInsecureRedirectUris -eq $true)) -or
+        (($activitySignalState -eq 'Collected') -and ($hasRecentActivity -eq $false)) -or
+        ($appRoleAssignmentRequired -eq $true)
+    )
+}
+
+function Get-CustomerNoteworthyEnterpriseApplications {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [object[]]$ApplicationRows = @(),
+        [Parameter(Mandatory = $false)]
+        [int]$Top = 8
+    )
+
+    $rows = @($ApplicationRows)
+    if ($rows.Count -eq 0) {
+        return @()
+    }
+
+    $rankedNoteworthyRows = @(
+        $rows |
+            Where-Object { Test-CustomerEnterpriseApplicationNoteworthy -ApplicationRow $_ } |
+            Sort-Object `
+                @{ Expression = { $value = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('HighPrivilegePermissionCount')); if ($null -eq $value) { 0 } else { $value } }; Descending = $true }, `
+                @{ Expression = { $value = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('ApplicationPermissionCount')); if ($null -eq $value) { 0 } else { $value } }; Descending = $true }, `
+                @{ Expression = { $value = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('DelegatedPermissionGrantCount')); if ($null -eq $value) { 0 } else { $value } }; Descending = $true }, `
+                @{ Expression = { if (Test-CustomerEnterpriseApplicationSsoEnabled -ApplicationRow $_) { 1 } else { 0 } }; Descending = $true }, `
+                @{ Expression = {
+                    $ownerState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'OwnerSignalState'
+                    $ownerCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('OwnerCount'))
+                    if (([string](Get-ArrayaObjectValue -Object $_ -Names @('ApplicationSource')) -eq 'First Party') -and ($ownerState -eq 'Collected') -and ($null -ne $ownerCount) -and ($ownerCount -le 0)) { 1 } else { 0 }
+                }; Descending = $true }, `
+                @{ Expression = {
+                    $redirectState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'RedirectUriSignalState'
+                    $hasRisk = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasInsecureRedirectUris'))
+                    if ((($redirectState -eq 'Collected') -or ($redirectState -eq 'Partial')) -and ($hasRisk -eq $true)) { 1 } else { 0 }
+                }; Descending = $true }, `
+                @{ Expression = {
+                    $activityState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ActivitySignalState'
+                    $hasRecentActivity = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))
+                    if (($activityState -eq 'Collected') -and ($hasRecentActivity -eq $false)) { 1 } else { 0 }
+                }; Descending = $true }, `
+                @{ Expression = { if ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AppRoleAssignmentRequired'))) -eq $true) { 1 } else { 0 } }; Descending = $true }, `
+                @{ Expression = { Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName')) -Default 'Unnamed application' } }
+    )
+
+    if ($rankedNoteworthyRows.Count -ge $Top) {
+        return @($rankedNoteworthyRows | Select-Object -First $Top)
+    }
+
+    $remainingRows = @(
+        $rows |
+            Where-Object { $rankedNoteworthyRows -notcontains $_ } |
+            Sort-Object @{ Expression = { Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName')) -Default 'Unnamed application' } }
+    )
+
+    return @(@($rankedNoteworthyRows) + @($remainingRows | Select-Object -First ($Top - $rankedNoteworthyRows.Count)))
+}
+
 function Get-CustomerTechnicalObservationByTitle {
     [CmdletBinding()]
     param(
@@ -1573,20 +1793,94 @@ function New-CustomerAssessmentDocumentBlocks {
     }
 
     $applicationSummaryRecord = if ($Signals.EnterpriseApplicationSummary) { Get-ArrayaObjectValue -Object $Signals.EnterpriseApplicationSummary -Names @('Summary') } else { $null }
+    $enterpriseApplicationRowSummaryRecord = if ($enterpriseApplications.Count -gt 0) { Get-CustomerEnterpriseApplicationSummaryFromRows -ApplicationRows $enterpriseApplications } else { $null }
+    if ($null -eq $applicationSummaryRecord -and $null -ne $enterpriseApplicationRowSummaryRecord) {
+        $applicationSummaryRecord = $enterpriseApplicationRowSummaryRecord
+    }
+    elseif ($null -ne $applicationSummaryRecord -and $null -ne $enterpriseApplicationRowSummaryRecord) {
+        $mergedApplicationSummaryRecord = [ordered]@{}
+        foreach ($property in @($applicationSummaryRecord.PSObject.Properties)) {
+            $mergedApplicationSummaryRecord[$property.Name] = $property.Value
+        }
+        foreach ($property in @($enterpriseApplicationRowSummaryRecord.PSObject.Properties)) {
+            $hasCurrentValue = $mergedApplicationSummaryRecord.Contains($property.Name)
+            $currentValue = if ($hasCurrentValue) { $mergedApplicationSummaryRecord[$property.Name] } else { $null }
+            if (-not $hasCurrentValue -or $null -eq $currentValue -or [string]::IsNullOrWhiteSpace([string]$currentValue)) {
+                $mergedApplicationSummaryRecord[$property.Name] = $property.Value
+            }
+        }
+        $applicationSummaryRecord = [pscustomobject]$mergedApplicationSummaryRecord
+    }
+
     $totalEnterpriseApps = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $applicationSummaryRecord -Names @('TotalEnterpriseApplications', 'EnterpriseApplicationCount'))
     $highPrivilegeApps = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $applicationSummaryRecord -Names @('ApplicationsWithHighPrivilege', 'HighPrivilegeApplicationCount'))
     $ssoEnabledApps = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $applicationSummaryRecord -Names @('SsoEnabledApplications', 'SsoEnabledApplicationCount'))
+    $firstPartyAppsWithoutOwners = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $applicationSummaryRecord -Names @('FirstPartyAppsWithoutOwners'))
+    $appsWithRedirectUriRisk = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $applicationSummaryRecord -Names @('ApplicationsWithInsecureRedirectUris'))
+    $appsWithNoRecentActivity = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $applicationSummaryRecord -Names @('ApplicationsWithNoRecentActivity'))
+    $thirdPartyAppsWithApplicationPerms = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $applicationSummaryRecord -Names @('ThirdPartyAppsWithApplicationPerms'))
+    $ownerSignalCoverageState = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $applicationSummaryRecord -Names @('OwnerSignalCoverageState')) -Default $(if ($null -ne $enterpriseApplicationRowSummaryRecord) { [string]$enterpriseApplicationRowSummaryRecord.OwnerSignalCoverageState } else { 'Unavailable' })
+    $redirectUriSignalCoverageState = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $applicationSummaryRecord -Names @('RedirectUriSignalCoverageState')) -Default $(if ($null -ne $enterpriseApplicationRowSummaryRecord) { [string]$enterpriseApplicationRowSummaryRecord.RedirectUriSignalCoverageState } else { 'Unavailable' })
+    $activitySignalCoverageState = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $applicationSummaryRecord -Names @('ActivitySignalCoverageState')) -Default $(if ($null -ne $enterpriseApplicationRowSummaryRecord) { [string]$enterpriseApplicationRowSummaryRecord.ActivitySignalCoverageState } else { 'Unavailable' })
     if ($null -eq $totalEnterpriseApps -or (($totalEnterpriseApps -eq 0) -and ($enterpriseApplications.Count -gt 0))) { $totalEnterpriseApps = $enterpriseApplications.Count }
     if ($null -eq $ssoEnabledApps) {
         $ssoEnabledApps = @(
             $enterpriseApplications |
+                Where-Object { Test-CustomerEnterpriseApplicationSsoEnabled -ApplicationRow $_ }
+        ).Count
+    }
+    if ($null -eq $firstPartyAppsWithoutOwners) {
+        $firstPartyAppsWithoutOwners = @(
+            $enterpriseApplications |
                 Where-Object {
-                    $preferredSingleSignOnMode = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('SSOMode', 'PreferredSingleSignOnMode')) -Default ''
-                    $explicitSsoEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('SsoEnabled'))
-                    ($explicitSsoEnabled -eq $true) -or (-not [string]::IsNullOrWhiteSpace($preferredSingleSignOnMode) -and $preferredSingleSignOnMode -ne 'notSupported')
+                    ([string](Get-ArrayaObjectValue -Object $_ -Names @('ApplicationSource')) -eq 'First Party') -and
+                    ((Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'OwnerSignalState') -eq 'Collected') -and
+                    ((Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('OwnerCount'))) -le 0)
                 }
         ).Count
     }
+    if ($null -eq $appsWithRedirectUriRisk) {
+        $appsWithRedirectUriRisk = @(
+            $enterpriseApplications |
+                Where-Object {
+                    $redirectSignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'RedirectUriSignalState'
+                    (($redirectSignalState -eq 'Collected') -or ($redirectSignalState -eq 'Partial')) -and
+                    ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasInsecureRedirectUris'))) -eq $true)
+                }
+        ).Count
+    }
+    if ($null -eq $appsWithNoRecentActivity) {
+        $appsWithNoRecentActivity = @(
+            $enterpriseApplications |
+                Where-Object {
+                    ((Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ActivitySignalState') -eq 'Collected') -and
+                    ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))) -eq $false)
+                }
+        ).Count
+    }
+    if ($null -eq $thirdPartyAppsWithApplicationPerms) {
+        $thirdPartyAppsWithApplicationPerms = @(
+            $enterpriseApplications |
+                Where-Object {
+                    ([string](Get-ArrayaObjectValue -Object $_ -Names @('ApplicationSource')) -eq 'Third Party') -and
+                    ((Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('ApplicationPermissionCount'))) -gt 0)
+                }
+        ).Count
+    }
+    $ownerSignalFullyValidated = ($ownerSignalCoverageState -eq 'Collected') -or ($ownerSignalCoverageState -eq 'NotApplicable')
+    $redirectUriSignalFullyValidated = ($redirectUriSignalCoverageState -eq 'Collected')
+    $activitySignalFullyValidated = ($activitySignalCoverageState -eq 'Collected')
+    $applicationValidationNotes = New-Object System.Collections.Generic.List[string]
+    if (-not $ownerSignalFullyValidated) {
+        $applicationValidationNotes.Add('Owner validation was not fully validated in this run.') | Out-Null
+    }
+    if (-not $redirectUriSignalFullyValidated) {
+        $applicationValidationNotes.Add('Redirect URI review was not fully validated in this run.') | Out-Null
+    }
+    if (-not $activitySignalFullyValidated) {
+        $applicationValidationNotes.Add('Recent activity validation was not fully validated in this run.') | Out-Null
+    }
+    $applicationValidationNoteText = @($applicationValidationNotes.ToArray()) -join ' '
     $applicationInventoryValidated = ($null -ne $applicationSummaryRecord) -or ($enterpriseApplications.Count -gt 0)
     $applicationInventoryClearlyEmpty = $applicationInventoryValidated -and ($enterpriseApplications.Count -eq 0) -and ($totalEnterpriseApps -eq 0)
 
@@ -1960,21 +2254,34 @@ function New-CustomerAssessmentDocumentBlocks {
     else {
         @((New-CustomerWordTableRow -Cells @('Not surfaced in current source', 'Not surfaced in current source', 'Not surfaced in current source')))
     }
+    $noteworthyEnterpriseApplications = if ($enterpriseApplications.Count -gt 0) {
+        @(Get-CustomerNoteworthyEnterpriseApplications -ApplicationRows $enterpriseApplications -Top 8)
+    }
+    else {
+        @()
+    }
     $applicationInventoryRows = if ($enterpriseApplications.Count -gt 0) {
         @(
-            foreach ($enterpriseApplication in @($enterpriseApplications | Select-Object -First 8)) {
+            foreach ($enterpriseApplication in @($noteworthyEnterpriseApplications)) {
                 $displayName = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('DisplayName')) -Default 'Unnamed application'
                 $preferredSingleSignOnMode = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('SSOMode', 'PreferredSingleSignOnMode')) -Default 'Not detected'
-                $ssoEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('SsoEnabled'))
-                if ($ssoEnabled -ne $true -and $preferredSingleSignOnMode -ne 'Not detected' -and $preferredSingleSignOnMode -ne 'notSupported') {
-                    $ssoEnabled = $true
-                }
+                $ssoEnabled = Test-CustomerEnterpriseApplicationSsoEnabled -ApplicationRow $enterpriseApplication
                 $ssoEnabledText = Convert-ToCustomerAssessmentBooleanLabel -Value $ssoEnabled -TrueText 'Enabled' -FalseText 'Not detected' -Default 'Not validated from the reviewed data'
                 $effectiveSsoMode = if ($ssoEnabled -eq $true -and $preferredSingleSignOnMode -ne 'Not detected') { $preferredSingleSignOnMode } elseif ($ssoEnabled -eq $true) { 'Configured' } else { 'Not detected' }
                 $highPrivilegeCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('HighPrivilegePermissionCount'))
                 $delegatedCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('DelegatedPermissionGrantCount'))
                 $applicationPermissionCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('ApplicationPermissionCount'))
                 $appRoleAssignmentRequired = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('AppRoleAssignmentRequired'))
+                $applicationSource = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('ApplicationSource')) -Default 'Source not classified'
+                $ownerSignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $enterpriseApplication -Name 'OwnerSignalState'
+                $redirectUriSignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $enterpriseApplication -Name 'RedirectUriSignalState'
+                $activitySignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $enterpriseApplication -Name 'ActivitySignalState'
+                $ownerCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('OwnerCount'))
+                $appCredentials = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('AppCredentials')) -Default ''
+                $delegatedLastSignIn = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('DelegatedLastSignIn')) -Default ''
+                $applicationLastSignIn = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('ApplicationLastSignIn')) -Default ''
+                $insecureRedirectUriCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('InsecureRedirectUriCount'))
+                $hasRecentActivity = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('HasRecentActivity'))
                 $lastSignInDateTime = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('LastSignInDateTime')) -Default ''
                 $lastSignInUserDisplayName = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('LastSignInUserDisplayName')) -Default ''
                 $lastSignInUserPrincipalName = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('LastSignInUserPrincipalName')) -Default ''
@@ -1982,6 +2289,9 @@ function New-CustomerAssessmentDocumentBlocks {
                 $lastClientAppUsed = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('LastClientAppUsed')) -Default ''
 
                 $observationParts = New-Object System.Collections.Generic.List[string]
+                if (-not [string]::IsNullOrWhiteSpace($applicationSource) -and $applicationSource -ne 'Source not classified') {
+                    $observationParts.Add("Application source is classified as $applicationSource.") | Out-Null
+                }
                 if ($ssoEnabled -eq $true) {
                     $observationParts.Add(("SSO is configured{0}." -f $(if ($effectiveSsoMode -ne 'Configured') { " via $effectiveSsoMode" } else { '' }))) | Out-Null
                 }
@@ -1992,6 +2302,32 @@ function New-CustomerAssessmentDocumentBlocks {
                 }
                 if ($appRoleAssignmentRequired -eq $true) {
                     $observationParts.Add('User assignment is required before access is granted.') | Out-Null
+                }
+                if ($ownerSignalState -eq 'Collected' -and $null -ne $ownerCount) {
+                    if ($ownerCount -le 0) {
+                        $observationParts.Add('No owner signal was surfaced for this application registration.') | Out-Null
+                    }
+                    else {
+                        $observationParts.Add(("Owner coverage shows {0} owner signal(s)." -f $ownerCount)) | Out-Null
+                    }
+                }
+                elseif ($ownerSignalState -eq 'Unavailable') {
+                    $observationParts.Add('Owner validation was not fully completed in the reviewed data.') | Out-Null
+                }
+                if (-not [string]::IsNullOrWhiteSpace($appCredentials)) {
+                    $observationParts.Add(("Application credentials surfaced: {0}." -f $appCredentials)) | Out-Null
+                }
+                if ($null -ne $insecureRedirectUriCount -and $insecureRedirectUriCount -gt 0) {
+                    $observationParts.Add(("Redirect URI review flagged {0} potentially insecure or overly broad endpoint(s)." -f $insecureRedirectUriCount)) | Out-Null
+                }
+                elseif ($redirectUriSignalState -eq 'Partial') {
+                    $observationParts.Add('Redirect URI review was only partially validated in the reviewed data.') | Out-Null
+                }
+                if (-not [string]::IsNullOrWhiteSpace($delegatedLastSignIn) -and $delegatedLastSignIn -ne 'Not validated from the reviewed data') {
+                    $observationParts.Add(("Latest delegated app sign-in: {0}." -f $delegatedLastSignIn)) | Out-Null
+                }
+                if (-not [string]::IsNullOrWhiteSpace($applicationLastSignIn) -and $applicationLastSignIn -ne 'Not validated from the reviewed data') {
+                    $observationParts.Add(("Latest application credential sign-in: {0}." -f $applicationLastSignIn)) | Out-Null
                 }
                 if (-not [string]::IsNullOrWhiteSpace($lastSignInDateTime)) {
                     if ($lastSignInDateTime -eq 'No sign-ins found') {
@@ -2014,6 +2350,12 @@ function New-CustomerAssessmentDocumentBlocks {
                 }
                 if (-not [string]::IsNullOrWhiteSpace($lastClientAppUsed) -and $lastClientAppUsed -ne 'Not validated from the reviewed data') {
                     $observationParts.Add("Latest client app used: $lastClientAppUsed.") | Out-Null
+                }
+                if ($activitySignalState -eq 'Collected' -and $hasRecentActivity -eq $false) {
+                    $observationParts.Add('No recent activity signal was surfaced across the reviewed application sign-in telemetry.') | Out-Null
+                }
+                elseif ($activitySignalState -eq 'Partial') {
+                    $observationParts.Add('Recent activity validation was only partially completed in the reviewed data.') | Out-Null
                 }
                 if ($observationParts.Count -eq 0) {
                     $observationParts.Add('Base application inventory was surfaced, but deeper permission usage was not validated from the reviewed data.') | Out-Null
@@ -2433,7 +2775,36 @@ function New-CustomerAssessmentDocumentBlocks {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'The application review looked for enterprise application inventory, consent-related controls, and elevated permission signals. In the reviewed data, no enterprise applications were surfaced. That should be read as the current reported result for this source, with a follow-up validation only if the tenant expects line-of-business or third-party enterprise applications to appear here.' -Style 'Normal')) | Out-Null
     }
     elseif ($applicationInventoryValidated) {
-        $blocks.Add((New-CustomerWordParagraphBlock -Text ("The application review looked at enterprise application inventory, sign-in posture, and the degree to which privileged permissions are visible in the current tenant data. The reviewed source surfaced {0} enterprise application(s){1}{2}." -f $(if ($null -ne $totalEnterpriseApps) { $totalEnterpriseApps } else { 'an unconfirmed number of' }), $(if ($null -ne $ssoEnabledApps) { ", including $ssoEnabledApps with SSO enabled" } else { '' }), $(if ($null -ne $highPrivilegeApps) { " and $highPrivilegeApps with elevated permissions" } else { '' })) -Style 'Normal')) | Out-Null
+        $validatedApplicationNarrativeSegments = New-Object System.Collections.Generic.List[string]
+        if ($null -ne $ssoEnabledApps) {
+            $validatedApplicationNarrativeSegments.Add("$ssoEnabledApps with SSO enabled") | Out-Null
+        }
+        if ($null -ne $highPrivilegeApps) {
+            $validatedApplicationNarrativeSegments.Add("$highPrivilegeApps with elevated permissions") | Out-Null
+        }
+        if ($ownerSignalFullyValidated -and $null -ne $firstPartyAppsWithoutOwners -and $firstPartyAppsWithoutOwners -gt 0) {
+            $validatedApplicationNarrativeSegments.Add("$firstPartyAppsWithoutOwners first-party app(s) without owner coverage") | Out-Null
+        }
+        if ($null -ne $thirdPartyAppsWithApplicationPerms -and $thirdPartyAppsWithApplicationPerms -gt 0) {
+            $validatedApplicationNarrativeSegments.Add("$thirdPartyAppsWithApplicationPerms third-party app(s) with application permissions") | Out-Null
+        }
+        if ($redirectUriSignalFullyValidated -and $null -ne $appsWithRedirectUriRisk -and $appsWithRedirectUriRisk -gt 0) {
+            $validatedApplicationNarrativeSegments.Add("$appsWithRedirectUriRisk redirect URI review flag(s)") | Out-Null
+        }
+        if ($activitySignalFullyValidated -and $null -ne $appsWithNoRecentActivity -and $appsWithNoRecentActivity -gt 0) {
+            $validatedApplicationNarrativeSegments.Add("$appsWithNoRecentActivity with no recent activity signal") | Out-Null
+        }
+
+        $validatedApplicationNarrativeText = Join-ArrayaReadableList -Items @($validatedApplicationNarrativeSegments.ToArray())
+        $applicationNarrative = "The application review looked at enterprise application inventory, sign-in posture, and the degree to which privileged permissions are visible in the current tenant data. The reviewed source surfaced {0} enterprise application(s)" -f $(if ($null -ne $totalEnterpriseApps) { $totalEnterpriseApps } else { 'an unconfirmed number of' })
+        if (-not [string]::IsNullOrWhiteSpace($validatedApplicationNarrativeText)) {
+            $applicationNarrative += ", including $validatedApplicationNarrativeText"
+        }
+        $applicationNarrative += '.'
+        if (-not [string]::IsNullOrWhiteSpace($applicationValidationNoteText)) {
+            $applicationNarrative += " $applicationValidationNoteText"
+        }
+        $blocks.Add((New-CustomerWordParagraphBlock -Text $applicationNarrative -Style 'Normal')) | Out-Null
     }
     else {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'The current review did not surface a usable enterprise application inventory. Validation note: this section should be treated as incomplete rather than as proof that no enterprise applications exist in the tenant.' -Style 'Normal')) | Out-Null

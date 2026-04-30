@@ -141,6 +141,885 @@ function Get-AllExchangeMailboxDetails {
         return $false
     }
 
+    function Convert-MailboxProxyAddressCollectionToArray {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $false)]
+            $Value
+        )
+
+        if ($null -eq $Value) {
+            return @()
+        }
+
+        if ($Value -is [string]) {
+            return @(
+                $Value -split ',' |
+                    ForEach-Object { ([string]$_).Trim() } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+        }
+
+        if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+            return @(
+                $Value |
+                    ForEach-Object { ([string]$_).Trim() } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+        }
+
+        $text = ([string]$Value).Trim()
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            return @()
+        }
+
+        return @($text)
+    }
+
+    function Add-MailboxMigrationAddressProperties {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [psobject]$Mailbox
+        )
+
+        $proxyAddresses = @(Convert-MailboxProxyAddressCollectionToArray -Value (Get-ArrayaObjectValue -Object $Mailbox -Names @('EmailAddresses')))
+        $onMicrosoftAliases = New-Object System.Collections.Generic.List[string]
+        $primaryOnMicrosoftAliases = New-Object System.Collections.Generic.List[string]
+        $x500Addresses = New-Object System.Collections.Generic.List[string]
+        $x400Addresses = New-Object System.Collections.Generic.List[string]
+
+        foreach ($proxyAddress in $proxyAddresses) {
+            $proxyText = ([string]$proxyAddress).Trim()
+            if ([string]::IsNullOrWhiteSpace($proxyText)) {
+                continue
+            }
+
+            if ($proxyText -match '^(?<prefix>SMTP|smtp):(?<address>[^@]+@[^@]+\.onmicrosoft\.com)$') {
+                $resolvedAddress = [string]$Matches['address']
+                if (-not $onMicrosoftAliases.Contains($resolvedAddress)) {
+                    $onMicrosoftAliases.Add($resolvedAddress) | Out-Null
+                }
+                if ($Matches['prefix'] -ceq 'SMTP' -and -not $primaryOnMicrosoftAliases.Contains($resolvedAddress)) {
+                    $primaryOnMicrosoftAliases.Add($resolvedAddress) | Out-Null
+                }
+                continue
+            }
+
+            if ($proxyText -match '^(?i)x500:') {
+                if (-not $x500Addresses.Contains($proxyText)) {
+                    $x500Addresses.Add($proxyText) | Out-Null
+                }
+                continue
+            }
+
+            if ($proxyText -match '^(?i)x400:') {
+                if (-not $x400Addresses.Contains($proxyText)) {
+                    $x400Addresses.Add($proxyText) | Out-Null
+                }
+            }
+        }
+
+        $preferredOnMicrosoftAlias = if ($primaryOnMicrosoftAliases.Count -gt 0) {
+            [string]$primaryOnMicrosoftAliases[0]
+        }
+        elseif ($onMicrosoftAliases.Count -gt 0) {
+            [string]$onMicrosoftAliases[0]
+        }
+        else {
+            $null
+        }
+
+        $legacyExchangeDn = [string](Get-ArrayaObjectValue -Object $Mailbox -Names @('LegacyExchangeDN', 'LegacyExchangeDn'))
+        if ([string]::IsNullOrWhiteSpace($legacyExchangeDn)) {
+            $legacyExchangeDn = $null
+        }
+        $legacyExchangeDnX500 = if ($legacyExchangeDn) { "x500:$legacyExchangeDn" } else { $null }
+
+        $grantSendOnBehalfCount = $null
+        if ($Mailbox.PSObject.Properties['GrantSendOnBehalfTo']) {
+            $grantSendOnBehalfCount = @(
+                ([string](Get-ArrayaObjectValue -Object $Mailbox -Names @('GrantSendOnBehalfTo'))) -split ';' |
+                    ForEach-Object { ([string]$_).Trim() } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            ).Count
+        }
+
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'LegacyExchangeDn' -Value $legacyExchangeDn -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'LegacyExchangeDnX500' -Value $legacyExchangeDnX500 -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'OnMicrosoftAlias' -Value $preferredOnMicrosoftAlias -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'OnMicrosoftAliases' -Value $(if ($onMicrosoftAliases.Count -gt 0) { @($onMicrosoftAliases.ToArray()) -join ';' } else { $null }) -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'OnMicrosoftAliasCount' -Value ([int]$onMicrosoftAliases.Count) -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'X500Addresses' -Value $(if ($x500Addresses.Count -gt 0) { @($x500Addresses.ToArray()) -join ';' } else { $null }) -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'X500AddressCount' -Value ([int]$x500Addresses.Count) -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'X400Addresses' -Value $(if ($x400Addresses.Count -gt 0) { @($x400Addresses.ToArray()) -join ';' } else { $null }) -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'X400AddressCount' -Value ([int]$x400Addresses.Count) -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'GrantSendOnBehalfToCount' -Value $grantSendOnBehalfCount -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'FullAccessDelegates' -Value $null -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'FullAccessDelegateCount' -Value $null -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'FullAccessDelegateState' -Value 'NotCollected' -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'SendAsDelegates' -Value $null -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'SendAsDelegateCount' -Value $null -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'SendAsDelegateState' -Value 'NotCollected' -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'CalendarDelegates' -Value $null -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'CalendarDelegateCount' -Value $null -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'CalendarPermissionEntryCount' -Value $null -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'CalendarDelegateState' -Value 'NotCollected' -Force
+    }
+
+    function Get-MailboxDelegateLookupKey {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [psobject]$Mailbox
+        )
+
+        return @(
+            [string](Get-ArrayaObjectValue -Object $Mailbox -Names @('ExternalDirectoryObjectId'))
+            [string](Get-ArrayaObjectValue -Object $Mailbox -Names @('ExchangeGuid'))
+            [string](Get-ArrayaObjectValue -Object $Mailbox -Names @('Guid'))
+            [string](Get-ArrayaObjectValue -Object $Mailbox -Names @('UserPrincipalName'))
+            [string](Get-ArrayaObjectValue -Object $Mailbox -Names @('PrimarySmtpAddress'))
+            [string](Get-ArrayaObjectValue -Object $Mailbox -Names @('Identity'))
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1
+    }
+
+    function Convert-MailboxDelegateIdentityToText {
+        [CmdletBinding()]
+        param(
+            [AllowNull()]$Value
+        )
+
+        if ($null -eq $Value) {
+            return $null
+        }
+
+        foreach ($fieldName in @('PrimarySmtpAddress', 'WindowsEmailAddress', 'UserPrincipalName', 'Name', 'DisplayName', 'Identity')) {
+            $resolvedValue = [string](Get-ArrayaObjectValue -Object $Value -Names @($fieldName))
+            if (-not [string]::IsNullOrWhiteSpace($resolvedValue)) {
+                return $resolvedValue.Trim()
+            }
+        }
+
+        $text = ([string]$Value).Trim()
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            return $null
+        }
+
+        return $text
+    }
+
+    function Test-MailboxDelegateIdentityShouldBeIgnored {
+        [CmdletBinding()]
+        param(
+            [AllowNull()]
+            [string]$Identity
+        )
+
+        if ([string]::IsNullOrWhiteSpace($Identity)) {
+            return $true
+        }
+
+        return (
+            $Identity -match '^(?i:NT AUTHORITY\\SELF|NULL SID)$' -or
+            $Identity -match '^(?i:NT AUTHORITY\\)' -or
+            $Identity -match '(?i)S-1-'
+        )
+    }
+
+    function Resolve-MailboxFromPermissionIdentity {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [hashtable]$TenantStatsHash,
+            [AllowNull()]$Identity
+        )
+
+        if ($null -eq $Identity) {
+            return $null
+        }
+
+        $candidateValues = New-Object System.Collections.Generic.List[string]
+        foreach ($candidateValue in @(
+                Convert-MailboxDelegateIdentityToText -Value $Identity
+                [string](Get-ArrayaObjectValue -Object $Identity -Names @('PrimarySmtpAddress'))
+                [string](Get-ArrayaObjectValue -Object $Identity -Names @('UserPrincipalName'))
+                [string](Get-ArrayaObjectValue -Object $Identity -Names @('Identity'))
+                [string](Get-ArrayaObjectValue -Object $Identity -Names @('DisplayName'))
+            )) {
+            if ([string]::IsNullOrWhiteSpace($candidateValue)) {
+                continue
+            }
+
+            $normalizedCandidate = $candidateValue.Trim()
+            if (-not $candidateValues.Contains($normalizedCandidate)) {
+                $candidateValues.Add($normalizedCandidate) | Out-Null
+            }
+        }
+
+        foreach ($candidate in @($candidateValues.ToArray())) {
+            foreach ($lookupName in @('AllMailboxes-MailIdentity', 'AllMailboxes-PrimarySmtpAddress', 'AllMailboxes-UserPrincipalName', 'AllMailboxes')) {
+                if (
+                    $TenantStatsHash.ContainsKey($lookupName) -and
+                    $TenantStatsHash[$lookupName] -is [System.Collections.IDictionary] -and
+                    $TenantStatsHash[$lookupName].Contains($candidate)
+                ) {
+                    return $TenantStatsHash[$lookupName][$candidate]
+                }
+            }
+
+            foreach ($mailbox in @($TenantStatsHash['AllMailboxes'].Values)) {
+                if (
+                    [string]::Equals([string]$mailbox.DisplayName, $candidate, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    [string]::Equals([string]$mailbox.Identity, $candidate, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    [string]::Equals([string]$mailbox.PrimarySmtpAddress, $candidate, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    [string]::Equals([string]$mailbox.UserPrincipalName, $candidate, [System.StringComparison]::OrdinalIgnoreCase)
+                ) {
+                    return $mailbox
+                }
+            }
+        }
+
+        return $null
+    }
+
+    function Set-MailboxDelegatePermissionProperties {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [psobject]$Mailbox,
+            [Parameter(Mandatory = $true)]
+            [ValidateSet('FullAccess', 'SendAs')]
+            [string]$PermissionType,
+            [AllowNull()]
+            [string[]]$Delegates,
+            [Parameter(Mandatory = $true)]
+            [ValidateSet('Collected', 'LookupFailed', 'NotCollected')]
+            [string]$State
+        )
+
+        $delegatePropertyName = if ($PermissionType -eq 'FullAccess') { 'FullAccessDelegates' } else { 'SendAsDelegates' }
+        $countPropertyName = if ($PermissionType -eq 'FullAccess') { 'FullAccessDelegateCount' } else { 'SendAsDelegateCount' }
+        $statePropertyName = if ($PermissionType -eq 'FullAccess') { 'FullAccessDelegateState' } else { 'SendAsDelegateState' }
+
+        $delegateValues = New-Object System.Collections.Generic.List[string]
+        if ($Delegates) {
+            foreach ($delegate in @($Delegates)) {
+                $delegateText = Convert-MailboxDelegateIdentityToText -Value $delegate
+                if (Test-MailboxDelegateIdentityShouldBeIgnored -Identity $delegateText) {
+                    continue
+                }
+                if (-not $delegateValues.Contains($delegateText)) {
+                    $delegateValues.Add($delegateText) | Out-Null
+                }
+            }
+        }
+
+        $Mailbox | Add-Member -MemberType NoteProperty -Name $delegatePropertyName -Value $(if ($State -eq 'Collected' -and $delegateValues.Count -gt 0) { @($delegateValues.ToArray()) -join ';' } else { $null }) -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name $countPropertyName -Value $(if ($State -eq 'Collected') { [int]$delegateValues.Count } else { $null }) -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name $statePropertyName -Value $State -Force
+    }
+
+    function Get-MailboxDelegatePermissionLookup {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [hashtable]$TenantStatsHash,
+            [Parameter(Mandatory = $true)]
+            [ValidateSet('FullAccess', 'SendAs')]
+            [string]$PermissionType,
+            [Parameter(Mandatory = $true)]
+            [array]$TargetMailboxes,
+            [Parameter(Mandatory = $true)]
+            [string]$ExportFileLocation
+        )
+
+        $lookup = @{}
+
+        if ($TargetMailboxes.Count -eq 0) {
+            return [pscustomobject]@{
+                Lookup  = $lookup
+                Success = $true
+            }
+        }
+
+        try {
+            $permissionRows = @()
+            if ($PermissionType -eq 'FullAccess') {
+                if (Get-Command -Name Get-EXOMailboxPermission -ErrorAction SilentlyContinue) {
+                    $permissionRows = @(
+                        $TargetMailboxes |
+                            Get-EXOMailboxPermission -ErrorAction SilentlyContinue |
+                            Where-Object {
+                                $_.IsInherited -eq $false -and
+                                $_.Deny -ne $true -and
+                                -not (Test-MailboxDelegateIdentityShouldBeIgnored -Identity (Convert-MailboxDelegateIdentityToText -Value $_.User))
+                            }
+                    )
+                }
+                elseif (Get-Command -Name Get-MailboxPermission -ErrorAction SilentlyContinue) {
+                    $permissionRows = @(
+                        foreach ($mailbox in $TargetMailboxes) {
+                            Get-MailboxPermission -Identity $mailbox.Identity -ErrorAction SilentlyContinue |
+                                Where-Object {
+                                    $_.IsInherited -eq $false -and
+                                    $_.Deny -ne $true -and
+                                    -not (Test-MailboxDelegateIdentityShouldBeIgnored -Identity (Convert-MailboxDelegateIdentityToText -Value $_.User))
+                                }
+                        }
+                    )
+                }
+                else {
+                    throw 'Mailbox permission cmdlets are not available in the current Exchange session.'
+                }
+            }
+            else {
+                if (Get-Command -Name Get-EXORecipientPermission -ErrorAction SilentlyContinue) {
+                    $permissionRows = @(
+                        Get-EXORecipientPermission -AccessRights SendAs -ResultSize Unlimited -ErrorAction SilentlyContinue |
+                            Where-Object {
+                                $_.IsInherited -eq $false -and
+                                -not (Test-MailboxDelegateIdentityShouldBeIgnored -Identity (Convert-MailboxDelegateIdentityToText -Value $_.Trustee))
+                            }
+                    )
+                }
+                elseif (Get-Command -Name Get-RecipientPermission -ErrorAction SilentlyContinue) {
+                    $permissionRows = @(
+                        foreach ($mailbox in $TargetMailboxes) {
+                            Get-RecipientPermission -Identity $mailbox.Identity -ErrorAction SilentlyContinue |
+                                Where-Object {
+                                    $_.IsInherited -eq $false -and
+                                    -not (Test-MailboxDelegateIdentityShouldBeIgnored -Identity (Convert-MailboxDelegateIdentityToText -Value $_.Trustee))
+                                }
+                        }
+                    )
+                }
+                else {
+                    throw 'Recipient permission cmdlets are not available in the current Exchange session.'
+                }
+            }
+
+            foreach ($permissionRow in @($permissionRows)) {
+                $mailbox = Resolve-MailboxFromPermissionIdentity -TenantStatsHash $TenantStatsHash -Identity $permissionRow.Identity
+                if (-not $mailbox) {
+                    continue
+                }
+
+                $lookupKey = Get-MailboxDelegateLookupKey -Mailbox $mailbox
+                if ([string]::IsNullOrWhiteSpace($lookupKey)) {
+                    continue
+                }
+
+                $delegateIdentity = if ($PermissionType -eq 'FullAccess') {
+                    Convert-MailboxDelegateIdentityToText -Value $permissionRow.User
+                }
+                else {
+                    Convert-MailboxDelegateIdentityToText -Value $permissionRow.Trustee
+                }
+
+                if (Test-MailboxDelegateIdentityShouldBeIgnored -Identity $delegateIdentity) {
+                    continue
+                }
+
+                if (-not $lookup.Contains($lookupKey)) {
+                    $lookup[$lookupKey] = New-Object System.Collections.Generic.List[string]
+                }
+                if (-not $lookup[$lookupKey].Contains($delegateIdentity)) {
+                    $lookup[$lookupKey].Add($delegateIdentity) | Out-Null
+                }
+            }
+
+            return [pscustomobject]@{
+                Lookup  = $lookup
+                Success = $true
+            }
+        }
+        catch {
+            Write-Log -Type WARNING -Message ("[Get-AllExchangeMailboxDetails] {0} delegate permission collection failed: {1}" -f $PermissionType, $_.Exception.Message) -ExportFileLocation $ExportFileLocation
+            return [pscustomobject]@{
+                Lookup  = @{}
+                Success = $false
+            }
+        }
+    }
+
+    function Update-MailboxDelegatePermissionInventory {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [hashtable]$TenantStatsHash,
+            [AllowNull()]$CollectionDepthPolicy,
+            [AllowNull()]
+            [int]$ProgressId,
+            [Parameter(Mandatory = $true)]
+            [string]$ExportFileLocation
+        )
+
+        $shouldCollectDelegates = $false
+        if ($CollectionDepthPolicy -and $CollectionDepthPolicy.PSObject.Properties['CollectMailboxDelegatePermissions']) {
+            $shouldCollectDelegates = [bool]$CollectionDepthPolicy.CollectMailboxDelegatePermissions
+        }
+
+        if (-not $shouldCollectDelegates) {
+            return
+        }
+
+        $targetMailboxes = @(
+            $TenantStatsHash['AllMailboxes'].Values | Where-Object {
+                -not [string]::Equals([string]$_.RecipientTypeDetails, 'GroupMailbox', [System.StringComparison]::OrdinalIgnoreCase)
+            }
+        )
+
+        if ($targetMailboxes.Count -eq 0) {
+            return
+        }
+
+        Write-ArrayaExchangeCollectorSubstep -Message 'Exchange mailboxes: delegate permissions for cutover planning'
+
+        if ($PSBoundParameters.ContainsKey('ProgressId')) {
+            Write-ProgressHelper -Total 2 -Id $ProgressId -Index 1 -Activity "Gathering mailbox delegate permissions" -Operation ("Resolving Full Access delegates across {0} mailbox(es)" -f $targetMailboxes.Count)
+        }
+        $fullAccessResult = Get-MailboxDelegatePermissionLookup -TenantStatsHash $TenantStatsHash -PermissionType FullAccess -TargetMailboxes $targetMailboxes -ExportFileLocation $ExportFileLocation
+        foreach ($mailbox in $targetMailboxes) {
+            $lookupKey = Get-MailboxDelegateLookupKey -Mailbox $mailbox
+            $delegates = if ($lookupKey -and $fullAccessResult.Lookup.Contains($lookupKey)) { @($fullAccessResult.Lookup[$lookupKey].ToArray()) } else { @() }
+            Set-MailboxDelegatePermissionProperties -Mailbox $mailbox -PermissionType FullAccess -Delegates $delegates -State $(if ($fullAccessResult.Success) { 'Collected' } else { 'LookupFailed' })
+        }
+
+        if ($PSBoundParameters.ContainsKey('ProgressId')) {
+            Write-ProgressHelper -Total 2 -Id $ProgressId -Index 2 -Activity "Gathering mailbox delegate permissions" -Operation ("Resolving Send As delegates across {0} mailbox(es)" -f $targetMailboxes.Count)
+        }
+        $sendAsResult = Get-MailboxDelegatePermissionLookup -TenantStatsHash $TenantStatsHash -PermissionType SendAs -TargetMailboxes $targetMailboxes -ExportFileLocation $ExportFileLocation
+        foreach ($mailbox in $targetMailboxes) {
+            $lookupKey = Get-MailboxDelegateLookupKey -Mailbox $mailbox
+            $delegates = if ($lookupKey -and $sendAsResult.Lookup.Contains($lookupKey)) { @($sendAsResult.Lookup[$lookupKey].ToArray()) } else { @() }
+            Set-MailboxDelegatePermissionProperties -Mailbox $mailbox -PermissionType SendAs -Delegates $delegates -State $(if ($sendAsResult.Success) { 'Collected' } else { 'LookupFailed' })
+        }
+
+        $fullAccessDelegateCount = @(
+            $targetMailboxes | Where-Object {
+                $_.PSObject.Properties['FullAccessDelegateCount'] -and
+                $null -ne $_.FullAccessDelegateCount -and
+                ([int]$_.FullAccessDelegateCount -gt 0)
+            }
+        ).Count
+        $sendAsDelegateCount = @(
+            $targetMailboxes | Where-Object {
+                $_.PSObject.Properties['SendAsDelegateCount'] -and
+                $null -ne $_.SendAsDelegateCount -and
+                ([int]$_.SendAsDelegateCount -gt 0)
+            }
+        ).Count
+
+        Write-Log -Type INFO -Message ("[Get-AllExchangeMailboxDetails] Mailbox delegate permission enrichment completed. FullAccessState={0}; SendAsState={1}; FullAccessMailboxesWithDelegates={2}; SendAsMailboxesWithDelegates={3}" -f $(if ($fullAccessResult.Success) { 'Collected' } else { 'LookupFailed' }), $(if ($sendAsResult.Success) { 'Collected' } else { 'LookupFailed' }), $fullAccessDelegateCount, $sendAsDelegateCount) -ExportFileLocation $ExportFileLocation
+    }
+
+    function Get-PermissionIdentityCandidateValues {
+        [CmdletBinding()]
+        param(
+            [AllowNull()]$Identity
+        )
+
+        $candidateValues = New-Object System.Collections.Generic.List[string]
+        foreach ($candidateValue in @(
+                Convert-MailboxDelegateIdentityToText -Value $Identity
+                [string](Get-ArrayaObjectValue -Object $Identity -Names @('PrimarySmtpAddress'))
+                [string](Get-ArrayaObjectValue -Object $Identity -Names @('WindowsEmailAddress'))
+                [string](Get-ArrayaObjectValue -Object $Identity -Names @('UserPrincipalName'))
+                [string](Get-ArrayaObjectValue -Object $Identity -Names @('Identity'))
+                [string](Get-ArrayaObjectValue -Object $Identity -Names @('DisplayName'))
+                [string](Get-ArrayaObjectValue -Object $Identity -Names @('Name'))
+            )) {
+            if ([string]::IsNullOrWhiteSpace($candidateValue)) {
+                continue
+            }
+
+            $normalizedCandidate = $candidateValue.Trim()
+            if (-not $candidateValues.Contains($normalizedCandidate)) {
+                $candidateValues.Add($normalizedCandidate) | Out-Null
+            }
+        }
+
+        return @($candidateValues.ToArray())
+    }
+
+    function Resolve-RecipientFromPermissionIdentity {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [hashtable]$TenantStatsHash,
+            [AllowNull()]$Identity
+        )
+
+        foreach ($candidate in @(Get-PermissionIdentityCandidateValues -Identity $Identity)) {
+            if (
+                $TenantStatsHash.ContainsKey('AllRecipients') -and
+                $TenantStatsHash['AllRecipients'] -is [System.Collections.IDictionary] -and
+                $TenantStatsHash['AllRecipients'].Contains($candidate)
+            ) {
+                return $TenantStatsHash['AllRecipients'][$candidate]
+            }
+
+            foreach ($recipient in @($TenantStatsHash['AllRecipients'].Values)) {
+                if (
+                    [string]::Equals([string]$recipient.DisplayName, $candidate, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    [string]::Equals([string]$recipient.Identity, $candidate, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    [string]::Equals([string]$recipient.PrimarySmtpAddress, $candidate, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    [string]::Equals([string](Get-ArrayaObjectValue -Object $recipient -Names @('UserPrincipalName')), $candidate, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    [string]::Equals([string]$recipient.Alias, $candidate, [System.StringComparison]::OrdinalIgnoreCase)
+                ) {
+                    return $recipient
+                }
+            }
+
+            $mailboxMatch = Resolve-MailboxFromPermissionIdentity -TenantStatsHash $TenantStatsHash -Identity $candidate
+            if ($mailboxMatch) {
+                return $mailboxMatch
+            }
+        }
+
+        return $null
+    }
+
+    function Test-MailboxCalendarFolderShouldBeSkipped {
+        [CmdletBinding()]
+        param(
+            [AllowNull()]
+            [string]$FolderPath
+        )
+
+        if ([string]::IsNullOrWhiteSpace($FolderPath)) {
+            return $false
+        }
+
+        return $FolderPath -in @('/Birthdays', '/United States holidays')
+    }
+
+    function Resolve-MailboxCalendarQueryIdentity {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [psobject]$Mailbox
+        )
+
+        foreach ($candidateIdentity in @(
+                [string]$Mailbox.UserPrincipalName
+                [string]$Mailbox.PrimarySmtpAddress
+                [string]$Mailbox.Identity
+                [string]$Mailbox.Guid
+                [string]$Mailbox.ExternalDirectoryObjectId
+            )) {
+            if (-not [string]::IsNullOrWhiteSpace($candidateIdentity)) {
+                return $candidateIdentity
+            }
+        }
+
+        return $null
+    }
+
+    function Resolve-MailboxCalendarFolderPermissionIdentity {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [psobject]$Mailbox,
+            [Parameter(Mandatory = $true)]
+            [psobject]$CalendarFolder
+        )
+
+        $mailboxPermissionIdentity = Resolve-MailboxCalendarQueryIdentity -Mailbox $Mailbox
+        if ([string]::IsNullOrWhiteSpace($mailboxPermissionIdentity)) {
+            $mailboxPermissionIdentity = [string]$Mailbox.Guid
+        }
+
+        $folderId = [string](Get-ArrayaObjectValue -Object $CalendarFolder -Names @('FolderID'))
+        if (-not [string]::IsNullOrWhiteSpace($folderId)) {
+            return ("{0}:{1}" -f $mailboxPermissionIdentity, $folderId)
+        }
+
+        $calendarIdentity = [string](Get-ArrayaObjectValue -Object $CalendarFolder -Names @('Identity'))
+        $folderPath = [string](Get-ArrayaObjectValue -Object $CalendarFolder -Names @('FolderPath'))
+        if ([string]::IsNullOrWhiteSpace($calendarIdentity)) {
+            return $null
+        }
+
+        if ($folderPath -like '/Calendar/*') {
+            return ($calendarIdentity -replace "\\([^\\]+$)", ':\$1')
+        }
+
+        return ($calendarIdentity -replace '(^[^\\]+)\\', '$1:\')
+    }
+
+    function Test-MailboxCalendarPermissionUserShouldBeIgnored {
+        [CmdletBinding()]
+        param(
+            [AllowNull()]$User
+        )
+
+        $userType = [string](Get-ArrayaObjectValue -Object $User -Names @('UserType'))
+        if ($userType -match '^(?i:Default|Anonymous)$') {
+            return $true
+        }
+
+        $identityText = Convert-MailboxDelegateIdentityToText -Value $User
+        if ($identityText -match '^(?i:Default|Anonymous)$') {
+            return $true
+        }
+
+        return (Test-MailboxDelegateIdentityShouldBeIgnored -Identity $identityText)
+    }
+
+    function Set-MailboxCalendarPermissionProperties {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [psobject]$Mailbox,
+            [AllowNull()]
+            [string[]]$Delegates,
+            [AllowNull()]
+            [int]$PermissionEntryCount,
+            [Parameter(Mandatory = $true)]
+            [ValidateSet('Collected', 'Partial', 'LookupFailed', 'NotCollected')]
+            [string]$State
+        )
+
+        $delegateValues = New-Object System.Collections.Generic.List[string]
+        if ($Delegates) {
+            foreach ($delegate in @($Delegates)) {
+                if (Test-MailboxDelegateIdentityShouldBeIgnored -Identity $delegate) {
+                    continue
+                }
+                if (-not $delegateValues.Contains($delegate)) {
+                    $delegateValues.Add($delegate) | Out-Null
+                }
+            }
+        }
+
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'CalendarDelegates' -Value $(if (($State -in @('Collected', 'Partial')) -and $delegateValues.Count -gt 0) { @($delegateValues.ToArray()) -join ';' } else { $null }) -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'CalendarDelegateCount' -Value $(if ($State -in @('Collected', 'Partial')) { [int]$delegateValues.Count } else { $null }) -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'CalendarPermissionEntryCount' -Value $(if ($State -in @('Collected', 'Partial')) { [int]$PermissionEntryCount } else { $null }) -Force
+        $Mailbox | Add-Member -MemberType NoteProperty -Name 'CalendarDelegateState' -Value $State -Force
+    }
+
+    function Update-MailboxCalendarDelegateInventory {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [hashtable]$TenantStatsHash,
+            [AllowNull()]$CollectionDepthPolicy,
+            [AllowNull()]
+            [int]$ProgressId,
+            [Parameter(Mandatory = $true)]
+            [string]$ExportFileLocation
+        )
+
+        $shouldCollectCalendarDelegates = $false
+        if ($CollectionDepthPolicy -and $CollectionDepthPolicy.PSObject.Properties['CollectMailboxCalendarDelegatePermissions']) {
+            $shouldCollectCalendarDelegates = [bool]$CollectionDepthPolicy.CollectMailboxCalendarDelegatePermissions
+        }
+
+        $TenantStatsHash['MailboxCalendarDelegatePermissions'] = @{}
+
+        if (-not $shouldCollectCalendarDelegates) {
+            return
+        }
+
+        $targetMailboxes = @(
+            $TenantStatsHash['AllMailboxes'].Values | Where-Object {
+                $_.IsInactiveMailbox -ne $true -and
+                @('UserMailbox', 'SharedMailbox', 'RoomMailbox', 'EquipmentMailbox') -contains ([string]$_.RecipientTypeDetails)
+            }
+        )
+
+        if ($targetMailboxes.Count -eq 0) {
+            return
+        }
+
+        $getFolderStatsCommand = $null
+        if (Get-Command -Name Get-EXOMailboxFolderStatistics -ErrorAction SilentlyContinue) {
+            $getFolderStatsCommand = 'Get-EXOMailboxFolderStatistics'
+        }
+        elseif (Get-Command -Name Get-MailboxFolderStatistics -ErrorAction SilentlyContinue) {
+            $getFolderStatsCommand = 'Get-MailboxFolderStatistics'
+        }
+
+        $getFolderPermissionCommand = $null
+        if (Get-Command -Name Get-EXOMailboxFolderPermission -ErrorAction SilentlyContinue) {
+            $getFolderPermissionCommand = 'Get-EXOMailboxFolderPermission'
+        }
+        elseif (Get-Command -Name Get-MailboxFolderPermission -ErrorAction SilentlyContinue) {
+            $getFolderPermissionCommand = 'Get-MailboxFolderPermission'
+        }
+
+        if ([string]::IsNullOrWhiteSpace($getFolderStatsCommand) -or [string]::IsNullOrWhiteSpace($getFolderPermissionCommand)) {
+            Write-Log -Type WARNING -Message '[Get-AllExchangeMailboxDetails] Calendar delegate permission collection skipped because mailbox folder permission cmdlets are not available in the current Exchange session.' -ExportFileLocation $ExportFileLocation
+            return
+        }
+
+        Write-ArrayaExchangeCollectorSubstep -Message 'Exchange mailboxes: calendar delegates for cutover planning'
+
+        $calendarDelegateProgressTotal = [Math]::Max($targetMailboxes.Count, 1)
+        $processedMailboxCount = 0
+        $slowCalendarMailboxThresholdSeconds = 30
+        if ($PSBoundParameters.ContainsKey('ProgressId')) {
+            Write-ProgressHelper -Total $calendarDelegateProgressTotal -Id $ProgressId -Index 0 -Activity "Gathering mailbox calendar delegate permissions" -Operation "Preparing calendar delegate inventory"
+        }
+
+        $calendarPermissionIndex = 0
+        foreach ($mailbox in $targetMailboxes) {
+            $mailboxState = 'Collected'
+            $permissionEntryCount = 0
+            $uniqueDelegates = New-Object System.Collections.Generic.List[string]
+            $mailboxPermissionRows = New-Object System.Collections.Generic.List[object]
+            $calendarFolders = @()
+            $processedMailboxCount++
+            $mailboxProgressLabel = @(
+                [string]$mailbox.PrimarySmtpAddress
+                [string]$mailbox.UserPrincipalName
+                [string]$mailbox.DisplayName
+                [string]$mailbox.Identity
+            ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1
+            if ([string]::IsNullOrWhiteSpace($mailboxProgressLabel)) {
+                $mailboxProgressLabel = "Mailbox $processedMailboxCount"
+            }
+            $mailboxCalendarQueryIdentity = Resolve-MailboxCalendarQueryIdentity -Mailbox $mailbox
+            if ([string]::IsNullOrWhiteSpace($mailboxCalendarQueryIdentity)) {
+                $mailboxCalendarQueryIdentity = [string]$mailbox.Guid
+            }
+            if ($PSBoundParameters.ContainsKey('ProgressId')) {
+                Write-ProgressHelper -Total $calendarDelegateProgressTotal -Id $ProgressId -Index $processedMailboxCount -Activity "Gathering mailbox calendar delegate permissions" -Operation ("Enumerating calendar folders: {0}" -f $mailboxProgressLabel)
+            }
+
+            $mailboxCalendarStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+            try {
+                if ($getFolderStatsCommand -eq 'Get-EXOMailboxFolderStatistics') {
+                    $calendarFolders = @(
+                        Get-EXOMailboxFolderStatistics -Identity $mailboxCalendarQueryIdentity -FolderScope Calendar -ErrorAction Stop |
+                            Where-Object { -not (Test-MailboxCalendarFolderShouldBeSkipped -FolderPath ([string]$_.FolderPath)) } |
+                            Select-Object Identity, FolderID, Name, FolderPath, LastModifiedTime
+                    )
+                }
+                else {
+                    $calendarFolders = @(
+                        Get-MailboxFolderStatistics -Identity $mailboxCalendarQueryIdentity -ErrorAction Stop |
+                            Where-Object {
+                                (($_.FolderPath -eq '/Calendar') -or ($_.FolderPath -like '/Calendar/*')) -and
+                                -not (Test-MailboxCalendarFolderShouldBeSkipped -FolderPath ([string]$_.FolderPath))
+                            } |
+                            Select-Object Identity, FolderID, Name, FolderPath, LastModifiedTime
+                    )
+                }
+            }
+            catch {
+                $mailboxState = 'LookupFailed'
+                Write-Log -Type WARNING -Message ("[Get-AllExchangeMailboxDetails] Calendar folder enumeration failed for mailbox '{0}': {1}" -f $mailbox.PrimarySmtpAddress, $_.Exception.Message) -ExportFileLocation $ExportFileLocation
+                Set-MailboxCalendarPermissionProperties -Mailbox $mailbox -Delegates @() -PermissionEntryCount $null -State $mailboxState
+                $mailboxCalendarStopwatch.Stop()
+                if ($mailboxCalendarStopwatch.Elapsed.TotalSeconds -ge $slowCalendarMailboxThresholdSeconds) {
+                    Write-Log -Type INFO -Message ("[Get-AllExchangeMailboxDetails] Calendar delegate enumeration for mailbox '{0}' took {1} across {2} calendar folder(s). State={3}; PermissionRows={4}" -f $mailboxProgressLabel, $mailboxCalendarStopwatch.Elapsed.ToString('hh\:mm\:ss'), @($calendarFolders).Count, $mailboxState, $permissionEntryCount) -ExportFileLocation $ExportFileLocation
+                }
+                continue
+            }
+
+            foreach ($calendarFolder in @($calendarFolders)) {
+                $calendarPermissionIdentity = Resolve-MailboxCalendarFolderPermissionIdentity -Mailbox $mailbox -CalendarFolder $calendarFolder
+                if ([string]::IsNullOrWhiteSpace($calendarPermissionIdentity)) {
+                    continue
+                }
+
+                if ($PSBoundParameters.ContainsKey('ProgressId')) {
+                    $calendarFolderLabel = [string](Get-ArrayaObjectValue -Object $calendarFolder -Names @('FolderPath', 'Name', 'Identity'))
+                    if ([string]::IsNullOrWhiteSpace($calendarFolderLabel)) {
+                        $calendarFolderLabel = $calendarPermissionIdentity
+                    }
+                    Write-ProgressHelper -Total $calendarDelegateProgressTotal -Id $ProgressId -Index $processedMailboxCount -Activity "Gathering mailbox calendar delegate permissions" -Operation ("Enumerating permissions: {0} :: {1}" -f $mailboxProgressLabel, $calendarFolderLabel)
+                }
+
+                try {
+                    $calendarPermissions = @()
+                    if ($getFolderPermissionCommand -eq 'Get-EXOMailboxFolderPermission') {
+                        $calendarPermissions = @(
+                            Get-EXOMailboxFolderPermission $calendarPermissionIdentity -ErrorAction Stop |
+                                Where-Object { -not (Test-MailboxCalendarPermissionUserShouldBeIgnored -User $_.User) }
+                        )
+                    }
+                    else {
+                        $calendarPermissions = @(
+                            Get-MailboxFolderPermission $calendarPermissionIdentity -ErrorAction Stop |
+                                Where-Object { -not (Test-MailboxCalendarPermissionUserShouldBeIgnored -User $_.User) }
+                        )
+                    }
+                }
+                catch {
+                    if ($mailboxState -ne 'LookupFailed') {
+                        $mailboxState = 'Partial'
+                    }
+                    Write-Log -Type WARNING -Message ("[Get-AllExchangeMailboxDetails] Calendar permission enumeration failed for mailbox '{0}' folder '{1}': {2}" -f $mailbox.PrimarySmtpAddress, $calendarPermissionIdentity, $_.Exception.Message) -ExportFileLocation $ExportFileLocation
+                    continue
+                }
+
+                foreach ($calendarPermission in @($calendarPermissions)) {
+                    $resolvedRecipient = Resolve-RecipientFromPermissionIdentity -TenantStatsHash $TenantStatsHash -Identity $calendarPermission.User
+                    $permissionTarget = if ($resolvedRecipient) {
+                        [string](Get-ArrayaObjectValue -Object $resolvedRecipient -Names @('PrimarySmtpAddress', 'WindowsEmailAddress', 'UserPrincipalName', 'Identity', 'DisplayName'))
+                    }
+                    else {
+                        Convert-MailboxDelegateIdentityToText -Value $calendarPermission.User
+                    }
+                    if (Test-MailboxDelegateIdentityShouldBeIgnored -Identity $permissionTarget) {
+                        continue
+                    }
+
+                    if (-not $uniqueDelegates.Contains($permissionTarget)) {
+                        $uniqueDelegates.Add($permissionTarget) | Out-Null
+                    }
+
+                    $permissionEntryCount++
+                    $mailboxPermissionRows.Add([pscustomobject]@{
+                        MailboxDisplayName       = [string]$mailbox.DisplayName
+                        MailboxPrimarySmtpAddress = [string]$mailbox.PrimarySmtpAddress
+                        MailboxUserPrincipalName = [string]$mailbox.UserPrincipalName
+                        RecipientTypeDetails     = [string]$mailbox.RecipientTypeDetails
+                        CalendarName             = [string](Get-ArrayaObjectValue -Object $calendarFolder -Names @('Name'))
+                        CalendarPath             = [string](Get-ArrayaObjectValue -Object $calendarFolder -Names @('FolderPath', 'Identity'))
+                        PermissionTarget         = $permissionTarget
+                        PermissionTargetDisplayName = if ($resolvedRecipient) { [string](Get-ArrayaObjectValue -Object $resolvedRecipient -Names @('DisplayName')) } else { $null }
+                        PermissionTargetType     = if ($resolvedRecipient) { [string](Get-ArrayaObjectValue -Object $resolvedRecipient -Names @('RecipientTypeDetails', 'UserType')) } else { $null }
+                        AccessRights             = @([string[]](Get-ArrayaObjectValue -Object $calendarPermission -Names @('AccessRights'))) -join ','
+                        SharingPermissionFlags   = @([string[]](Get-ArrayaObjectValue -Object $calendarPermission -Names @('SharingPermissionFlags'))) -join ','
+                    }) | Out-Null
+                }
+            }
+
+            Set-MailboxCalendarPermissionProperties -Mailbox $mailbox -Delegates @($uniqueDelegates.ToArray()) -PermissionEntryCount $permissionEntryCount -State $mailboxState
+
+            foreach ($calendarPermissionRow in @($mailboxPermissionRows.ToArray())) {
+                $calendarPermissionIndex++
+                $TenantStatsHash['MailboxCalendarDelegatePermissions'][("{0:D5}-{1}-{2}" -f $calendarPermissionIndex, ([string]$mailbox.PrimarySmtpAddress), ([string]$calendarPermissionRow.PermissionTarget))] = $calendarPermissionRow
+            }
+
+            $mailboxCalendarStopwatch.Stop()
+            if ($mailboxCalendarStopwatch.Elapsed.TotalSeconds -ge $slowCalendarMailboxThresholdSeconds) {
+                Write-Log -Type INFO -Message ("[Get-AllExchangeMailboxDetails] Calendar delegate enumeration for mailbox '{0}' took {1} across {2} calendar folder(s). State={3}; PermissionRows={4}" -f $mailboxProgressLabel, $mailboxCalendarStopwatch.Elapsed.ToString('hh\:mm\:ss'), @($calendarFolders).Count, $mailboxState, $permissionEntryCount) -ExportFileLocation $ExportFileLocation
+            }
+        }
+
+        $mailboxesWithCalendarDelegates = @(
+            $targetMailboxes | Where-Object {
+                $_.PSObject.Properties['CalendarDelegateCount'] -and
+                $null -ne $_.CalendarDelegateCount -and
+                ([int]$_.CalendarDelegateCount -gt 0)
+            }
+        ).Count
+        $mailboxesWithCalendarLookupIssues = @(
+            $targetMailboxes | Where-Object {
+                $_.PSObject.Properties['CalendarDelegateState'] -and
+                ([string]$_.CalendarDelegateState -in @('Partial', 'LookupFailed'))
+            }
+        ).Count
+
+        Write-Log -Type INFO -Message ("[Get-AllExchangeMailboxDetails] Calendar delegate enrichment completed. MailboxesWithCalendarDelegates={0}; MailboxesWithLookupIssues={1}; PermissionRows={2}" -f $mailboxesWithCalendarDelegates, $mailboxesWithCalendarLookupIssues, $TenantStatsHash['MailboxCalendarDelegatePermissions'].Count) -ExportFileLocation $ExportFileLocation
+    }
+
     $Context = Resolve-ArrayaExchangeCollectorContext -Context $Context -DetailLevel $detailLevel
     $tenantStatsHash = $Context.TenantStats
     $exportDetails = $Context.ExportFileLocation
@@ -171,7 +1050,7 @@ function Get-AllExchangeMailboxDetails {
                     "Identity", "Guid", "ExchangeGuid", "ArchiveStatus", "ArchiveState", "ArchiveGuid", "ArchiveName"
                     "WhenMailboxCreated", "UsageLocation", "IsInactiveMailbox", "WasInactiveMailbox", "WhenSoftDeleted"
                     "LitigationHoldEnabled", "RetentionHoldEnabled", "DelayHoldApplied", "RetentionPolicy"
-                    "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias", "EmailAddresses"
+                    "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias", "EmailAddresses", "LegacyExchangeDN"
                 )
 
                 $DesiredProperties = @(
@@ -180,7 +1059,7 @@ function Get-AllExchangeMailboxDetails {
                     @{Name="ArchiveName"; Expression={$_.ArchiveName -join ","}},
                     "WhenMailboxCreated", "UsageLocation", "IsInactiveMailbox", "WasInactiveMailbox", "WhenSoftDeleted",
                     "LitigationHoldEnabled", "RetentionHoldEnabled", "DelayHoldApplied", "RetentionPolicy",
-                    "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias",
+                    "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias", "LegacyExchangeDN",
                     @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}}
                 )
 
@@ -193,18 +1072,19 @@ function Get-AllExchangeMailboxDetails {
                 $Properties = @(
                     "ExternalDirectoryObjectId", "DisplayName", "Office", "UserPrincipalName", "RecipientTypeDetails", "PrimarySmtpAddress"
                     "WhenMailboxCreated", "UsageLocation", "IsInactiveMailbox", "WasInactiveMailbox", "WhenSoftDeleted"
-                    "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias", "EmailAddresses"
+                    "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias", "EmailAddresses", "LegacyExchangeDN"
                     "Identity", "WhenCreated", "Guid", "DeliverToMailboxAndForward", "ForwardingAddress"
-                    "ForwardingSmtpAddress", "LitigationHoldEnabled", "RetentionHoldEnabled", "DelayHoldApplied", "RetentionPolicy"
+                    "ForwardingSmtpAddress", "GrantSendOnBehalfTo", "LitigationHoldEnabled", "RetentionHoldEnabled", "DelayHoldApplied", "RetentionPolicy"
                     "ExchangeGuid", "ArchiveStatus", "ArchiveState", "ArchiveGuid", "ArchiveName", "AutoExpandingArchiveEnabled"
                 )
 
                 $DesiredProperties = @(
                     "ExternalDirectoryObjectId", "DisplayName", "Office", "UserPrincipalName", "RecipientTypeDetails", "PrimarySmtpAddress",
                     "WhenMailboxCreated", "UsageLocation", "IsInactiveMailbox", "WasInactiveMailbox", "WhenSoftDeleted",
-                    "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias",
+                    "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias", "LegacyExchangeDN",
                     @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}},
                     "Identity", "WhenCreated", "Guid", "DeliverToMailboxAndForward", "ForwardingAddress", "ForwardingSmtpAddress",
+                    @{Name="GrantSendOnBehalfTo"; Expression={$_.GrantSendOnBehalfTo -join ";"}},
                     "LitigationHoldEnabled", "RetentionHoldEnabled", "DelayHoldApplied", "RetentionPolicy",
                     "ExchangeGuid", "ArchiveStatus", "ArchiveState", "ArchiveGuid",
                     @{Name="ArchiveName"; Expression={$_.ArchiveName -join ","}}, "AutoExpandingArchiveEnabled"
@@ -221,7 +1101,7 @@ function Get-AllExchangeMailboxDetails {
                     "InPlaceHolds", "AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias"
                     "EmailAddresses", "GrantSendOnBehalfTo", "AcceptMessagesOnlyFrom", "AcceptMessagesOnlyFromDLMembers", "AcceptMessagesOnlyFromSendersOrMembers"
                     "RejectMessagesFrom", "RejectMessagesFromDLMembers", "RejectMessagesFromSendersOrMembers", "RequireSenderAuthenticationEnabled", "WindowsEmailAddress"
-                    "DistinguishedName", "Identity", "WhenChanged", "WhenCreated", "ExchangeObjectId"
+                    "DistinguishedName", "Identity", "WhenChanged", "WhenCreated", "ExchangeObjectId", "LegacyExchangeDN"
                     "Guid", "DeliverToMailboxAndForward", "ForwardingAddress", "ForwardingSmtpAddress", "LitigationHoldEnabled"
                     "RetentionHoldEnabled", "DelayHoldApplied", "RetentionPolicy", "ExchangeGuid", "IsResource"
                     "IsShared", "ResourceType", "RoomMailboxAccountEnabled", "WindowsLiveID", "MicrosoftOnlineServicesID"
@@ -234,7 +1114,7 @@ function Get-AllExchangeMailboxDetails {
                     "WhenMailboxCreated", "UsageLocation", "IsInactiveMailbox", "WasInactiveMailbox", "WhenSoftDeleted",
                     @{Name="InPlaceHolds"; Expression={$_.InPlaceHolds -join ","}},"AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias",
                     @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}}, 
-                    @{Name="GrantSendOnBehalfTo"; Expression={$_.GrantSendOnBehalfTo -join ","}}, 
+                    @{Name="GrantSendOnBehalfTo"; Expression={$_.GrantSendOnBehalfTo -join ";"}}, 
                     @{Name="AcceptMessagesOnlyFrom"; Expression={$_.AcceptMessagesOnlyFrom -join ","}}, 
                     @{Name="AcceptMessagesOnlyFromDLMembers"; Expression={$_.AcceptMessagesOnlyFromDLMembers -join ","}}, 
                     @{Name="AcceptMessagesOnlyFromSendersOrMembers"; Expression={$_.AcceptMessagesOnlyFromSendersOrMembers -join ","}}, 
@@ -242,7 +1122,7 @@ function Get-AllExchangeMailboxDetails {
                     @{Name="RejectMessagesFromDLMembers"; Expression={$_.RejectMessagesFromDLMembers -join ","}}, 
                     @{Name="RejectMessagesFromSendersOrMembers"; Expression={$_.RejectMessagesFromSendersOrMembers -join ","}}, 
                     "RequireSenderAuthenticationEnabled", "WindowsEmailAddress",
-                    "DistinguishedName", "Identity", "WhenChanged", "WhenCreated", "ExchangeObjectId",
+                    "DistinguishedName", "Identity", "WhenChanged", "WhenCreated", "ExchangeObjectId", "LegacyExchangeDN",
                     "Guid", "DeliverToMailboxAndForward", "ForwardingAddress", "ForwardingSmtpAddress", "LitigationHoldEnabled",
                     "RetentionHoldEnabled", "DelayHoldApplied", "RetentionPolicy", "ExchangeGuid", "IsResource",
                     "IsShared", "ResourceType", "RoomMailboxAccountEnabled", "WindowsLiveID", "MicrosoftOnlineServicesID", "EffectivePublicFolderMailbox", "MailboxPlan", 
@@ -286,6 +1166,7 @@ function Get-AllExchangeMailboxDetails {
                 $key = "mailbox:$([guid]::NewGuid().Guid)"
             }
             Write-ProgressHelper -Total $totalCount -Id $mailboxInventoryProgressId -Activity "Gathering All Exchange Mailbox Details" -Operation "Gathering Mailbox Details for $($key)"
+            Add-MailboxMigrationAddressProperties -Mailbox $mailbox
             
             # Set the key based on the mailbox type
             #$MailboxTypeKey = $mailbox.RecipientTypeDetails.tostring() # Use RecipientTypeDetails as the key
@@ -311,6 +1192,9 @@ function Get-AllExchangeMailboxDetails {
                 $tenantStatsHash["LitigationHoldMailboxes"][$key] = $mailbox
             }
         }
+
+        Update-MailboxDelegatePermissionInventory -TenantStatsHash $tenantStatsHash -CollectionDepthPolicy $collectionDepthPolicy -ProgressId $mailboxInventoryProgressId -ExportFileLocation $exportDetails
+        Update-MailboxCalendarDelegateInventory -TenantStatsHash $tenantStatsHash -CollectionDepthPolicy $collectionDepthPolicy -ProgressId $mailboxInventoryProgressId -ExportFileLocation $exportDetails
     }
     catch {
         Write-Log -Type ERROR -Message "[Get-AllExchangeMailboxDetails] An error occurred in Gathering Mailbox Details. $($_.Exception.Message)" -ExportFileLocation $exportDetails -CaptureError -ErrorRecordVar $_

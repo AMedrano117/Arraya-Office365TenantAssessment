@@ -35,6 +35,54 @@ Describe 'Improve workflow' {
 
             [xml](Get-TestDocxDocumentXmlText -Path $Path)
         }
+
+        function New-TestEnterpriseApplicationSnapshot {
+            param(
+                [Parameter(Mandatory = $true)]
+                $EnterpriseApplications,
+                [Parameter(Mandatory = $false)]
+                $EnterpriseApplicationSummary
+            )
+
+            $identityData = @{
+                Admins = @()
+                Users = @()
+                ConditionalAccessPolicies = @()
+                ConditionalAccessPolicySummary = @{
+                    Summary = [pscustomobject]@{
+                        TotalPolicies                 = 0
+                        EnabledPolicies               = 0
+                        ReportOnlyPolicies            = 0
+                        HasGuestCoverage              = $false
+                        HasPrivilegedRoleCoverage     = $false
+                        HasCompliantDeviceRequirement = $false
+                        HasRiskBasedCoverage          = $false
+                        PoliciesWithExclusions        = 0
+                    }
+                }
+                SecurityDefaultsPolicy = @{
+                    Summary = [pscustomobject]@{
+                        IsEnabled = $false
+                    }
+                }
+                AuthenticationConfig = [pscustomobject]@{
+                    AdminConsentWorkflowEnabled   = $false
+                    PermissionGrantPoliciesAssigned = @()
+                    PasswordlessMethods           = @()
+                }
+                EnterpriseApplications = $EnterpriseApplications
+            }
+
+            if ($null -ne $EnterpriseApplicationSummary) {
+                $identityData['EnterpriseApplicationSummary'] = @{
+                    Summary = [pscustomobject]$EnterpriseApplicationSummary
+                }
+            }
+
+            return New-ArrayaTenantSnapshot -Data @{
+                Identity = $identityData
+            }
+        }
     }
 
     It 'generates normalized findings, customer deliverables, and fixed remediation snippets' {
@@ -132,6 +180,8 @@ Describe 'Improve workflow' {
                             AppId                        = '11111111-1111-1111-1111-111111111111'
                             ServicePrincipalId           = '22222222-2222-2222-2222-222222222222'
                             DisplayName                   = 'High Priv App'
+                            ApplicationSource             = 'First Party'
+                            ApplicationSourceState        = 'Collected'
                             SsoEnabled                    = $true
                             PreferredSingleSignOnMode     = 'saml'
                             SSOMode                       = 'saml'
@@ -140,18 +190,67 @@ Describe 'Improve workflow' {
                             ApplicationPermissionCount    = 1
                             DelegatedPermissionGrantCount = 1
                             AppRoleAssignmentRequired     = $true
+                            OwnerSignalState              = 'Collected'
+                            OwnerCount                    = 0
+                            AppCredentials                = 'Client Secret'
+                            RedirectUriSignalState        = 'Collected'
+                            InsecureRedirectUriCount      = 1
+                            HasInsecureRedirectUris       = $true
+                            ActivitySignalState           = 'Collected'
+                            HasRecentActivity             = $false
+                            DelegatedLastSignIn           = $null
+                            ApplicationLastSignIn         = $null
                             LastSignInDateTime            = '2026-04-12T09:15:00Z'
                             LastSignInUserDisplayName     = 'Adele Vance'
                             LastSignInUserPrincipalName   = 'adele.vance@contoso.com'
                             LastConditionalAccessStatus   = 'success'
                             LastClientAppUsed             = 'Browser'
                         }
+                        '002-ThirdPartyApp' = [pscustomobject]@{
+                            AppId                        = '33333333-3333-3333-3333-333333333333'
+                            ServicePrincipalId           = '44444444-4444-4444-4444-444444444444'
+                            DisplayName                  = 'Third Party App'
+                            ApplicationSource            = 'Third Party'
+                            ApplicationSourceState       = 'Collected'
+                            SsoEnabled                   = $false
+                            HighPrivilegePermissionCount = 0
+                            ApplicationPermissionCount   = 1
+                            DelegatedPermissionGrantCount = 0
+                            OwnerSignalState             = 'NotApplicable'
+                            OwnerCount                   = $null
+                            RedirectUriSignalState       = 'Partial'
+                            HasInsecureRedirectUris      = $null
+                            ActivitySignalState          = 'Collected'
+                            HasRecentActivity            = $true
+                        }
                     }
                     EnterpriseApplicationSummary = @{
                         Summary = [pscustomobject]@{
-                            TotalEnterpriseApplications   = 1
+                            TotalEnterpriseApplications   = 2
+                            FirstPartyApplications        = 1
+                            ThirdPartyApplications        = 1
+                            UnknownSourceApplications     = 0
                             ApplicationsWithHighPrivilege = 1
+                            FirstPartyAppsWithoutOwners   = 1
+                            ThirdPartyAppsWithApplicationPerms = 1
+                            ApplicationsWithInsecureRedirectUris = 1
+                            ApplicationsWithNoRecentActivity = 1
                             SsoEnabledApplications        = 1
+                            ApplicationSourceCoverageState = 'Collected'
+                            ApplicationSourceCollectedCount = 2
+                            ApplicationSourceUnavailableCount = 0
+                            OwnerSignalCoverageState      = 'Collected'
+                            OwnerSignalCollectedCount     = 1
+                            OwnerSignalUnavailableCount   = 0
+                            OwnerSignalNotApplicableCount = 1
+                            RedirectUriSignalCoverageState = 'Partial'
+                            RedirectUriSignalCollectedCount = 1
+                            RedirectUriSignalPartialCount = 1
+                            RedirectUriSignalUnavailableCount = 0
+                            ActivitySignalCoverageState   = 'Collected'
+                            ActivitySignalCollectedCount  = 2
+                            ActivitySignalPartialCount    = 0
+                            ActivitySignalUnavailableCount = 0
                         }
                     }
                     GuestSignInSummary = @{
@@ -644,6 +743,10 @@ Describe 'Improve workflow' {
         @($payload.Findings | Where-Object { $_.RuleId -like 'AREA-*' }).Count | Should -Be 0
         @($payload.Findings | Where-Object { $_.Source -eq 'Derived/BestPracticeFindings' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-007' }).Count | Should -BeGreaterThan 0
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-009' }).Count | Should -BeGreaterThan 0
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-010' }).Count | Should -BeGreaterThan 0
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-011' }).Count | Should -BeGreaterThan 0
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-012' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-005' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'CA-002' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'CA-010' }).Count | Should -BeGreaterThan 0
@@ -663,6 +766,12 @@ Describe 'Improve workflow' {
         $id007.WhyFlagged | Should -Match 'permission'
         $id007.EvidenceLocation | Should -Match 'EnterpriseApplications'
         $id007.TechnicalRemediation | Should -Match 'business owner|permissions|broad consent'
+
+        $id010 = @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-010' }) | Select-Object -First 1
+        $id010.CurrentValue | Should -Match 'owner signal'
+
+        $id011 = @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-011' }) | Select-Object -First 1
+        $id011.CurrentValue | Should -Match 'redirect URI'
 
         $col002 = @($payload.Findings | Where-Object { $_.RuleId -eq 'COL-002' }) | Select-Object -First 1
         $col002.Finding | Should -Be 'OneDrive delegated ownership review is required.'
@@ -927,6 +1036,202 @@ Describe 'Improve workflow' {
 
         $snippetContent = Get-Content -Raw $result.RemediationPs1Path
         $snippetContent | Should -Match '\$gaRole = Get-MgDirectoryRole'
+        $snippetContent | Should -Match "Connect-MgGraph -Scopes 'SecurityEvents.Read.All'"
+        $snippetContent | Should -Match "Connect-MgGraph -Scopes 'Policy.Read.All'"
+        $snippetContent | Should -Not -Match 'SecurityEvents.ReadWrite.All'
+        $snippetContent | Should -Not -Match 'Policy.ReadWrite.ConditionalAccess'
+    }
+
+    It 'does not raise ID-010 and labels owner validation as incomplete when owner enrichment is unavailable' {
+        $snapshot = New-TestEnterpriseApplicationSnapshot -EnterpriseApplications @{
+            '001-OwnerValidationPending' = [pscustomobject]@{
+                AppId                  = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+                ServicePrincipalId     = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+                DisplayName            = 'Owner Validation Pending'
+                ApplicationSource      = 'First Party'
+                ApplicationSourceState = 'Collected'
+                OwnerSignalState       = 'Unavailable'
+                OwnerCount             = $null
+                RedirectUriSignalState = 'Collected'
+                InsecureRedirectUriCount = 0
+                HasInsecureRedirectUris = $false
+                ActivitySignalState    = 'Collected'
+                HasRecentActivity      = $true
+                ApplicationPermissionCount = 0
+                DelegatedPermissionGrantCount = 0
+                HighPrivilegePermissionCount = 0
+                SsoEnabled             = $false
+            }
+        }
+
+        $snapshotPath = Join-Path $TestDrive 'owner-validation-pending.json'
+        Export-ArrayaTenantSnapshot -Snapshot $snapshot -Path $snapshotPath
+
+        $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
+        $payload = Get-Content -Raw $result.JsonPath | ConvertFrom-Json -Depth 20
+        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
+
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-010' }).Count | Should -Be 0
+        $customerReportMarkdown | Should -Match 'Owner validation was not fully validated in this run\.'
+        $customerReportMarkdown | Should -Not -Match 'without owner coverage'
+    }
+
+    It 'does not raise ID-012 and avoids inactivity count claims when activity enrichment is unavailable' {
+        $snapshot = New-TestEnterpriseApplicationSnapshot -EnterpriseApplications @{
+            '001-ActivityValidationPending' = [pscustomobject]@{
+                AppId                  = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+                ServicePrincipalId     = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
+                DisplayName            = 'Activity Validation Pending'
+                ApplicationSource      = 'First Party'
+                ApplicationSourceState = 'Collected'
+                OwnerSignalState       = 'Collected'
+                OwnerCount             = 1
+                RedirectUriSignalState = 'Collected'
+                InsecureRedirectUriCount = 0
+                HasInsecureRedirectUris = $false
+                ActivitySignalState    = 'Unavailable'
+                HasRecentActivity      = $null
+                ApplicationPermissionCount = 0
+                DelegatedPermissionGrantCount = 0
+                HighPrivilegePermissionCount = 0
+                SsoEnabled             = $false
+            }
+        }
+
+        $snapshotPath = Join-Path $TestDrive 'activity-validation-pending.json'
+        Export-ArrayaTenantSnapshot -Snapshot $snapshot -Path $snapshotPath
+
+        $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
+        $payload = Get-Content -Raw $result.JsonPath | ConvertFrom-Json -Depth 20
+        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
+
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-012' }).Count | Should -Be 0
+        $customerReportMarkdown | Should -Match 'Recent activity validation was not fully validated in this run\.'
+        $customerReportMarkdown | Should -Not -Match 'with no recent activity signal'
+    }
+
+    It 'does not classify unknown-source apps as first-party or third-party findings' {
+        $snapshot = New-TestEnterpriseApplicationSnapshot -EnterpriseApplications @{
+            '001-UnknownSourceApp' = [pscustomobject]@{
+                AppId                        = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
+                ServicePrincipalId           = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+                DisplayName                  = 'Unknown Source App'
+                ApplicationSource            = 'Unknown'
+                ApplicationSourceState       = 'Unavailable'
+                OwnerSignalState             = 'Unavailable'
+                OwnerCount                   = $null
+                RedirectUriSignalState       = 'Unavailable'
+                InsecureRedirectUriCount     = $null
+                HasInsecureRedirectUris      = $null
+                ActivitySignalState          = 'Unavailable'
+                HasRecentActivity            = $null
+                ApplicationPermissionCount   = 2
+                DelegatedPermissionGrantCount = 0
+                HighPrivilegePermissionCount = 0
+                SsoEnabled                   = $false
+            }
+        }
+
+        $snapshotPath = Join-Path $TestDrive 'unknown-source-app.json'
+        Export-ArrayaTenantSnapshot -Snapshot $snapshot -Path $snapshotPath
+
+        $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
+        $payload = Get-Content -Raw $result.JsonPath | ConvertFrom-Json -Depth 20
+        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
+
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-009' }).Count | Should -Be 0
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-010' }).Count | Should -Be 0
+        $customerReportMarkdown | Should -Not -Match 'third-party app\(s\) with application permissions'
+        $customerReportMarkdown | Should -Not -Match 'without owner coverage'
+    }
+
+    It 'surfaces a noteworthy app outside the alphabetical first eight in the customer report sample' {
+        $enterpriseApplications = [ordered]@{}
+        foreach ($name in @('Alpha App', 'Bravo App', 'Charlie App', 'Delta App', 'Echo App', 'Foxtrot App', 'Golf App', 'Hotel App')) {
+            $key = ('app-{0}' -f ($enterpriseApplications.Count + 1).ToString('00'))
+            $enterpriseApplications[$key] = [pscustomobject]@{
+                AppId                        = ('00000000-0000-0000-0000-{0}' -f ($enterpriseApplications.Count + 1).ToString('000000000001'))
+                ServicePrincipalId           = ('10000000-0000-0000-0000-{0}' -f ($enterpriseApplications.Count + 1).ToString('000000000001'))
+                DisplayName                  = $name
+                ApplicationSource            = 'First Party'
+                ApplicationSourceState       = 'Collected'
+                OwnerSignalState             = 'Collected'
+                OwnerCount                   = 1
+                RedirectUriSignalState       = 'Collected'
+                InsecureRedirectUriCount     = 0
+                HasInsecureRedirectUris      = $false
+                ActivitySignalState          = 'Collected'
+                HasRecentActivity            = $true
+                ApplicationPermissionCount   = 0
+                DelegatedPermissionGrantCount = 0
+                HighPrivilegePermissionCount = 0
+                SsoEnabled                   = $false
+            }
+        }
+        $enterpriseApplications['app-09'] = [pscustomobject]@{
+            AppId                        = '99999999-9999-9999-9999-999999999999'
+            ServicePrincipalId           = '88888888-8888-8888-8888-888888888888'
+            DisplayName                  = 'Zulu Risky App'
+            ApplicationSource            = 'First Party'
+            ApplicationSourceState       = 'Collected'
+            SsoEnabled                   = $true
+            SSOMode                      = 'saml'
+            PreferredSingleSignOnMode    = 'saml'
+            OwnerSignalState             = 'Collected'
+            OwnerCount                   = 0
+            RedirectUriSignalState       = 'Collected'
+            InsecureRedirectUriCount     = 2
+            HasInsecureRedirectUris      = $true
+            ActivitySignalState          = 'Collected'
+            HasRecentActivity            = $false
+            ApplicationPermissionCount   = 1
+            DelegatedPermissionGrantCount = 1
+            HighPrivilegePermissionCount = 3
+            AppRoleAssignmentRequired    = $true
+        }
+
+        $snapshot = New-TestEnterpriseApplicationSnapshot -EnterpriseApplications $enterpriseApplications
+        $snapshotPath = Join-Path $TestDrive 'ranked-enterprise-apps.json'
+        Export-ArrayaTenantSnapshot -Snapshot $snapshot -Path $snapshotPath
+
+        $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
+        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
+
+        $customerReportMarkdown | Should -Match '\| Zulu Risky App \| Enabled \| saml \|'
+    }
+
+    It 'allows redirect-risk findings from partial data without emitting a zero-risk narrative' {
+        $snapshot = New-TestEnterpriseApplicationSnapshot -EnterpriseApplications @{
+            '001-RedirectRiskPartial' = [pscustomobject]@{
+                AppId                        = '12121212-1212-1212-1212-121212121212'
+                ServicePrincipalId           = '34343434-3434-3434-3434-343434343434'
+                DisplayName                  = 'Partial Redirect Review App'
+                ApplicationSource            = 'Third Party'
+                ApplicationSourceState       = 'Collected'
+                OwnerSignalState             = 'NotApplicable'
+                OwnerCount                   = $null
+                RedirectUriSignalState       = 'Partial'
+                InsecureRedirectUriCount     = 1
+                HasInsecureRedirectUris      = $true
+                ActivitySignalState          = 'Collected'
+                HasRecentActivity            = $true
+                ApplicationPermissionCount   = 1
+                DelegatedPermissionGrantCount = 0
+                HighPrivilegePermissionCount = 0
+                SsoEnabled                   = $false
+            }
+        }
+
+        $snapshotPath = Join-Path $TestDrive 'partial-redirect-review.json'
+        Export-ArrayaTenantSnapshot -Snapshot $snapshot -Path $snapshotPath
+
+        $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
+        $payload = Get-Content -Raw $result.JsonPath | ConvertFrom-Json -Depth 20
+        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
+
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-011' }).Count | Should -BeGreaterThan 0
+        $customerReportMarkdown | Should -Match 'Redirect URI review was not fully validated in this run\.'
+        $customerReportMarkdown | Should -Not -Match '1 redirect URI review flag\(s\)'
     }
 
     It 'derives MFA enrollment output from registration details when summary objects are missing' {

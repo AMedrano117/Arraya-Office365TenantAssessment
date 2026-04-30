@@ -13,7 +13,7 @@ The runner module then loads the local `Office365Custom` module (latest version 
 ## Auth Modes
 - `Delegated`: interactive sign-in for full module compatibility.
 - `Certificate`: noninteractive app auth for Graph and Exchange, with Graph-based SharePoint fallback in PowerShell 7.
-- `Client secret`: noninteractive app auth for Graph and Exchange app-only; Teams PowerShell remains limited in app-secret mode.
+- `Client secret`: compatibility mode for Graph app auth. It is not equivalent to certificate auth in this workflow because Exchange falls back to delegated sign-in and Purview compliance app auth is unsupported.
 
 Examples:
 
@@ -30,7 +30,7 @@ Examples:
   -Action M365 `
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
-  -ClientSecret '<client-secret>'
+  -ClientSecret $env:ARRAYA_M365_CLIENT_SECRET
 ```
 
 ## Direct actions (optional)
