@@ -23,6 +23,10 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$ClientSecret,
     [Parameter(Mandatory = $false)]
+    [pscredential]$ClientSecretCredential,
+    [Parameter(Mandatory = $false)]
+    [securestring]$ClientSecretSecure,
+    [Parameter(Mandatory = $false)]
     [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
     [string[]]$OutputProfile = @('SolutionsEngineer'),
     [Parameter(Mandatory = $false)]
@@ -115,7 +119,10 @@ if (-not (Test-Path -Path $commonManifestPath)) {
 }
 $resolvedCommonManifestPath = (Resolve-Path -Path $commonManifestPath).Path
 $loadedCommonModule = Get-Module -Name 'Arraya.M365.Common' -ErrorAction SilentlyContinue | Select-Object -First 1
-$requiredCommonCommands = @('Get-ArrayaAssessmentOutputRoot')
+$requiredCommonCommands = @(
+    'Get-ArrayaAssessmentOutputRoot',
+    'Import-ArrayaTenantSnapshotContext'
+)
 $missingCommonCommands = @(
     $requiredCommonCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
 )
@@ -218,6 +225,59 @@ function Add-LauncherOutputProfile {
     return $resolvedProfiles.ToArray()
 }
 
+function Test-LauncherManifestHasSnapshotArtifact {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ManifestPath
+    )
+
+    if (-not (Test-Path -Path $ManifestPath -PathType Leaf)) {
+        return $false
+    }
+
+    try {
+        $resolvedManifestPath = (Resolve-Path -Path $ManifestPath -ErrorAction Stop).Path
+        $manifest = Get-Content -Path $resolvedManifestPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -Depth 10 -ErrorAction Stop
+    }
+    catch {
+        return $false
+    }
+
+    if (-not $manifest -or -not $manifest.PSObject.Properties['Artifacts']) {
+        return $false
+    }
+
+    foreach ($artifact in @($manifest.Artifacts)) {
+        if (-not $artifact) {
+            continue
+        }
+
+        $artifactType = [string]$artifact.Type
+        if ($artifactType -notin @('Assessment Snapshot JSON', 'JSON')) {
+            continue
+        }
+
+        $artifactPath = [string]$artifact.Path
+        if ([string]::IsNullOrWhiteSpace($artifactPath)) {
+            continue
+        }
+
+        $resolvedArtifactPath = if ([System.IO.Path]::IsPathRooted($artifactPath)) {
+            $artifactPath
+        }
+        else {
+            Join-Path -Path (Split-Path -Path $resolvedManifestPath -Parent) -ChildPath $artifactPath
+        }
+
+        if (Test-Path -Path $resolvedArtifactPath -PathType Leaf) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 function Resolve-LauncherLatestManifestPath {
     [CmdletBinding()]
     param(
@@ -274,12 +334,29 @@ function Resolve-LauncherLatestManifestPath {
         }
     }
 
+    $existingManifestPaths = New-Object System.Collections.Generic.List[string]
+    $seenManifestPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($candidatePath in $candidateManifestPaths) {
         if (Test-Path -Path $candidatePath -PathType Leaf) {
-            return (Resolve-Path -Path $candidatePath).Path
+            $resolvedCandidatePath = (Resolve-Path -Path $candidatePath).Path
+            if ($seenManifestPaths.Add($resolvedCandidatePath)) {
+                $existingManifestPaths.Add($resolvedCandidatePath)
+            }
         }
     }
 
+    foreach ($candidatePath in $existingManifestPaths) {
+        if (Test-LauncherManifestHasSnapshotArtifact -ManifestPath $candidatePath) {
+            return $candidatePath
+        }
+    }
+
+    if ($existingManifestPaths.Count -gt 0) {
+        return $existingManifestPaths[0]
+    }
+
+    $searchedManifestPaths = New-Object System.Collections.Generic.List[string]
+    $seenSearchedManifestPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $searchRoot = if (Test-Path -Path $fullExportPath -PathType Container) {
         $fullExportPath
     }
@@ -294,11 +371,20 @@ function Resolve-LauncherLatestManifestPath {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($searchRoot)) {
-        $latestManifest = Get-ChildItem -Path $searchRoot -Recurse -Filter '*.manifest.json' -File -ErrorAction SilentlyContinue |
-            Sort-Object -Property LastWriteTimeUtc -Descending |
-            Select-Object -First 1
-        if ($latestManifest) {
-            return $latestManifest.FullName
+        foreach ($manifest in @(Get-ChildItem -Path $searchRoot -Recurse -Filter '*.manifest.json' -File -ErrorAction SilentlyContinue | Sort-Object -Property LastWriteTimeUtc -Descending)) {
+            if ($seenSearchedManifestPaths.Add($manifest.FullName)) {
+                $searchedManifestPaths.Add($manifest.FullName)
+            }
+        }
+
+        foreach ($manifestPath in $searchedManifestPaths) {
+            if (Test-LauncherManifestHasSnapshotArtifact -ManifestPath $manifestPath) {
+                return $manifestPath
+            }
+        }
+
+        if ($searchedManifestPaths.Count -gt 0) {
+            return $searchedManifestPaths[0]
         }
     }
 
@@ -333,7 +419,14 @@ function Invoke-LauncherImproveFromLatestRun {
 
     $manifestPath = Resolve-LauncherLatestManifestPath -ExportPath $ExportPath
     if ([string]::IsNullOrWhiteSpace($manifestPath)) {
-        throw "Could not find a manifest for the completed assessment run under: $ExportPath"
+        throw "Could not find a run manifest for the completed assessment under: $ExportPath. The workbook alone is not enough for Improve; rerun a JSON-enabled output profile and check the export log for manifest write warnings."
+    }
+
+    try {
+        Import-ArrayaTenantSnapshotContext -Path $manifestPath -Purpose ImprovementPlan | Out-Null
+    }
+    catch {
+        throw ("The completed assessment run did not produce a usable JSON snapshot, so Improve cannot continue from the manifest. This usually means snapshot export failed earlier in the run even if the workbook was created. Review the earlier export errors in the run log and rerun after the snapshot issue is corrected. Manifest: {0} Underlying error: {1}" -f $manifestPath, $_.Exception.Message)
     }
 
     $resolvedOutputFolder = $OutputFolder
@@ -388,6 +481,16 @@ if ([string]::IsNullOrWhiteSpace($Action)) {
     }
 }
 
+$clientSecretRequested = (
+    [string]::Equals([string]$AuthMode, 'ClientSecret', [System.StringComparison]::OrdinalIgnoreCase) -or
+    -not [string]::IsNullOrWhiteSpace($ClientSecret) -or
+    $null -ne $ClientSecretCredential -or
+    $null -ne $ClientSecretSecure
+)
+if ($clientSecretRequested) {
+    Write-Warning 'Client secret auth is a compatibility path in this workflow. Microsoft Graph app auth remains available, but Exchange Online falls back to delegated sign-in and Purview compliance app auth is not supported. Prefer certificate auth for unattended production runs.'
+}
+
 switch ($Action) {
     'M365' {
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
@@ -436,6 +539,8 @@ switch ($Action) {
         if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
         if (-not [string]::IsNullOrWhiteSpace($ClientId)) { $invokeParams.ClientId = $ClientId }
         if (-not [string]::IsNullOrWhiteSpace($ClientSecret)) { $invokeParams.ClientSecret = $ClientSecret }
+        if ($null -ne $ClientSecretCredential) { $invokeParams.ClientSecretCredential = $ClientSecretCredential }
+        if ($null -ne $ClientSecretSecure) { $invokeParams.ClientSecretSecure = $ClientSecretSecure }
 
         Invoke-M365TenantAssessment @invokeParams
     }
@@ -455,6 +560,8 @@ switch ($Action) {
         if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
         if (-not [string]::IsNullOrWhiteSpace($ClientId)) { $invokeParams.ClientId = $ClientId }
         if (-not [string]::IsNullOrWhiteSpace($ClientSecret)) { $invokeParams.ClientSecret = $ClientSecret }
+        if ($null -ne $ClientSecretCredential) { $invokeParams.ClientSecretCredential = $ClientSecretCredential }
+        if ($null -ne $ClientSecretSecure) { $invokeParams.ClientSecretSecure = $ClientSecretSecure }
 
         Invoke-M365TenantConnectionPreflight @invokeParams
     }
@@ -497,6 +604,8 @@ switch ($Action) {
         if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
         if (-not [string]::IsNullOrWhiteSpace($ClientId)) { $invokeParams.ClientId = $ClientId }
         if (-not [string]::IsNullOrWhiteSpace($ClientSecret)) { $invokeParams.ClientSecret = $ClientSecret }
+        if ($null -ne $ClientSecretCredential) { $invokeParams.ClientSecretCredential = $ClientSecretCredential }
+        if ($null -ne $ClientSecretSecure) { $invokeParams.ClientSecretSecure = $ClientSecretSecure }
 
         Invoke-M365TenantDataCollection @invokeParams
     }

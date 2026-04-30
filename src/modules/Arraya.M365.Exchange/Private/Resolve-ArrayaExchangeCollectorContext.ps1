@@ -17,6 +17,8 @@ function Get-ArrayaExchangeCollectionDepthPolicy {
     return [PSCustomObject]@{
         ReportingMode                   = (Get-Culture).TextInfo.ToTitleCase($mode)
         CollectUnifiedGroupMailboxStats = (-not $isMinimum)
+        CollectMailboxDelegatePermissions = $false
+        CollectMailboxCalendarDelegatePermissions = $false
         IsMinimum                       = $isMinimum
         IsOperator                      = $isOperator
         IsCombined                      = $isOperator

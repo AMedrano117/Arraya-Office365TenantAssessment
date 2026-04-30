@@ -31,6 +31,7 @@ Run one script and choose from the menu:
 ## Legacy compatibility
 Migrated legacy scripts are stored in `src/scripts/migrated/legacy`.
 The legacy `Import-Office365CustomLocal.ps1` now delegates to the shared Common module loader.
+The standalone `Invoke-EntraAppReport.ps1` file in that folder is kept only as an unsupported reference script and now requires an explicit override switch to run.
 
 ## Operator references
 - [../../RUN.md](../../RUN.md)

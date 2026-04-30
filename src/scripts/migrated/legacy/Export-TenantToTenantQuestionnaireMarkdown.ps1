@@ -193,6 +193,83 @@ function Export-TenantToTenantQuestionnaireMarkdown {
     )
     $averageMailboxSizeGb = if ($mailboxSizeRows.Count -gt 0) { [math]::Round((($mailboxSizeRows | Measure-Object SizeGB -Average).Average), 2) } else { $null }
     $largestMailbox = @($mailboxSizeRows | Sort-Object SizeGB -Descending | Select-Object -First 1)
+    $crossTenantMailboxRows = @(
+        $mailboxes | Where-Object {
+            (Txt (Prop $_ 'RecipientTypeDetails') '') -ne 'GroupMailbox'
+        }
+    )
+    $mailboxesWithOnMicrosoftAlias = @(
+        $crossTenantMailboxRows | Where-Object {
+            -not [string]::IsNullOrWhiteSpace((Txt (Prop $_ 'OnMicrosoftAlias') ''))
+        }
+    ).Count
+    $mailboxesWithLegacyExchangeDn = @(
+        $crossTenantMailboxRows | Where-Object {
+            -not [string]::IsNullOrWhiteSpace((Txt (Prop $_ 'LegacyExchangeDn') ''))
+        }
+    ).Count
+    $mailboxesWithExistingX500 = @(
+        $crossTenantMailboxRows | Where-Object {
+            $countValue = 0
+            [void][int]::TryParse((Txt (Prop $_ 'X500AddressCount') '0'), [ref]$countValue)
+            $countValue -gt 0
+        }
+    ).Count
+    $mailboxesWithExistingX400 = @(
+        $crossTenantMailboxRows | Where-Object {
+            $countValue = 0
+            [void][int]::TryParse((Txt (Prop $_ 'X400AddressCount') '0'), [ref]$countValue)
+            $countValue -gt 0
+        }
+    ).Count
+    $calendarDelegateSignalMailboxCount = @(
+        $crossTenantMailboxRows | Where-Object {
+            (Txt (Prop $_ 'CalendarDelegateState') '') -in @('Collected', 'Partial')
+        }
+    ).Count
+    $mailboxesWithCalendarDelegates = @(
+        $crossTenantMailboxRows | Where-Object {
+            $countValue = 0
+            [void][int]::TryParse((Txt (Prop $_ 'CalendarDelegateCount') '0'), [ref]$countValue)
+            $countValue -gt 0
+        }
+    ).Count
+    $fullAccessSignalMailboxCount = @(
+        $crossTenantMailboxRows | Where-Object {
+            (Txt (Prop $_ 'FullAccessDelegateState') '') -eq 'Collected'
+        }
+    ).Count
+    $mailboxesWithFullAccessDelegates = @(
+        $crossTenantMailboxRows | Where-Object {
+            $countValue = 0
+            [void][int]::TryParse((Txt (Prop $_ 'FullAccessDelegateCount') '0'), [ref]$countValue)
+            $countValue -gt 0
+        }
+    ).Count
+    $sendAsSignalMailboxCount = @(
+        $crossTenantMailboxRows | Where-Object {
+            (Txt (Prop $_ 'SendAsDelegateState') '') -eq 'Collected'
+        }
+    ).Count
+    $mailboxesWithSendAsDelegates = @(
+        $crossTenantMailboxRows | Where-Object {
+            $countValue = 0
+            [void][int]::TryParse((Txt (Prop $_ 'SendAsDelegateCount') '0'), [ref]$countValue)
+            $countValue -gt 0
+        }
+    ).Count
+    $sendOnBehalfSignalMailboxCount = @(
+        $crossTenantMailboxRows | Where-Object {
+            $null -ne (Prop $_ 'GrantSendOnBehalfToCount')
+        }
+    ).Count
+    $mailboxesWithSendOnBehalfDelegates = @(
+        $crossTenantMailboxRows | Where-Object {
+            $countValue = 0
+            [void][int]::TryParse((Txt (Prop $_ 'GrantSendOnBehalfToCount') '0'), [ref]$countValue)
+            $countValue -gt 0
+        }
+    ).Count
 
     $connectorNames = Summary $mailFlowConnectors 'Name' 5
     $inboundConnectors = @($mailFlowConnectors | Where-Object { (Prop $_ 'ConnectorDirection') -eq 'Inbound' }).Count
@@ -223,6 +300,34 @@ function Export-TenantToTenantQuestionnaireMarkdown {
     if ($priorityFindings.Count -gt 0) {
         $summary = @($priorityFindings | ForEach-Object { Txt (Prop $_ 'Message') '' }) -join ' '
         $comments.Add("- Current assessment findings to review: $summary") | Out-Null
+    }
+    if ($crossTenantMailboxRows.Count -gt 0) {
+        $mailboxCutoverComment = "- Exchange cutover-ready mailbox data: $mailboxesWithOnMicrosoftAlias/$($crossTenantMailboxRows.Count) include a source .onmicrosoft alias, $mailboxesWithLegacyExchangeDn/$($crossTenantMailboxRows.Count) include LegacyExchangeDN, X500 proxies are surfaced on $mailboxesWithExistingX500 mailbox(es), and X400 proxies are surfaced on $mailboxesWithExistingX400 mailbox(es)."
+        if ($calendarDelegateSignalMailboxCount -gt 0) {
+            $mailboxCutoverComment += " Calendar delegates are present on $mailboxesWithCalendarDelegates mailbox(es) and should be rebuilt after cutover."
+        }
+        else {
+            $mailboxCutoverComment += ' Calendar delegate state was not collected in this run.'
+        }
+        if ($fullAccessSignalMailboxCount -gt 0) {
+            $mailboxCutoverComment += " Full Access delegates are present on $mailboxesWithFullAccessDelegates mailbox(es) and should be restamped after cutover."
+        }
+        else {
+            $mailboxCutoverComment += ' Full Access state was not collected in this run.'
+        }
+        if ($sendAsSignalMailboxCount -gt 0) {
+            $mailboxCutoverComment += " Send As delegates are present on $mailboxesWithSendAsDelegates mailbox(es) and should be restamped after cutover."
+        }
+        else {
+            $mailboxCutoverComment += ' Send As state was not collected in this run.'
+        }
+        if ($sendOnBehalfSignalMailboxCount -gt 0) {
+            $mailboxCutoverComment += " Send-on-Behalf delegates are present on $mailboxesWithSendOnBehalfDelegates mailbox(es) and should be restamped after cutover."
+        }
+        else {
+            $mailboxCutoverComment += ' Send-on-Behalf state was not collected in this run.'
+        }
+        $comments.Add($mailboxCutoverComment) | Out-Null
     }
     $comments.Add("- Manual validation is still required for Teams topology details, SharePoint external sharing posture, App Proxy/Private Access/PIM, compliance policy inventory, PST usage, and browser standards.") | Out-Null
 

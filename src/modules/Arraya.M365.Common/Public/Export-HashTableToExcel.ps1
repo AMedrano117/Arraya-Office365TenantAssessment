@@ -5,7 +5,10 @@ function Export-HashTableToExcel {
         [Parameter(Mandatory=$True)] 
         [Hashtable]$hashtable,
         [Parameter(Mandatory=$True)] 
-        [string]$ExportDetails
+        [string]$ExportDetails,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Default', 'TenantToTenantCutover')]
+        [string]$WorkbookExportPolicy = 'Default'
         #[Parameter(Mandatory=$false)] [switch]$tenant
     )
 
@@ -30,11 +33,13 @@ function Export-HashTableToExcel {
     $worksheetAliases = @{
         'Office365GroupsActivityTopGroups' = 'O365GroupsActivityTop'
         'EmployeeExperienceInsightsSummary' = 'EmployeeExpInsights'
+        'MailboxCalendarDelegatePermissions' = 'MailboxCalendarDelegatePerms'
     }
 
     $worksheetCleanupAliases = @{
         'Office365GroupsActivityTopGroups' = @('Office365GroupsActivityTopGroups', 'Office365GroupsActivityTopGroup', 'O365GroupsActivityTop')
         'EmployeeExperienceInsightsSummary' = @('EmployeeExperienceInsightsSummary', 'EmployeeExperienceInsightsSumma', 'EmployeeExpInsights')
+        'MailboxCalendarDelegatePermissions' = @('MailboxCalendarDelegatePermissions', 'MailboxCalendarDelegatePermissi', 'MailboxCalendarDelegatePerms')
     }
 
     function Resolve-WorksheetExportName {
@@ -76,11 +81,12 @@ function Export-HashTableToExcel {
         'EmployeeExperienceInsightsSummary',
         'InboxRulesExternalForwarding',
         'ExternalSharingSiteOverrides',
+        'MailboxCalendarDelegatePermissions',
         'MfaEnforcementGapUsers',
         'MfaEnforcementScopeReview'
     )
 
-    $excludedWorksheets = @(
+    $defaultExcludedWorksheets = @(
         'OwnershipGovernanceSummary',
         'TenantInfoSummary',
         'AuthenticationConfigSummary',
@@ -159,9 +165,146 @@ function Export-HashTableToExcel {
             Source = if ($null -ne $singleValue) { @($singleValue) } else { $sourceEnumerable }
         }
     }
+
+    function New-ExplicitWorksheetPlaceholderRow {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string[]]$Columns
+        )
+
+        $row = [ordered]@{}
+        foreach ($column in $Columns) {
+            $row[$column] = $null
+        }
+
+        return [pscustomobject]$row
+    }
+
+    function Get-TenantToTenantWorksheetColumns {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$LogicalName
+        )
+
+        $columnMap = @{
+            'TenantInfo'                      = @('DisplayName', 'TenantId', 'InitialDomain', 'DefaultDomain', 'Country', 'CountryLetterCode', 'PreferredDataLocation', 'MultiGeoEnabled', 'MultiGeoAllowed', 'MultiGeoCentral', 'SelfServicePurchase', 'SelfServicePurchaseNotes', 'AzureResourceUsage', 'AzureResourceUsageNotes')
+            'MigrationExecutiveSummary'       = @('Section', 'Metric', 'Value', 'Notes')
+            'RecipientDomainSummary'          = @('Domain', 'RecipientCount', 'UserMailboxCount', 'SharedMailboxCount', 'GroupRecipientCount', 'HiddenFromAddressListsCount', 'Notes')
+            'MailboxMigrationSummary'         = @('RecipientTypeDetails', 'MailboxCount', 'ActiveMailboxCount', 'InactiveMailboxCount', 'ArchiveEnabledCount', 'ForwardingCount', 'MailboxesWithDelegateDependencies', 'TotalDataToMigrateGB')
+            'BitTitanLicenseSummary'          = @('Section', 'Metric', 'Value', 'Notes')
+            'DelegateSummary'                 = @('PermissionType', 'AffectedMailboxCount', 'AssignmentCount', 'CollectionStates', 'Notes')
+            'CollaborationSummary'            = @('Workload', 'TotalCount', 'TotalStorageGB', 'UnknownStorageCount', 'LargestObjectName', 'LargestObjectSizeGB', 'Notes')
+            'CutoverPrepSummary'              = @('Category', 'Item', 'Status', 'Value', 'Notes')
+            'AdConnectConfiguration'          = @('Section', 'Item', 'Value', 'Notes')
+            'HybridConfiguration'             = @('Section', 'Item', 'Value', 'Notes')
+            'Domains'                         = @('Name', 'IsDefault', 'IsInitial', 'Verified', 'AuthenticationType', 'SupportedServices', 'MXRecords', 'Office365MailExchanger', 'ThirdPartySpamFilterReview', 'HybridRoutingReview', 'RecipientCount', 'Notes')
+            'Users'                           = @('DisplayName', 'UserPrincipalName', 'Mail', 'AccountEnabled', 'OnPremisesSyncEnabled', 'AssignedLicensesFriendly', 'HasMailbox', 'MailboxPrimarySmtpAddress', 'RecipientTypeDetails', 'TargetUPN', 'TargetPrimarySmtpAddress', 'Wave', 'MigrationState', 'CutoverDate', 'Notes')
+            'AllRecipients'                   = @('DisplayName', 'PrimarySmtpAddress', 'RecipientTypeDetails', 'UserPrincipalName', 'WindowsEmailAddress', 'PrimaryDomain', 'EmailAddresses', 'OnMicrosoftAlias', 'OnMicrosoftAliases', 'HiddenFromAddressListsEnabled', 'Notes')
+            'AllMailboxes'                    = @('DisplayName', 'UserPrincipalName', 'PrimarySmtpAddress', 'RecipientTypeDetails', 'IsInactiveMailbox', 'OnPremisesSyncEnabled', 'ExchangeGuid', 'ArchiveGuid', 'OnMicrosoftAlias', 'OnMicrosoftAliases', 'LegacyExchangeDn', 'LegacyExchangeDnX500', 'X500Addresses', 'X400Addresses', 'MailboxSizeGB', 'DeletedItemsGB', 'ArchiveStatus', 'ArchiveSizeGB', 'ArchiveDeletedItemsGB', 'TotalDataToMigrateGB', 'BitTitanLicenseType', 'BitTitanLicenseCount', 'ForwardingAddress', 'ForwardingSmtpAddress', 'DeliverToMailboxAndForward', 'LitigationHoldEnabled', 'RetentionPolicy', 'FullAccessDelegateCount', 'SendAsDelegateCount', 'GrantSendOnBehalfToCount', 'CalendarDelegateCount', 'Wave', 'MigrationState', 'CutoverDate', 'Notes')
+            'MailboxDelegateAssignments'      = @('MailboxDisplayName', 'MailboxPrimarySmtpAddress', 'MailboxUserPrincipalName', 'RecipientTypeDetails', 'PermissionType', 'Delegate', 'DelegateCountSource', 'CollectionState', 'Wave', 'Notes')
+            'MailboxCalendarDelegatePermissions' = @('MailboxDisplayName', 'MailboxPrimarySmtpAddress', 'MailboxUserPrincipalName', 'RecipientTypeDetails', 'CalendarName', 'CalendarPath', 'PermissionTarget', 'PermissionTargetDisplayName', 'PermissionTargetType', 'AccessRights', 'SharingPermissionFlags', 'Wave', 'Notes')
+            'InactiveMailboxDetails'          = @('DisplayName', 'UserPrincipalName', 'PrimarySmtpAddress', 'RecipientTypeDetails', 'IsInactiveMailbox', 'OnPremisesSyncEnabled', 'ExchangeGuid', 'ArchiveGuid', 'OnMicrosoftAlias', 'OnMicrosoftAliases', 'LegacyExchangeDn', 'LegacyExchangeDnX500', 'X500Addresses', 'X400Addresses', 'MailboxSizeGB', 'DeletedItemsGB', 'ArchiveStatus', 'ArchiveSizeGB', 'ArchiveDeletedItemsGB', 'TotalDataToMigrateGB', 'BitTitanLicenseType', 'BitTitanLicenseCount', 'ForwardingAddress', 'ForwardingSmtpAddress', 'DeliverToMailboxAndForward', 'LitigationHoldEnabled', 'RetentionPolicy', 'FullAccessDelegateCount', 'SendAsDelegateCount', 'GrantSendOnBehalfToCount', 'CalendarDelegateCount', 'Wave', 'MigrationState', 'CutoverDate', 'Notes')
+            'PublicFolderDetails'             = @('Name', 'Identity', 'Path', 'MailEnabled', 'PrimarySmtpAddress', 'ItemCount', 'FolderCount', 'EntryId', 'Notes')
+            'MailFlowConnectors'              = @('Name', 'Enabled', 'ConnectorType', 'ConnectorSource', 'SenderDomains', 'RecipientDomains', 'SmartHosts', 'TlsSettings', 'Comment', 'Notes')
+            'RemoteDomains'                   = @('Name', 'DomainName', 'AutoForwardEnabled', 'AllowedOOFType', 'TNEFEnabled', 'TrustedMailOutboundEnabled', 'Notes')
+            'SMTPRelayServiceAccounts'        = @('DisplayName', 'UserPrincipalName', 'PrimarySmtpAddress', 'RecipientTypeDetails', 'IsDirSynced', 'AssignedLicensesFriendly', 'Notes')
+            'AllTeams'                        = @('DisplayName', 'Visibility', 'IsArchived', 'SharePointSiteUrl', 'SiteSize-GB', 'TotalChannels', 'SharedChannelCount', 'SharedChannels', 'OwnerCount', 'MemberCount', 'GuestCount', 'LastActivityDate', 'Notes')
+            'SharePoint'                      = @('Title', 'Url', 'Template', 'Owner', 'StorageUsedGB', 'StorageQuota', 'LastContentModifiedDate', 'LockState', 'ArchiveStatus', 'SharingCapability', 'IsTeamsConnected', 'Notes')
+            'OneDrive'                        = @('Title', 'Url', 'Template', 'Owner', 'StorageUsedGB', 'StorageQuota', 'LastContentModifiedDate', 'LockState', 'ArchiveStatus', 'SharingCapability', 'IsTeamsConnected', 'Notes')
+        }
+
+        if ($columnMap.ContainsKey($LogicalName)) {
+            return @($columnMap[$LogicalName])
+        }
+
+        return @()
+    }
+
+    function Get-TenantToTenantWorksheetSourceName {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$LogicalName,
+            [Parameter(Mandatory = $true)]
+            [hashtable]$ExportTables
+        )
+
+        switch ($LogicalName) {
+            'TenantInfo' {
+                if (
+                    $ExportTables.ContainsKey('TenantInfoSummary') -and
+                    (Get-WorksheetExportSourceInfo -TableValue $ExportTables['TenantInfoSummary']).Count -gt 0
+                ) {
+                    return 'TenantInfoSummary'
+                }
+            }
+            'AdConnectConfiguration' {
+                return 'TenantToTenantAdConnectConfiguration'
+            }
+            'HybridConfiguration' {
+                return 'TenantToTenantHybridConfiguration'
+            }
+            'AllMailboxes' {
+                if (
+                    $ExportTables.ContainsKey('MailboxFullDetails') -and
+                    (Get-WorksheetExportSourceInfo -TableValue $ExportTables['MailboxFullDetails']).Count -gt 0
+                ) {
+                    return 'MailboxFullDetails'
+                }
+            }
+        }
+
+        return $LogicalName
+    }
+
+    function Get-TenantToTenantColumnWidth {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$ColumnName
+        )
+
+        if ($ColumnName -match '^(MailboxSizeGB|DeletedItemsGB|ArchiveSizeGB|ArchiveDeletedItemsGB|TotalDataToMigrateGB|BitTitanLicenseCount|RecipientCount|UserMailboxCount|SharedMailboxCount|GroupRecipientCount|HiddenFromAddressListsCount|MailboxCount|ActiveMailboxCount|InactiveMailboxCount|ArchiveEnabledCount|ForwardingCount|MailboxesWithDelegateDependencies|AffectedMailboxCount|AssignmentCount|TotalCount|TotalStorageGB|UnknownStorageCount|LargestObjectSizeGB|OwnerCount|MemberCount|GuestCount|TotalChannels|SharedChannelCount|Count|Status|AccountEnabled|HasMailbox|IsInactiveMailbox|OnPremisesSyncEnabled|IsArchived|Verified|IsDefault|IsInitial|Office365MailExchanger|LitigationHoldEnabled|DeliverToMailboxAndForward)$') {
+            return 14
+        }
+
+        if ($ColumnName -match '^(DisplayName|UserPrincipalName|PrimarySmtpAddress|WindowsEmailAddress|MailboxPrimarySmtpAddress|MailboxUserPrincipalName|Mail|Owner|Title|Url|SharePointSiteUrl|Source|Target|TargetUPN|TargetPrimarySmtpAddress|TargetMail|SourceUPN|SourceEmail|SourceOneDriveUrl|TargetOneDriveUrl|LargestObjectName|ForwardingAddress|ForwardingSmtpAddress)$') {
+            return 26
+        }
+
+        if ($ColumnName -match '^(EmailAddresses|OnMicrosoftAliases|LegacyExchangeDn|LegacyExchangeDnX500|X500Addresses|X400Addresses|Delegate|FullAccessDelegates|SendAsDelegates|GrantSendOnBehalfTo|SmartHosts|SenderDomains|RecipientDomains|Comment|Notes|CollectionStates|SupportedServices|TlsSettings|MXRecords|SharedChannels)$') {
+            return 34
+        }
+
+        return 20
+    }
+
+    function Set-TenantToTenantWorksheetColumnWidths {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            $ExcelPackage,
+            [Parameter(Mandatory = $true)]
+            [string]$WorksheetName,
+            [Parameter(Mandatory = $true)]
+            [string[]]$Columns
+        )
+
+        $worksheet = $ExcelPackage.Workbook.Worksheets[$WorksheetName]
+        if ($null -eq $worksheet) {
+            return
+        }
+
+        for ($columnIndex = 1; $columnIndex -le $Columns.Count; $columnIndex++) {
+            $worksheet.Column($columnIndex).Width = Get-TenantToTenantColumnWidth -ColumnName $Columns[$columnIndex - 1]
+            $worksheet.Column($columnIndex).BestFit = $false
+        }
+    }
     
     # === Sheet ordering ===
-    $desiredOrder = @(
+    $defaultDesiredOrder = @(
         # Tenant Overview
         "TenantInfo", "LicenseSKUs", "AdConnectConfiguration",
 
@@ -174,7 +317,7 @@ function Export-HashTableToExcel {
 
         # Exchange
         "HybridConfiguration",
-        "AllRecipients", "AllMailboxes", "PrimaryMailboxStats", "MailboxFullDetails", "NonUserMailboxes",
+        "AllRecipients", "AllMailboxes", "PrimaryMailboxStats", "MailboxFullDetails", "MailboxCalendarDelegatePermissions", "NonUserMailboxes",
         "ArchiveMailboxes", "ArchiveMailboxStats", "LitigationHoldMailboxes", "InactiveMailboxes", "InactiveMailboxDetails",
         "AllExchangeGroups", "PublicFolderDetails", "PublicFolderPerms",
         "MailFlowRules", "MailFlowConnectors", "RemoteDomains", "EmailActivityTopSenders", "EmailActivityTopReceivers",
@@ -198,17 +341,70 @@ function Export-HashTableToExcel {
         "BestPractices", "BestPracticeFindings", "MigrationReadiness"
     )
 
+    $tenantToTenantCutoverDesiredOrder = @(
+        'AllMailboxes',
+        'TenantInfo',
+        'MigrationExecutiveSummary',
+        'RecipientDomainSummary',
+        'MailboxMigrationSummary',
+        'BitTitanLicenseSummary',
+        'DelegateSummary',
+        'CollaborationSummary',
+        'CutoverPrepSummary',
+        'Domains',
+        'AdConnectConfiguration',
+        'HybridConfiguration',
+        'Users',
+        'AllRecipients',
+        'MailboxDelegateAssignments',
+        'MailboxCalendarDelegatePermissions',
+        'InactiveMailboxDetails',
+        'PublicFolderDetails',
+        'MailFlowConnectors',
+        'RemoteDomains',
+        'SMTPRelayServiceAccounts',
+        'AllTeams',
+        'SharePoint',
+        'OneDrive'
+    )
+    $tenantToTenantCutoverExcludedWorksheets = @(
+        'Admins', 'AuthenticationConfig', 'AuthenticationSSOApplications', 'MfaEnrollmentSummary', 'MfaEnforcementSummary',
+        'ConditionalAccessPolicySummary', 'ConditionalAccessPolicies', 'SecurityDefaultsPolicy', 'GuestAccessConfiguration',
+        'ExternalIdentityRestrictions', 'MailboxFullDetails', 'ArchiveMailboxes', 'ArchiveMailboxStats', 'UnifiedGroups',
+        'SpamFilteringConfig', 'SMTPRelayConfig', 'SharedMailboxGovernanceSummary', 'ForwardingPolicySummary', 'BestPractices',
+        'BestPracticeFindings', 'UserFullDetails', 'EntraIDGroups', 'EnterpriseApplications', 'SecuritySecureScore',
+        'SecureScoreActions', 'EmailActivityTopSenders', 'EmailActivityTopReceivers', 'TeamsVoiceSummary',
+        'CollaborationActivitySummary', 'TeamsActivityTopUsers', 'Office365GroupsActivityTopGroups',
+        'EmployeeExperienceInsightsSummary', 'DeviceDetails', 'DeviceManagementSummary', 'LitigationHoldMailboxes',
+        'NonUserMailboxes', 'InactiveMailboxes', 'PublicFolderPerms', 'RetentionPolicies', 'DlpPolicies',
+        'UnmanagedObjects', 'OneDriveOwnerMismatches', 'ExternalSharingSummary', 'ExternalSharingSiteOverrides',
+        'SharePointSharingSummary', 'AllExchangeGroups', 'MigrationReadiness'
+    )
+
+    $desiredOrder = $defaultDesiredOrder
+    $excludedWorksheets = $defaultExcludedWorksheets
+    $appendRemainingWorksheets = $true
+    switch ($WorkbookExportPolicy) {
+        'TenantToTenantCutover' {
+            $desiredOrder = $tenantToTenantCutoverDesiredOrder
+            $excludedWorksheets = @($defaultExcludedWorksheets + $tenantToTenantCutoverExcludedWorksheets | Select-Object -Unique)
+            $appendRemainingWorksheets = $false
+        }
+    }
+
     $orderedTables = @()
     foreach ($name in $desiredOrder) {
         if (($excludedWorksheets -notcontains $name) -and $hashtable.ContainsKey($name)) {
             $orderedTables += $name
         }
     }
-    $orderedTables += ($hashtable.Keys | Where-Object { ($orderedTables -notcontains $_) -and ($excludedWorksheets -notcontains $_) } | Sort-Object)
+    if ($appendRemainingWorksheets) {
+        $orderedTables += ($hashtable.Keys | Where-Object { ($orderedTables -notcontains $_) -and ($excludedWorksheets -notcontains $_) } | Sort-Object)
+    }
 
     foreach ($excludedSheet in $excludedWorksheets) {
         if ($hashtable.ContainsKey($excludedSheet)) {
-            Write-Log -Type INFO -Message "Skipping worksheet '$excludedSheet' by export policy." -ExportFileLocation $ExportDetails
+            Write-Log -Type INFO -Message "Skipping worksheet '$excludedSheet' by export policy '$WorkbookExportPolicy'." -ExportFileLocation $ExportDetails
         }
     }
 
@@ -231,12 +427,20 @@ function Export-HashTableToExcel {
                 Write-ProgressHelper -Total $totalCount -Id 2 -Activity "Exporting Hash To Excel"
                 Write-Log -Type DEBUG -Message ("Exporting '{0}' Hash Table to '{1}' as worksheet '{2}'" -f $table, $ExportDetails, $worksheetName) -ExportFileLocation $ExportDetails
 
-                $sourceInfo = Get-WorksheetExportSourceInfo -TableValue $hashtable[$table]
+                $tableValue = if ($WorkbookExportPolicy -eq 'TenantToTenantCutover') {
+                    $sourceTableName = Get-TenantToTenantWorksheetSourceName -LogicalName $table -ExportTables $hashtable
+                    if ($hashtable.ContainsKey($sourceTableName)) { $hashtable[$sourceTableName] } else { $null }
+                }
+                else {
+                    $hashtable[$table]
+                }
+                $sourceInfo = Get-WorksheetExportSourceInfo -TableValue $tableValue
                 $sourceCount = [int]$sourceInfo.Count
                 $exportSource = $sourceInfo.Source
+                $explicitColumns = if ($WorkbookExportPolicy -eq 'TenantToTenantCutover') { @(Get-TenantToTenantWorksheetColumns -LogicalName $table) } else { @() }
 
                 if ($sourceCount -gt 0) {
-                    $autoSizeSheet = ($sourceCount -le $autoSizeRowLimit)
+                    $autoSizeSheet = ($sourceCount -le $autoSizeRowLimit -and $WorkbookExportPolicy -ne 'TenantToTenantCutover')
                     if (-not $autoSizeSheet) {
                         Write-Log -Type INFO -Message "Skipping AutoSize for worksheet '$worksheetName' due to row count ($sourceCount) to reduce export runtime/memory pressure." -ExportFileLocation $ExportDetails
                     }
@@ -251,10 +455,31 @@ function Export-HashTableToExcel {
                         $excelSplat.AutoSize = $true
                     }
 
-                    $exportSource |
+                    $rowsToExport = if ($explicitColumns.Count -gt 0) {
+                        @($exportSource | Select-Object $explicitColumns)
+                    }
+                    else {
+                        @($exportSource)
+                    }
+
+                    $rowsToExport |
                         ForEach-Object { ConvertTo-ExportFriendlyRecord -InputObject $_ } |
                         Export-Excel @excelSplat -PassThru |
                         ForEach-Object { $excelPackage = $_ }
+
+                    if ($WorkbookExportPolicy -eq 'TenantToTenantCutover' -and $explicitColumns.Count -gt 0) {
+                        Set-TenantToTenantWorksheetColumnWidths -ExcelPackage $excelPackage -WorksheetName $worksheetName -Columns $explicitColumns
+                    }
+                    continue
+                }
+
+                if ($WorkbookExportPolicy -eq 'TenantToTenantCutover' -and $explicitColumns.Count -gt 0) {
+                    @(New-ExplicitWorksheetPlaceholderRow -Columns $explicitColumns) |
+                        ForEach-Object { ConvertTo-ExportFriendlyRecord -InputObject $_ } |
+                        Export-Excel -ExcelPackage $excelPackage -WorksheetName $worksheetName -ClearSheet -BoldTopRow -PassThru |
+                        ForEach-Object { $excelPackage = $_ }
+                    Set-TenantToTenantWorksheetColumnWidths -ExcelPackage $excelPackage -WorksheetName $worksheetName -Columns $explicitColumns
+                    Write-Log -Type INFO -Message "No data found for '$table'; exported an empty-schema worksheet for the tenant-to-tenant workbook contract." -ExportFileLocation $ExportDetails
                     continue
                 }
 

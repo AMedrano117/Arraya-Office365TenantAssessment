@@ -1,6 +1,6 @@
 # App Registration Setup
 
-Use this runbook when you want to run the assessment with `-AuthMode Certificate` or `-AuthMode ClientSecret`.
+Use this runbook when you want to run the assessment with app-based auth. Certificate auth is the recommended production path. `ClientSecret` remains available as a compatibility mode for Graph-focused automation, but it is not equivalent to the certificate path in this workflow.
 
 ## Create the app registration
 1. Go to Entra admin center.
@@ -71,6 +71,7 @@ If you want optional extended enrichment beyond the standard assessment path, ad
 ## Keep secrets and certificates out of the repo
 - Do not store client secrets, PFX files, or exported private keys in this repository.
 - Store certificate material in approved secure storage and import it on the execution machine only.
+- If you must use `ClientSecret`, pass it through approved secret storage or an environment variable rather than embedding it directly in scripts or shell history.
 
 ## Next step
 After the app registration exists, continue with [certificate-auth-setup.md](certificate-auth-setup.md) if you plan to use certificate auth.

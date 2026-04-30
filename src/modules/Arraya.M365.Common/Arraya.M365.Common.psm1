@@ -15,6 +15,7 @@ Export-ModuleMember -Function @(
     'ConvertTo-ExportFriendlyRecord',
     'ConvertTo-ExportFriendlyValue',
     'Export-ArrayaErrorReports',
+    'Export-ArrayaTenantToTenantCutoverPack',
     'Export-ArrayaTenantSnapshot',
     'Export-HashTableToExcel',
     'Filter-TenantStatsHash',

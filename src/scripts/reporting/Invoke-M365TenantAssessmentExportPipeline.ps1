@@ -28,6 +28,14 @@ function Invoke-M365TenantAssessmentExportPipeline {
         [Parameter(Mandatory = $true)]
         [bool]$ExportOnly,
         [Parameter(Mandatory = $false)]
+        [ValidateSet('Default', 'TenantToTenantCutover')]
+        [string]$WorkbookExportPolicy = 'Default',
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Default', 'TenantToTenantCutover')]
+        [string]$TechnicalHtmlPolicy = 'Default',
+        [Parameter(Mandatory = $false)]
+        [bool]$GenerateMigrationPack = $false,
+        [Parameter(Mandatory = $false)]
         [string]$LegacyScriptRoot
     )
 
@@ -143,14 +151,13 @@ function Invoke-M365TenantAssessmentExportPipeline {
         JSON                  = $null
     }
 
+    $requiresExcelArtifacts = (-not $SkipWorkbook) -or [bool]$GenerateMigrationPack
+
     if (-not $ExportTenantStatsHash) {
         $ExportTenantStatsHash = $TenantStatsHash
     }
 
-    if ($SkipWorkbook) {
-        Write-PipelineLog -Type INFO -Message 'Skipping workbook generation because the selected output profile disables workbook output.'
-    }
-    else {
+    if ($requiresExcelArtifacts) {
         try {
             if (Get-Command -Name Ensure-ImportExcelReady -ErrorAction SilentlyContinue) {
                 Ensure-ImportExcelReady
@@ -162,17 +169,49 @@ function Invoke-M365TenantAssessmentExportPipeline {
             elseif (-not (Get-Module -Name ImportExcel -ErrorAction SilentlyContinue)) {
                 Import-Module ImportExcel -ErrorAction Stop
             }
+        }
+        catch {
+            throw "ImportExcel is required for workbook and migration-pack exports: $($_.Exception.Message)"
+        }
+    }
 
+    if ($SkipWorkbook) {
+        Write-PipelineLog -Type INFO -Message 'Skipping workbook generation because the selected output profile disables workbook output.'
+    }
+    else {
+        try {
             if (-not (Get-Command -Name Export-HashTableToExcel -ErrorAction SilentlyContinue)) {
                 throw 'Export-HashTableToExcel function is unavailable in the current session.'
             }
 
             Write-PipelineLog -Type INFO -Message "Exporting the Tenant Statistics to $ExportDetails."
-            Export-HashTableToExcel -hashtable $ExportTenantStatsHash -ExportDetails $ExportDetails
+            Export-HashTableToExcel -hashtable $ExportTenantStatsHash -ExportDetails $ExportDetails -WorkbookExportPolicy $WorkbookExportPolicy
             $generatedArtifacts['Workbook'] = $ExportDetails
         }
         catch {
             Write-PipelineLog -Type ERROR -Message "Workbook export failed: $($_.Exception.Message)"
+        }
+    }
+
+    if ($GenerateMigrationPack) {
+        try {
+            if (-not (Get-Command -Name Export-ArrayaTenantToTenantCutoverPack -ErrorAction SilentlyContinue)) {
+                throw 'Export-ArrayaTenantToTenantCutoverPack function is unavailable in the current session.'
+            }
+
+            $cutoverPackResult = Export-ArrayaTenantToTenantCutoverPack -TenantStatsHash $TenantStatsHash -BaseExportPath $ExportDetails
+            if ($cutoverPackResult -and -not [string]::IsNullOrWhiteSpace([string]$cutoverPackResult.WorkbookPath)) {
+                $generatedArtifacts['T2T Cutover Pack Workbook'] = [string]$cutoverPackResult.WorkbookPath
+            }
+
+            if ($cutoverPackResult -and $cutoverPackResult.CsvArtifacts -is [System.Collections.IDictionary]) {
+                foreach ($csvArtifactName in $cutoverPackResult.CsvArtifacts.Keys) {
+                    $generatedArtifacts["T2T Cutover Pack CSV - $csvArtifactName"] = [string]$cutoverPackResult.CsvArtifacts[$csvArtifactName]
+                }
+            }
+        }
+        catch {
+            Write-PipelineLog -Type ERROR -Message "Tenant-to-tenant cutover pack export failed: $($_.Exception.Message)"
         }
     }
 
@@ -193,7 +232,10 @@ function Invoke-M365TenantAssessmentExportPipeline {
             Write-PipelineLog -Type INFO -Message "Exported Tenant Statistics JSON to $jsonExportPath"
         }
         catch {
-            Write-PipelineLog -Type WARNING -Message "Unable to export Tenant Statistics JSON: $($_.Exception.Message)"
+            $jsonExportErrorMessage = "Unable to export Tenant Statistics JSON: $($_.Exception.Message)"
+            $generatedArtifacts['Assessment Snapshot JSON Error'] = $jsonExportErrorMessage
+            Write-PipelineLog -Type ERROR -Message $jsonExportErrorMessage
+            throw $jsonExportErrorMessage
         }
     }
 
@@ -286,21 +328,41 @@ function Invoke-M365TenantAssessmentExportPipeline {
             if (Test-Path -Path $fullHtmlHelperPath) {
                 . $fullHtmlHelperPath
             }
-            if (-not (Get-Command -Name New-TenantHtmlReport -ErrorAction SilentlyContinue)) {
-                Write-PipelineLog -Type WARNING -Message 'Skipping full HTML report generation because New-TenantHtmlReport is unavailable.'
+            $htmlExportPath = if ($TechnicalHtmlPolicy -eq 'TenantToTenantCutover') {
+                $ExportDetails -replace '\.xlsx$', '-T2TCutover.html'
             }
             else {
-                $reportThresholds = @{
-                    LicenseUtilization      = 85
-                    MailboxSizeGB           = 50
-                    ArchiveSizeGB           = 50
-                    SharePointSiteGB        = 1024
-                    OneDriveSiteGB          = 1024
-                    DeviceStaleMonths       = 6
-                    DeviceCompliancePercent = 80
+                $ExportDetails -replace '\.xlsx$', '-TenantSnapshot.html'
+            }
+
+            $htmlResult = $null
+            if ($TechnicalHtmlPolicy -eq 'TenantToTenantCutover') {
+                if (-not (Get-Command -Name New-TenantMigrationCutoverHtmlReport -ErrorAction SilentlyContinue)) {
+                    Write-PipelineLog -Type WARNING -Message 'Skipping full HTML report generation because New-TenantMigrationCutoverHtmlReport is unavailable.'
                 }
-                $htmlExportPath = $ExportDetails -replace '\.xlsx$', '-TenantSnapshot.html'
-                $htmlResult = New-TenantHtmlReport -TenantStatsHash $TenantStatsHash -Thresholds $reportThresholds -OutputPath $htmlExportPath
+                else {
+                    $htmlResult = New-TenantMigrationCutoverHtmlReport -TenantStatsHash $TenantStatsHash -OutputPath $htmlExportPath -CollectionScopePolicy 'TenantToTenantCutover'
+                }
+            }
+            else {
+                if (-not (Get-Command -Name New-TenantHtmlReport -ErrorAction SilentlyContinue)) {
+                    Write-PipelineLog -Type WARNING -Message 'Skipping full HTML report generation because New-TenantHtmlReport is unavailable.'
+                }
+                else {
+                    $reportThresholds = @{
+                        LicenseUtilization      = 85
+                        MailboxSizeGB           = 50
+                        ArchiveSizeGB           = 50
+                        SharePointSiteGB        = 1024
+                        OneDriveSiteGB          = 1024
+                        DeviceStaleMonths       = 6
+                        DeviceCompliancePercent = 80
+                    }
+                    $htmlResult = New-TenantHtmlReport -TenantStatsHash $TenantStatsHash -Thresholds $reportThresholds -OutputPath $htmlExportPath
+                }
+            }
+
+            if ($null -ne $htmlResult) {
                 if ($htmlResult.Success) {
                     $generatedArtifacts['Full HTML'] = $htmlResult.OutputPath
                     Write-PipelineLog -Type INFO -Message "HTML report generated: $($htmlResult.OutputPath)"

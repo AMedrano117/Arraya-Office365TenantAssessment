@@ -27,13 +27,16 @@ The assessment supports three authentication modes:
 
 - `Interactive`: default sign-in flow for guided, delegated access.
 - `Certificate`: app-based authentication using a certificate.
-- `ClientSecret`: app-based authentication using a client secret.
+- `ClientSecret`: compatibility mode for Graph app authentication using a client secret.
 
 Coverage is not identical across those modes:
 
 - `Interactive`: best choice for the fullest workload coverage.
 - `Certificate`: supports Microsoft Graph, Exchange Online app auth, and Purview certificate auth; SharePoint admin PowerShell is skipped by design and falls back to Microsoft Graph collection.
-- `ClientSecret`: Microsoft Graph supports app auth, Exchange falls back to delegated sign-in in this workflow, SharePoint admin cmdlets are skipped, and Teams PowerShell is skipped.
+- `ClientSecret`: Microsoft Graph supports app auth, Exchange falls back to delegated sign-in in this workflow, SharePoint admin cmdlets are skipped, and Teams PowerShell is skipped. Treat this as a compatibility path, not the production-equivalent alternative to certificate auth.
+
+For unattended production use, prefer certificate-based auth. Microsoft guidance treats client secrets as less secure than certificates or federated credentials, so this repo keeps client-secret mode for compatibility rather than as the recommended automation default.
+If you must use a client secret, prefer `-ClientSecretSecure` or `-ClientSecretCredential` over a plain `-ClientSecret` string so the secret is less likely to linger in shell history or copied command lines.
 
 If you are using app-based authentication, complete the setup guidance first:
 
@@ -41,6 +44,7 @@ If you are using app-based authentication, complete the setup guidance first:
 - [Certificate Auth Setup](docs/runbooks/certificate-auth-setup.md)
 
 The assessment now uses an assessment-owned, staged login flow instead of a generic "connect everything" bootstrap. Graph and Exchange are the baseline live-collection workloads, Purview is only connected when the active run needs governance policy collection, and SharePoint/Teams PowerShell are attempted only when the active run can use them.
+In `Interactive` mode, the current auth order is `Exchange Online -> Purview -> Microsoft Graph`. This is intentional: Exchange-family auth is attempted before Graph interactive auth so a later broker/WAM issue in the Graph path does not poison Exchange or Purview auth in the same shell.
 
 If you already connected the required workloads for the active run in the same PowerShell session, you can reuse those sessions with `-SkipAuth`.
 If the active profile includes Purview retention or DLP collection, `-SkipAuth` requires a usable existing compliance PowerShell session, not only the presence of Purview cmdlet names in scope.
@@ -52,7 +56,8 @@ The permission preflight now shows the specific check being evaluated, then prin
 Assessment progress output now uses plain-language governance step names instead of older internal `Tier B` terminology.
 
 Purview retention and DLP policy collection is a separate compliance PowerShell surface in this workflow. It uses `Connect-IPPSSession` and the compliance cmdlets `Get-RetentionCompliancePolicy` and `Get-DlpCompliancePolicy` rather than the main Graph collector path.
-In `Interactive` mode, the assessment now intentionally retries the Purview sign-in flow with device code if the first interactive attempt does not complete cleanly, so the operator can still complete the compliance login in sessions where browser-based auth is blocked or unstable.
+In `Interactive` mode, the assessment now starts with a normal `Connect-IPPSSession` attempt and then retries with `-DisableWAM` when the installed module supports it.
+Purview device-code fallback is conditional, not guaranteed. It is only available when the installed `ExchangeOnlineManagement` module exposes `Connect-IPPSSession -Device`. Some current module builds do not expose that parameter, so the operator may see only interactive and `-DisableWAM` retries.
 If that connection fails during permission preflight, the run now reports the auth path used, the tenant organization value when applicable, and a next-step message so the operator can tell whether the problem is missing module availability, unsupported auth mode, certificate/app access, or missing compliance cmdlets after connect.
 The same certificate and app registration can also behave differently across tenants: one tenant may expose the Purview retention/DLP cmdlets to the app session while another rejects that feature surface. When the compliance endpoint accepts the certificate sign-in but returns "No cmdlet assigned to the user have this feature enabled," treat it as a tenant-specific Purview/compliance access or licensing gap rather than a generic Graph auth failure.
 
@@ -86,7 +91,7 @@ If you are setting up app-based authentication, you will also need enough Entra 
 
 ### Microsoft Graph Delegated Scopes
 
-When you run the main assessment in `Interactive` mode, the connector now requests the core delegated scope set used by the standard assessment:
+When you run the main assessment in `Interactive` mode, the connector requests a workload-driven delegated scope set. The standard full assessment can require:
 
 - `Organization.Read.All`
 - `User.Read.All`
@@ -110,6 +115,7 @@ When you run the main assessment in `Interactive` mode, the connector now reques
 
 These scopes support the repo's current Graph-based collection for tenant, identity, reporting, security, collaboration, and SharePoint data.
 They are meant to cover the standard assessment path, not every possible legacy helper or optional enrichment path in the repo.
+Smaller profile-driven runs can now omit workload-specific scopes such as Teams channel inventory when that surface is not part of the active run.
 
 ### App-Based Permission Baseline
 
@@ -285,7 +291,7 @@ Run a full assessment with client-secret authentication:
   -AuthMode ClientSecret `
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
-  -ClientSecret '<client-secret>'
+  -ClientSecret $env:ARRAYA_M365_CLIENT_SECRET
 ```
 
 Collect tenant data only and save a JSON snapshot for later export:
@@ -520,6 +526,7 @@ If a required module is missing, rerun:
 ```
 
 If you are prompted for authentication unexpectedly, check whether you intended to use the default interactive mode or whether `-SkipAuth` should be used to reuse an existing session.
+If Exchange Online or Purview interactive auth fails after Microsoft Graph interactive auth has already run in the same shell, close that PowerShell window and start a fresh session before retrying. The current interactive bootstrap intentionally authenticates `Exchange Online -> Purview -> Microsoft Graph` to reduce this failure mode, but once Graph has already poisoned the shell, later Exchange-family retries in that same session may still fail.
 If the run stops before collection because of the startup access gate and you want best-effort behavior instead, rerun with `-SkipPermissionPreflight`.
 
 If PDF output is missing, the assessment can still complete successfully. PDF generation depends on a locally installed Chromium-based browser such as Google Chrome or Microsoft Edge.

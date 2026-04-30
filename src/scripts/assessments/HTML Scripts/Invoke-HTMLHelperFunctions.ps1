@@ -129,6 +129,29 @@ function Convert-AssessmentHtmlArray {
     return Convert-ToArrayLocal -Value $InputObject
 }
 
+function Write-AssessmentOptionalSubstep {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Message,
+        [Parameter(Mandatory = $false)]
+        [string]$ForegroundColor = 'DarkGray'
+    )
+
+    $substepCommand = Get-Command -Name 'Write-AssessmentConsoleSubstep' -ErrorAction SilentlyContinue
+    if ($substepCommand) {
+        try {
+            Write-AssessmentConsoleSubstep -Message $Message -ForegroundColor $ForegroundColor
+            return
+        }
+        catch {
+            # Fall back to verbose output when the collector-hosted console helper is unavailable.
+        }
+    }
+
+    Write-Verbose $Message
+}
+
 function Test-AssessmentHtmlBlankValue {
     <#
     .SYNOPSIS
@@ -503,6 +526,29 @@ function New-CalloutBox {
     <div class="callout-body">$Content</div>
 </div>
 "@
+}
+
+function Get-AssessmentBundledChartJsScript {
+    <#
+    .SYNOPSIS
+        Returns the bundled Chart.js payload as an inline script block so generated reports stay self-contained.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $chartBundlePath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\vendor\chart.js\4.4.0\chart.umd.min.js'))
+    if (-not (Test-Path -Path $chartBundlePath -PathType Leaf)) {
+        return @"
+<script>
+window.Chart = function ChartStub() { return { destroy: function () {}, update: function () {} }; };
+window.Chart.register = function () {};
+console.warn('Bundled Chart.js asset is unavailable. Charts are disabled for this report render.');
+</script>
+"@
+    }
+
+    $chartSource = Get-Content -Path $chartBundlePath -Raw -Encoding UTF8
+    return "<script>`n$chartSource`n</script>"
 }
 
 #endregion
@@ -1342,6 +1388,7 @@ function Update-OwnershipGovernanceTables {
     $TenantStatsHash['UnmanagedObjects'] = @{}
     $TenantStatsHash['OneDriveOwnerMismatches'] = @{}
     $TenantStatsHash['OwnershipGovernanceSummary'] = @{}
+    Write-AssessmentOptionalSubstep -Message 'Ownership governance: building owner state lookup from collected user and admin records'
 
     $staleOwnerDays = 180
     $staleCutoff = (Get-Date).AddDays(-1 * $staleOwnerDays)
@@ -1573,6 +1620,7 @@ function Update-OwnershipGovernanceTables {
         }) | Out-Null
     }
 
+    Write-AssessmentOptionalSubstep -Message 'Ownership governance: reviewing OneDrive and SharePoint ownership signals'
     foreach ($oneDrive in $context.OneDrive) {
         $displayName = if ($oneDrive.Title) { [string]$oneDrive.Title } else { [string]$oneDrive.Url }
         $identifier = if ($oneDrive.Url) { [string]$oneDrive.Url } elseif ($oneDrive.SiteId) { [string]$oneDrive.SiteId } else { $displayName }
@@ -1622,6 +1670,7 @@ function Update-OwnershipGovernanceTables {
         }
     }
 
+    Write-AssessmentOptionalSubstep -Message 'Ownership governance: reviewing group and distribution object ownership signals'
     foreach ($group in $context.Groups) {
         $ownerCount = Convert-ToNullableInt -Value $group.OwnerCount
         if ($null -eq $ownerCount) {
@@ -1713,6 +1762,7 @@ function Update-OwnershipGovernanceTables {
     }
 
     $TenantStatsHash['OwnershipGovernanceSummary']['Summary'] = $summary
+    Write-AssessmentOptionalSubstep -Message ("Ownership governance: completed ({0} unmanaged object(s); {1} OneDrive mismatch(es); {2} unresolved owner signal(s))" -f $sortedUnmanagedRows.Count, $sortedMismatchRows.Count, $unknownOwnerStateCount)
 }
 
 function Get-OwnershipGovernanceAnalysis {
@@ -3341,7 +3391,11 @@ function Update-AssessmentReportTables {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [hashtable]$TenantStatsHash
+        [hashtable]$TenantStatsHash,
+        [Parameter(Mandatory = $false)]
+        [bool]$IncludeBestPracticeTables = $true,
+        [Parameter(Mandatory = $false)]
+        [bool]$IncludeMigrationReadiness = $true
     )
 
     if (-not $TenantStatsHash) {
@@ -3353,6 +3407,7 @@ function Update-AssessmentReportTables {
     $TenantStatsHash['BestPractices'] = @{}
     $TenantStatsHash['BestPracticeFindings'] = @{}
     $TenantStatsHash['MigrationReadiness'] = @{}
+    Write-AssessmentOptionalSubstep -Message 'Assessment reporting: building best-practice and migration summary tables'
 
     $summaryRows = New-Object System.Collections.Generic.List[object]
     $findingRows = New-Object System.Collections.Generic.List[object]
@@ -3479,6 +3534,8 @@ function Update-AssessmentReportTables {
         }) | Out-Null
     }
 
+    if ($IncludeBestPracticeTables) {
+    Write-AssessmentOptionalSubstep -Message 'Assessment reporting: analyzing workload findings for best-practice rollups'
     if ($context.Licenses.Count -gt 0) {
         $licAnalysis = Get-LicenseAnalysis -Licenses $context.Licenses -UserCount $context.Users.Count
         Add-AreaSummary -Area 'Licensing' -AreaFindings $licAnalysis.Findings -AssessmentType 'Assessment heuristic using Microsoft 365 license data' -RelatedWorksheet 'LicenseSKUs' -Notes 'Evaluates capacity, at-capacity SKUs, and high utilization.'
@@ -3627,17 +3684,23 @@ function Update-AssessmentReportTables {
         }
         Add-AreaSummary -Area 'Secure Score' -AreaFindings $secureScoreFindings -AssessmentType 'Microsoft Secure Score recommendation mapping' -RelatedWorksheet 'SecureScoreActions' -Notes 'Uses Microsoft Secure Score snapshots and control profile metadata, including Microsoft Learn action URLs.'
     }
-
-    foreach ($summaryRow in $summaryRows) {
-        $summaryIndex++
-        $TenantStatsHash['BestPractices'][("{0:D3}-{1}" -f $summaryIndex, $summaryRow.Area)] = $summaryRow
     }
 
-    foreach ($findingRow in $findingRows) {
-        $findingIndex++
-        $TenantStatsHash['BestPracticeFindings'][("{0:D3}-{1}" -f $findingIndex, $findingRow.Area)] = $findingRow
+    if ($IncludeBestPracticeTables) {
+        Write-AssessmentOptionalSubstep -Message 'Assessment reporting: indexing best-practice summary and finding rows'
+        foreach ($summaryRow in $summaryRows) {
+            $summaryIndex++
+            $TenantStatsHash['BestPractices'][("{0:D3}-{1}" -f $summaryIndex, $summaryRow.Area)] = $summaryRow
+        }
+
+        foreach ($findingRow in $findingRows) {
+            $findingIndex++
+            $TenantStatsHash['BestPracticeFindings'][("{0:D3}-{1}" -f $findingIndex, $findingRow.Area)] = $findingRow
+        }
     }
 
+    if ($IncludeMigrationReadiness) {
+    Write-AssessmentOptionalSubstep -Message 'Assessment reporting: building migration readiness checkpoints'
     $verifiedDomains = @($context.Domains | Where-Object { $_.Verified -eq $true }).Count
     $unverifiedDomains = @($context.Domains | Where-Object { $_.Verified -ne $true }).Count
     $nonM365MxDomains = @($context.Domains | Where-Object { $_.Office365MailExchanger -eq $false }).Count
@@ -3645,6 +3708,97 @@ function Update-AssessmentReportTables {
     $guestCount = @($context.Users | Where-Object { $_.UserType -match 'Guest' -or $_.UserPrincipalName -like '*#EXT#*' }).Count
     $licensedUsers = @($context.Users | Where-Object { $_.AssignedLicenses }).Count
     $archiveMailboxCount = @($context.Mailboxes | Where-Object { $_.ArchiveStatus -and $_.ArchiveStatus -ne 'None' }).Count
+    $crossTenantMailboxRows = @(
+        $context.Mailboxes | Where-Object {
+            ([string]$_.RecipientTypeDetails) -ne 'GroupMailbox'
+        }
+    )
+    $crossTenantMailboxCount = @($crossTenantMailboxRows).Count
+    $mailboxesWithOnMicrosoftAlias = @(
+        $crossTenantMailboxRows | Where-Object {
+            -not [string]::IsNullOrWhiteSpace([string]$_.OnMicrosoftAlias)
+        }
+    ).Count
+    $isTenantToTenantCutover = (
+        $script:ProfileCollectionPlan -and
+        [string]$script:ProfileCollectionPlan.CollectionScopePolicy -eq 'TenantToTenantCutover' -and
+        [string]$script:ProfileCollectionPlan.OutputProfile -eq 'TenantToTenantMigration'
+    )
+    $mailboxesWithLegacyExchangeDn = @(
+        $crossTenantMailboxRows | Where-Object {
+            -not [string]::IsNullOrWhiteSpace([string]$_.LegacyExchangeDn)
+        }
+    ).Count
+    $mailboxesWithLegacyExchangeDnX500 = @(
+        $crossTenantMailboxRows | Where-Object {
+            -not [string]::IsNullOrWhiteSpace([string]$_.LegacyExchangeDnX500)
+        }
+    ).Count
+    $mailboxesWithExistingX500 = @(
+        $crossTenantMailboxRows | Where-Object {
+            $x500Count = $null
+            [void][int]::TryParse([string]$_.X500AddressCount, [ref]$x500Count)
+            $x500Count -gt 0
+        }
+    ).Count
+    $mailboxesWithExistingX400 = @(
+        $crossTenantMailboxRows | Where-Object {
+            $x400Count = $null
+            [void][int]::TryParse([string]$_.X400AddressCount, [ref]$x400Count)
+            $x400Count -gt 0
+        }
+    ).Count
+    $calendarDelegateSignalMailboxCount = @(
+        $crossTenantMailboxRows | Where-Object {
+            $_.PSObject.Properties['CalendarDelegateState'] -and
+            ([string]$_.CalendarDelegateState -in @('Collected', 'Partial'))
+        }
+    ).Count
+    $mailboxesWithCalendarDelegates = @(
+        $crossTenantMailboxRows | Where-Object {
+            $_.PSObject.Properties['CalendarDelegateCount'] -and
+            $null -ne $_.CalendarDelegateCount -and
+            ([int]$_.CalendarDelegateCount -gt 0)
+        }
+    ).Count
+    $fullAccessSignalMailboxCount = @(
+        $crossTenantMailboxRows | Where-Object {
+            $_.PSObject.Properties['FullAccessDelegateState'] -and
+            [string]$_.FullAccessDelegateState -eq 'Collected'
+        }
+    ).Count
+    $mailboxesWithFullAccessDelegates = @(
+        $crossTenantMailboxRows | Where-Object {
+            $_.PSObject.Properties['FullAccessDelegateCount'] -and
+            $null -ne $_.FullAccessDelegateCount -and
+            ([int]$_.FullAccessDelegateCount -gt 0)
+        }
+    ).Count
+    $sendAsSignalMailboxCount = @(
+        $crossTenantMailboxRows | Where-Object {
+            $_.PSObject.Properties['SendAsDelegateState'] -and
+            [string]$_.SendAsDelegateState -eq 'Collected'
+        }
+    ).Count
+    $mailboxesWithSendAsDelegates = @(
+        $crossTenantMailboxRows | Where-Object {
+            $_.PSObject.Properties['SendAsDelegateCount'] -and
+            $null -ne $_.SendAsDelegateCount -and
+            ([int]$_.SendAsDelegateCount -gt 0)
+        }
+    ).Count
+    $sendOnBehalfSignalMailboxCount = @(
+        $crossTenantMailboxRows | Where-Object {
+            $_.PSObject.Properties['GrantSendOnBehalfToCount'] -and $null -ne $_.GrantSendOnBehalfToCount
+        }
+    ).Count
+    $mailboxesWithSendOnBehalfDelegates = @(
+        $crossTenantMailboxRows | Where-Object {
+            $_.PSObject.Properties['GrantSendOnBehalfToCount'] -and
+            $null -ne $_.GrantSendOnBehalfToCount -and
+            ([int]$_.GrantSendOnBehalfToCount -gt 0)
+        }
+    ).Count
     $publicFolderCount = @($context.PublicFolders).Count
     $connectorCount = @($context.MailFlowConnectors).Count
     $hybridDetected = [bool]($context.HybridInfo -and (($context.HybridInfo.IsHybridConfigured -eq $true) -or ($context.HybridInfo.MigrationEndpointCount -gt 0) -or ($context.HybridInfo.EvidenceCount -gt 0)))
@@ -3661,24 +3815,35 @@ function Update-AssessmentReportTables {
     Add-MigrationRow -Category 'Domains' -Item 'Verified custom domains' -Status $(if ($unverifiedDomains -gt 0) { 'Blocker' } else { 'Ready' }) -Value "$verifiedDomains verified / $unverifiedDomains unverified" -Notes 'All accepted domains should be validated and sequenced for migration and cutover.' -MigrationAction 'Confirm domain ownership, cutover timing, and accepted domain strategy in the target tenant.' -SourceWorksheet 'Domains'
     Add-MigrationRow -Category 'Domains' -Item 'Mail routing' -Status $(if ($nonM365MxDomains -gt 0) { 'Review' } else { 'Ready' }) -Value "$nonM365MxDomains domain(s) with non-Microsoft 365 MX" -Notes 'Non-M365 MX routing can indicate third-party filtering, staged coexistence, or non-standard cutover requirements.' -MigrationAction 'Document current MX and transport path before migration planning.' -SourceWorksheet 'Domains'
     Add-MigrationRow -Category 'Identity' -Item 'Directory synchronization' -Status $(if ($dirSyncEnabled) { 'Review' } else { 'Ready' }) -Value $(if ($dirSyncEnabled) { 'On-prem sync enabled' } else { 'Cloud-only identity model' }) -Notes 'Hybrid identity affects object authority and user cutover sequencing.' -MigrationAction 'Plan whether identities stay synced during migration or transition to cloud-managed.' -SourceWorksheet 'AdConnectConfiguration'
-    Add-MigrationRow -Category 'Identity' -Item 'Guests and external identities' -Status $(if ($guestCount -gt 0) { 'Review' } else { 'Info' }) -Value "$guestCount guest/external user(s)" -Notes 'Guest access usually requires separate planning from member user migration.' -MigrationAction 'Decide whether guest objects are recreated, invited, or excluded from scope.' -SourceWorksheet 'Users'
-    Add-MigrationRow -Category 'Messaging' -Item 'Mailbox inventory' -Status 'Info' -Value "$($context.Mailboxes.Count) mailbox(es), $archiveMailboxCount archive-enabled" -Notes 'Mailbox and archive counts drive migration batch sizing and exception planning.' -MigrationAction 'Use mailbox detail sheets to segment batches and identify oversized or special-case mailboxes.' -SourceWorksheet 'MailboxFullDetails'
+    if (-not $isTenantToTenantCutover) {
+        Add-MigrationRow -Category 'Identity' -Item 'Guests and external identities' -Status $(if ($guestCount -gt 0) { 'Review' } else { 'Info' }) -Value "$guestCount guest/external user(s)" -Notes 'Guest access usually requires separate planning from member user migration.' -MigrationAction 'Decide whether guest objects are recreated, invited, or excluded from scope.' -SourceWorksheet 'Users'
+    }
+    Add-MigrationRow -Category 'Messaging' -Item 'Mailbox inventory' -Status 'Info' -Value "$($context.Mailboxes.Count) mailbox(es), $archiveMailboxCount archive-enabled" -Notes 'Mailbox and archive counts drive migration batch sizing and exception planning.' -MigrationAction 'Use mailbox detail sheets to segment batches and identify oversized or special-case mailboxes.' -SourceWorksheet 'AllMailboxes'
+    Add-MigrationRow -Category 'Messaging' -Item 'Mailbox cutover attributes' -Status $(if ($crossTenantMailboxCount -eq 0) { 'Info' } elseif ($mailboxesWithOnMicrosoftAlias -lt $crossTenantMailboxCount -or $mailboxesWithLegacyExchangeDnX500 -lt $crossTenantMailboxCount -or $calendarDelegateSignalMailboxCount -lt $crossTenantMailboxCount -or $fullAccessSignalMailboxCount -lt $crossTenantMailboxCount -or $sendAsSignalMailboxCount -lt $crossTenantMailboxCount) { 'Review' } else { 'Ready' }) -Value $(if ($crossTenantMailboxCount -gt 0) { "$mailboxesWithOnMicrosoftAlias/$crossTenantMailboxCount with .onmicrosoft alias; $mailboxesWithLegacyExchangeDnX500/$crossTenantMailboxCount with canonical LegacyExchangeDN x500; additional X500 proxies on $mailboxesWithExistingX500; X400 proxies on $mailboxesWithExistingX400; $(if ($calendarDelegateSignalMailboxCount -gt 0) { "Calendar delegates on $mailboxesWithCalendarDelegates mailbox(es)" } else { 'Calendar delegates not collected' }); $(if ($fullAccessSignalMailboxCount -gt 0) { "Full Access on $mailboxesWithFullAccessDelegates mailbox(es)" } else { 'Full Access not collected' }); $(if ($sendAsSignalMailboxCount -gt 0) { "Send As on $mailboxesWithSendAsDelegates mailbox(es)" } else { 'Send As not collected' }); $(if ($sendOnBehalfSignalMailboxCount -gt 0) { "Send-on-Behalf on $mailboxesWithSendOnBehalfDelegates mailbox(es)" } else { 'Send-on-Behalf not collected' })" } else { 'No mailbox objects collected for cross-tenant cutover review' }) -Notes $("Cross-tenant mailbox moves rely on source routing aliases plus canonical x500:<LegacyExchangeDN> continuity. Additional X500 proxies should also be preserved when present. Existing X400 proxies are rare but worth preserving. " + $(if ($calendarDelegateSignalMailboxCount -gt 0) { 'Calendar folder permissions do not move automatically and should be rebuilt after cutover. ' } else { 'Calendar delegate state was not collected in this run. ' }) + $(if ($fullAccessSignalMailboxCount -gt 0) { 'Full Access permissions do not move automatically and should be rebuilt after cutover. ' } else { 'Full Access state was not collected in this run. ' }) + $(if ($sendAsSignalMailboxCount -gt 0) { 'Send As permissions do not move automatically and should be rebuilt after cutover. ' } else { 'Send As state was not collected in this run. ' }) + $(if ($sendOnBehalfSignalMailboxCount -gt 0) { 'Send On Behalf permissions do not move automatically and should be rebuilt after cutover.' } else { 'Send On Behalf state was not collected in this run.' })) -MigrationAction 'Validate target MailUser stamping for ExchangeGuid/ArchiveGuid, source .onmicrosoft routing addresses, canonical x500:<LegacyExchangeDN>, any additional X500/X400 proxies, and post-cutover calendar delegates, Full Access, Send As, and Send On Behalf assignments.' -SourceWorksheet 'AllMailboxes'
     Add-MigrationRow -Category 'Messaging' -Item 'Inactive mailboxes' -Status $(if ($context.InactiveMailboxes.Count -gt 0) { 'Review' } else { 'Ready' }) -Value "$($context.InactiveMailboxes.Count) inactive mailbox(es)" -Notes 'Inactive mailboxes may be retained for compliance rather than migrated.' -MigrationAction 'Confirm retention, restore, or exclusion decisions before migration scope is finalized.' -SourceWorksheet 'InactiveMailboxDetails'
     Add-MigrationRow -Category 'Messaging' -Item 'Public folders' -Status $(if ($publicFolderCount -gt 0) { 'Review' } else { 'Ready' }) -Value "$publicFolderCount public folder object(s)" -Notes 'Public folders frequently require separate migration tooling or remediation.' -MigrationAction 'Validate whether public folders remain in scope and determine their target-state strategy.' -SourceWorksheet 'PublicFolderDetails'
     Add-MigrationRow -Category 'Messaging' -Item 'Mail flow dependencies' -Status $(if ($connectorCount -gt 0) { 'Review' } else { 'Ready' }) -Value "$connectorCount connector(s), $($context.RemoteDomains.Count) remote domain(s)" -Notes 'Connectors and remote domains can indicate coexistence, partner routing, or relay dependencies.' -MigrationAction 'Inventory connectors, relay paths, and remote domains before cutover design.' -SourceWorksheet 'MailFlowConnectors'
     Add-MigrationRow -Category 'Collaboration' -Item 'SharePoint and OneDrive' -Status 'Info' -Value "$($context.SharePoint.Count) SharePoint site(s), $($context.OneDrive.Count) OneDrive site(s)" -Notes 'Collaboration workload size and ownership patterns influence tooling and wave planning.' -MigrationAction 'Use site inventory, size, and owner data to prioritize migration waves.' -SourceWorksheet 'SharePoint / OneDrive'
-    Add-MigrationRow -Category 'Collaboration' -Item 'Teams workload data' -Status $(if ($teamsCollected) { 'Info' } else { 'Needs Data' }) -Value $(if ($teamsCollected) { "$($context.Teams.Count) team(s) collected" } else { 'Teams inventory not collected in current run' }) -Notes 'Teams topology may require delegated or expanded app permissions beyond this cert-auth path.' -MigrationAction 'Collect Teams team/channel inventory before finalizing collaboration migration planning.' -SourceWorksheet $(if ($teamsCollected) { 'AllTeams' } else { 'N/A' })
-    Add-MigrationRow -Category 'Security' -Item 'Conditional Access and MFA' -Status $(if ($context.ConditionalAccess.Count -gt 0 -or $context.AuthConfig) { 'Info' } else { 'Review' }) -Value "$($context.ConditionalAccess.Count) CA policy/policies; MFA summary collected=$(if ($null -ne $context.MfaRegistrationSummary) { 'Yes' } else { 'No' })" -Notes 'Security controls need parity planning to avoid cutover lockouts.' -MigrationAction 'Map CA, MFA, and authentication controls between source and target tenant.' -SourceWorksheet 'ConditionalAccessPolicies'
+    if (-not $isTenantToTenantCutover) {
+        Add-MigrationRow -Category 'Collaboration' -Item 'Teams workload data' -Status $(if ($teamsCollected) { 'Info' } else { 'Needs Data' }) -Value $(if ($teamsCollected) { "$($context.Teams.Count) team(s) collected" } else { 'Teams inventory not collected in current run' }) -Notes 'Teams topology may require delegated or expanded app permissions beyond this cert-auth path.' -MigrationAction 'Collect Teams team/channel inventory before finalizing collaboration migration planning.' -SourceWorksheet $(if ($teamsCollected) { 'AllTeams' } else { 'N/A' })
+        Add-MigrationRow -Category 'Security' -Item 'Conditional Access and MFA' -Status $(if ($context.ConditionalAccess.Count -gt 0 -or $context.AuthConfig) { 'Info' } else { 'Review' }) -Value "$($context.ConditionalAccess.Count) CA policy/policies; MFA summary collected=$(if ($null -ne $context.MfaRegistrationSummary) { 'Yes' } else { 'No' })" -Notes 'Security controls need parity planning to avoid cutover lockouts.' -MigrationAction 'Map CA, MFA, and authentication controls between source and target tenant.' -SourceWorksheet 'ConditionalAccessPolicies'
+    }
     Add-MigrationRow -Category 'Hybrid' -Item 'Hybrid or coexistence indicators' -Status $(if ($hybridDetected) { 'Review' } else { 'Ready' }) -Value $(if ($hybridDetected) { "Hybrid signals detected; migration endpoints=$($context.HybridInfo.MigrationEndpointCount)" } else { 'No hybrid indicators detected' }) -Notes 'Hybrid configuration affects mailbox authority, routing, and migration tooling choices.' -MigrationAction 'Validate whether hybrid remains required during migration or can be removed from scope.' -SourceWorksheet 'HybridConfiguration'
-    Add-MigrationRow -Category 'External Access' -Item 'Cross-tenant and B2B settings' -Status $(if ($crossTenantPartnerCount -gt 0) { 'Review' } else { 'Info' }) -Value "$crossTenantPartnerCount partner relationship(s)" -Notes 'Cross-tenant policies may affect coexistence and post-migration collaboration behavior.' -MigrationAction 'Review B2B and cross-tenant access settings as part of coexistence planning.' -SourceWorksheet 'FederationConfiguration'
+    if (-not $isTenantToTenantCutover) {
+        Add-MigrationRow -Category 'External Access' -Item 'Cross-tenant and B2B settings' -Status $(if ($crossTenantPartnerCount -gt 0) { 'Review' } else { 'Info' }) -Value "$crossTenantPartnerCount partner relationship(s)" -Notes 'Cross-tenant policies may affect coexistence and post-migration collaboration behavior.' -MigrationAction 'Review B2B and cross-tenant access settings as part of coexistence planning.' -SourceWorksheet 'FederationConfiguration'
+    }
     Add-MigrationRow -Category 'Licensing' -Item 'Target licensing readiness' -Status $(if ($null -ne $overallLicenseUtilization -and $overallLicenseUtilization -ge 85) { 'Review' } else { 'Info' }) -Value $(if ($null -ne $overallLicenseUtilization) { "$overallLicenseUtilization% utilized; $licensedUsers licensed user(s)" } else { 'License utilization unavailable' }) -Notes 'Target tenant licensing should be aligned before user and workload onboarding.' -MigrationAction 'Review paid SKU utilization and confirm target-tenant licensing for migration scope.' -SourceWorksheet 'LicenseSKUs'
-    Add-MigrationRow -Category 'Teams Voice' -Item 'Voice workload readiness' -Status $(if ($voiceSummary -and $voiceSummary.PSObject.Properties['DataSource'] -and $voiceSummary.DataSource -eq 'GraphLicenseInference') { 'Needs Data' } else { 'Info' }) -Value $(if ($voiceSummary) { "Voice users=$($voiceSummary.VoiceUserCount); source=$($voiceSummary.DataSource)" } else { 'No Teams voice summary collected' }) -Notes 'Current app-auth path infers voice licensing but does not capture full PSTN or number-assignment state.' -MigrationAction 'Add Teams voice/call record permissions or collect delegated Teams PowerShell data before final voice migration planning.' -SourceWorksheet 'TeamsVoice'
+    if (-not $isTenantToTenantCutover) {
+        Add-MigrationRow -Category 'Teams Voice' -Item 'Voice workload readiness' -Status $(if ($voiceSummary -and $voiceSummary.PSObject.Properties['DataSource'] -and $voiceSummary.DataSource -eq 'GraphLicenseInference') { 'Needs Data' } else { 'Info' }) -Value $(if ($voiceSummary) { "Voice users=$($voiceSummary.VoiceUserCount); source=$($voiceSummary.DataSource)" } else { 'No Teams voice summary collected' }) -Notes 'Current app-auth path infers voice licensing but does not capture full PSTN or number-assignment state.' -MigrationAction 'Add Teams voice/call record permissions or collect delegated Teams PowerShell data before final voice migration planning.' -SourceWorksheet 'TeamsVoice'
+    }
 
     foreach ($migrationRow in $migrationRows) {
         $migrationIndex++
         $TenantStatsHash['MigrationReadiness'][("{0:D3}-{1}" -f $migrationIndex, $migrationRow.Item)] = $migrationRow
     }
+    }
 
+    Write-AssessmentOptionalSubstep -Message ("Assessment reporting: completed ({0} best-practice summary row(s); {1} detailed finding row(s); {2} migration readiness row(s))" -f $TenantStatsHash['BestPractices'].Count, $TenantStatsHash['BestPracticeFindings'].Count, $TenantStatsHash['MigrationReadiness'].Count)
     Write-Log -Type INFO -Message "[Update-AssessmentReportTables] Created $($TenantStatsHash['BestPractices'].Count) best-practice summary rows, $($TenantStatsHash['BestPracticeFindings'].Count) detailed findings, and $($TenantStatsHash['MigrationReadiness'].Count) migration readiness rows" -ExportFileLocation $ExportDetails
 }
 
@@ -3692,6 +3857,8 @@ function Update-ConfigurationSummaryTables {
     if (-not $TenantStatsHash) {
         return
     }
+
+    Write-AssessmentOptionalSubstep -Message 'Configuration summaries: normalizing tenant, mail flow, federation, and voice rollups'
 
     foreach ($summaryKey in @('TenantInfoSummary', 'SpamFilteringSummary', 'SMTPRelaySummary', 'FederationSummary', 'TeamsVoiceSummary')) {
         if (-not $TenantStatsHash.ContainsKey($summaryKey) -or -not $TenantStatsHash[$summaryKey]) {
@@ -3781,6 +3948,19 @@ function Update-ConfigurationSummaryTables {
     if ($TenantStatsHash.ContainsKey('TeamsVoice') -and $TenantStatsHash['TeamsVoice'].ContainsKey('Summary')) {
         $TenantStatsHash['TeamsVoiceSummary']['Summary'] = $TenantStatsHash['TeamsVoice']['Summary']
     }
+
+    $completedSummaryKeys = @(
+        'TenantInfoSummary',
+        'SpamFilteringSummary',
+        'SMTPRelaySummary',
+        'FederationSummary',
+        'TeamsVoiceSummary'
+    ) | Where-Object {
+        $TenantStatsHash.ContainsKey($_) -and
+        $TenantStatsHash[$_] -and
+        $TenantStatsHash[$_].ContainsKey('Summary')
+    }
+    Write-AssessmentOptionalSubstep -Message ("Configuration summaries: completed ({0} summary table(s) populated)" -f $completedSummaryKeys.Count)
 }
 
 function Update-LicenseClassificationMetadata {
@@ -7279,6 +7459,11 @@ function New-TenantHtmlReport {
     $defaultDomainText = if (-not [string]::IsNullOrWhiteSpace([string]$tenantIdentity.DefaultDomain)) { [string]$tenantIdentity.DefaultDomain } else { 'Unavailable' }
     $initialDomainText = if (-not [string]::IsNullOrWhiteSpace([string]$tenantIdentity.InitialDomain)) { [string]$tenantIdentity.InitialDomain } else { 'Unavailable' }
     $countryText = if (-not [string]::IsNullOrWhiteSpace([string]$tenantIdentity.Country)) { [string]$tenantIdentity.Country } else { 'Unavailable' }
+    $tenantNameHtml = [System.Web.HttpUtility]::HtmlEncode($tenantName)
+    $tenantIdTextHtml = [System.Web.HttpUtility]::HtmlEncode($tenantIdText)
+    $defaultDomainTextHtml = [System.Web.HttpUtility]::HtmlEncode($defaultDomainText)
+    $initialDomainTextHtml = [System.Web.HttpUtility]::HtmlEncode($initialDomainText)
+    $countryTextHtml = [System.Web.HttpUtility]::HtmlEncode($countryText)
 
     # Determine output path (include tenant name)
     if (-not $OutputPath) {
@@ -7298,6 +7483,7 @@ function New-TenantHtmlReport {
     }
     
     $reportDate = Get-Date -Format "MMMM dd, yyyy h:mm tt"
+    $reportDateHtml = [System.Web.HttpUtility]::HtmlEncode($reportDate)
     
     $htmlContent = @"
 <!DOCTYPE html>
@@ -7305,10 +7491,10 @@ function New-TenantHtmlReport {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>$tenantName - Tenant Snapshot | Arraya Solutions</title>
+    <title>$tenantNameHtml - Tenant Snapshot | Arraya Solutions</title>
     
-    <!-- Load Chart.js FIRST -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <!-- Load bundled Chart.js FIRST -->
+    $(Get-AssessmentBundledChartJsScript)
     
     <!-- Load CSS -->
     $(Get-HtmlStyle)
@@ -7318,14 +7504,14 @@ function New-TenantHtmlReport {
         <!-- Header -->
         <div class="report-header">
             <div class="report-brand">Prepared by Arraya Solutions</div>
-            <h1>$tenantName</h1>
+            <h1>$tenantNameHtml</h1>
             <p style="font-size:1.1em;">Tenant Snapshot</p>
             <div class="report-meta">
-                <div class="report-meta-item">📅 Generated: $reportDate</div>
-                <div class="report-meta-item">🆔 Tenant ID: $tenantIdText</div>
-                <div class="report-meta-item">🌐 Default Domain: $defaultDomainText</div>
-                <div class="report-meta-item">📛 Initial Domain: $initialDomainText</div>
-                <div class="report-meta-item">🌍 Country: $countryText</div>
+                <div class="report-meta-item">📅 Generated: $reportDateHtml</div>
+                <div class="report-meta-item">🆔 Tenant ID: $tenantIdTextHtml</div>
+                <div class="report-meta-item">🌐 Default Domain: $defaultDomainTextHtml</div>
+                <div class="report-meta-item">📛 Initial Domain: $initialDomainTextHtml</div>
+                <div class="report-meta-item">🌍 Country: $countryTextHtml</div>
                 <div class="report-meta-item">✅ Data Freshness: Current session</div>
                 <div class="report-meta-item">🏢 Prepared by: Arraya Solutions</div>
             </div>
@@ -7410,6 +7596,967 @@ function New-TenantHtmlReport {
 }
 
 #endregion
+
+function New-TenantMigrationCutoverHtmlReport {
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [hashtable]$TenantStatsHash = $script:tenantStatsHash,
+
+        [Parameter()]
+        [string]$OutputPath,
+
+        [Parameter()]
+        [ValidateSet('TenantToTenantCutover', 'Default')]
+        [string]$CollectionScopePolicy = 'TenantToTenantCutover',
+
+        [Parameter()]
+        [string]$JsonPath,
+
+        [Parameter()]
+        [switch]$UseJsonCache
+    )
+
+    function ConvertTo-MigrationHtmlArray {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Key
+        )
+
+        if (-not $TenantStatsHash.ContainsKey($Key) -or $null -eq $TenantStatsHash[$Key]) {
+            return @()
+        }
+
+        $value = $TenantStatsHash[$Key]
+        if ($value -is [System.Collections.IDictionary]) {
+            return @($value.Values)
+        }
+        if ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
+            return @($value)
+        }
+
+        return @($value)
+    }
+
+    function Get-MigrationSummaryMetricValue {
+        param(
+            [Parameter(Mandatory = $true)]
+            [object[]]$Rows,
+            [Parameter(Mandatory = $true)]
+            [string]$Metric
+        )
+
+        $match = @($Rows | Where-Object { [string]$_.Metric -eq $Metric } | Select-Object -First 1)
+        if ($match.Count -eq 0) {
+            return $null
+        }
+
+        return $match[0].Value
+    }
+
+    function Format-MigrationDisplayValue {
+        param(
+            [AllowNull()]$Value,
+            [string]$Fallback = 'Not surfaced in current source'
+        )
+
+        if ($null -eq $Value) {
+            return $Fallback
+        }
+
+        $text = [string]$Value
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            return $Fallback
+        }
+
+        return $Value
+    }
+
+    function Get-MigrationNumericValue {
+        param(
+            [AllowNull()]$Value
+        )
+
+        if ($null -eq $Value) {
+            return $null
+        }
+
+        try {
+            return [double]$Value
+        }
+        catch {
+            return $null
+        }
+    }
+
+    function Format-MigrationHumanDataSize {
+        param(
+            [AllowNull()]$Value,
+            [string]$Fallback = 'Not surfaced in current source'
+        )
+
+        $numericValue = Get-MigrationNumericValue -Value $Value
+        if ($null -eq $numericValue) {
+            return $Fallback
+        }
+
+        if ($numericValue -eq 0) {
+            return '0 GB'
+        }
+
+        $sizeInBytes = [double]$numericValue * 1GB
+        $absoluteBytes = [math]::Abs($sizeInBytes)
+        $units = @('B', 'KB', 'MB', 'GB', 'TB', 'PB')
+        $unitIndex = 0
+
+        while ($absoluteBytes -ge 1024 -and $unitIndex -lt ($units.Count - 1)) {
+            $sizeInBytes /= 1024
+            $absoluteBytes /= 1024
+            $unitIndex++
+        }
+
+        return '{0:N2} {1}' -f $sizeInBytes, $units[$unitIndex]
+    }
+
+    function New-MigrationReadinessChecklistRows {
+        param(
+            [Parameter()]
+            [object[]]$ExplicitRows = @(),
+            [Parameter()]
+            [object[]]$MigrationReadinessRows = @(),
+            [Parameter()]
+            [object[]]$MailboxRows = @(),
+            [Parameter()]
+            [object[]]$BitTitanLicenseSummaryRows = @(),
+            [Parameter()]
+            [object[]]$CollaborationSummaryRows = @(),
+            [Parameter()]
+            [object[]]$TeamRows = @(),
+            [Parameter()]
+            [object[]]$RemoteDomainRows = @(),
+            [Parameter()]
+            [object[]]$RelayAccountRows = @(),
+            [Parameter()]
+            [object[]]$PublicFolderRows = @(),
+            [Parameter()]
+            [object[]]$MailFlowConnectorRows = @()
+        )
+
+        $checklistOrder = @(
+            'Verified custom domains',
+            'Mail routing',
+            'Hybrid or coexistence indicators',
+            'Directory synchronization',
+            'Mail flow connectors',
+            'Remote domains allowing auto-forwarding',
+            'SMTP relay service accounts',
+            'Mailbox routing and proxy attributes',
+            'Mailbox delegate reapplication',
+            'Mailboxes with forwarding',
+            'Mailboxes on hold',
+            'Public folders',
+            'Oversized mailbox batches',
+            'Oversized archives',
+            'Teams with shared channels',
+            'Collaboration sizing gaps'
+        )
+        $orderLookup = @{}
+        for ($index = 0; $index -lt $checklistOrder.Count; $index++) {
+            $orderLookup[$checklistOrder[$index]] = $index
+        }
+
+        if ($ExplicitRows.Count -gt 0) {
+            return @(
+                $ExplicitRows |
+                    Where-Object { [string]$_.Status -notin @('Ready', 'Info') } |
+                    Sort-Object @{
+                        Expression = {
+                            $item = [string]$_.Item
+                            if ($orderLookup.ContainsKey($item)) { $orderLookup[$item] } else { 999 }
+                        }
+                    }, Category, Item
+            )
+        }
+
+        function Get-ExistingMigrationReadinessRow {
+            param(
+                [Parameter(Mandatory = $true)]
+                [string]$Item
+            )
+
+            return @($MigrationReadinessRows | Where-Object { [string]$_.Item -eq $Item } | Select-Object -First 1)
+        }
+
+        function Add-ChecklistRow {
+            param(
+                [AllowEmptyCollection()]
+                [Parameter(Mandatory = $true)]
+                [System.Collections.Generic.List[object]]$Rows,
+                [Parameter(Mandatory = $true)]
+                [string]$Category,
+                [Parameter(Mandatory = $true)]
+                [string]$Item,
+                [Parameter(Mandatory = $true)]
+                [string]$Status,
+                [AllowNull()]$Value,
+                [AllowNull()]
+                [string]$Notes,
+                [AllowNull()]
+                [string]$MigrationAction,
+                [AllowNull()]
+                [string]$SourceWorksheet
+            )
+
+            if ([string]$Status -in @('Ready', 'Info')) {
+                return
+            }
+
+            $Rows.Add([pscustomobject]@{
+                Category        = $Category
+                Item            = $Item
+                Status          = $Status
+                Value           = $Value
+                Notes           = $Notes
+                MigrationAction = $MigrationAction
+                SourceWorksheet = $SourceWorksheet
+            }) | Out-Null
+        }
+
+        $rows = New-Object System.Collections.Generic.List[object]
+        foreach ($existingItem in @(
+                'Verified custom domains',
+                'Mail routing',
+                'Hybrid or coexistence indicators',
+                'Directory synchronization'
+            )) {
+            $existingRow = Get-ExistingMigrationReadinessRow -Item $existingItem
+            if ($existingRow.Count -eq 0) {
+                continue
+            }
+
+            Add-ChecklistRow `
+                -Rows $rows `
+                -Category ([string]$existingRow[0].Category) `
+                -Item ([string]$existingRow[0].Item) `
+                -Status ([string]$existingRow[0].Status) `
+                -Value $existingRow[0].Value `
+                -Notes ([string]$existingRow[0].Notes) `
+                -MigrationAction ([string]$existingRow[0].MigrationAction) `
+                -SourceWorksheet ([string]$existingRow[0].SourceWorksheet)
+        }
+
+        $mailFlowConnectorCount = @($MailFlowConnectorRows).Count
+        Add-ChecklistRow `
+            -Rows $rows `
+            -Category 'Messaging' `
+            -Item 'Mail flow connectors' `
+            -Status $(if ($mailFlowConnectorCount -gt 0) { 'Review' } else { 'Ready' }) `
+            -Value ("{0} connector(s)" -f $mailFlowConnectorCount) `
+            -Notes 'Inbound and outbound connectors should be reviewed for coexistence routing, relay dependencies, and cutover-day mail flow changes.' `
+            -MigrationAction 'Confirm whether each connector remains required during coexistence, identify who owns it, and document the cutover-day routing change plan.' `
+            -SourceWorksheet 'MailFlowConnectors'
+
+        $remoteDomainsWithAutoForwardEnabled = @(
+            $RemoteDomainRows |
+                Where-Object {
+                    $_ -and
+                    $_.PSObject.Properties['AutoForwardEnabled'] -and
+                    $_.AutoForwardEnabled -eq $true
+                }
+        )
+        $remoteDomainsWithForwardingStateMissing = @(
+            $RemoteDomainRows |
+                Where-Object {
+                    $_ -and
+                    (
+                        -not $_.PSObject.Properties['AutoForwardEnabled'] -or
+                        $null -eq $_.AutoForwardEnabled
+                    )
+                }
+        )
+        $remoteDomainChecklistStatus = if ($remoteDomainsWithAutoForwardEnabled.Count -gt 0) {
+            'Review'
+        }
+        elseif ($RemoteDomainRows.Count -gt 0 -and $remoteDomainsWithForwardingStateMissing.Count -gt 0) {
+            'Needs Data'
+        }
+        else {
+            'Ready'
+        }
+        $remoteDomainChecklistValue = if ($remoteDomainsWithAutoForwardEnabled.Count -gt 0) {
+            "{0} remote domain(s) allow auto-forwarding" -f $remoteDomainsWithAutoForwardEnabled.Count
+        }
+        elseif ($remoteDomainChecklistStatus -eq 'Needs Data') {
+            "{0} remote domain(s) collected; auto-forwarding state not surfaced for {1}" -f $RemoteDomainRows.Count, $remoteDomainsWithForwardingStateMissing.Count
+        }
+        else {
+            "{0} remote domain(s) allow auto-forwarding" -f 0
+        }
+        Add-ChecklistRow `
+            -Rows $rows `
+            -Category 'Messaging' `
+            -Item 'Remote domains allowing auto-forwarding' `
+            -Status $remoteDomainChecklistStatus `
+            -Value $remoteDomainChecklistValue `
+            -Notes 'Remote domain forwarding rules can preserve legacy forwarding paths, OOF behavior, or transport decisions that need explicit review before cutover.' `
+            -MigrationAction 'Review remote-domain forwarding settings, identify any accepted exceptions, and decide whether forwarding should be preserved, removed, or restamped in the target tenant.' `
+            -SourceWorksheet 'RemoteDomains'
+
+        $relayAccountCount = @($RelayAccountRows).Count
+        Add-ChecklistRow `
+            -Rows $rows `
+            -Category 'Messaging' `
+            -Item 'SMTP relay service accounts' `
+            -Status $(if ($relayAccountCount -gt 0) { 'Review' } else { 'Ready' }) `
+            -Value ("{0} relay account(s)" -f $relayAccountCount) `
+            -Notes 'Relay accounts and their SMTP authentication paths often require separate connector, credential, or application updates outside mailbox cutover.' `
+            -MigrationAction 'Inventory relay account usage, relay endpoints, and required SMTP auth or connector changes before domain cutover.' `
+            -SourceWorksheet 'SMTPRelayServiceAccounts'
+
+        $mailboxesWithOnMicrosoftAlias = @(
+            $MailboxRows |
+                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.OnMicrosoftAlias) }
+        ).Count
+        $mailboxesWithLegacyExchangeDnX500 = @(
+            $MailboxRows |
+                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.LegacyExchangeDnX500) }
+        ).Count
+        $mailboxesWithAdditionalX500 = @(
+            $MailboxRows |
+                Where-Object { [int](Get-MigrationNumericValue $_.X500AddressCount) -gt 0 }
+        ).Count
+        $mailboxesWithX400 = @(
+            $MailboxRows |
+                Where-Object { [int](Get-MigrationNumericValue $_.X400AddressCount) -gt 0 }
+        ).Count
+        Add-ChecklistRow `
+            -Rows $rows `
+            -Category 'Messaging' `
+            -Item 'Mailbox routing and proxy attributes' `
+            -Status $(if ($MailboxRows.Count -gt 0 -and ($mailboxesWithOnMicrosoftAlias -lt $MailboxRows.Count -or $mailboxesWithLegacyExchangeDnX500 -lt $MailboxRows.Count)) { 'Review' } elseif ($MailboxRows.Count -eq 0) { 'Needs Data' } else { 'Ready' }) `
+            -Value $(if ($MailboxRows.Count -gt 0) {
+                    "{0}/{1} with .onmicrosoft alias; {2}/{1} with canonical LegacyExchangeDN x500; additional X500 proxies on {3} mailbox(es); X400 proxies on {4} mailbox(es)" -f $mailboxesWithOnMicrosoftAlias, $MailboxRows.Count, $mailboxesWithLegacyExchangeDnX500, $mailboxesWithAdditionalX500, $mailboxesWithX400
+                } else {
+                    'No mailbox objects collected for cross-tenant cutover review'
+                }) `
+            -Notes 'Target MailUser prep depends on source routing aliases, ExchangeGuid/ArchiveGuid continuity, canonical x500:<LegacyExchangeDN>, and preserving any additional X500 or X400 proxy addresses when present.' `
+            -MigrationAction 'Validate target MailUser stamping for ExchangeGuid, ArchiveGuid, source .onmicrosoft routing addresses, canonical x500:<LegacyExchangeDN>, and any additional X500 or X400 proxies before migration batches are finalized.' `
+            -SourceWorksheet 'AllMailboxes'
+
+        $calendarDelegateSignalMailboxCount = @(
+            $MailboxRows |
+                Where-Object { ([string]$_.CalendarDelegateState) -eq 'Collected' }
+        ).Count
+        $calendarDelegateProblemCount = @(
+            $MailboxRows |
+                Where-Object { ([string]$_.CalendarDelegateState) -in @('Partial', 'LookupFailed', 'NotCollected') }
+        ).Count
+        $mailboxesWithCalendarDelegates = @(
+            $MailboxRows |
+                Where-Object { [int](Get-MigrationNumericValue $_.CalendarDelegateCount) -gt 0 }
+        ).Count
+        $fullAccessSignalMailboxCount = @(
+            $MailboxRows |
+                Where-Object { ([string]$_.FullAccessDelegateState) -eq 'Collected' }
+        ).Count
+        $fullAccessProblemCount = @(
+            $MailboxRows |
+                Where-Object { ([string]$_.FullAccessDelegateState) -in @('LookupFailed', 'NotCollected') }
+        ).Count
+        $mailboxesWithFullAccessDelegates = @(
+            $MailboxRows |
+                Where-Object { [int](Get-MigrationNumericValue $_.FullAccessDelegateCount) -gt 0 }
+        ).Count
+        $sendAsSignalMailboxCount = @(
+            $MailboxRows |
+                Where-Object { ([string]$_.SendAsDelegateState) -eq 'Collected' }
+        ).Count
+        $sendAsProblemCount = @(
+            $MailboxRows |
+                Where-Object { ([string]$_.SendAsDelegateState) -in @('LookupFailed', 'NotCollected') }
+        ).Count
+        $mailboxesWithSendAsDelegates = @(
+            $MailboxRows |
+                Where-Object { [int](Get-MigrationNumericValue $_.SendAsDelegateCount) -gt 0 }
+        ).Count
+        $sendOnBehalfSignalMailboxCount = @(
+            $MailboxRows |
+                Where-Object { $null -ne $_.GrantSendOnBehalfToCount }
+        ).Count
+        $mailboxesWithSendOnBehalfDelegates = @(
+            $MailboxRows |
+                Where-Object { [int](Get-MigrationNumericValue $_.GrantSendOnBehalfToCount) -gt 0 }
+        ).Count
+        $delegateChecklistStatus = if (
+            $MailboxRows.Count -eq 0 -or
+            $calendarDelegateSignalMailboxCount -lt $MailboxRows.Count -or
+            $fullAccessSignalMailboxCount -lt $MailboxRows.Count -or
+            $sendAsSignalMailboxCount -lt $MailboxRows.Count -or
+            $sendOnBehalfSignalMailboxCount -lt $MailboxRows.Count
+        ) {
+            'Needs Data'
+        }
+        elseif ($mailboxesWithCalendarDelegates -gt 0 -or $mailboxesWithFullAccessDelegates -gt 0 -or $mailboxesWithSendAsDelegates -gt 0 -or $mailboxesWithSendOnBehalfDelegates -gt 0) {
+            'Review'
+        }
+        else {
+            'Ready'
+        }
+        $delegateChecklistStateParts = New-Object System.Collections.Generic.List[string]
+        if ($MailboxRows.Count -gt 0) {
+            if ($calendarDelegateSignalMailboxCount -lt $MailboxRows.Count) {
+                $delegateChecklistStateParts.Add("Calendar delegates not fully collected ($calendarDelegateSignalMailboxCount/$($MailboxRows.Count) mailboxes)") | Out-Null
+            }
+            else {
+                $delegateChecklistStateParts.Add("Calendar delegates on $mailboxesWithCalendarDelegates mailbox(es)") | Out-Null
+            }
+            if ($fullAccessSignalMailboxCount -lt $MailboxRows.Count) {
+                $delegateChecklistStateParts.Add("Full Access not fully collected ($fullAccessSignalMailboxCount/$($MailboxRows.Count) mailboxes)") | Out-Null
+            }
+            else {
+                $delegateChecklistStateParts.Add("Full Access on $mailboxesWithFullAccessDelegates mailbox(es)") | Out-Null
+            }
+            if ($sendAsSignalMailboxCount -lt $MailboxRows.Count) {
+                $delegateChecklistStateParts.Add("Send As not fully collected ($sendAsSignalMailboxCount/$($MailboxRows.Count) mailboxes)") | Out-Null
+            }
+            else {
+                $delegateChecklistStateParts.Add("Send As on $mailboxesWithSendAsDelegates mailbox(es)") | Out-Null
+            }
+            if ($sendOnBehalfSignalMailboxCount -lt $MailboxRows.Count) {
+                $delegateChecklistStateParts.Add("Send On Behalf not fully collected ($sendOnBehalfSignalMailboxCount/$($MailboxRows.Count) mailboxes)") | Out-Null
+            }
+            else {
+                $delegateChecklistStateParts.Add("Send On Behalf on $mailboxesWithSendOnBehalfDelegates mailbox(es)") | Out-Null
+            }
+        }
+        else {
+            $delegateChecklistStateParts.Add('No mailbox objects collected for delegate review') | Out-Null
+        }
+        $delegateChecklistNotes = 'Full Access, Send As, Send On Behalf, and calendar folder permissions do not move automatically in cross-tenant mailbox migrations and usually need post-cutover reapplication.'
+        if ($calendarDelegateProblemCount -gt 0 -or $fullAccessProblemCount -gt 0 -or $sendAsProblemCount -gt 0 -or $sendOnBehalfSignalMailboxCount -lt $MailboxRows.Count) {
+            $delegateChecklistNotes += ' Some delegate collection states were partial or unavailable in this run, so mailbox-level delegate review should be confirmed in the workbook or recollected before execution.'
+        }
+        Add-ChecklistRow `
+            -Rows $rows `
+            -Category 'Messaging' `
+            -Item 'Mailbox delegate reapplication' `
+            -Status $delegateChecklistStatus `
+            -Value (($delegateChecklistStateParts.ToArray()) -join '; ') `
+            -Notes $delegateChecklistNotes `
+            -MigrationAction 'Use the mailbox delegate worksheets and cutover pack to plan post-cutover reapplication for calendar delegates, Full Access, Send As, and Send On Behalf permissions.' `
+            -SourceWorksheet 'MailboxDelegateAssignments'
+
+        $mailboxesWithForwarding = @(
+            $MailboxRows |
+                Where-Object {
+                    -not [string]::IsNullOrWhiteSpace([string]$_.ForwardingSmtpAddress) -or
+                    -not [string]::IsNullOrWhiteSpace([string]$_.ForwardingAddress)
+                }
+        ).Count
+        Add-ChecklistRow `
+            -Rows $rows `
+            -Category 'Dependencies' `
+            -Item 'Mailboxes with forwarding' `
+            -Status $(if ($mailboxesWithForwarding -gt 0) { 'Review' } else { 'Ready' }) `
+            -Value ("{0} mailbox(es) with forwarding" -f $mailboxesWithForwarding) `
+            -Notes 'Mailbox forwarding needs cutover-day validation because target-side routing, relay, or forwarding rules may change.' `
+            -MigrationAction 'Inventory each mailbox forwarding path and decide whether it should be preserved, replaced, or retired after the mailbox move.' `
+            -SourceWorksheet 'AllMailboxes'
+
+        $mailboxesOnHold = @(
+            $MailboxRows |
+                Where-Object { $_.LitigationHoldEnabled -eq $true }
+        ).Count
+        Add-ChecklistRow `
+            -Rows $rows `
+            -Category 'Dependencies' `
+            -Item 'Mailboxes on hold' `
+            -Status $(if ($mailboxesOnHold -gt 0) { 'Review' } else { 'Ready' }) `
+            -Value ("{0} mailbox(es) on hold" -f $mailboxesOnHold) `
+            -Notes 'Hold and retention states can affect move sequencing, validation, and post-cutover compliance review.' `
+            -MigrationAction 'Validate whether held mailboxes stay in migration scope, and coordinate any retention, inactive-mailbox, or legal-hold requirements before scheduling cutover.' `
+            -SourceWorksheet 'AllMailboxes'
+
+        Add-ChecklistRow `
+            -Rows $rows `
+            -Category 'Messaging' `
+            -Item 'Public folders' `
+            -Status $(if ($PublicFolderRows.Count -gt 0) { 'Review' } else { 'Ready' }) `
+            -Value ("{0} public folder object(s)" -f $PublicFolderRows.Count) `
+            -Notes 'Public folders usually require separate migration tooling, sequencing, or exclusion decisions outside normal mailbox cutover.' `
+            -MigrationAction 'Confirm whether public folders remain in migration scope and document the target-state and tooling plan before cutover.' `
+            -SourceWorksheet 'PublicFolderDetails'
+
+        $mailboxesOver50WithDeleted = [int](Get-MigrationNumericValue (Get-MigrationSummaryMetricValue -Rows $BitTitanLicenseSummaryRows -Metric 'Mailboxes over 50 GB including deleted items'))
+        $mailboxesOver100 = [int](Get-MigrationNumericValue (Get-MigrationSummaryMetricValue -Rows $BitTitanLicenseSummaryRows -Metric 'Mailboxes over 100 GB'))
+        Add-ChecklistRow `
+            -Rows $rows `
+            -Category 'Sizing' `
+            -Item 'Oversized mailbox batches' `
+            -Status $(if ($mailboxesOver50WithDeleted -gt 0 -or $mailboxesOver100 -gt 0) { 'Review' } else { 'Ready' }) `
+            -Value ("{0} over 50 GB including deleted items; {1} over 100 GB" -f $mailboxesOver50WithDeleted, $mailboxesOver100) `
+            -Notes 'Large mailboxes often need earlier staging, separate waves, or different MigrationWiz licensing assumptions to avoid cutover-day surprises.' `
+            -MigrationAction 'Review oversized mailboxes, validate batch sizing, and align migration-wave planning and licensing before execution.' `
+            -SourceWorksheet 'AllMailboxes'
+
+        $archivesOver100 = [int](Get-MigrationNumericValue (Get-MigrationSummaryMetricValue -Rows $BitTitanLicenseSummaryRows -Metric 'Archives over 100 GB'))
+        Add-ChecklistRow `
+            -Rows $rows `
+            -Category 'Sizing' `
+            -Item 'Oversized archives' `
+            -Status $(if ($archivesOver100 -gt 0) { 'Review' } else { 'Ready' }) `
+            -Value ("{0} archive(s) over 100 GB" -f $archivesOver100) `
+            -Notes 'Large archives can change licensing expectations, increase migration duration, or require separate move-wave planning.' `
+            -MigrationAction 'Validate whether oversized archives stay in the same wave as the primary mailbox and confirm the licensing and timing plan for those users.' `
+            -SourceWorksheet 'AllMailboxes'
+
+        $teamsWithSharedChannels = @(
+            $TeamRows |
+                Where-Object { [int](Get-MigrationNumericValue $_.SharedChannelCount) -gt 0 }
+        )
+        $totalSharedChannels = @(
+            $TeamRows |
+                ForEach-Object { [int](Get-MigrationNumericValue $_.SharedChannelCount) } |
+                Measure-Object -Sum
+        ).Sum
+        Add-ChecklistRow `
+            -Rows $rows `
+            -Category 'Collaboration' `
+            -Item 'Teams with shared channels' `
+            -Status $(if ($teamsWithSharedChannels.Count -gt 0) { 'Review' } else { 'Ready' }) `
+            -Value ("{0} team(s) with {1} shared channel(s)" -f $teamsWithSharedChannels.Count, $totalSharedChannels) `
+            -Notes 'Shared channels are a manual coexistence and migration review item and should be validated before collaboration cutover planning is finalized.' `
+            -MigrationAction 'Identify which teams use shared channels, confirm the target-state approach, and plan any manual remediation needed around those channels.' `
+            -SourceWorksheet 'AllTeams'
+
+        $teamsUnknownStorageCount = 0
+        $sharePointUnknownStorageCount = 0
+        $oneDriveUnknownStorageCount = 0
+        foreach ($collaborationRow in @($CollaborationSummaryRows)) {
+            $unknownCount = [int](Get-MigrationNumericValue $collaborationRow.UnknownStorageCount)
+            switch ([string]$collaborationRow.Workload) {
+                'Teams' { $teamsUnknownStorageCount = $unknownCount }
+                'SharePoint' { $sharePointUnknownStorageCount = $unknownCount }
+                'OneDrive' { $oneDriveUnknownStorageCount = $unknownCount }
+            }
+        }
+        $collaborationUnknownTotal = $teamsUnknownStorageCount + $sharePointUnknownStorageCount + $oneDriveUnknownStorageCount
+        Add-ChecklistRow `
+            -Rows $rows `
+            -Category 'Collaboration' `
+            -Item 'Collaboration sizing gaps' `
+            -Status $(if ($collaborationUnknownTotal -gt 0) { 'Needs Data' } else { 'Ready' }) `
+            -Value ("Teams {0}; SharePoint {1}; OneDrive {2} with storage not surfaced" -f $teamsUnknownStorageCount, $sharePointUnknownStorageCount, $oneDriveUnknownStorageCount) `
+            -Notes 'Missing storage visibility can hide large collaboration objects that affect wave design, tooling throughput, or follow-on migration planning.' `
+            -MigrationAction 'Backfill missing Teams, SharePoint, or OneDrive sizing where needed before finalizing migration waves and post-mailbox workload sequencing.' `
+            -SourceWorksheet 'CollaborationSummary'
+
+        return @(
+            $rows |
+                Sort-Object @{
+                    Expression = {
+                        $item = [string]$_.Item
+                        if ($orderLookup.ContainsKey($item)) { $orderLookup[$item] } else { 999 }
+                    }
+                }, Category, Item
+        )
+    }
+
+    if ($JsonPath -and ($UseJsonCache -or -not $TenantStatsHash -or $TenantStatsHash.Count -eq 0)) {
+        $loaded = Import-TenantStatsJson -Path $JsonPath
+        if ($loaded) {
+            $TenantStatsHash = $loaded
+        }
+    }
+
+    if (-not $TenantStatsHash -or $TenantStatsHash.Count -eq 0) {
+        throw 'TenantStatsHash is null or empty. Please ensure data collection has completed successfully or provide -JsonPath.'
+    }
+
+    $context = Get-TenantAssessmentContext -TenantStatsHash $TenantStatsHash
+    $tenantIdentity = Get-TenantIdentityDetails -TenantStatsHash $TenantStatsHash
+    $tenantName = if ([string]::IsNullOrWhiteSpace([string]$tenantIdentity.DisplayName)) { 'Microsoft 365 Tenant' } else { [string]$tenantIdentity.DisplayName }
+    $tenantIdText = if ([string]::IsNullOrWhiteSpace([string]$tenantIdentity.TenantId)) { 'Unavailable' } else { [string]$tenantIdentity.TenantId }
+    $defaultDomainText = if ([string]::IsNullOrWhiteSpace([string]$tenantIdentity.DefaultDomain)) { 'Unavailable' } else { [string]$tenantIdentity.DefaultDomain }
+
+    $tenantNameHtml = [System.Web.HttpUtility]::HtmlEncode($tenantName)
+    $tenantIdTextHtml = [System.Web.HttpUtility]::HtmlEncode($tenantIdText)
+    $defaultDomainTextHtml = [System.Web.HttpUtility]::HtmlEncode($defaultDomainText)
+
+    if (-not $OutputPath) {
+        $safeName = ($tenantName -replace '[^\w\-. ]', '').Trim()
+        if ([string]::IsNullOrWhiteSpace($safeName)) { $safeName = 'TenantReport' }
+        if ($global:ExportDetails) {
+            $exportDir = Split-Path -Path $global:ExportDetails -Parent
+            $OutputPath = Join-Path $exportDir "$safeName-T2TCutover.html"
+        }
+        else {
+            $OutputPath = Join-Path ([Environment]::GetFolderPath('Desktop')) "$safeName-T2TCutover.html"
+        }
+    }
+
+    if ($OutputPath -notmatch '\.html$') {
+        $OutputPath += '.html'
+    }
+
+    $migrationExecutiveSummaryRows = @(ConvertTo-MigrationHtmlArray -Key 'MigrationExecutiveSummary')
+    $recipientDomainSummaryRows = @(ConvertTo-MigrationHtmlArray -Key 'RecipientDomainSummary')
+    $mailboxMigrationSummaryRows = @(ConvertTo-MigrationHtmlArray -Key 'MailboxMigrationSummary')
+    $bitTitanLicenseSummaryRows = @(ConvertTo-MigrationHtmlArray -Key 'BitTitanLicenseSummary')
+    $delegateSummaryRows = @(ConvertTo-MigrationHtmlArray -Key 'DelegateSummary')
+    $collaborationSummaryRows = @(ConvertTo-MigrationHtmlArray -Key 'CollaborationSummary')
+    $cutoverPrepSummaryRows = @(ConvertTo-MigrationHtmlArray -Key 'CutoverPrepSummary')
+    $migrationReadinessChecklistDataRows = @(ConvertTo-MigrationHtmlArray -Key 'MigrationReadinessChecklist')
+    $migrationReadinessRows = @(
+        ConvertTo-MigrationHtmlArray -Key 'MigrationReadiness' |
+            Sort-Object Category, Item
+    )
+    $mailboxRows = @(
+        (ConvertTo-MigrationHtmlArray -Key 'MailboxFullDetails') +
+        (ConvertTo-MigrationHtmlArray -Key 'AllMailboxes')
+    ) | Group-Object PrimarySmtpAddress | ForEach-Object { $_.Group | Select-Object -First 1 } | Where-Object { ([string]$_.RecipientTypeDetails) -ne 'GroupMailbox' }
+    $domainRows = @(ConvertTo-MigrationHtmlArray -Key 'Domains')
+    $mailFlowConnectorRows = @(ConvertTo-MigrationHtmlArray -Key 'MailFlowConnectors')
+    $remoteDomainRows = @(ConvertTo-MigrationHtmlArray -Key 'RemoteDomains')
+    $relayAccountRows = @(ConvertTo-MigrationHtmlArray -Key 'SMTPRelayServiceAccounts')
+    $publicFolderRows = @(ConvertTo-MigrationHtmlArray -Key 'PublicFolderDetails')
+    $teamRows = @(ConvertTo-MigrationHtmlArray -Key 'AllTeams')
+    $sharePointRows = @(ConvertTo-MigrationHtmlArray -Key 'SharePoint')
+    $oneDriveRows = @(ConvertTo-MigrationHtmlArray -Key 'OneDrive')
+
+    $enabledMemberUsers = Get-MigrationSummaryMetricValue -Rows $migrationExecutiveSummaryRows -Metric 'Enabled member users'
+    $recipientTotal = Get-MigrationSummaryMetricValue -Rows $migrationExecutiveSummaryRows -Metric 'Recipients'
+    $mailboxTotal = Get-MigrationSummaryMetricValue -Rows $migrationExecutiveSummaryRows -Metric 'Mailboxes'
+    $delegateDependencyMailboxCount = Get-MigrationSummaryMetricValue -Rows $migrationExecutiveSummaryRows -Metric 'Mailboxes with delegate dependencies'
+    $grandTotalDataGB = Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'Grand total data to migrate (GB)'
+    $mailboxesOver50Gb = Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'Mailboxes over 50 GB'
+    $mailboxesOver100Gb = Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'Mailboxes over 100 GB'
+    $archivesOver100Gb = Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'Archives over 100 GB'
+    $migrationWizMailboxLicenses = Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'MigrationWiz-Mailbox'
+    $migrationWizMailboxX2Licenses = Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'MigrationWiz-Mailbox x2'
+    $userMigrationBundleLicenses = Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'User Migration Bundle'
+
+    $recipientDomainTopRows = @(
+        $recipientDomainSummaryRows |
+            Sort-Object @{ Expression = { Get-MigrationNumericValue $_.RecipientCount }; Descending = $true }, Domain |
+            Select-Object -First 15
+    )
+    $mailboxTypeRows = @(
+        $mailboxMigrationSummaryRows |
+            Sort-Object @{ Expression = { Get-MigrationNumericValue $_.MailboxCount }; Descending = $true }, RecipientTypeDetails
+    )
+    $routingGapRows = @(
+        $mailboxRows |
+            Where-Object {
+                [string]::IsNullOrWhiteSpace([string]$_.OnMicrosoftAlias) -or
+                [string]::IsNullOrWhiteSpace([string]$_.LegacyExchangeDnX500)
+            } |
+            Sort-Object DisplayName |
+            Select-Object -First 15 DisplayName, PrimarySmtpAddress, OnMicrosoftAlias, LegacyExchangeDnX500, ArchiveStatus, BitTitanLicenseType
+    )
+    $mailFlowReviewRows = @(
+        @(
+            $mailFlowConnectorRows | ForEach-Object {
+                [pscustomobject]@{
+                    Type         = 'Connector'
+                    Name         = if ($_.Name) { $_.Name } else { $_.Identity }
+                    ReviewSignal = 'Review'
+                    Notes        = 'Connector should be reviewed for coexistence and cutover routing impact.'
+                }
+            }
+        ) + @(
+            $remoteDomainRows | ForEach-Object {
+                [pscustomobject]@{
+                    Type         = 'Remote Domain'
+                    Name         = if ($_.Name) { $_.Name } else { $_.DomainName }
+                    ReviewSignal = 'Review'
+                    Notes        = 'Remote domain settings can affect forwarding, OOF, and cutover mail flow behavior.'
+                }
+            }
+        ) + @(
+            $relayAccountRows | ForEach-Object {
+                [pscustomobject]@{
+                    Type         = 'SMTP Relay Account'
+                    Name         = if ($_.UserPrincipalName) { $_.UserPrincipalName } else { $_.PrimarySmtpAddress }
+                    ReviewSignal = 'Review'
+                    Notes        = 'Relay credentials or relay paths usually need explicit migration planning.'
+                }
+            }
+        )
+    ) | Select-Object -First 15
+    $largestCollaborationRows = @(
+        @(
+            $teamRows | ForEach-Object {
+                [pscustomobject]@{
+                    Workload = 'Teams'
+                    Name     = $_.DisplayName
+                    Owner    = $null
+                    Url      = $_.SharePointSiteUrl
+                    SizeGB   = $_.'SiteSize-GB'
+                }
+            }
+        ) + @(
+            $sharePointRows | ForEach-Object {
+                [pscustomobject]@{
+                    Workload = 'SharePoint'
+                    Name     = $_.Title
+                    Owner    = $_.Owner
+                    Url      = $_.Url
+                    SizeGB   = $_.StorageUsedGB
+                }
+            }
+        ) + @(
+            $oneDriveRows | ForEach-Object {
+                [pscustomobject]@{
+                    Workload = 'OneDrive'
+                    Name     = if ($_.Title) { $_.Title } else { $_.Url }
+                    Owner    = $_.Owner
+                    Url      = $_.Url
+                    SizeGB   = $_.StorageUsedGB
+                }
+            }
+        ) |
+            Sort-Object @{ Expression = { Get-MigrationNumericValue $_.SizeGB }; Descending = $true }, Workload, Name |
+            Select-Object -First 15
+    )
+    $teamsWithSharedChannelRows = @(
+        $teamRows |
+            Where-Object { (Get-MigrationNumericValue $_.SharedChannelCount) -gt 0 } |
+            Sort-Object @{ Expression = { Get-MigrationNumericValue $_.SharedChannelCount }; Descending = $true }, DisplayName |
+            Select-Object -First 15 DisplayName, SharePointSiteUrl, SharedChannelCount, SharedChannels
+    )
+    $teamsWithSharedChannelCount = $teamsWithSharedChannelRows.Count
+    $totalSharedChannels = @(
+        $teamRows |
+            ForEach-Object { [int](Get-MigrationNumericValue $_.SharedChannelCount) } |
+            Measure-Object -Sum
+    ).Sum
+    $executiveHtml = "<div class='kpi-grid'>"
+    $executiveHtml += New-KpiCard -Title 'Enabled Member Users' -Value (Format-MigrationDisplayValue $enabledMemberUsers) -Theme 'default'
+    $executiveHtml += New-KpiCard -Title 'Recipients' -Value (Format-MigrationDisplayValue $recipientTotal) -Theme 'default'
+    $executiveHtml += New-KpiCard -Title 'Mailboxes' -Value (Format-MigrationDisplayValue $mailboxTotal) -Theme 'default'
+    $executiveHtml += New-KpiCard -Title 'Total Data to Migrate' -Value (Format-MigrationHumanDataSize -Value $grandTotalDataGB) -Theme 'default'
+    $executiveHtml += New-KpiCard -Title 'Delegate Dependency Mailboxes' -Value (Format-MigrationDisplayValue $delegateDependencyMailboxCount) -Theme $(if ((Get-MigrationNumericValue $delegateDependencyMailboxCount) -gt 0) { 'warning' } else { 'success' })
+    $executiveHtml += New-KpiCard -Title 'Public Folders' -Value (Format-MigrationDisplayValue $publicFolderRows.Count) -Theme $(if ($publicFolderRows.Count -gt 0) { 'warning' } else { 'success' })
+    $executiveHtml += '</div>'
+    $executiveHtml += "<p>This tenant-to-tenant report is intentionally cutover-focused. It summarizes recipient and mailbox footprint, BitTitan-style sizing, mail-flow review signals, delegate dependencies, collaboration volume, and target-prep callouts without rendering raw mailbox or address inventory tables.</p>"
+    $executiveHtml += New-HtmlTable -Data $migrationExecutiveSummaryRows -Columns @('Section', 'Metric', 'Value', 'Notes') -ValueFormatters @{
+        Value = {
+            param($value, $row)
+            if ([string]$row.Metric -match 'Grand total data to migrate') {
+                return Format-MigrationHumanDataSize -Value $value
+            }
+
+            return Format-MigrationDisplayValue -Value $value
+        }
+    } -EmptyMessage 'Executive migration summary rows were not generated for this run.'
+
+    $domainAndMailFlowHtml = "<div class='kpi-grid'>"
+    $domainAndMailFlowHtml += New-KpiCard -Title 'Domains' -Value $domainRows.Count -Theme 'default'
+    $domainAndMailFlowHtml += New-KpiCard -Title 'Third-Party Filter Review Domains' -Value (@($domainRows | Where-Object { ([string]$_.ThirdPartySpamFilterReview) -eq 'Review' }).Count) -Theme $(if (@($domainRows | Where-Object { ([string]$_.ThirdPartySpamFilterReview) -eq 'Review' }).Count -gt 0) { 'warning' } else { 'success' })
+    $domainAndMailFlowHtml += New-KpiCard -Title 'Hybrid Review Domains' -Value (@($domainRows | Where-Object { ([string]$_.HybridRoutingReview) -eq 'Review' }).Count) -Theme $(if (@($domainRows | Where-Object { ([string]$_.HybridRoutingReview) -eq 'Review' }).Count -gt 0) { 'warning' } else { 'success' })
+    $domainAndMailFlowHtml += New-KpiCard -Title 'Mail Flow Connectors' -Value $mailFlowConnectorRows.Count -Theme $(if ($mailFlowConnectorRows.Count -gt 0) { 'warning' } else { 'success' })
+    $domainAndMailFlowHtml += New-KpiCard -Title 'Remote Domains' -Value $remoteDomainRows.Count -Theme $(if ($remoteDomainRows.Count -gt 0) { 'warning' } else { 'success' })
+    $domainAndMailFlowHtml += New-KpiCard -Title 'SMTP Relay Accounts' -Value $relayAccountRows.Count -Theme $(if ($relayAccountRows.Count -gt 0) { 'warning' } else { 'success' })
+    $domainAndMailFlowHtml += '</div>'
+    $domainAndMailFlowHtml += "<p>All accepted domains collected in this run are listed below along with the current MX value, Microsoft 365 MX alignment signal, third-party filtering review signal, and hybrid-routing review signal.</p>"
+    $domainAndMailFlowHtml += New-HtmlTable -Data @($domainRows | Sort-Object Name) -Columns @('Name', 'MXRecords', 'AuthenticationType', 'Office365MailExchanger', 'ThirdPartySpamFilterReview', 'HybridRoutingReview', 'RecipientCount') -ColumnHeaders @{
+        MXRecords              = 'Current MX'
+        Office365MailExchanger = 'MX points to Microsoft 365'
+    } -EmptyMessage 'No domains were surfaced in this run.'
+    $domainAndMailFlowHtml += New-HtmlTable -Data $mailFlowReviewRows -Columns @('Type', 'Name', 'ReviewSignal', 'Notes') -EmptyMessage 'No connector, remote-domain, or relay review rows were detected in this run.'
+
+    $footprintHtml = "<div class='kpi-grid'>"
+    $footprintHtml += New-KpiCard -Title 'Recipients' -Value (Format-MigrationDisplayValue $recipientTotal) -Theme 'default'
+    $footprintHtml += New-KpiCard -Title 'Mailboxes' -Value (Format-MigrationDisplayValue $mailboxTotal) -Theme 'default'
+    $footprintHtml += New-KpiCard -Title 'Inactive Mailboxes' -Value (Format-MigrationDisplayValue (Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'Inactive mailboxes')) -Theme $(if ((Get-MigrationNumericValue (Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'Inactive mailboxes')) -gt 0) { 'warning' } else { 'success' })
+    $footprintHtml += New-KpiCard -Title 'Archive-Enabled Mailboxes' -Value (Format-MigrationDisplayValue (Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'Archive-enabled mailboxes')) -Theme 'default'
+    $footprintHtml += '</div>'
+    $footprintHtml += New-HtmlTable -Data $recipientDomainTopRows -Columns @('Domain', 'RecipientCount', 'UserMailboxCount', 'SharedMailboxCount', 'GroupRecipientCount', 'HiddenFromAddressListsCount') -EmptyMessage 'Recipient domain summary rows were not generated for this run.'
+    $footprintHtml += New-HtmlTable -Data $mailboxTypeRows -Columns @('RecipientTypeDetails', 'MailboxCount', 'ActiveMailboxCount', 'InactiveMailboxCount', 'ArchiveEnabledCount', 'ForwardingCount', 'MailboxesWithDelegateDependencies', 'TotalDataToMigrateGB') -ValueFormatters @{
+        TotalDataToMigrateGB = {
+            param($value, $row)
+            Format-MigrationHumanDataSize -Value $value
+        }
+    } -EmptyMessage 'Mailbox footprint summary rows were not generated for this run.'
+
+    $sizingHtml = "<div class='kpi-grid'>"
+    $sizingHtml += New-KpiCard -Title 'Grand Total Data' -Value (Format-MigrationHumanDataSize -Value $grandTotalDataGB) -Theme 'default'
+    $sizingHtml += New-KpiCard -Title 'Mailboxes over 50 GB' -Value (Format-MigrationDisplayValue $mailboxesOver50Gb) -Theme $(if ((Get-MigrationNumericValue $mailboxesOver50Gb) -gt 0) { 'warning' } else { 'success' })
+    $sizingHtml += New-KpiCard -Title 'Mailboxes over 100 GB' -Value (Format-MigrationDisplayValue $mailboxesOver100Gb) -Theme $(if ((Get-MigrationNumericValue $mailboxesOver100Gb) -gt 0) { 'warning' } else { 'success' })
+    $sizingHtml += New-KpiCard -Title 'Archives over 100 GB' -Value (Format-MigrationDisplayValue $archivesOver100Gb) -Theme $(if ((Get-MigrationNumericValue $archivesOver100Gb) -gt 0) { 'warning' } else { 'success' })
+    $sizingHtml += New-KpiCard -Title 'MigrationWiz-Mailbox' -Value (Format-MigrationDisplayValue $migrationWizMailboxLicenses) -Theme 'default'
+    $sizingHtml += New-KpiCard -Title 'MigrationWiz-Mailbox x2' -Value (Format-MigrationDisplayValue $migrationWizMailboxX2Licenses) -Theme 'default'
+    $sizingHtml += New-KpiCard -Title 'User Migration Bundle' -Value (Format-MigrationDisplayValue $userMigrationBundleLicenses) -Theme 'default'
+    $sizingHtml += '</div>'
+    $sizingHtml += "<p>Mailbox sizing is kept summary-focused in this HTML view. Detailed mailbox-by-mailbox sizing remains in the workbook and the T2T cutover pack for migration execution.</p>"
+    $sizingHtml += New-HtmlTable -Data $bitTitanLicenseSummaryRows -Columns @('Section', 'Metric', 'Value', 'Notes') -ValueFormatters @{
+        Value = {
+            param($value, $row)
+            if ([string]$row.Section -eq 'Data') {
+                return Format-MigrationHumanDataSize -Value $value
+            }
+
+            return Format-MigrationDisplayValue -Value $value
+        }
+    } -EmptyMessage 'Mailbox sizing summary rows were not generated for this run.'
+
+    $delegateHtml = "<div class='kpi-grid'>"
+    $delegateHtml += New-KpiCard -Title 'Full Access Mailboxes' -Value (Format-MigrationDisplayValue ((@($mailboxRows | Where-Object { (Get-MigrationNumericValue $_.FullAccessDelegateCount) -gt 0 }).Count))) -Theme 'warning'
+    $delegateHtml += New-KpiCard -Title 'Send As Mailboxes' -Value (Format-MigrationDisplayValue ((@($mailboxRows | Where-Object { (Get-MigrationNumericValue $_.SendAsDelegateCount) -gt 0 }).Count))) -Theme 'warning'
+    $delegateHtml += New-KpiCard -Title 'Send On Behalf Mailboxes' -Value (Format-MigrationDisplayValue ((@($mailboxRows | Where-Object { (Get-MigrationNumericValue $_.GrantSendOnBehalfToCount) -gt 0 }).Count))) -Theme 'warning'
+    $delegateHtml += New-KpiCard -Title 'Calendar Delegate Mailboxes' -Value (Format-MigrationDisplayValue ((@($mailboxRows | Where-Object { (Get-MigrationNumericValue $_.CalendarDelegateCount) -gt 0 }).Count))) -Theme 'warning'
+    $delegateHtml += New-KpiCard -Title 'Forwarding Mailboxes' -Value (Format-MigrationDisplayValue ((@($mailboxRows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.ForwardingSmtpAddress) -or -not [string]::IsNullOrWhiteSpace([string]$_.ForwardingAddress) }).Count))) -Theme 'warning'
+    $delegateHtml += '</div>'
+    $delegateHtml += "<p>Full Access, Send As, Send On Behalf, calendar folder permissions, and mailbox forwarding do not move automatically in cross-tenant mailbox migrations. This section stays summary-focused; the workbook and cutover pack hold the mailbox-level detail used for execution.</p>"
+    $delegateHtml += New-HtmlTable -Data $delegateSummaryRows -Columns @('PermissionType', 'AffectedMailboxCount', 'AssignmentCount') -ColumnHeaders @{
+        PermissionType       = 'Dependency Type'
+        AffectedMailboxCount = 'Affected Mailboxes'
+        AssignmentCount      = 'Assignments'
+    } -EmptyMessage 'Delegate summary rows were not generated for this run.'
+
+    $collaborationHtml = "<div class='kpi-grid'>"
+    foreach ($collaborationRow in @($collaborationSummaryRows)) {
+        $subtitle = if ($null -ne $collaborationRow.TotalStorageGB) { "{0} GB total" -f $collaborationRow.TotalStorageGB } else { 'Storage not surfaced in current source' }
+        $collaborationHtml += New-KpiCard -Title ([string]$collaborationRow.Workload) -Value (Format-MigrationDisplayValue $collaborationRow.TotalCount) -Subtitle $subtitle -Theme 'default'
+    }
+    $collaborationHtml += '</div>'
+    $collaborationHtml += "<p>Teams, SharePoint, and OneDrive stay in scope for cutover planning because access remapping, ownership checks, and the largest collaboration objects often drive separate migration waves or follow-on actions.</p>"
+    $collaborationHtml += New-KpiCard -Title 'Teams with Shared Channels' -Value $teamsWithSharedChannelCount -Subtitle $(if ($teamsWithSharedChannelCount -gt 0) { '{0} shared channel(s) detected' -f $totalSharedChannels } else { 'No shared channels surfaced in this run' }) -Theme $(if ($teamsWithSharedChannelCount -gt 0) { 'warning' } else { 'success' })
+    $collaborationHtml += New-HtmlTable -Data $collaborationSummaryRows -Columns @('Workload', 'TotalCount', 'TotalStorageGB', 'UnknownStorageCount', 'LargestObjectName', 'LargestObjectSizeGB', 'Notes') -ValueFormatters @{
+        TotalStorageGB = {
+            param($value, $row)
+            Format-MigrationHumanDataSize -Value $value
+        }
+        LargestObjectSizeGB = {
+            param($value, $row)
+            Format-MigrationHumanDataSize -Value $value
+        }
+    } -EmptyMessage 'Collaboration summary rows were not generated for this run.'
+    $collaborationHtml += New-HtmlTable -Data $teamsWithSharedChannelRows -Columns @('DisplayName', 'SharePointSiteUrl', 'SharedChannelCount', 'SharedChannels') -ColumnHeaders @{
+        DisplayName      = 'Team'
+        SharePointSiteUrl = 'Team Site URL'
+        SharedChannelCount = 'Shared Channel Count'
+        SharedChannels   = 'Shared Channels'
+    } -EmptyMessage 'No shared-channel Teams were surfaced in this run.'
+    $collaborationHtml += "<p>The table below highlights the largest SharePoint sites, OneDrives, and Teams-connected sites surfaced in this run so they are easier to spot during wave and cutover planning.</p>"
+    $collaborationHtml += New-HtmlTable -Data $largestCollaborationRows -Columns @('Workload', 'Name', 'Owner', 'Url', 'SizeGB') -ColumnHeaders @{
+        Workload = 'Workload'
+        Name     = 'Largest Site or OneDrive'
+        Owner    = 'Owner'
+        Url      = 'URL'
+        SizeGB   = 'Current Size'
+    } -ValueFormatters @{
+        SizeGB = {
+            param($value, $row)
+            Format-MigrationHumanDataSize -Value $value
+        }
+    } -EmptyMessage 'Largest collaboration objects were not surfaced in this run.'
+
+    $migrationReadinessChecklistRows = @(New-MigrationReadinessChecklistRows `
+            -ExplicitRows $migrationReadinessChecklistDataRows `
+            -MigrationReadinessRows $migrationReadinessRows `
+            -MailboxRows $mailboxRows `
+            -BitTitanLicenseSummaryRows $bitTitanLicenseSummaryRows `
+            -CollaborationSummaryRows $collaborationSummaryRows `
+            -TeamRows $teamRows `
+            -RemoteDomainRows $remoteDomainRows `
+            -RelayAccountRows $relayAccountRows `
+            -PublicFolderRows $publicFolderRows `
+            -MailFlowConnectorRows $mailFlowConnectorRows)
+
+    $cutoverHtml = "<div class='kpi-grid'>"
+    $cutoverHtml += New-KpiCard -Title 'Routing Gaps' -Value $routingGapRows.Count -Theme $(if ($routingGapRows.Count -gt 0) { 'warning' } else { 'success' })
+    $cutoverHtml += New-KpiCard -Title 'Checklist Items' -Value $migrationReadinessChecklistRows.Count -Theme $(if ($migrationReadinessChecklistRows.Count -gt 0) { 'warning' } else { 'success' })
+    $cutoverHtml += New-KpiCard -Title 'Public Folders' -Value $publicFolderRows.Count -Theme $(if ($publicFolderRows.Count -gt 0) { 'warning' } else { 'success' })
+    $cutoverHtml += '</div>'
+    $cutoverHtml += "<p>Cutover preparation stays at the summary and action level in this HTML view. Detailed routing-gap mailbox rows remain in the workbook and cutover pack where they are easier to work from during execution.</p>"
+    $cutoverHtml += New-HtmlTable -Data $cutoverPrepSummaryRows -Columns @('Category', 'Item', 'Status', 'Value', 'Notes') -EmptyMessage 'Cutover preparation rows were not generated for this run.'
+    $cutoverHtml += "<h3 style='margin-top:20px;'>Migration Readiness Checklist</h3>"
+    $cutoverHtml += "<p>Only the migration readiness items that still need validation, decision-making, or remediation are listed below.</p>"
+    $cutoverHtml += New-HtmlTable -Data $migrationReadinessChecklistRows -Columns @('Category', 'Item', 'Status', 'Value', 'Notes', 'MigrationAction') -ColumnHeaders @{
+        Category        = 'Category'
+        Item            = 'Check'
+        Status          = 'Status'
+        Value           = 'Current State'
+        Notes           = 'Notes'
+        MigrationAction = 'Cutover Action'
+    } -EmptyMessage 'No open migration readiness checklist items were surfaced in this run.'
+
+    $sectionContents = @(
+        @{ Id = 't2t-executive-summary'; Name = 'Executive Summary'; Content = $executiveHtml },
+        @{ Id = 't2t-domain-mail-flow'; Name = 'Domain and Mail Flow'; Content = $domainAndMailFlowHtml },
+        @{ Id = 't2t-footprint'; Name = 'Recipient and Mailbox Footprint'; Content = $footprintHtml },
+        @{ Id = 't2t-sizing'; Name = 'Mailbox Migration Sizing'; Content = $sizingHtml },
+        @{ Id = 't2t-delegates'; Name = 'Delegates and Forwarding'; Content = $delegateHtml },
+        @{ Id = 't2t-collaboration'; Name = 'Collaboration Footprint'; Content = $collaborationHtml },
+        @{ Id = 't2t-cutover-prep'; Name = 'Cutover Preparation'; Content = $cutoverHtml }
+    )
+
+    $reportDate = Get-Date -Format 'MMMM dd, yyyy h:mm tt'
+    $reportDateHtml = [System.Web.HttpUtility]::HtmlEncode($reportDate)
+
+    $htmlContent = @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>$tenantNameHtml - Tenant-to-Tenant Cutover | Arraya Solutions</title>
+    $(Get-AssessmentBundledChartJsScript)
+    $(Get-HtmlStyle)
+</head>
+<body>
+    <div class="container">
+        <div class="report-header">
+            <div class="report-brand">Prepared by Arraya Solutions</div>
+            <h1>$tenantNameHtml</h1>
+            <p style="font-size:1.1em;">Tenant-to-Tenant Cutover Snapshot</p>
+            <div class="report-meta">
+                <div class="report-meta-item">Generated: $reportDateHtml</div>
+                <div class="report-meta-item">Tenant ID: $tenantIdTextHtml</div>
+                <div class="report-meta-item">Default Domain: $defaultDomainTextHtml</div>
+                <div class="report-meta-item">Collection Scope: $([System.Web.HttpUtility]::HtmlEncode($CollectionScopePolicy))</div>
+            </div>
+        </div>
+        $(Build-Navigation -Sections $sectionContents)
+"@
+
+    foreach ($section in $sectionContents) {
+        $htmlContent += @"
+        <div class="section" id="$($section.Id)">
+            <div class="section-workload">Tenant-to-tenant migration</div>
+            <h2>$([System.Web.HttpUtility]::HtmlEncode([string]$section.Name))</h2>
+            $($section.Content)
+        </div>
+"@
+    }
+
+    $htmlContent += @"
+    </div>
+    $(Get-HtmlScript)
+</body>
+</html>
+"@
+
+    try {
+        $htmlContent | Out-File -FilePath $OutputPath -Encoding UTF8 -Force
+        return [pscustomobject]@{
+            Success       = $true
+            OutputPath    = $OutputPath
+            SectionCount  = $sectionContents.Count
+            FindingsCount = ($migrationReadinessChecklistRows.Count + $cutoverPrepSummaryRows.Count)
+        }
+    }
+    catch {
+        Write-Error "Failed to write tenant-to-tenant cutover HTML report: $_"
+        return [pscustomobject]@{
+            Success    = $false
+            OutputPath = $null
+            Error      = $_.Exception.Message
+        }
+    }
+}
 
 function Get-TenantPdfRendererPath {
     [CmdletBinding()]

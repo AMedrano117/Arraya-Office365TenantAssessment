@@ -3,6 +3,8 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
         $script:collectorPath = Join-Path $script:repoRoot 'src\scripts\migrated\legacy\Get-FullTenantReportDetails.ps1'
         $script:collectorSource = Get-Content -Raw -Path $script:collectorPath
+        $script:exportPipelinePath = Join-Path $script:repoRoot 'src\scripts\reporting\Invoke-M365TenantAssessmentExportPipeline.ps1'
+        $script:exportPipelineSource = Get-Content -Raw -Path $script:exportPipelinePath
         $script:graphDataPath = Join-Path $script:repoRoot 'src\vendor\Office365Custom\1.2.1\Public\Get-GraphData.ps1'
         $script:graphDataSource = Get-Content -Raw -Path $script:graphDataPath
     }
@@ -11,13 +13,14 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         Test-Path $script:collectorPath | Should -BeTrue
         $script:collectorSource | Should -Match 'function Test-AssessmentImportedModuleMatchesManifestPath'
         $script:collectorSource | Should -Match 'function Test-AssessmentPermissionPreflight'
+        $script:collectorSource | Should -Match 'function Invoke-AssessmentPermissionPreflightWithStatus'
         $script:collectorSource | Should -Match '\[switch\]\$PreflightOnly'
         $script:collectorSource | Should -Match '\[switch\]\$SkipPermissionPreflight'
         $script:collectorSource | Should -Match 'Permission preflight failed\. The assessment will not continue'
         $script:collectorSource | Should -Match 'Permission preflight warnings:'
-        $script:collectorSource | Should -Match 'Test-AssessmentPermissionPreflight -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload Graph'
-        $script:collectorSource | Should -Match 'Test-AssessmentPermissionPreflight -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload ExchangeOnline'
-        $script:collectorSource | Should -Match 'Test-AssessmentPermissionPreflight -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload Purview'
+        $script:collectorSource | Should -Match 'Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload Graph'
+        $script:collectorSource | Should -Match 'Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload ExchangeOnline'
+        $script:collectorSource | Should -Match 'Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload Purview'
         $script:collectorSource | Should -Match 'Connection / Preflight'
         $script:collectorSource | Should -Match 'Write-ConnectionPreflightSummary'
         $script:collectorSource | Should -Match 'if \(\$runPreflightOnly\)\s*\{\s*return'
@@ -31,11 +34,44 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Not -Match 'Connect-Office365 @connectOffice365Params'
     }
 
+    It 'requires the assessment snapshot JSON before allowing the export stage to finish' {
+        $script:collectorSource | Should -Match '\$requiresAssessmentSnapshotArtifact = \(-not \$effectiveSkipJsonReport\)'
+        $script:collectorSource | Should -Match "'Assessment Snapshot JSON', 'JSON'"
+        $script:collectorSource | Should -Match 'The assessment workbook export completed, but the required assessment snapshot JSON was not produced'
+        $script:collectorSource | Should -Match 'Improve, export replay, and manifest-based follow-up cannot continue without that snapshot'
+        $script:collectorSource | Should -Match '\$generatedArtifacts\.Contains\(''Manifest''\)'
+        $script:collectorSource | Should -Match 'The assessment snapshot JSON was produced, but the required run manifest was not produced'
+        $script:collectorSource | Should -Match 'Improve and manifest-based follow-up cannot continue without the manifest'
+        $script:collectorSource | Should -Match 'if \(\$requiresAssessmentSnapshotArtifact\)'
+        $script:collectorSource | Should -Match 'throw \('
+    }
+
+    It 'surfaces the underlying JSON snapshot export failure instead of only reporting a missing artifact' {
+        $script:exportPipelineSource | Should -Match '\$jsonExportErrorMessage = "Unable to export Tenant Statistics JSON: \$\(\$_.Exception.Message\)"'
+        $script:exportPipelineSource | Should -Match '\$generatedArtifacts\[''Assessment Snapshot JSON Error''\] = \$jsonExportErrorMessage'
+        $script:exportPipelineSource | Should -Match 'throw \$jsonExportErrorMessage'
+    }
+
+    It 'threads workbook policy, migration-pack export, and the T2T cutover HTML mode through the export pipeline' {
+        $script:exportPipelineSource | Should -Match 'WorkbookExportPolicy'
+        $script:exportPipelineSource | Should -Match 'TechnicalHtmlPolicy'
+        $script:exportPipelineSource | Should -Match 'GenerateMigrationPack'
+        $script:exportPipelineSource | Should -Match 'Export-HashTableToExcel -hashtable \$ExportTenantStatsHash -ExportDetails \$ExportDetails -WorkbookExportPolicy \$WorkbookExportPolicy'
+        $script:exportPipelineSource | Should -Match 'Export-ArrayaTenantToTenantCutoverPack -TenantStatsHash \$TenantStatsHash -BaseExportPath \$ExportDetails'
+        $script:exportPipelineSource | Should -Match 'New-TenantMigrationCutoverHtmlReport -TenantStatsHash \$TenantStatsHash -OutputPath \$htmlExportPath -CollectionScopePolicy ''TenantToTenantCutover'''
+        $script:exportPipelineSource | Should -Match '''T2T Cutover Pack Workbook'''
+    }
+
     It 'uses an assessment-owned auth orchestrator instead of the generic Office365 connector bootstrap' {
         $script:collectorSource | Should -Match 'function Resolve-AssessmentProfileCollectionPlan'
+        $script:collectorSource | Should -Match 'function Resolve-AssessmentGraphScopePlan'
         $script:collectorSource | Should -Match 'function Resolve-AssessmentRequestedAuthMode'
+        $script:collectorSource | Should -Match 'function Resolve-AssessmentClientSecretAuthContext'
         $script:collectorSource | Should -Match 'function Get-AssessmentGraphDelegatedScopes'
         $script:collectorSource | Should -Match 'function Resolve-AssessmentAuthWorkloadPlan'
+        $script:collectorSource | Should -Match 'function Test-IsAssessmentInteractiveTokenAcquisitionFailure'
+        $script:collectorSource | Should -Match 'function Get-AssessmentInteractiveTokenFailureOperatorMessage'
+        $script:collectorSource | Should -Match 'function Write-AssessmentInteractiveAuthNotice'
         $script:collectorSource | Should -Match 'function Connect-AssessmentGraph'
         $script:collectorSource | Should -Match 'function Connect-AssessmentExchange'
         $script:collectorSource | Should -Match 'function Connect-AssessmentPurview'
@@ -48,7 +84,19 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Resolve-AssessmentProfileCollectionPlan `'
         $script:collectorSource | Should -Match 'Resolve-AssessmentAuthWorkloadPlan'
         $script:collectorSource | Should -Match 'Initialize-AssessmentAuthentication'
+        $script:collectorSource | Should -Match '\[pscredential\]\$ClientSecretCredential'
+        $script:collectorSource | Should -Match '\[securestring\]\$ClientSecretSecure'
+        $script:collectorSource | Should -Match 'Get-AssessmentGraphDelegatedScopes -WorkloadPlan \$WorkloadPlan'
+        $script:collectorSource | Should -Match 'GraphScopePlan'
+        $script:collectorSource | Should -Match 'CollectionScopePolicy'
+        $script:collectorSource | Should -Match 'Client secret authentication requires -ClientId, or a PSCredential whose username is the app client ID\.'
         $script:collectorSource | Should -Not -Match "'Connect-Office365',"
+    }
+
+    It 'connects Exchange Online before Microsoft Graph for interactive assessment runs' {
+        $script:collectorSource | Should -Match '\$connectExchangeFirst = \(\[string\]\$WorkloadPlan\.AuthenticationType -eq ''Interactive''\)'
+        $script:collectorSource | Should -Match 'Interactive auth optimization: connecting Exchange Online and Purview before Microsoft Graph\.'
+        $script:collectorSource | Should -Match 'if \(\$connectExchangeFirst\) \{[\s\S]*Connect-AssessmentExchange[\s\S]*Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload ExchangeOnline[\s\S]*if \(\$WorkloadPlan\.Workloads\.PurviewCompliance\.Required\) \{[\s\S]*Connect-AssessmentPurview[\s\S]*Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload Purview[\s\S]*Connect-AssessmentGraph[\s\S]*Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload Graph'
     }
 
     It 'makes auth workload planning profile-driven with explicit fallback/skipped workload states' {
@@ -63,6 +111,50 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'GraphOnly'
         $script:collectorSource | Should -Match 'OptionalModuleConnect'
         $script:collectorSource | Should -Match 'OptionalPowerShellConnect'
+        $script:collectorSource | Should -Match 'NeedsDeviceData'
+        $script:collectorSource | Should -Match 'NeedsSecureScore'
+        $script:collectorSource | Should -Match 'NeedsReportsData'
+    }
+
+    It 'adds a reduced-scope tenant-to-tenant collection policy and uses it to trim collectors and Graph scopes' {
+        $script:collectorSource | Should -Match 'CollectionScopePolicy -eq ''TenantToTenantCutover'''
+        $script:collectorSource | Should -Match 'CollectDevices'
+        $script:collectorSource | Should -Match 'CollectSecuritySecureScore'
+        $script:collectorSource | Should -Match 'CollectEntraGroups'
+        $script:collectorSource | Should -Match 'CollectSharePointAndOneDriveSites'
+        $script:collectorSource | Should -Match 'BuildMigrationReadinessTables'
+        $script:collectorSource | Should -Match 'Get-ArrayaCollectionDepthPolicy -ReportingMode \(\(Get-Culture\)\.TextInfo\.ToTitleCase\(\$reportingMode\)\) -CollectionScopePolicy \$effectiveCollectionScopePolicy'
+        $script:collectorSource | Should -Match 'CollectMailboxDelegatePermissions'
+        $script:collectorSource | Should -Match 'CollectMailboxCalendarDelegatePermissions'
+        $script:collectorSource | Should -Match '\$plan\.CollectDevices = \$false'
+        $script:collectorSource | Should -Match '\$plan\.CollectSecuritySecureScore = \$false'
+        $script:collectorSource | Should -Match '\$plan\.CollectEntraGroups = \$false'
+        $script:collectorSource | Should -Match '\$plan\.CollectAdmins = \$false'
+        $script:collectorSource | Should -Match '\$plan\.CollectAuthenticationConfiguration = \$false'
+        $script:collectorSource | Should -Match '\$plan\.CollectConditionalAccessPolicies = \$false'
+        $script:collectorSource | Should -Match '\$plan\.CollectMfaRegistrationDetails = \$false'
+        $script:collectorSource | Should -Match '\$plan\.CollectUnifiedGroups = \$false'
+        $script:collectorSource | Should -Match '\$plan\.BuildExternalExposureSummaries = \$false'
+        $script:collectorSource | Should -Match '\$plan\.BuildAssessmentReportTables = \$false'
+        $script:collectorSource | Should -Match '\$plan\.BuildMigrationReadinessTables = \$true'
+        $script:collectorSource | Should -Match 'CollectSsoApplicationDetails -Value \$false -Force'
+        $script:collectorSource | Should -Match 'if \(\$needsDeviceData\)'
+        $script:collectorSource | Should -Match 'if \(\$needsSecureScore\)'
+        $script:collectorSource | Should -Match 'if \(\$needsReportsData\)'
+    }
+
+    It 'builds a dedicated action-only T2T migration readiness checklist dataset with split mail-flow and mailbox-prep rows' {
+        $script:collectorSource | Should -Match 'MigrationReadinessChecklist'
+        $script:collectorSource | Should -Match 'Mail flow connectors'
+        $script:collectorSource | Should -Match 'Remote domains allowing auto-forwarding'
+        $script:collectorSource | Should -Match 'SMTP relay service accounts'
+        $script:collectorSource | Should -Match 'Mailbox routing and proxy attributes'
+        $script:collectorSource | Should -Match 'Mailbox delegate reapplication'
+        $script:collectorSource | Should -Match 'Oversized mailbox batches'
+        $script:collectorSource | Should -Match 'Oversized archives'
+        $script:collectorSource | Should -Match 'Teams with shared channels'
+        $script:collectorSource | Should -Match 'Collaboration sizing gaps'
+        $script:collectorSource | Should -Match '\[string\]\$Status -in @\(''Ready'', ''Info''\)'
     }
 
     It 'validates only the required workload sessions when SkipAuth is used' {
@@ -70,8 +162,34 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'SkipAuth was requested, but no existing Microsoft Graph session was found'
         $script:collectorSource | Should -Match 'SkipAuth was requested, but Exchange Online cmdlets are not available in the current session'
         $script:collectorSource | Should -Match 'function Test-AssessmentPurviewSessionReady'
+        $script:collectorSource | Should -Match 'function Test-AssessmentSharePointSessionReady'
+        $script:collectorSource | Should -Match 'function Test-AssessmentTeamsSessionReady'
         $script:collectorSource | Should -Match 'SkipAuth was requested, but Purview compliance session is not usable in the current session'
         $script:collectorSource | Should -Match 'Test-AssessmentExistingSessions -WorkloadPlan \$WorkloadPlan'
+        $script:collectorSource | Should -Match 'SkipAuth was requested and no existing SharePoint admin session was found\. Graph fallback remains active'
+        $script:collectorSource | Should -Match 'SkipAuth was requested and no existing Teams PowerShell session was found\. Graph-only Teams collection remains active'
+    }
+
+    It 'validates tenant alignment before reusing Graph and Exchange sessions and removes the public tenant lookup fallback' {
+        $script:collectorSource | Should -Match 'function Get-AssessmentGraphOrganizationDetails'
+        $script:collectorSource | Should -Match 'function Assert-AssessmentGraphContextMatchesTenant'
+        $script:collectorSource | Should -Match 'function Resolve-AssessmentValidationInitialDomain'
+        $script:collectorSource | Should -Match 'function Assert-AssessmentExchangeSessionMatchesTenant'
+        $script:collectorSource | Should -Match 'Get-AcceptedDomain -Identity \$validationDomain'
+        $script:collectorSource | Should -Match 'Test-AssessmentExistingSessions -WorkloadPlan \$WorkloadPlan -TenantId \$TenantId'
+        $script:collectorSource | Should -Match 'Connect-AssessmentExchange -AuthenticationType \$WorkloadPlan\.AuthenticationType -TenantId \$TenantId'
+        $script:collectorSource | Should -Match 'Disconnect-MgGraph -ErrorAction SilentlyContinue'
+        $script:collectorSource | Should -Not -Match 'tenantinfoapp\.azurewebsites\.us'
+        $script:collectorSource | Should -Not -Match 'beta/tenantRelationships/findTenantInformationByTenantId'
+    }
+
+    It 'restores Graph globals after the run and labels remaining beta fallbacks explicitly' {
+        $script:collectorSource | Should -Match '\$script:AssessmentGraphRuntimeState = \[ordered\]@'
+        $script:collectorSource | Should -Match 'function Restore-AssessmentGraphRuntimeState'
+        $script:collectorSource | Should -Match 'finally \{\s*Restore-AssessmentGraphRuntimeState'
+        $script:collectorSource | Should -Match 'Enterprise application service principal sign-in activities \(beta best-effort\)'
+        $script:collectorSource | Should -Match 'beta best-effort fallback'
+        $script:collectorSource | Should -Match 'Application activity state will remain not validated where this enrichment was required'
     }
 
     It 'uses plain-language governance progress labels instead of legacy Tier B terminology' {
@@ -106,7 +224,8 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Not -Match 'Write-Host "Gathering Tenant Overview Info \.\.\."'
         $script:collectorSource | Should -Match "Write-AssessmentCollectorBanner -Message 'Gathering Tenant Overview Info \.\.\.' -NoNewline"
         $script:collectorSource | Should -Match "Write-AssessmentConsoleSubstep -Message 'Users: Graph inventory retrieval and per-user enrichment'"
-        $script:collectorSource | Should -Match 'Users: processed \{0\} directory records'
+        $script:collectorSource | Should -Match 'Users: processed \{0\} total directory records'
+        $script:collectorSource | Should -Not -Match '\$consoleProgressInterval = 500'
     }
 
     It 'checks the critical Graph permissions used by the collector' {
@@ -132,6 +251,15 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
             $escapedPattern = [regex]::Escape($_)
             $script:collectorSource | Should -Match $escapedPattern
         }
+        $script:collectorSource | Should -Match 'https://graph\.microsoft\.com/v1\.0/sites/getAllSites\?\$top=1'
+    }
+
+    It 'handles SharePoint getAllSites access denied with operator guidance and SPO fallback when available' {
+        $script:collectorSource | Should -Match 'SharePoint/OneDrive Graph site inventory was denied by /sites/getAllSites'
+        $script:collectorSource | Should -Match 'Confirm the app or signed-in user has Sites.Read.All with admin consent'
+        $script:collectorSource | Should -Match 'falling back to connected SharePoint Online PowerShell session'
+        $script:collectorSource | Should -Match "SharePointCollectionSummary"
+        $script:collectorSource | Should -Match 'Site usage report coverage unavailable because no SharePoint/OneDrive site inventory rows were collected'
     }
 
     It 'checks Exchange and Purview access in addition to Graph' {
@@ -151,14 +279,59 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Connected to Purview compliance PowerShell using certificate authentication'
         $script:collectorSource | Should -Match 'interactive authentication with -DisableWAM'
         $script:collectorSource | Should -Match 'device code authentication'
+        $script:collectorSource | Should -Match 'Purview auth: attempting interactive sign-in'
+        $script:collectorSource | Should -Match 'Purview auth: this ExchangeOnlineManagement version does not expose device code for Connect-IPPSSession; only interactive and -DisableWAM are available'
+        $script:collectorSource | Should -Match 'Purview auth: interactive sign-in hit a Windows broker / WAM token issue, retrying with -DisableWAM'
+        $script:collectorSource | Should -Match 'Purview auth: interactive sign-in hit a Windows broker / WAM token issue, retrying with device code'
         $script:collectorSource | Should -Match 'Client secret authentication is not supported for Purview compliance PowerShell in this workflow'
         $script:collectorSource | Should -Match 'Purview compliance PowerShell session could not be established\. Underlying error:'
+        $script:collectorSource | Should -Match 'Purview compliance PowerShell interactive sign-in hit a Windows broker / WAM token acquisition failure\. Underlying error:'
         $script:collectorSource | Should -Match 'Organization used:'
         $script:collectorSource | Should -Match 'Next step:'
         $script:collectorSource | Should -Match 'Missing compliance cmdlets after connect:'
         $script:collectorSource | Should -Match 'The certificate and app registration were accepted, but this tenant did not expose the Purview retention/DLP cmdlets to that app session'
         $script:collectorSource | Should -Match 'Exchange Administrator role'
         $script:collectorSource | Should -Match 'Connect-IPPSSession successfully in the current PowerShell session and rerun the assessment with session reuse'
+        $script:collectorSource | Should -Match 'Interactive Purview sign-in hit a Windows broker / WAM token acquisition failure'
+    }
+
+    It 'turns Graph interactive broker token failures into explicit operator guidance before and after the device-code fallback' {
+        $script:collectorSource | Should -Match 'Microsoft Graph interactive sign-in'
+        $script:collectorSource | Should -Match 'Windows broker / WAM token acquisition failure'
+        $script:collectorSource | Should -Match 'Write-AssessmentInteractiveAuthNotice -ServiceName ''Microsoft Graph'''
+        $script:collectorSource | Should -Match 'browser sign-in prompt should appear'
+        $script:collectorSource | Should -Match 'Graph auth: device code prompt should appear in this console'
+        $script:collectorSource | Should -Match 'Retrying Microsoft Graph sign-in with device code'
+        $script:collectorSource | Should -Match 'The follow-up device code sign-in did not complete'
+        $script:collectorSource | Should -Match 'try again from a fresh PowerShell window'
+        $script:collectorSource | Should -Match 'certificate-based authentication'
+    }
+
+    It 'makes the broader interactive connection path operator-friendly across Exchange, SharePoint, Teams, and Purview' {
+        $script:collectorSource | Should -Match 'Write-AssessmentInteractiveAuthNotice -ServiceName ''Exchange Online'''
+        $script:collectorSource | Should -Match 'Exchange auth: broker / WAM sign-in failed, retrying with -DisableWAM'
+        $script:collectorSource | Should -Match 'Exchange auth: broker / WAM sign-in failed, retrying with device code'
+        $script:collectorSource | Should -Match 'Exchange Online interactive sign-in hit a Windows broker / WAM token acquisition failure'
+        $script:collectorSource | Should -Match 'SharePoint admin already connected for this session.'
+        $script:collectorSource | Should -Match 'Write-AssessmentInteractiveAuthNotice -ServiceName ''SharePoint admin'''
+        $script:collectorSource | Should -Match 'SharePoint admin interactive sign-in'
+        $script:collectorSource | Should -Match 'Graph fallback remains active for SharePoint data in this run'
+        $script:collectorSource | Should -Match 'Teams PowerShell already connected for this session.'
+        $script:collectorSource | Should -Match 'Write-AssessmentInteractiveAuthNotice -ServiceName ''Teams PowerShell'''
+        $script:collectorSource | Should -Match 'Teams interactive sign-in'
+        $script:collectorSource | Should -Match 'Graph-only Teams collection remains active for this run'
+        $script:collectorSource | Should -Match 'Write-AssessmentInteractiveAuthNotice -ServiceName ''Purview compliance PowerShell'''
+        $script:collectorSource | Should -Match 'Write-AssessmentInteractiveAuthNotice -ServiceName ''Purview compliance PowerShell'' -SupportsDisableWam:\$ConnectCommandMetadata\.Parameters\.ContainsKey\(''DisableWAM''\) -SupportsDeviceCode:\$ConnectCommandMetadata\.Parameters\.ContainsKey\(''Device''\)'
+        $script:collectorSource | Should -Not -Match 'Invoke-PurviewComplianceDelegatedConnect -BaseParameters \$connectParams -ConnectCommandMetadata \$connectCommand -GraphAccount \$graphAccount'
+    }
+
+    It 'suppresses noisy SharePoint and Teams module import warnings during runtime' {
+        $script:collectorSource | Should -Match 'function Ensure-AssessmentSharePointModuleAvailable'
+        $script:collectorSource | Should -Match 'function Ensure-AssessmentTeamsModuleAvailable'
+        $script:collectorSource | Should -Match "Import-Module 'Microsoft\.Online\.SharePoint\.PowerShell' -UseWindowsPowerShell -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop"
+        $script:collectorSource | Should -Match "Import-Module 'Microsoft\.Online\.SharePoint\.PowerShell' -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop"
+        $script:collectorSource | Should -Match "Import-Module 'MicrosoftTeams' -UseWindowsPowerShell -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop"
+        $script:collectorSource | Should -Match "Import-Module 'MicrosoftTeams' -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop"
     }
 
     It 'treats directory synchronization feature access as a non-blocking validation warning' {
@@ -168,6 +341,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     }
 
     It 'uses a stable preflight progress counter and suppresses inner Graph record-count progress' {
+        $script:collectorSource | Should -Match 'Running \{0\} permission preflight\.\.\.'
         $script:collectorSource | Should -Match '\$preflightProgressTotal\s*=\s*\$selectedGraphChecks\.Count \+ \$selectedExchangeChecks\.Count'
         $script:collectorSource | Should -Match 'Write-ProgressHelper -Total \(\[Math\]::Max\(\$preflightProgressTotal, 1\)\) -Id \$preflightProgressId'
         $script:collectorSource | Should -Match '\$ProgressIndex\.Value\+\+'
@@ -306,13 +480,24 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match '\[\{0\}/\{1\} \| \{2\}%\] \{3\} - \{4\} in \{5\}\{6\}'
     }
 
-    It 'shows visible substeps for long-running group, governance, and export preparation work' {
+    It 'shows visible substeps for long-running group, governance, and export preparation work without verbose forwarding checkpoint spam' {
         $script:collectorSource | Should -Match 'Exchange governance: shared mailbox review'
         $script:collectorSource | Should -Match 'Exchange governance: forwarding policy review'
         $script:collectorSource | Should -Match 'Exchange governance: inbox rule forwarding review'
+        $script:collectorSource | Should -Match 'Exchange governance: shared mailbox review completed'
+        $script:collectorSource | Should -Match 'Exchange governance: forwarding policy review completed'
+        $script:collectorSource | Should -Match 'Reviewing mailbox inbox rules for external forwarding'
+        $script:collectorSource | Should -Match 'Mailbox \{0\}/\{1\}: \{2\} \| External rules \{3\} \| Lookup failures \{4\}'
+        $script:collectorSource | Should -Not -Match 'Exchange governance: inbox rule review progress'
+        $script:collectorSource | Should -Not -Match 'Exchange governance: slow inbox rule lookup'
         $script:collectorSource | Should -Match 'Export preparation: user and mailbox detail projection'
         $script:collectorSource | Should -Match 'Export preparation: inactive mailbox detail projection'
         $script:collectorSource | Should -Match 'Users: tenant license lookup unavailable, continuing without license and sign-in activity enrichment'
+        $script:collectorSource | Should -Match 'Device management summaries: building compliance and supportability rollup'
+        $script:collectorSource | Should -Match 'Tier B operational summaries: reviewing SharePoint tenant settings from Microsoft Graph'
+        $script:collectorSource | Should -Match 'Tier B operational summaries: completed'
+        $script:collectorSource | Should -Match 'External exposure summaries: reviewing sharing baseline and site override signals'
+        $script:collectorSource | Should -Match 'External exposure summaries: completed'
     }
 
     It 'maps the broader SharePoint tenant settings surface used by the sharing review' {
@@ -350,6 +535,29 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'SsoEnabled'
         $script:collectorSource | Should -Match 'SSOMode'
         $script:collectorSource | Should -Match 'PublisherName'
+        $script:collectorSource | Should -Match 'ApplicationSource'
+        $script:collectorSource | Should -Match 'ApplicationSourceState'
+        $script:collectorSource | Should -Match 'UnknownSourceApplications'
+        $script:collectorSource | Should -Match 'OwnerCount'
+        $script:collectorSource | Should -Match 'OwnerSignalState'
+        $script:collectorSource | Should -Match 'RedirectUris'
+        $script:collectorSource | Should -Match 'RedirectUriSignalState'
+        $script:collectorSource | Should -Match 'InsecureRedirectUriCount'
+        $script:collectorSource | Should -Match 'HasInsecureRedirectUris'
+        $script:collectorSource | Should -Match 'AppCredentials'
+        $script:collectorSource | Should -Match 'DelegatedLastSignIn'
+        $script:collectorSource | Should -Match 'ApplicationLastSignIn'
+        $script:collectorSource | Should -Match 'LastServicePrincipalSignInDateTime'
+        $script:collectorSource | Should -Match 'ActivitySignalState'
+        $script:collectorSource | Should -Match 'HasRecentActivity'
+        $script:collectorSource | Should -Match 'ApplicationSourceCoverageState'
+        $script:collectorSource | Should -Match 'OwnerSignalCoverageState'
+        $script:collectorSource | Should -Match 'RedirectUriSignalCoverageState'
+        $script:collectorSource | Should -Match 'ActivitySignalCoverageState'
+        $script:collectorSource | Should -Match 'ApplicationsWithInsecureRedirectUris'
+        $script:collectorSource | Should -Match 'FirstPartyAppsWithoutOwners'
+        $script:collectorSource | Should -Match 'ThirdPartyAppsWithApplicationPerms'
+        $script:collectorSource | Should -Match 'ApplicationsWithNoRecentActivity'
         $script:collectorSource | Should -Match 'SsoEnabledApplications'
         $script:collectorSource | Should -Match 'servicePrincipalType'
         $script:collectorSource | Should -Match 'ManagedIdentity'
@@ -391,9 +599,15 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match '\[datetime\]::TryParse\(\$lastSignInText, \[ref\]\$parsedLastSignIn\)'
     }
 
-    It 'safely parses guest last sign-in timestamps and suppresses expected DNS / MSCommerce noise' {
+    It 'safely parses guest last sign-in timestamps and suppresses expected DNS / MSCommerce noise while preferring native MSCommerce imports' {
+        $script:collectorSource | Should -Match "\$effectiveAuthenticationType -ne 'Interactive'"
+        $script:collectorSource | Should -Match 'MSCommerce self-service purchase review is skipped for \$effectiveAuthenticationType assessment runs'
         $script:collectorSource | Should -Match '\$selfServiceErrorCountBeforeLookup = \$global:Error\.Count'
         $script:collectorSource | Should -Match 'while \(\$global:Error\.Count -gt \$selfServiceErrorCountBeforeLookup\)'
+        $script:collectorSource | Should -Match '\$msCommerceModule = Get-Module -ListAvailable -Name MSCommerce \| Sort-Object Version -Descending \| Select-Object -First 1'
+        $script:collectorSource | Should -Match '\$msCommerceImportTarget = if \(-not \[string\]::IsNullOrWhiteSpace\(\[string\]\$msCommerceModule\.Path\)\)'
+        $script:collectorSource | Should -Match 'Import-Module -Name \$msCommerceImportTarget -ErrorAction Stop'
+        $script:collectorSource | Should -Match 'Import-Module MSCommerce -UseWindowsPowerShell -ErrorAction Stop'
         $script:collectorSource | Should -Match 'Resolve-DnsName -Name \$domainName -Server 1\.1\.1\.1 -Type A -ErrorAction Ignore'
         $script:collectorSource | Should -Match 'Resolve-DnsName -Name \("\{0\}\._domainkey\.\{1\}" -f \$selector, \$domainName\) -Server 1\.1\.1\.1 -Type CNAME -ErrorAction Ignore'
     }
