@@ -13,3 +13,4 @@ secrets.json
 local.settings.json
 TestResults/
 coverage.xml
+TestRuns/
