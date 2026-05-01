@@ -415,6 +415,17 @@ Describe 'Improve workflow' {
                             LastSignInDateTime = '2026-01-01T00:00:00Z'
                         },
                         [pscustomobject]@{
+                            DisplayName        = 'Excluded Member'
+                            UserPrincipalName  = 'excluded.member@contoso.com'
+                            UserType           = 'Member'
+                            DirectoryObjectId  = 'user-002'
+                            GapCategory        = 'Excluded from all enabled MFA CA policies that otherwise target the user'
+                            GapReason          = 'Excluded through group ''Break Glass Exclusions'' in enabled MFA policy ''Baseline MFA''.'
+                            RelatedPolicies    = 'Baseline MFA'
+                            AccountEnabled     = $true
+                            LastSignInDateTime = '2026-01-05T00:00:00Z'
+                        },
+                        [pscustomobject]@{
                             DisplayName        = 'Uncovered Guest'
                             UserPrincipalName  = 'uncovered.guest_contoso.com#EXT#@contoso.onmicrosoft.com'
                             UserType           = 'Guest'
@@ -500,6 +511,59 @@ Describe 'Improve workflow' {
                             PrimarySmtpAddress      = 'forwarded@contoso.com'
                         }
                     }
+                    PrimaryMailboxStats = @(
+                        [pscustomobject]@{
+                            MailboxType        = 'UserMailbox'
+                            TotalItemSizeBytes = 50GB
+                        },
+                        [pscustomobject]@{
+                            MailboxType        = 'SharedMailbox'
+                            TotalItemSizeBytes = 10GB
+                        },
+                        [pscustomobject]@{
+                            MailboxType        = 'GroupMailbox'
+                            TotalItemSizeBytes = 5GB
+                        }
+                    )
+                    ArchiveMailboxes = @(
+                        [pscustomobject]@{
+                            RecipientTypeDetails = 'UserMailbox'
+                        }
+                    )
+                    ArchiveMailboxStats = @(
+                        [pscustomobject]@{
+                            MailboxType        = 'UserMailbox'
+                            TotalItemSizeBytes = 25GB
+                        }
+                    )
+                    EmailActivityTopSenders = @(
+                        [pscustomobject]@{
+                            DisplayName       = 'Forwarded Mailbox'
+                            UserPrincipalName = 'forwarded@contoso.com'
+                            SendCount         = 245
+                            LastActivityDate  = '2026-04-25'
+                        },
+                        [pscustomobject]@{
+                            DisplayName       = 'Shared Projects'
+                            UserPrincipalName = 'shared@contoso.com'
+                            SendCount         = 120
+                            LastActivityDate  = '2026-04-24'
+                        }
+                    )
+                    EmailActivityTopReceivers = @(
+                        [pscustomobject]@{
+                            DisplayName       = 'Executive Team'
+                            UserPrincipalName = 'executive@contoso.com'
+                            ReceiveCount      = 310
+                            LastActivityDate  = '2026-04-25'
+                        },
+                        [pscustomobject]@{
+                            DisplayName       = 'Forwarded Mailbox'
+                            UserPrincipalName = 'forwarded@contoso.com'
+                            ReceiveCount      = 210
+                            LastActivityDate  = '2026-04-23'
+                        }
+                    )
                     MailFlowConnectors = @(
                         [pscustomobject]@{
                             Enabled                = $true
@@ -562,8 +626,16 @@ Describe 'Improve workflow' {
                     )
                     SharePoint = @(
                         [pscustomobject]@{
+                            Title                   = 'Projects Hub'
+                            IsTeamsConnected        = $true
                             LastContentModifiedDate = (Get-Date).AddDays(-220).ToString('o')
                             StorageUsedGB           = 1200
+                        },
+                        [pscustomobject]@{
+                            Title                   = 'Standalone PMO'
+                            IsTeamsConnected        = $false
+                            LastContentModifiedDate = (Get-Date).AddDays(-90).ToString('o')
+                            StorageUsedGB           = 300
                         }
                     )
                     OneDrive = @(
@@ -873,7 +945,11 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'Credential Cleanup Opportunities'
         $customerReportDocument | Should -Match '6\.0 Authentication Methods, MFA Enrollment, and MFA Enforcement'
         $customerReportDocument | Should -Match 'MFA Enrollment'
+        $customerReportDocument | Should -Match 'MFA Enrollment Status'
+        $customerReportDocument | Should -Match 'Registered MFA Method Mix'
         $customerReportDocument | Should -Match 'MFA Enforcement'
+        $customerReportDocument | Should -Match 'Covered vs Not Covered by Active MFA Enforcement'
+        $customerReportDocument | Should -Match 'MFA Enforcement Driver Breakdown'
         $customerReportDocument | Should -Match 'Software one-time passcode'
         $customerReportDocument | Should -Match 'Users with weak MFA methods only'
         $customerReportDocument | Should -Match 'Users with weak default MFA method'
@@ -886,26 +962,33 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'MFA enforcement state'
         $customerReportDocument | Should -Match 'MFA Enforcement Gap Summary'
         $customerReportDocument | Should -Match 'Common Coverage Drivers'
-        $customerReportDocument | Should -Match 'Top Internal Member Users Not Covered by Enabled MFA Enforcement'
+        $customerReportDocument | Should -Match 'Internal Member Users Outside Active MFA Include Scope'
+        $customerReportDocument | Should -Match 'Internal Member Users Explicitly Excluded from Active MFA Policies'
         $customerReportDocument | Should -Match 'Guest MFA Coverage Drivers'
         $customerReportDocument | Should -Match 'Representative MFA Scope Examples'
         $customerReportDocument | Should -Match 'Coverage Gap Signal'
-        $customerReportDocument | Should -Match 'Coverage Driver'
         $customerReportDocument | Should -Match 'Uncovered Member'
+        $customerReportDocument | Should -Match 'Excluded Member'
         $customerReportDocument | Should -Not -Match 'Uncovered Guest'
-        $customerReportDocument | Should -Match 'Outside enabled MFA include scope'
         $customerReportDocument | Should -Match 'Outside include scope'
+        $customerReportDocument | Should -Match 'outside the active MFA include scope'
+        $customerReportDocument | Should -Match 'Enrollment and enforcement are intentionally reported as separate views'
         $customerReportDocument | Should -Match 'Some Conditional Access policies naturally target employee, admin, or workload-specific populations'
         $customerReportDocument | Should -Match 'partner tenants with the most collaboration and a validated trust relationship'
         $customerReportDocument | Should -Match 'MfaEnforcementGapUsers'
         $customerReportDocument | Should -Match 'MfaEnforcementScopeReview'
         $customerReportDocument | Should -Match '7\.0 Password Writeback and Self-Service Password Reset'
         $customerReportDocument | Should -Match '8\.0 Authorization: Admin Access and Role Assignments'
+        $customerReportDocument | Should -Match 'Recent vs Stale Admins'
+        $customerReportDocument | Should -Match 'Admins Covered vs Not Covered by Active MFA Enforcement'
         $customerReportDocument | Should -Match 'Service Accounts'
         $customerReportDocument | Should -Match '9\.0 Exchange Online: Mailboxes and Storage Overview'
+        $customerReportDocument | Should -Match 'Data Footprint by Workload'
         $customerReportDocument | Should -Match '9\.1 Recipient and Mailbox Footprint'
         $customerReportDocument | Should -Match 'Recipient Mix by Type'
         $customerReportDocument | Should -Match 'Top Recipient Domains'
+        $customerReportDocument | Should -Match 'Top Senders'
+        $customerReportDocument | Should -Match 'Top Receivers'
         $customerReportDocument | Should -Match 'Mailbox Lifecycle Summary'
         $customerReportDocument | Should -Match 'Transport Exposure Summary'
         $customerReportDocument | Should -Match 'User Mailbox Growth'
@@ -980,6 +1063,7 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Not -Match 'Domain Recommendations'
         $customerReportDocument | Should -Not -Match 'DNS Recommendations'
         $customerReportDocument | Should -Not -Match 'Enabled MFA Policy Scope Review'
+        $customerReportDocument | Should -Not -Match 'Top Internal Member Users Not Covered by Enabled MFA Enforcement'
         $customerReportDocument | Should -Not -Match 'Findings Legend'
         $customerReportDocument | Should -Not -Match 'What Should Happen Next'
         $customerReportDocument | Should -Not -Match 'Priority / Impact'
@@ -1037,7 +1121,11 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match 'Latest activity 2026-04-12'
         $customerReportMarkdown | Should -Match '## 6\.0 Authentication Methods, MFA Enrollment, and MFA Enforcement'
         $customerReportMarkdown | Should -Match '### MFA Enrollment'
+        $customerReportMarkdown | Should -Match '#### MFA Enrollment Status'
+        $customerReportMarkdown | Should -Match '#### Registered MFA Method Mix'
         $customerReportMarkdown | Should -Match '### MFA Enforcement'
+        $customerReportMarkdown | Should -Match '#### Covered vs Not Covered by Active MFA Enforcement'
+        $customerReportMarkdown | Should -Match '#### MFA Enforcement Driver Breakdown'
         $customerReportMarkdown | Should -Match 'Software one-time passcode'
         $customerReportMarkdown | Should -Match '\| Conditional Access policies reviewed \| 8 \|'
         $customerReportMarkdown | Should -Match '\| Policies with exclusions \| 7 \|'
@@ -1052,14 +1140,18 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match '#### MFA Enforcement Gap Summary'
         $customerReportMarkdown | Should -Match '\| Coverage Gap Signal \| Current State \|'
         $customerReportMarkdown | Should -Match '\| Users outside enabled MFA CA include scope \| 2 \|'
-        $customerReportMarkdown | Should -Match '\| Users explicitly excluded from enabled MFA CA policies \| 0 \|'
+        $customerReportMarkdown | Should -Match '\| Users explicitly excluded from enabled MFA CA policies \| 1 \|'
         $customerReportMarkdown | Should -Match '#### Common Coverage Drivers'
-        $customerReportMarkdown | Should -Match '- Outside enabled MFA include scope: 1 uncovered internal member user\(s\)\.'
-        $customerReportMarkdown | Should -Match '#### Top Internal Member Users Not Covered by Enabled MFA Enforcement'
-        $customerReportMarkdown | Should -Match '\| Display Name \| User Principal Name \| Gap Category \| Coverage Driver \|'
+        $customerReportMarkdown | Should -Match '- Outside include scope: 1 uncovered internal member user\(s\)\.'
+        $customerReportMarkdown | Should -Match '- Policy: Baseline MFA: 1 uncovered internal member user\(s\)\.'
+        $customerReportMarkdown | Should -Match '#### Internal Member Users Outside Active MFA Include Scope'
+        $customerReportMarkdown | Should -Match '#### Internal Member Users Explicitly Excluded from Active MFA Policies'
+        $customerReportMarkdown | Should -Match '\| Display Name \| User Principal Name \|'
         $customerReportMarkdown | Should -Match 'Uncovered Member'
+        $customerReportMarkdown | Should -Match 'Excluded Member'
         $customerReportMarkdown | Should -Not -Match 'Uncovered Guest'
         $customerReportMarkdown | Should -Match 'Outside include scope'
+        $customerReportMarkdown | Should -Match 'Enrollment and enforcement are intentionally reported as separate views in this report'
         $customerReportMarkdown | Should -Not -Match 'Related Policy / Scope'
         $customerReportMarkdown | Should -Match 'The desired baseline is to require strong guest authentication through a guest-specific Conditional Access policy and to trust the guest home-tenant MFA where supported and approved'
         $customerReportMarkdown | Should -Match '#### Guest MFA Coverage Drivers'
@@ -1085,10 +1177,16 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match '### External Exposure Review'
         $customerReportMarkdown | Should -Match '\| Workload \| Asset Type \| Title \| Exposure Category \| Gap Reason \| Review Priority \|'
         $customerReportMarkdown | Should -Match '## 9\.0 Exchange Online: Mailboxes and Storage Overview'
+        $customerReportMarkdown | Should -Match '### Data Footprint by Workload'
         $customerReportMarkdown | Should -Match '### 9\.1 Recipient and Mailbox Footprint'
         $customerReportMarkdown | Should -Match '### Recipient Mix by Type'
         $customerReportMarkdown | Should -Match '### Top Recipient Domains'
         $customerReportMarkdown | Should -Match '\| Domain \| Total \| Primary \| Alias-only \|'
+        $customerReportMarkdown | Should -Match 'Teams storage is represented here through team-connected SharePoint site storage'
+        $customerReportMarkdown | Should -Match '#### Top Senders'
+        $customerReportMarkdown | Should -Match '#### Top Receivers'
+        $customerReportMarkdown | Should -Match '\| Display Name \| User Principal Name \| Send Count \| Last Activity \|'
+        $customerReportMarkdown | Should -Match '\| Display Name \| User Principal Name \| Receive Count \| Last Activity \|'
         $customerReportMarkdown | Should -Match '### Largest Collaboration Sites to Review'
         $customerReportMarkdown | Should -Match '- '
         $customerReportMarkdown | Should -Match '## 12\.0 Retention Policies and Data Loss Prevention'
@@ -1104,6 +1202,8 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Not -Match 'CustomerRemediationReport'
         $customerReportMarkdown | Should -Not -Match '10dae51f-b6af-4016-8d66-8c2a99b929b3'
         $customerReportMarkdown | Should -Not -Match '#### Enabled MFA Policy Scope Review'
+        $customerReportMarkdown | Should -Not -Match '#### Top Internal Member Users Not Covered by Enabled MFA Enforcement'
+        $customerReportMarkdown | Should -Not -Match '\| Display Name \| User Principal Name \| Gap Category \| Coverage Driver \|'
         $customerReportMarkdown | Should -Not -Match 'Tier B'
         $customerReportMarkdown | Should -Not -Match 's of tw ar eO ne Ti me Pa ss co de'
         $customerReportMarkdown | Should -Not -Match 'Primary Owner'
@@ -1145,8 +1245,32 @@ Describe 'Improve workflow' {
     It 'embeds customer-report chart images in the DOCX and skips them in markdown when chart datasets are renderable' {
         $snapshot = New-ArrayaTenantSnapshot -Data @{
             Identity = @{
-                Admins = @()
-                Users = @()
+                Admins = @(
+                    [pscustomobject]@{
+                        DisplayName       = 'Recent Admin'
+                        UserPrincipalName = 'recent.admin@contoso.com'
+                        AccountEnabled    = $true
+                        LastSignInDateTime = (Get-Date).AddDays(-20).ToString('o')
+                    },
+                    [pscustomobject]@{
+                        DisplayName       = 'Stale Admin'
+                        UserPrincipalName = 'stale.admin@contoso.com'
+                        AccountEnabled    = $true
+                        LastSignInDateTime = (Get-Date).AddDays(-240).ToString('o')
+                    }
+                )
+                Users = @(
+                    [pscustomobject]@{
+                        UserPrincipalName = 'registered.user@contoso.com'
+                        UserType          = 'Member'
+                        AccountEnabled    = $true
+                    },
+                    [pscustomobject]@{
+                        UserPrincipalName = 'not.registered@contoso.com'
+                        UserType          = 'Member'
+                        AccountEnabled    = $true
+                    }
+                )
                 ConditionalAccessPolicies = @()
                 ConditionalAccessPolicySummary = @{
                     Summary = [pscustomobject]@{
@@ -1169,6 +1293,67 @@ Describe 'Improve workflow' {
                     AdminConsentWorkflowEnabled    = $false
                     PermissionGrantPoliciesAssigned = @()
                     PasswordlessMethods            = @()
+                }
+                MfaRegistrationSummary = [pscustomobject]@{
+                    TotalUsers         = 5
+                    RegisteredUsers    = 3
+                    NotRegisteredUsers = 2
+                    MethodCounts       = @{ 'Microsoft Authenticator' = 2; 'SMS / phone' = 1 }
+                }
+                MfaEnrollmentSummary = [pscustomobject]@{
+                    TotalUsers                        = 5
+                    RegisteredUsers                   = 3
+                    NotRegisteredUsers                = 2
+                    RegistrationPercent               = 60
+                    RegisteredMethodBreakdown         = 'Microsoft Authenticator=2; SMS / phone=1'
+                    WeakMethodBreakdown               = 'SMS / phone=1'
+                    PhishingResistantMethodBreakdown  = 'FIDO2 security key / passkey=1'
+                    UsersWithWeakMethodsOnly          = 1
+                    UsersWithWeakDefaultMethod        = 1
+                    UsersWithPhishingResistantMethods = 1
+                }
+                MfaEnforcementSummary = [pscustomobject]@{
+                    ConditionalAccessPoliciesReviewed      = 2
+                    EnabledPoliciesRequiringMfa            = 1
+                    ReportOnlyPoliciesRequiringMfa         = 0
+                    PoliciesWithExclusions                 = 1
+                    EnabledUsersReviewed                   = 5
+                    UsersCoveredByEnabledMfaPolicies       = 3
+                    UsersNotCoveredByEnabledMfaPolicies    = 2
+                    UserCoveragePercent                    = 60
+                    EnabledMemberUsersReviewed             = 4
+                    MemberUsersCoveredByEnabledMfaPolicies = 2
+                    MemberUserCoveragePercent              = 50
+                    EnabledGuestUsersReviewed              = 1
+                    GuestUsersCoveredByEnabledMfaPolicies  = 1
+                    GuestUserCoveragePercent               = 100
+                    GuestUserEnforcementState              = 'Guest users appear covered in the reviewed baseline.'
+                    EnforcementState                       = 'MFA enforcement is active through enabled Conditional Access policies.'
+                }
+                MfaEnforcementGapUsers = @(
+                    [pscustomobject]@{
+                        DisplayName       = 'Outside Scope User'
+                        UserPrincipalName = 'outside.scope@contoso.com'
+                        UserType          = 'Member'
+                        GapCategory       = 'Outside enabled MFA CA include scope'
+                        GapReason         = 'User is outside the include scope of all enabled Conditional Access policies that currently require MFA.'
+                        RelatedPolicies   = ''
+                    },
+                    [pscustomobject]@{
+                        DisplayName       = 'Excluded Scope User'
+                        UserPrincipalName = 'excluded.scope@contoso.com'
+                        UserType          = 'Member'
+                        GapCategory       = 'Excluded from all enabled MFA CA policies that otherwise target the user'
+                        GapReason         = 'Excluded through group ''Break Glass Exclusions'' in enabled MFA policy ''Baseline MFA''.'
+                        RelatedPolicies   = 'Baseline MFA'
+                    }
+                )
+                AdminMfaSummary = [pscustomobject]@{
+                    EnabledAdminUsersReviewed            = 2
+                    AdminUsersRegisteredForMfa           = 1
+                    AdminUsersNotRegisteredForMfa        = 1
+                    AdminUsersCoveredByMfaEnforcement    = 1
+                    AdminUsersNotCoveredByMfaEnforcement = 1
                 }
                 LicenseSKUs = @()
                 DeviceDetails = @(
@@ -1228,6 +1413,38 @@ Describe 'Improve workflow' {
                     }
                 )
                 AllMailboxes = @{}
+                PrimaryMailboxStats = @(
+                    [pscustomobject]@{
+                        MailboxType        = 'UserMailbox'
+                        TotalItemSizeBytes = 15GB
+                    },
+                    [pscustomobject]@{
+                        MailboxType        = 'GroupMailbox'
+                        TotalItemSizeBytes = 4GB
+                    }
+                )
+                ArchiveMailboxStats = @(
+                    [pscustomobject]@{
+                        MailboxType        = 'UserMailbox'
+                        TotalItemSizeBytes = 6GB
+                    }
+                )
+                EmailActivityTopSenders = @(
+                    [pscustomobject]@{
+                        DisplayName       = 'User A'
+                        UserPrincipalName = 'usera@contoso.com'
+                        SendCount         = 42
+                        LastActivityDate  = '2026-04-20'
+                    }
+                )
+                EmailActivityTopReceivers = @(
+                    [pscustomobject]@{
+                        DisplayName       = 'Shared A'
+                        UserPrincipalName = 'shared@fabrikam.com'
+                        ReceiveCount      = 55
+                        LastActivityDate  = '2026-04-21'
+                    }
+                )
                 MailFlowConnectors = @()
                 PublicFolderDetails = @()
             }
@@ -1236,12 +1453,18 @@ Describe 'Improve workflow' {
                 SharePoint  = @(
                     [pscustomobject]@{
                         Title                   = 'Projects'
+                        IsTeamsConnected        = $true
                         SharingCapability       = 'ExternalUserSharingOnly'
                         StorageUsedGB           = 24
                         LastContentModifiedDate = (Get-Date).AddDays(-12).ToString('o')
                     }
                 )
-                OneDrive    = @()
+                OneDrive    = @(
+                    [pscustomobject]@{
+                        Title         = 'User A OneDrive'
+                        StorageUsedGB = 12
+                    }
+                )
                 ExternalExposureFindings = @(
                     [pscustomobject]@{
                         Workload         = 'SharePoint'
@@ -1270,7 +1493,14 @@ Describe 'Improve workflow' {
         $customerReportEntryNames = Get-TestDocxEntryNames -Path $result.CustomerAssessmentReportPath
         $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
 
-        @($customerReportEntryNames | Where-Object { $_ -match '^word/media/customer-chart-\d+\.png$' }).Count | Should -BeGreaterOrEqual 4
+        @($customerReportEntryNames | Where-Object { $_ -match '^word/media/customer-chart-\d+\.png$' }).Count | Should -BeGreaterOrEqual 8
+        $customerReportMarkdown | Should -Match '#### MFA Enrollment Status'
+        $customerReportMarkdown | Should -Match '#### Registered MFA Method Mix'
+        $customerReportMarkdown | Should -Match '#### Covered vs Not Covered by Active MFA Enforcement'
+        $customerReportMarkdown | Should -Match '#### MFA Enforcement Driver Breakdown'
+        $customerReportMarkdown | Should -Match '#### Recent vs Stale Admins'
+        $customerReportMarkdown | Should -Match '#### Admins Covered vs Not Covered by Active MFA Enforcement'
+        $customerReportMarkdown | Should -Match '### Data Footprint by Workload'
         $customerReportMarkdown | Should -Match '### Device Platform Distribution'
         $customerReportMarkdown | Should -Match '### Recipient Mix by Type'
         $customerReportMarkdown | Should -Match '### Top Recipient Domains'
