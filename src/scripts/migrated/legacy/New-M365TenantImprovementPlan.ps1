@@ -2975,8 +2975,76 @@ function Get-CustomerRecipientDomainBreakdownText {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)][object[]]$DomainRows = @(),
+        [Parameter(Mandatory = $false)][object[]]$RecipientRows = @(),
         [Parameter(Mandatory = $false)][int]$Top = 3
     )
+
+    if (@($RecipientRows).Count -gt 0) {
+        $domainSummary = @{}
+        foreach ($recipientRow in @($RecipientRows)) {
+            if ($null -eq $recipientRow) {
+                continue
+            }
+
+            $primarySmtp = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $recipientRow -Names @('PrimarySmtpAddress', 'WindowsEmailAddress', 'UserPrincipalName')) -Default ''
+            if (-not [string]::IsNullOrWhiteSpace($primarySmtp) -and $primarySmtp -match '@(?<domain>[^@\s>]+)$') {
+                $domainName = $Matches['domain'].ToLowerInvariant()
+                if (-not $domainSummary.ContainsKey($domainName)) {
+                    $domainSummary[$domainName] = [ordered]@{ Domain = $domainName; Primary = 0; AliasOnly = 0 }
+                }
+                $domainSummary[$domainName].Primary++
+            }
+
+            $emailAddresses = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $recipientRow -Names @('EmailAddresses'))
+            foreach ($emailAddress in @($emailAddresses)) {
+                $addressText = Convert-ToArrayaDisplayText -Value $emailAddress -Default ''
+                if ([string]::IsNullOrWhiteSpace($addressText)) {
+                    continue
+                }
+
+                if ($addressText -match '^[A-Za-z]+:(?<value>.+)$') {
+                    $addressText = $Matches['value']
+                }
+                if ($addressText -notmatch '@(?<domain>[^@\s>]+)$') {
+                    continue
+                }
+
+                $domainName = $Matches['domain'].ToLowerInvariant()
+                if (-not $domainSummary.ContainsKey($domainName)) {
+                    $domainSummary[$domainName] = [ordered]@{ Domain = $domainName; Primary = 0; AliasOnly = 0 }
+                }
+
+                if (-not [string]::IsNullOrWhiteSpace($primarySmtp) -and [string]::Equals($addressText, $primarySmtp, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    continue
+                }
+
+                $domainSummary[$domainName].AliasOnly++
+            }
+        }
+
+        $items = @(
+            @($domainSummary.Values) |
+                ForEach-Object {
+                    [pscustomobject]@{
+                        Domain    = $_.Domain
+                        Total     = ($_.Primary + $_.AliasOnly)
+                        Primary   = $_.Primary
+                        AliasOnly = $_.AliasOnly
+                    }
+                } |
+                Sort-Object -Property Total, Primary -Descending |
+                Select-Object -First $Top |
+                ForEach-Object {
+                    '{0}: {1} total ({2} primary, {3} alias-only)' -f $_.Domain, $_.Total, $_.Primary, $_.AliasOnly
+                }
+        )
+
+        if ($items.Count -eq 0) {
+            return 'Not surfaced in current source'
+        }
+
+        return ($items -join '; ')
+    }
 
     $domainRowsWithSortValue = @()
     foreach ($row in @($DomainRows)) {
@@ -3335,7 +3403,7 @@ function Get-CustomerTechnicalObservations {
     $totalPrivilegedIdentities = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $privilegedSummaryRecord -Names @('TotalPrivilegedIdentities'))
     $recipientRowsForMessaging = if ($recipientRows.Count -gt 0) { $recipientRows } else { $mailboxRows }
     $recipientBreakdown = Get-CustomerTypeBreakdownText -Rows $recipientRowsForMessaging -PropertyName 'RecipientTypeDetails' -Top 6
-    $domainBreakdown = Get-CustomerRecipientDomainBreakdownText -DomainRows $domainRows -Top 3
+    $domainBreakdown = Get-CustomerRecipientDomainBreakdownText -DomainRows $domainRows -RecipientRows $recipientRowsForMessaging -Top 3
     $recipientBreakdownShort = Get-CustomerCondensedListText -Text $recipientBreakdown -MaxItems 3
     $domainBreakdownShort = Get-CustomerCondensedListText -Text $domainBreakdown -MaxItems 2
     $recipientBreakdownItems = Get-CustomerListItemsFromText -Text $recipientBreakdown -MaxItems 3
@@ -3663,7 +3731,7 @@ function Get-CustomerConsultativeSummaries {
     ).Count
     $recipientRowsForMessaging = if ($recipientRows.Count -gt 0) { $recipientRows } else { $mailboxRows }
     $recipientBreakdown = Get-CustomerTypeBreakdownText -Rows $recipientRowsForMessaging -PropertyName 'RecipientTypeDetails' -Top 3
-    $domainBreakdown = Get-CustomerRecipientDomainBreakdownText -DomainRows $domainRows -Top 2
+    $domainBreakdown = Get-CustomerRecipientDomainBreakdownText -DomainRows $domainRows -RecipientRows $recipientRowsForMessaging -Top 2
     $smtpAuthUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $smtpRelaySummary -Names @('SMTPAuthUsers'))
 
     $ownerlessTeams = @($teamRows | Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('OwnerCount'))) -eq 0 }).Count
@@ -6173,7 +6241,7 @@ $customerSourceModel = New-CustomerReportSourceModel -TenantName $tenantName -As
 $customerAssessmentTemplatePath = Get-CustomerAssessmentTemplatePath
 $customerAssessmentBlocks = New-CustomerAssessmentDocumentBlocks -SourceModel $customerSourceModel -Signals $customerAssessmentSignals -GeneratedAt $generatedAt
 Write-CustomerAssessmentDocxFromModel -TemplatePath $customerAssessmentTemplatePath -OutputPath $customerAssessmentReportOutPath -TenantName $tenantName -GeneratedAt $generatedAt -Blocks $customerAssessmentBlocks
-Write-CustomerAssessmentMarkdownFromDocx -InputPath $customerAssessmentReportOutPath -OutputPath $customerAssessmentReportMarkdownOutPath
+Write-CustomerAssessmentMarkdownFromBlocks -Blocks $customerAssessmentBlocks -OutputPath $customerAssessmentReportMarkdownOutPath
 
 $engineerActionPackMarkdown = New-EngineerActionPack -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt -JsonOutPath $jsonOutPath -CsvOutPath $csvOutPath -SnippetOutPath $snippetOutPath -SupportFolderPath $supportFolder
 Set-Content -Path $engineerMdOutPath -Value $engineerActionPackMarkdown -Encoding UTF8

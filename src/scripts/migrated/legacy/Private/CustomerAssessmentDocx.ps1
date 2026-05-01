@@ -40,6 +40,40 @@ function New-CustomerWordTableBlock {
     }
 }
 
+function New-CustomerWordListBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Items,
+        [Parameter(Mandatory = $false)][string]$Style = 'ListBullet'
+    )
+
+    return [pscustomobject]@{
+        Type  = 'List'
+        Items = @($Items | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+        Style = $Style
+    }
+}
+
+function New-CustomerWordImageBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][byte[]]$ImageBytes,
+        [Parameter(Mandatory = $true)][string]$AltText,
+        [Parameter(Mandatory = $false)][int]$WidthPx = 640,
+        [Parameter(Mandatory = $false)][int]$HeightPx = 240,
+        [Parameter(Mandatory = $false)][string]$ContentType = 'image/png'
+    )
+
+    return [pscustomobject]@{
+        Type        = 'Image'
+        ImageBytes  = $ImageBytes
+        AltText     = $AltText
+        WidthPx     = $WidthPx
+        HeightPx    = $HeightPx
+        ContentType = $ContentType
+    }
+}
+
 function New-CustomerWordTableRow {
     [CmdletBinding()]
     param(
@@ -56,6 +90,37 @@ function New-CustomerWordBlankCell {
     param()
 
     return '__ARRAYA_BLANK__'
+}
+
+function New-CustomerWordTableCellContent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]$Content,
+        [Parameter(Mandatory = $false)][string]$FillColor
+    )
+
+    return [pscustomobject]@{
+        CellType  = 'Formatted'
+        Content   = $Content
+        FillColor = $FillColor
+    }
+}
+
+function Get-CustomerWordTableCellMetadata {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $false)]$Content)
+
+    if ($null -ne $Content -and $Content.PSObject -and $Content.PSObject.Properties['CellType'] -and [string]$Content.CellType -eq 'Formatted') {
+        return [pscustomobject]@{
+            Content   = $Content.Content
+            FillColor = [string]$Content.FillColor
+        }
+    }
+
+    return [pscustomobject]@{
+        Content   = $Content
+        FillColor = $null
+    }
 }
 
 function Get-CustomerDistinctRoadmapActions {
@@ -129,6 +194,9 @@ function Convert-ToCustomerAssessmentMarkdownHeadingPrefix {
 function Convert-ToCustomerAssessmentMarkdownCellText {
     [CmdletBinding()]
     param([Parameter(Mandatory = $false)]$Content)
+
+    $cellMetadata = Get-CustomerWordTableCellMetadata -Content $Content
+    $Content = $cellMetadata.Content
 
     if ($null -eq $Content) {
         return 'Not surfaced in current source'
@@ -209,6 +277,17 @@ function Convert-CustomerAssessmentBlocksToMarkdown {
                 }
                 $lines.Add('') | Out-Null
             }
+            'List' {
+                foreach ($item in @($block.Items)) {
+                    $text = Convert-ToArrayaDisplayText -Value $item -Default ''
+                    if ([string]::IsNullOrWhiteSpace($text)) {
+                        continue
+                    }
+
+                    $lines.Add('- ' + $text) | Out-Null
+                }
+                $lines.Add('') | Out-Null
+            }
             'Table' {
                 $headers = @($block.Headers | ForEach-Object { Convert-ToCustomerAssessmentMarkdownCellText -Content $_ })
                 if ($headers.Count -eq 0) {
@@ -245,6 +324,9 @@ function Convert-CustomerAssessmentBlocksToMarkdown {
                 }
 
                 $lines.Add('') | Out-Null
+            }
+            'Image' {
+                continue
             }
         }
     }
@@ -1074,12 +1156,66 @@ function Get-CustomerMfaGapCategoryLabel {
     }
 }
 
+function Get-CustomerCompactMfaGapDriverText {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$GapCategory,
+        [AllowNull()]$GapReason,
+        [AllowNull()]$RelatedPolicies
+    )
+
+    $policyText = Convert-ToCustomerAssessmentDisplayText -Value $RelatedPolicies -Default ''
+    if (-not [string]::IsNullOrWhiteSpace($policyText) -and $policyText -ne 'Not validated from the reviewed data') {
+        return "Policy: $policyText"
+    }
+
+    $reasonText = Convert-ToCustomerAssessmentDisplayText -Value $GapReason -Default ''
+    if (-not [string]::IsNullOrWhiteSpace($reasonText) -and $reasonText -ne 'Not validated from the reviewed data') {
+        if ($reasonText -match '(?i)outside the include scope') {
+            return 'Outside enabled MFA include scope'
+        }
+
+        if ($reasonText -match '(?i)excluded through group') {
+            return 'Excluded through group or policy scope'
+        }
+
+        if ($reasonText -match '(?i)\bexcluded\b') {
+            return 'Explicitly excluded from enabled MFA scope'
+        }
+
+        $firstSentence = (($reasonText -split '(?<=[.!?])\s+', 2)[0]).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($firstSentence)) {
+            if ($firstSentence.Length -gt 96) {
+                return ($firstSentence.Substring(0, 93).TrimEnd() + '...')
+            }
+
+            return $firstSentence
+        }
+    }
+
+    return (Get-CustomerMfaGapCategoryLabel -Value $GapCategory)
+}
+
 function Get-CustomerActionImpactLabel {
     [CmdletBinding()]
     param([AllowNull()][string]$Severity)
 
     switch (([string]$Severity).ToLowerInvariant()) {
         'critical' { return 'High' }
+        'high' { return 'High' }
+        'medium' { return 'Medium' }
+        'low' { return 'Low' }
+        'info' { return 'Low' }
+        default { return 'Not validated from the reviewed data' }
+    }
+}
+
+function Get-CustomerActionCriticalityLabel {
+    [CmdletBinding()]
+    param([AllowNull()][string]$Severity)
+
+    switch (([string]$Severity).ToLowerInvariant()) {
+        'critical' { return 'Critical' }
         'high' { return 'High' }
         'medium' { return 'Medium' }
         'low' { return 'Low' }
@@ -1113,6 +1249,52 @@ function Get-CustomerPriorityRank {
         'monitor' { return 4 }
         default { return 5 }
     }
+}
+
+function Get-CustomerCriticalityFillColor {
+    [CmdletBinding()]
+    param([AllowNull()][string]$Criticality)
+
+    switch (([string]$Criticality).ToLowerInvariant()) {
+        'critical' { return 'FDE9E7' }
+        'high' { return 'FCE5CD' }
+        'medium' { return 'FFF2CC' }
+        'low' { return 'E7E6E6' }
+        'info' { return 'E7E6E6' }
+        default { return $null }
+    }
+}
+
+function Get-CustomerActionEffortLabel {
+    [CmdletBinding()]
+    param([AllowNull()]$Action)
+
+    $actionTitle = [string](Get-ArrayaObjectValue -Object $Action -Names @('ActionTitle'))
+    switch ($actionTitle) {
+        'Improve device compliance and managed endpoint coverage' { return 'High' }
+        'Establish accountable ownership for collaboration spaces' { return 'Medium' }
+        'Reduce privileged access and strengthen identity controls' { return 'Medium' }
+        'Strengthen domain and anti-spoofing controls' { return 'Medium' }
+        'Reconcile license capacity and tenant governance gaps' { return 'Medium' }
+        'Review external forwarding and mail flow exposure' { return 'Medium' }
+        'Strengthen baseline security and access protections' { return 'Medium' }
+        default { return 'Medium' }
+    }
+}
+
+function Get-CustomerTableRowCells {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $false)]$Row)
+
+    if ($null -ne $Row -and $Row.PSObject -and $Row.PSObject.Properties['Cells']) {
+        return @($Row.Cells)
+    }
+
+    if (($Row -is [System.Collections.IEnumerable]) -and -not ($Row -is [string]) -and -not ($Row -is [System.Collections.IDictionary])) {
+        return @($Row)
+    }
+
+    return @($Row)
 }
 
 function Get-CustomerGuestUserRoleLabel {
@@ -1492,9 +1674,663 @@ function Get-CustomerAssessmentAppendixSections {
     )
 }
 
+function Convert-CustomerDocumentationReferencesToListItems {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$References = @()
+    )
+
+    return @(
+        foreach ($reference in @($References)) {
+            if ($null -eq $reference) {
+                continue
+            }
+
+            $title = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $reference -Names @('Title')) -Default ''
+            $url = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $reference -Names @('Url')) -Default ''
+            $why = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $reference -Names @('WhyItIsRelevant')) -Default ''
+            $segments = @()
+            if (-not [string]::IsNullOrWhiteSpace($title)) {
+                $segments += $title
+            }
+            if (-not [string]::IsNullOrWhiteSpace($url)) {
+                $segments += $url
+            }
+            $line = $segments -join ' - '
+            if (-not [string]::IsNullOrWhiteSpace($why)) {
+                if (-not [string]::IsNullOrWhiteSpace($line)) {
+                    $line += '. '
+                }
+                $line += ('Why it is relevant: {0}' -f $why)
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($line)) {
+                $line
+            }
+        }
+    )
+}
+
+function Get-CustomerChartPaletteColors {
+    [CmdletBinding()]
+    param()
+
+    Add-Type -AssemblyName System.Drawing
+    return @(
+        [System.Drawing.Color]::FromArgb(36, 93, 165),
+        [System.Drawing.Color]::FromArgb(0, 146, 153),
+        [System.Drawing.Color]::FromArgb(219, 120, 44),
+        [System.Drawing.Color]::FromArgb(114, 81, 181),
+        [System.Drawing.Color]::FromArgb(74, 125, 63),
+        [System.Drawing.Color]::FromArgb(194, 67, 112)
+    )
+}
+
+function Get-CustomerChartRenderableRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Rows = @()
+    )
+
+    return @(
+        foreach ($row in @($Rows)) {
+            if ($null -eq $row) {
+                continue
+            }
+
+            $label = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $row -Names @('Label', 'Name', 'Workstream')) -Default ''
+            $value = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $row -Names @('Value', 'Count', 'OpenFindings'))
+            if ([string]::IsNullOrWhiteSpace($label) -or $null -eq $value -or $value -le 0) {
+                continue
+            }
+
+            [pscustomobject]@{
+                Label = $label
+                Value = [double]$value
+            }
+        }
+    )
+}
+
+function New-CustomerChartPngBytesFromBitmap {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Drawing.Bitmap]$Bitmap
+    )
+
+    $stream = New-Object System.IO.MemoryStream
+    try {
+        $Bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+        return $stream.ToArray()
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
+function New-CustomerHorizontalBarChartPngBytes {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Rows = @(),
+        [Parameter(Mandatory = $false)][int]$WidthPx = 720,
+        [Parameter(Mandatory = $false)][int]$HeightPx = 260
+    )
+
+    $renderableRows = @(Get-CustomerChartRenderableRows -Rows $Rows)
+    if ($renderableRows.Count -lt 2) {
+        return $null
+    }
+
+    Add-Type -AssemblyName System.Drawing
+    $colors = Get-CustomerChartPaletteColors
+    $bitmap = [System.Drawing.Bitmap]::new($WidthPx, $HeightPx)
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    $labelFont = [System.Drawing.Font]::new('Segoe UI', 10)
+    $valueFont = [System.Drawing.Font]::new('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+    $labelBrush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(52, 58, 64))
+    $axisPen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(197, 205, 214), 1)
+    try {
+        $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $graphics.Clear([System.Drawing.Color]::White)
+
+        $topPadding = 20
+        $leftPadding = 210
+        $rightPadding = 56
+        $rowSpacing = [Math]::Max([Math]::Floor(($HeightPx - ($topPadding * 2)) / $renderableRows.Count), 26)
+        $barHeight = [Math]::Max($rowSpacing - 10, 14)
+        $maxValue = ($renderableRows | Measure-Object -Property Value -Maximum).Maximum
+        if ($null -eq $maxValue -or $maxValue -le 0) {
+            return $null
+        }
+
+        $graphics.DrawLine($axisPen, $leftPadding, $topPadding - 4, $leftPadding, $HeightPx - $topPadding + 2)
+        for ($index = 0; $index -lt $renderableRows.Count; $index++) {
+            $row = $renderableRows[$index]
+            $y = $topPadding + ($index * $rowSpacing)
+            $barWidth = [Math]::Max([Math]::Round((($WidthPx - $leftPadding - $rightPadding) * ($row.Value / $maxValue))), 4)
+            $barRect = [System.Drawing.RectangleF]::new($leftPadding, $y, $barWidth, $barHeight)
+            $barBrush = [System.Drawing.SolidBrush]::new($colors[$index % $colors.Count])
+            try {
+                $graphics.DrawString($row.Label, $labelFont, $labelBrush, 8, $y - 1)
+                $graphics.FillRectangle($barBrush, $barRect)
+                $graphics.DrawString(([string][int][Math]::Round($row.Value, 0)), $valueFont, $labelBrush, ($leftPadding + $barWidth + 8), ($y - 1))
+            }
+            finally {
+                $barBrush.Dispose()
+            }
+        }
+
+        return New-CustomerChartPngBytesFromBitmap -Bitmap $bitmap
+    }
+    catch {
+        return $null
+    }
+    finally {
+        $axisPen.Dispose()
+        $labelBrush.Dispose()
+        $labelFont.Dispose()
+        $valueFont.Dispose()
+        $graphics.Dispose()
+        $bitmap.Dispose()
+    }
+}
+
+function New-CustomerDonutChartPngBytes {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Rows = @(),
+        [Parameter(Mandatory = $false)][int]$WidthPx = 720,
+        [Parameter(Mandatory = $false)][int]$HeightPx = 250
+    )
+
+    $renderableRows = @(Get-CustomerChartRenderableRows -Rows $Rows)
+    if ($renderableRows.Count -lt 2) {
+        return $null
+    }
+
+    Add-Type -AssemblyName System.Drawing
+    $colors = Get-CustomerChartPaletteColors
+    $bitmap = [System.Drawing.Bitmap]::new($WidthPx, $HeightPx)
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    $labelFont = [System.Drawing.Font]::new('Segoe UI', 10)
+    $smallFont = [System.Drawing.Font]::new('Segoe UI', 9)
+    $boldFont = [System.Drawing.Font]::new('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
+    $labelBrush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(52, 58, 64))
+    try {
+        $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $graphics.Clear([System.Drawing.Color]::White)
+
+        $chartSize = [Math]::Min($HeightPx - 32, 190)
+        $chartRect = [System.Drawing.Rectangle]::new(18, [Math]::Max([Math]::Floor(($HeightPx - $chartSize) / 2), 16), $chartSize, $chartSize)
+        $innerSize = [Math]::Floor($chartSize * 0.56)
+        $innerOffset = [Math]::Floor(($chartSize - $innerSize) / 2)
+        $total = ($renderableRows | Measure-Object -Property Value -Sum).Sum
+        if ($null -eq $total -or $total -le 0) {
+            return $null
+        }
+
+        $startAngle = -90.0
+        for ($index = 0; $index -lt $renderableRows.Count; $index++) {
+            $row = $renderableRows[$index]
+            $sweepAngle = [double](360.0 * ($row.Value / $total))
+            $sliceBrush = [System.Drawing.SolidBrush]::new($colors[$index % $colors.Count])
+            try {
+                $graphics.FillPie($sliceBrush, $chartRect, [single]$startAngle, [single]$sweepAngle)
+            }
+            finally {
+                $sliceBrush.Dispose()
+            }
+            $startAngle += $sweepAngle
+        }
+
+        $graphics.FillEllipse([System.Drawing.Brushes]::White, ($chartRect.X + $innerOffset), ($chartRect.Y + $innerOffset), $innerSize, $innerSize)
+        $totalText = [string][int][Math]::Round($total, 0)
+        $totalLabelSize = $graphics.MeasureString($totalText, $boldFont)
+        $totalCaptionSize = $graphics.MeasureString('Total', $smallFont)
+        $centerX = $chartRect.X + ($chartRect.Width / 2)
+        $centerY = $chartRect.Y + ($chartRect.Height / 2)
+        $graphics.DrawString($totalText, $boldFont, $labelBrush, ($centerX - ($totalLabelSize.Width / 2)), ($centerY - 16))
+        $graphics.DrawString('Total', $smallFont, $labelBrush, ($centerX - ($totalCaptionSize.Width / 2)), ($centerY + 6))
+
+        $legendX = $chartRect.Right + 28
+        $legendY = $chartRect.Y + 2
+        for ($index = 0; $index -lt $renderableRows.Count; $index++) {
+            $row = $renderableRows[$index]
+            $legendItemY = $legendY + ($index * 32)
+            $legendBrush = [System.Drawing.SolidBrush]::new($colors[$index % $colors.Count])
+            try {
+                $graphics.FillRectangle($legendBrush, $legendX, $legendItemY + 4, 12, 12)
+            }
+            finally {
+                $legendBrush.Dispose()
+            }
+
+            $percentageText = '{0:N1}%' -f (($row.Value / $total) * 100)
+            $graphics.DrawString($row.Label, $labelFont, $labelBrush, ($legendX + 20), $legendItemY)
+            $graphics.DrawString(($percentageText + ' (' + [int][Math]::Round($row.Value, 0) + ')'), $smallFont, $labelBrush, ($legendX + 20), ($legendItemY + 14))
+        }
+
+        return New-CustomerChartPngBytesFromBitmap -Bitmap $bitmap
+    }
+    catch {
+        return $null
+    }
+    finally {
+        $labelBrush.Dispose()
+        $labelFont.Dispose()
+        $smallFont.Dispose()
+        $boldFont.Dispose()
+        $graphics.Dispose()
+        $bitmap.Dispose()
+    }
+}
+
+function New-CustomerChartImageBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('HorizontalBar', 'Donut')][string]$ChartType,
+        [Parameter(Mandatory = $false)][object[]]$Rows = @(),
+        [Parameter(Mandatory = $true)][string]$AltText,
+        [Parameter(Mandatory = $false)][int]$WidthPx = 720,
+        [Parameter(Mandatory = $false)][int]$HeightPx = 260
+    )
+
+    $imageBytes = switch ($ChartType) {
+        'HorizontalBar' { New-CustomerHorizontalBarChartPngBytes -Rows $Rows -WidthPx $WidthPx -HeightPx $HeightPx }
+        'Donut' { New-CustomerDonutChartPngBytes -Rows $Rows -WidthPx $WidthPx -HeightPx $HeightPx }
+    }
+
+    if ($null -eq $imageBytes -or $imageBytes.Length -eq 0) {
+        return $null
+    }
+
+    return New-CustomerWordImageBlock -ImageBytes $imageBytes -AltText $AltText -WidthPx $WidthPx -HeightPx $HeightPx
+}
+
+function Get-CustomerOverallFindingsChartRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$WorkstreamSummaries = @()
+    )
+
+    return @(
+        foreach ($summary in @($WorkstreamSummaries | Where-Object { $null -ne $_ })) {
+            $workstream = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $summary -Names @('Workstream')) -Default ''
+            $openFindings = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $summary -Names @('OpenFindings'))
+            if ([string]::IsNullOrWhiteSpace($workstream) -or $null -eq $openFindings -or $openFindings -le 0) {
+                continue
+            }
+
+            [pscustomobject]@{
+                Label = $workstream
+                Value = $openFindings
+            }
+        }
+    )
+}
+
+function Get-CustomerRecipientTypeChartRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$RecipientRows = @()
+    )
+
+    return @(
+        @(
+            $RecipientRows |
+                Group-Object {
+                    Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('RecipientTypeDetails')) -Default 'Unknown'
+                } |
+                Sort-Object Count -Descending
+        ) |
+            Select-Object -First 5 |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Label = $_.Name
+                    Value = $_.Count
+                }
+            }
+    )
+}
+
+function Get-CustomerRecipientDomainSummaryRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$RecipientRows = @(),
+        [Parameter(Mandatory = $false)][int]$Top = 5
+    )
+
+    $domainSummary = @{}
+    foreach ($recipientRow in @($RecipientRows)) {
+        if ($null -eq $recipientRow) {
+            continue
+        }
+
+        $primarySmtp = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $recipientRow -Names @('PrimarySmtpAddress', 'WindowsEmailAddress', 'UserPrincipalName')) -Default ''
+        if (-not [string]::IsNullOrWhiteSpace($primarySmtp) -and $primarySmtp -match '@(?<domain>[^@\s>]+)$') {
+            $domainName = $Matches['domain'].ToLowerInvariant()
+            if (-not $domainSummary.ContainsKey($domainName)) {
+                $domainSummary[$domainName] = [ordered]@{ Domain = $domainName; Primary = 0; AliasOnly = 0 }
+            }
+            $domainSummary[$domainName].Primary++
+        }
+
+        $emailAddresses = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $recipientRow -Names @('EmailAddresses'))
+        foreach ($emailAddress in @($emailAddresses)) {
+            $addressText = Convert-ToArrayaDisplayText -Value $emailAddress -Default ''
+            if ([string]::IsNullOrWhiteSpace($addressText)) {
+                continue
+            }
+
+            if ($addressText -match '^[A-Za-z]+:(?<value>.+)$') {
+                $addressText = $Matches['value']
+            }
+            if ($addressText -notmatch '@(?<domain>[^@\s>]+)$') {
+                continue
+            }
+
+            $domainName = $Matches['domain'].ToLowerInvariant()
+            if (-not $domainSummary.ContainsKey($domainName)) {
+                $domainSummary[$domainName] = [ordered]@{ Domain = $domainName; Primary = 0; AliasOnly = 0 }
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($primarySmtp) -and [string]::Equals($addressText, $primarySmtp, [System.StringComparison]::OrdinalIgnoreCase)) {
+                continue
+            }
+
+            $domainSummary[$domainName].AliasOnly++
+        }
+    }
+
+    return @(
+        @($domainSummary.Values) |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Domain    = $_.Domain
+                    Total     = ($_.Primary + $_.AliasOnly)
+                    Primary   = $_.Primary
+                    AliasOnly = $_.AliasOnly
+                }
+            } |
+            Sort-Object Total, Primary -Descending |
+            Select-Object -First $Top
+    )
+}
+
+function Get-CustomerRecipientDomainChartRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$RecipientRows = @(),
+        [Parameter(Mandatory = $false)][int]$Top = 6
+    )
+
+    return @(
+        Get-CustomerRecipientDomainSummaryRows -RecipientRows $RecipientRows -Top $Top |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Label = $_.Domain
+                    Value = [double]$_.Total
+                }
+            }
+    )
+}
+
+function Get-CustomerExternalExposureCategoryChartRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$ExternalExposureFindings = @(),
+        [Parameter(Mandatory = $false)][int]$Top = 6
+    )
+
+    return @(
+        @(
+            $ExternalExposureFindings |
+                Where-Object {
+                    -not [string]::IsNullOrWhiteSpace((Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ExposureCategory')) -Default ''))
+                } |
+                Group-Object {
+                    Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ExposureCategory')) -Default 'Unknown'
+                } |
+                Sort-Object -Property @{ Expression = 'Count'; Descending = $true }, @{ Expression = 'Name'; Descending = $false }
+        ) |
+            Select-Object -First $Top |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Label = $_.Name
+                    Value = [double]$_.Count
+                }
+            }
+    )
+}
+
+function Get-CustomerExecutiveRiskBulletItems {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $false)][object[]]$Rows = @())
+
+    return @(
+        foreach ($row in @($Rows)) {
+            $cells = @(Get-CustomerTableRowCells -Row $row)
+            if ($cells.Count -lt 3) {
+                continue
+            }
+
+            $cluster = Convert-ToCustomerAssessmentDisplayText -Value $cells[0] -Default ''
+            $standout = Convert-ToCustomerAssessmentDisplayText -Value $cells[1] -Default ''
+            $care = Convert-ToCustomerAssessmentDisplayText -Value $cells[2] -Default ''
+            if ([string]::IsNullOrWhiteSpace($cluster)) {
+                continue
+            }
+
+            '{0}: {1} Why leadership should care: {2}' -f $cluster, $standout, $care
+        }
+    )
+}
+
+function Get-CustomerLeadershipDecisionBulletItems {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $false)][object[]]$Rows = @())
+
+    return @(
+        foreach ($row in @($Rows)) {
+            $cells = @(Get-CustomerTableRowCells -Row $row)
+            if ($cells.Count -lt 3) {
+                continue
+            }
+
+            $focus = Convert-ToCustomerAssessmentDisplayText -Value $cells[0] -Default ''
+            $next = Convert-ToCustomerAssessmentDisplayText -Value $cells[1] -Default ''
+            $whyNow = Convert-ToCustomerAssessmentDisplayText -Value $cells[2] -Default ''
+            if ([string]::IsNullOrWhiteSpace($focus)) {
+                continue
+            }
+
+            '{0}: {1} Why now: {2}' -f $focus, $next, $whyNow
+        }
+    )
+}
+
+function Get-CustomerApplicationPrimaryRiskSignalText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]$ApplicationRow
+    )
+
+    $signals = New-Object System.Collections.Generic.List[string]
+    $highPrivilegeCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HighPrivilegePermissionCount'))
+    $applicationPermissionCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('ApplicationPermissionCount'))
+    $activitySignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $ApplicationRow -Name 'ActivitySignalState'
+    $hasRecentActivity = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasRecentActivity'))
+    $redirectSignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $ApplicationRow -Name 'RedirectUriSignalState'
+    $insecureRedirectUriCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('InsecureRedirectUriCount'))
+    $ownerSignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $ApplicationRow -Name 'OwnerSignalState'
+    $ownerCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('OwnerCount'))
+
+    if (Test-CustomerEnterpriseApplicationHasExpiredCredentials -ApplicationRow $ApplicationRow) {
+        $signals.Add('Expired credentials') | Out-Null
+    }
+    elseif (Test-CustomerEnterpriseApplicationHasCredentialsExpiringSoon -ApplicationRow $ApplicationRow) {
+        $signals.Add('Credentials expiring soon') | Out-Null
+    }
+
+    if ($null -ne $highPrivilegeCount -and $highPrivilegeCount -gt 0) {
+        $signals.Add(('{0} high-privilege permission signal(s)' -f $highPrivilegeCount)) | Out-Null
+    }
+    elseif ($null -ne $applicationPermissionCount -and $applicationPermissionCount -gt 0) {
+        $signals.Add(('{0} application permission(s)' -f $applicationPermissionCount)) | Out-Null
+    }
+
+    if ($activitySignalState -eq 'Collected' -and $hasRecentActivity -eq $false) {
+        $signals.Add('No recent activity') | Out-Null
+    }
+
+    if (($redirectSignalState -eq 'Collected' -or $redirectSignalState -eq 'Partial') -and $null -ne $insecureRedirectUriCount -and $insecureRedirectUriCount -gt 0) {
+        $signals.Add(('{0} redirect URI flag(s)' -f $insecureRedirectUriCount)) | Out-Null
+    }
+
+    if ($ownerSignalState -eq 'Collected' -and $null -ne $ownerCount -and $ownerCount -le 0) {
+        $signals.Add('No owner coverage') | Out-Null
+    }
+
+    if (Test-CustomerEnterpriseApplicationSsoEnabled -ApplicationRow $ApplicationRow) {
+        $signals.Add(('SSO: {0}' -f (Get-CustomerEnterpriseApplicationSsoModeLabel -ApplicationRow $ApplicationRow -Default 'Configured'))) | Out-Null
+    }
+
+    if ($signals.Count -eq 0) {
+        return 'Review current owner, permission, and activity posture'
+    }
+
+    return Join-ArrayaReadableList -Items @($signals.ToArray())
+}
+
+function Get-CustomerEnterpriseApplicationBulletItems {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$ApplicationRows = @(),
+        [Parameter(Mandatory = $false)][string]$Mode = 'General',
+        [Parameter(Mandatory = $false)][int]$Max = 8
+    )
+
+    return @(
+        foreach ($applicationRow in @($ApplicationRows | Select-Object -First $Max)) {
+            $displayName = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $applicationRow -Names @('DisplayName')) -Default 'Unnamed application'
+            $activityText = Get-CustomerEnterpriseApplicationActivityText -ApplicationRow $applicationRow
+            $observationText = Get-CustomerEnterpriseApplicationObservationText -ApplicationRow $applicationRow
+            $line = switch ($Mode) {
+                'Sso' {
+                    '{0} - {1}; {2}; {3}' -f $displayName, (Get-CustomerEnterpriseApplicationSsoModeLabel -ApplicationRow $applicationRow -Default 'Configured'), (Get-CustomerApplicationPrimaryRiskSignalText -ApplicationRow $applicationRow), $observationText
+                }
+                'Cleanup' {
+                    '{0} - {1}; {2}; {3}' -f $displayName, (Get-CustomerApplicationPrimaryRiskSignalText -ApplicationRow $applicationRow), $activityText, $observationText
+                }
+                'Credential' {
+                    '{0} - {1}; {2}; {3}' -f $displayName, (Get-CustomerEnterpriseApplicationCredentialStateText -ApplicationRow $applicationRow), $activityText, $observationText
+                }
+                default {
+                    '{0} - {1}; {2}' -f $displayName, (Get-CustomerApplicationPrimaryRiskSignalText -ApplicationRow $applicationRow), $observationText
+                }
+            }
+
+            $line
+        }
+    )
+}
+
+function Get-CustomerReadableItemSampleText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][string[]]$Items = @(),
+        [Parameter(Mandatory = $false)][int]$Max = 4
+    )
+
+    $cleanItems = @(
+        $Items |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+            ForEach-Object { [string]$_ } |
+            Select-Object -Unique
+    )
+
+    if ($cleanItems.Count -le 0) {
+        return 'No named items surfaced'
+    }
+
+    if ($cleanItems.Count -le $Max) {
+        return Join-ArrayaReadableList -Items $cleanItems
+    }
+
+    $sampleItems = @($cleanItems | Select-Object -First $Max)
+    return '{0} (and {1} more)' -f (Join-ArrayaReadableList -Items $sampleItems), ($cleanItems.Count - $Max)
+}
+
+function Get-CustomerEnterpriseApplicationSpotlightListItems {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$ApplicationRows = @(),
+        [Parameter(Mandatory = $false)][int]$Max = 8
+    )
+
+    $selectedApplicationRows = @($ApplicationRows | Select-Object -First $Max)
+    if ($selectedApplicationRows.Count -le 0) {
+        return @()
+    }
+
+    $groupedSpotlightRows = New-Object System.Collections.Generic.List[object]
+    foreach ($applicationRow in $selectedApplicationRows) {
+        $displayName = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $applicationRow -Names @('DisplayName')) -Default 'Unnamed application'
+        $ssoMode = Get-CustomerEnterpriseApplicationSsoModeLabel -ApplicationRow $applicationRow -Default 'Not detected'
+        $riskSignal = Get-CustomerApplicationPrimaryRiskSignalText -ApplicationRow $applicationRow
+        $activityText = Get-CustomerEnterpriseApplicationActivityText -ApplicationRow $applicationRow
+        $groupKey = '{0}||{1}||{2}' -f $ssoMode, $riskSignal, $activityText
+
+        $groupedSpotlightRows.Add([pscustomobject]@{
+            DisplayName = $displayName
+            SsoMode     = $ssoMode
+            RiskSignal  = $riskSignal
+            Activity    = $activityText
+            GroupKey    = $groupKey
+        }) | Out-Null
+    }
+
+    return @(
+        foreach ($spotlightGroup in @($groupedSpotlightRows | Group-Object -Property GroupKey)) {
+            if ($spotlightGroup.Count -le 0) {
+                continue
+            }
+
+            $sampleRow = $spotlightGroup.Group | Select-Object -First 1
+            $applicationNames = @($spotlightGroup.Group | ForEach-Object { [string]$_.DisplayName })
+            $applicationNameText = Get-CustomerReadableItemSampleText -Items $applicationNames -Max 4
+            'Applications: {0}; SSO: {1}; Primary risk signal: {2}; Latest activity: {3}' -f $applicationNameText, $sampleRow.SsoMode, $sampleRow.RiskSignal, $sampleRow.Activity
+        }
+    )
+}
+
+function Get-CustomerLargestSiteReviewListItems {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$SiteRows = @(),
+        [Parameter(Mandatory = $false)][int]$Max = 5
+    )
+
+    return @(
+        foreach ($siteRow in @($SiteRows | Select-Object -First $Max)) {
+            $title = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $siteRow -Names @('Title')) -Default 'Unnamed site'
+            $owner = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $siteRow -Names @('Owner')) -Default 'Owner not surfaced'
+            $storage = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $siteRow -Names @('StorageUsedGB', 'StorageUsageCurrent')) -Default 'Not surfaced in current source'
+            if ($storage -ne 'Not surfaced in current source') {
+                $storage = ('{0} GB' -f $storage)
+            }
+            $lastModified = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $siteRow -Names @('LastContentModifiedDate')) -Default 'Not surfaced in current source'
+            '{0} - Owner: {1}; Storage used: {2}; Last content modified: {3}' -f $title, $owner, $storage, $lastModified
+        }
+    )
+}
+
 function Convert-ToCustomerWordCellParagraphs {
     [CmdletBinding()]
     param([Parameter(Mandatory = $false)]$Content)
+
+    $cellMetadata = Get-CustomerWordTableCellMetadata -Content $Content
+    $Content = $cellMetadata.Content
 
     if ($null -eq $Content) {
         return @('Not validated from the reviewed data')
@@ -1552,6 +2388,25 @@ function New-CustomerWordParagraphXml {
     return "<w:p>$styleXml<w:r>$runProperties<w:t xml:space=""preserve"">$escapedText</w:t></w:r></w:p>"
 }
 
+function New-CustomerWordListXml {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Items,
+        [Parameter(Mandatory = $false)][string]$Style = 'ListBullet'
+    )
+
+    return @(
+        foreach ($item in @($Items)) {
+            $text = Convert-ToArrayaDisplayText -Value $item -Default ''
+            if ([string]::IsNullOrWhiteSpace($text)) {
+                continue
+            }
+
+            New-CustomerWordParagraphXml -Text $text -Style $Style
+        }
+    )
+}
+
 function New-CustomerWordTableCellXml {
     [CmdletBinding()]
     param(
@@ -1559,19 +2414,113 @@ function New-CustomerWordTableCellXml {
         [Parameter(Mandatory = $false)][switch]$Header
     )
 
+    $cellMetadata = Get-CustomerWordTableCellMetadata -Content $Content
     $paragraphXml = @()
-    foreach ($paragraph in (Convert-ToCustomerWordCellParagraphs -Content $Content)) {
+    foreach ($paragraph in (Convert-ToCustomerWordCellParagraphs -Content $cellMetadata.Content)) {
         $paragraphXml += New-CustomerWordParagraphXml -Text $paragraph -Style 'Normal' -Bold:$Header
     }
 
     $cellProperties = if ($Header) {
         '<w:tcPr><w:tcW w:w="0" w:type="auto"/><w:shd w:val="clear" w:color="auto" w:fill="D9E2F3"/></w:tcPr>'
     }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$cellMetadata.FillColor)) {
+        '<w:tcPr><w:tcW w:w="0" w:type="auto"/><w:shd w:val="clear" w:color="auto" w:fill="' + ([string]$cellMetadata.FillColor).TrimStart('#') + '"/></w:tcPr>'
+    }
     else {
         '<w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr>'
     }
 
     return "<w:tc>$cellProperties$($paragraphXml -join '')</w:tc>"
+}
+
+function Get-CustomerImageContentTypeExtension {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$ContentType)
+
+    switch ($ContentType.ToLowerInvariant()) {
+        'image/png' { return 'png' }
+        default { throw "Unsupported customer report image content type: $ContentType" }
+    }
+}
+
+function Initialize-CustomerImageBlocks {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][object[]]$Blocks)
+
+    $imageIndex = 0
+    foreach ($block in @($Blocks)) {
+        if ($null -eq $block -or [string]$block.Type -ne 'Image') {
+            continue
+        }
+
+        $extension = Get-CustomerImageContentTypeExtension -ContentType ([string]$block.ContentType)
+        $mediaPath = 'word/media/customer-chart-{0:D3}.{1}' -f ($imageIndex + 1), $extension
+        $relationshipId = 'rIdCustomerChart{0:D3}' -f ($imageIndex + 1)
+        $docPrId = 5000 + $imageIndex
+        $cx = [int]$block.WidthPx * 9525
+        $cy = [int]$block.HeightPx * 9525
+
+        $block | Add-Member -NotePropertyName MediaPath -NotePropertyValue $mediaPath -Force
+        $block | Add-Member -NotePropertyName RelationshipId -NotePropertyValue $relationshipId -Force
+        $block | Add-Member -NotePropertyName DocPrId -NotePropertyValue $docPrId -Force
+        $block | Add-Member -NotePropertyName WidthEmu -NotePropertyValue $cx -Force
+        $block | Add-Member -NotePropertyName HeightEmu -NotePropertyValue $cy -Force
+
+        $imageIndex++
+    }
+
+    return @($Blocks)
+}
+
+function New-CustomerWordImageXml {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$Block
+    )
+
+    $altText = Convert-ToCustomerWordXmlText -Text ([string]$Block.AltText)
+    $rId = [string]$Block.RelationshipId
+    $docPrId = [string]$Block.DocPrId
+    $cx = [string]$Block.WidthEmu
+    $cy = [string]$Block.HeightEmu
+
+    return @"
+<w:p>
+  <w:r>
+    <w:drawing>
+      <wp:inline distT="0" distB="0" distL="0" distR="0">
+        <wp:extent cx="$cx" cy="$cy"/>
+        <wp:effectExtent l="0" t="0" r="0" b="0"/>
+        <wp:docPr id="$docPrId" name="Customer Chart $docPrId" descr="$altText"/>
+        <wp:cNvGraphicFramePr>
+          <a:graphicFrameLocks noChangeAspect="1"/>
+        </wp:cNvGraphicFramePr>
+        <a:graphic>
+          <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+            <pic:pic>
+              <pic:nvPicPr>
+                <pic:cNvPr id="0" name="Customer Chart $docPrId" descr="$altText"/>
+                <pic:cNvPicPr/>
+              </pic:nvPicPr>
+              <pic:blipFill>
+                <a:blip r:embed="$rId"/>
+                <a:stretch><a:fillRect/></a:stretch>
+              </pic:blipFill>
+              <pic:spPr>
+                <a:xfrm>
+                  <a:off x="0" y="0"/>
+                  <a:ext cx="$cx" cy="$cy"/>
+                </a:xfrm>
+                <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+              </pic:spPr>
+            </pic:pic>
+          </a:graphicData>
+        </a:graphic>
+      </wp:inline>
+    </w:drawing>
+  </w:r>
+</w:p>
+"@
 }
 
 function New-CustomerWordTableXml {
@@ -1742,6 +2691,29 @@ function Set-CustomerZipTextEntry {
     }
 }
 
+function Set-CustomerZipBinaryEntry {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$Archive,
+        [Parameter(Mandatory = $true)][string]$EntryName,
+        [Parameter(Mandatory = $true)][byte[]]$Content
+    )
+
+    $existingEntry = $Archive.GetEntry($EntryName)
+    if ($null -ne $existingEntry) {
+        $existingEntry.Delete()
+    }
+
+    $entry = $Archive.CreateEntry($EntryName)
+    $stream = $entry.Open()
+    try {
+        $stream.Write($Content, 0, $Content.Length)
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
 function Set-CustomerAssessmentCoreProperties {
     [CmdletBinding()]
     param(
@@ -1767,6 +2739,87 @@ function Set-CustomerAssessmentCoreProperties {
     Set-CustomerZipTextEntry -Archive $Archive -EntryName 'docProps/core.xml' -Content $coreXml
 }
 
+function Set-CustomerAssessmentContentTypes {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$Archive,
+        [Parameter(Mandatory = $false)][object[]]$ImageBlocks = @()
+    )
+
+    if (@($ImageBlocks).Count -eq 0) {
+        return
+    }
+
+    $entry = $Archive.GetEntry('[Content_Types].xml')
+    if ($null -eq $entry) {
+        return
+    }
+
+    $reader = New-Object System.IO.StreamReader($entry.Open())
+    try {
+        [xml]$contentTypesXml = $reader.ReadToEnd()
+    }
+    finally {
+        $reader.Dispose()
+    }
+
+    $typesNode = $contentTypesXml.Types
+    foreach ($imageBlock in @($ImageBlocks)) {
+        $extension = Get-CustomerImageContentTypeExtension -ContentType ([string]$imageBlock.ContentType)
+        $hasDefault = @($typesNode.Default | Where-Object { [string]$_.Extension -eq $extension }).Count -gt 0
+        if (-not $hasDefault) {
+            $defaultNode = $contentTypesXml.CreateElement('Default', $typesNode.NamespaceURI)
+            $null = $defaultNode.SetAttribute('Extension', $extension)
+            $null = $defaultNode.SetAttribute('ContentType', [string]$imageBlock.ContentType)
+            $null = $typesNode.AppendChild($defaultNode)
+        }
+    }
+
+    Set-CustomerZipTextEntry -Archive $Archive -EntryName '[Content_Types].xml' -Content $contentTypesXml.OuterXml
+}
+
+function Set-CustomerAssessmentDocumentRelationships {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$Archive,
+        [Parameter(Mandatory = $false)][object[]]$ImageBlocks = @()
+    )
+
+    if (@($ImageBlocks).Count -eq 0) {
+        return
+    }
+
+    $entryName = 'word/_rels/document.xml.rels'
+    $entry = $Archive.GetEntry($entryName)
+    if ($null -eq $entry) {
+        return
+    }
+
+    $reader = New-Object System.IO.StreamReader($entry.Open())
+    try {
+        [xml]$relationshipsXml = $reader.ReadToEnd()
+    }
+    finally {
+        $reader.Dispose()
+    }
+
+    $relationshipsNode = $relationshipsXml.Relationships
+    foreach ($imageBlock in @($ImageBlocks)) {
+        $existing = @($relationshipsNode.Relationship | Where-Object { [string]$_.Id -eq [string]$imageBlock.RelationshipId })
+        if ($existing.Count -gt 0) {
+            continue
+        }
+
+        $relationshipNode = $relationshipsXml.CreateElement('Relationship', $relationshipsNode.NamespaceURI)
+        $null = $relationshipNode.SetAttribute('Id', [string]$imageBlock.RelationshipId)
+        $null = $relationshipNode.SetAttribute('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image')
+        $null = $relationshipNode.SetAttribute('Target', ([string]$imageBlock.MediaPath -replace '^word/', ''))
+        $null = $relationshipsNode.AppendChild($relationshipNode)
+    }
+
+    Set-CustomerZipTextEntry -Archive $Archive -EntryName $entryName -Content $relationshipsXml.OuterXml
+}
+
 function New-CustomerAssessmentDocumentXml {
     [CmdletBinding()]
     param(
@@ -1781,8 +2834,16 @@ function New-CustomerAssessmentDocumentXml {
             'Paragraph' {
                 $bodyElements.Add((New-CustomerWordParagraphXml -Text ([string]$block.Text) -Style ([string]$block.Style))) | Out-Null
             }
+            'List' {
+                foreach ($paragraphXml in @(New-CustomerWordListXml -Items @($block.Items) -Style ([string]$block.Style))) {
+                    $bodyElements.Add($paragraphXml) | Out-Null
+                }
+            }
             'Table' {
                 $bodyElements.Add((New-CustomerWordTableXml -Headers @($block.Headers) -Rows @($block.Rows) -Style ([string]$block.Style))) | Out-Null
+            }
+            'Image' {
+                $bodyElements.Add((New-CustomerWordImageXml -Block $block)) | Out-Null
             }
         }
     }
@@ -1792,7 +2853,7 @@ function New-CustomerAssessmentDocumentXml {
 
     return @"
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
   <w:body>
     $($bodyElements -join [Environment]::NewLine)
   </w:body>
@@ -1813,11 +2874,18 @@ function Write-CustomerAssessmentDocxFromModel {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     Copy-Item -LiteralPath $TemplatePath -Destination $OutputPath -Force
 
-    $documentXml = New-CustomerAssessmentDocumentXml -Blocks $Blocks -TemplatePath $OutputPath
+    $preparedBlocks = Initialize-CustomerImageBlocks -Blocks $Blocks
+    $imageBlocks = @($preparedBlocks | Where-Object { $null -ne $_ -and [string]$_.Type -eq 'Image' })
+    $documentXml = New-CustomerAssessmentDocumentXml -Blocks $preparedBlocks -TemplatePath $OutputPath
     $archive = [System.IO.Compression.ZipFile]::Open($OutputPath, [System.IO.Compression.ZipArchiveMode]::Update)
     try {
         Set-CustomerZipTextEntry -Archive $Archive -EntryName 'word/document.xml' -Content $documentXml
         Set-CustomerAssessmentCoreProperties -Archive $Archive -TenantName $TenantName -GeneratedAt $GeneratedAt
+        Set-CustomerAssessmentContentTypes -Archive $Archive -ImageBlocks $imageBlocks
+        Set-CustomerAssessmentDocumentRelationships -Archive $Archive -ImageBlocks $imageBlocks
+        foreach ($imageBlock in @($imageBlocks)) {
+            Set-CustomerZipBinaryEntry -Archive $Archive -EntryName ([string]$imageBlock.MediaPath) -Content ([byte[]]$imageBlock.ImageBytes)
+        }
     }
     finally {
         $archive.Dispose()
@@ -1923,6 +2991,9 @@ function Convert-CustomerAssessmentParagraphNodeToMarkdown {
         'Heading3' { return @("#### $text", '') }
         'Heading4' { return @("##### $text", '') }
         'Subtitle' { return @("**$text**", '') }
+        'ListBullet' { return @("- $text") }
+        'ListBullet2' { return @("- $text") }
+        'ListNumber' { return @("- $text") }
         default { return @($text, '') }
     }
 }
@@ -2604,17 +3675,32 @@ function New-CustomerAssessmentDocumentBlocks {
             Sort-Object -Unique
     )
 
+    $indexedRoadmapActions = @(
+        for ($index = 0; $index -lt @($roadmapActions).Count; $index++) {
+            [pscustomobject]@{
+                OriginalIndex = $index
+                Action        = $roadmapActions[$index]
+            }
+        }
+    )
+    $sortedRoadmapActions = @(
+        $indexedRoadmapActions |
+            Sort-Object -Property `
+                @{ Expression = { Get-CustomerSeverityRank -Severity ([string]$_.Action.HighestSeverity) }; Descending = $true }, `
+                @{ Expression = 'OriginalIndex'; Descending = $false } |
+            ForEach-Object {
+                $_.Action
+            }
+    )
+
     $recommendationRows = @(
-        foreach ($action in @($roadmapActions)) {
+        foreach ($action in @($sortedRoadmapActions)) {
+            $criticality = Get-CustomerActionCriticalityLabel -Severity ([string]$action.HighestSeverity)
+            $effort = Get-CustomerActionEffortLabel -Action $action
             New-CustomerWordTableRow -Cells @(
                 [string]$action.ActionTitle,
-                @(
-                    (Convert-ToCustomerAssessmentDisplayText -Value ([string]$action.RoadmapPhase) -Default 'Not validated from the reviewed data'),
-                    ('Impact: {0}' -f (Get-CustomerActionImpactLabel -Severity ([string]$action.HighestSeverity)))
-                ),
-                (Convert-ToCustomerAssessmentDisplayText -Value ([string]$action.FirstValidationStep) -Default 'Validate the current state behind this work item before scheduling remediation.'),
-                (Convert-ToCustomerAssessmentDisplayText -Value ([string]$action.SuccessCheck) -Default 'The agreed target state should be validated in the relevant detailed section.'),
-                (New-CustomerWordBlankCell)
+                (New-CustomerWordTableCellContent -Content $criticality -FillColor (Get-CustomerCriticalityFillColor -Criticality $criticality)),
+                $effort
             )
         }
     )
@@ -2622,27 +3708,8 @@ function New-CustomerAssessmentDocumentBlocks {
         $recommendationRows = @(
             New-CustomerWordTableRow -Cells @(
                 'Priority work item not clearly surfaced',
-                @('Monitor', 'Impact: Info'),
-                'Validate the current state behind this work item before scheduling remediation.',
-                'The agreed target state should be validated in the relevant detailed section.',
-                (New-CustomerWordBlankCell)
-            )
-        )
-    }
-
-    $recommendationImpactRows = @(
-        foreach ($action in @($roadmapActions)) {
-            New-CustomerWordTableRow -Cells @(
-                (Convert-ToCustomerAssessmentDisplayText -Value ([string]$action.ActionTitle) -Default 'Priority work item'),
-                (Convert-ToCustomerAssessmentNarrativeText -Text ([string]$action.UserImpactExperience))
-            )
-        }
-    )
-    if ($recommendationImpactRows.Count -eq 0) {
-        $recommendationImpactRows = @(
-            New-CustomerWordTableRow -Cells @(
-                'Priority work item not clearly surfaced',
-                'User impact should be confirmed from the detailed findings before remediation is scheduled.'
+                (New-CustomerWordTableCellContent -Content 'Low' -FillColor (Get-CustomerCriticalityFillColor -Criticality 'Low')),
+                'Medium'
             )
         )
     }
@@ -2709,6 +3776,17 @@ function New-CustomerAssessmentDocumentBlocks {
     else {
         @((New-CustomerWordTableRow -Cells @('Not surfaced in current source', 'Not surfaced in current source', 'Not surfaced in current source')))
     }
+    $devicePlatformChartRows = @(
+        $platformGroups |
+            Sort-Object Count -Descending |
+            Select-Object -First 5 |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Label = $_.Name
+                    Value = $_.Count
+                }
+            }
+    )
     $noteworthyEnterpriseApplications = if ($enterpriseApplications.Count -gt 0) {
         @(Get-CustomerNoteworthyEnterpriseApplications -ApplicationRows $enterpriseApplications -Top 8)
     }
@@ -2800,6 +3878,10 @@ function New-CustomerAssessmentDocumentBlocks {
     else {
         @((New-CustomerWordTableRow -Cells @('No credential lifecycle cleanup candidates were surfaced in the reviewed data', 'Credential lifecycle did not show an immediate issue in the reviewed app set', 'Not validated from the reviewed data', 'If app credentials are expected in this tenant, continue to review expiry posture alongside enterprise-app activity and least-privilege cleanup.')))
     }
+    $applicationSpotlightListItems = @(Get-CustomerEnterpriseApplicationSpotlightListItems -ApplicationRows $noteworthyEnterpriseApplications -Max 8)
+    $ssoApplicationListItems = @(Get-CustomerEnterpriseApplicationBulletItems -ApplicationRows $ssoApplicationRows -Mode 'Sso' -Max 8)
+    $cleanupCandidateListItems = @(Get-CustomerEnterpriseApplicationBulletItems -ApplicationRows $cleanupCandidateApplications -Mode 'Cleanup' -Max 8)
+    $credentialCleanupListItems = @(Get-CustomerEnterpriseApplicationBulletItems -ApplicationRows $credentialCleanupApplications -Mode 'Credential' -Max 8)
     $globalAdminTableRows = if ($gaRows.Count -gt 0) {
         @(
             foreach ($globalAdmin in @($gaRows | Select-Object -First 15)) {
@@ -2815,6 +3897,11 @@ function New-CustomerAssessmentDocumentBlocks {
     else {
         @((New-CustomerWordTableRow -Cells @('Not surfaced in current source', 'Not surfaced in current source', 'Not surfaced in current source', 'Not surfaced in current source')))
     }
+    $globalAdminRecommendationItems = @(
+        'Reduce the number of active Global Administrator assignments and remove the role entirely from inactive or stale privileged accounts.',
+        'Move administrators who do not routinely need full tenant-wide change authority to lower-privilege roles such as Global Reader.',
+        'Retain Global Administrator as an eligible role requiring approval before activation when elevated access is only occasionally needed.'
+    )
     $domainOverviewRows = if ($domainRows.Count -gt 0) {
         @(
             foreach ($domainRow in $domainRows) {
@@ -2902,6 +3989,14 @@ function New-CustomerAssessmentDocumentBlocks {
         @('Inactive mailbox types represented', $(if ($inactiveMailboxRows.Count -gt 0) { ((@($inactiveMailboxRows | Group-Object { Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('RecipientTypeDetails')) -Default 'Unknown' }) | Sort-Object Count -Descending | ForEach-Object { '{0}: {1}' -f $_.Name, $_.Count }) -join '; ') } else { 'Not surfaced in current source' })),
         @('Example inactive mailboxes', $(if ($inactiveMailboxRows.Count -gt 0) { ((@($inactiveMailboxRows | Select-Object -First 2 | ForEach-Object { '{0} ({1})' -f (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName')) -Default 'Not surfaced in current source'), (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('PrimarySmtpAddress', 'UserPrincipalName')) -Default 'address not surfaced') })) -join '; ') } else { 'Not surfaced in current source' }))
     )
+    $inactiveMailboxExampleItems = @(
+        foreach ($inactiveMailbox in @($inactiveMailboxRows | Select-Object -First 5)) {
+            $displayName = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $inactiveMailbox -Names @('DisplayName')) -Default 'Unnamed inactive mailbox'
+            $address = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $inactiveMailbox -Names @('PrimarySmtpAddress', 'UserPrincipalName')) -Default 'address not surfaced'
+            $recipientType = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $inactiveMailbox -Names @('RecipientTypeDetails')) -Default 'type not surfaced'
+            '{0} - {1}; {2}' -f $displayName, $address, $recipientType
+        }
+    )
     $groupMailboxUtilizationRows = @(
         @('Group mailboxes represented in statistics', $groupMailboxStatsRows.Count),
         @('Largest group mailbox', $(if ($largestGroupMailbox.Count -gt 0) { '{0} ({1} GB)' -f (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $largestGroupMailbox[0] -Names @('DisplayName')) -Default 'Not surfaced in current source'), (& $formatSizeGb (Get-ArrayaObjectValue -Object $largestGroupMailbox[0] -Names @('TotalItemSizeBytes'))) } else { 'Not surfaced in current source' })),
@@ -2950,6 +4045,15 @@ function New-CustomerAssessmentDocumentBlocks {
             New-CustomerWordTableRow -Cells @('Public folders still present', (Get-CustomerObservationState -Observation $messagingObservation -Signal 'Public folders still present'))
         )
     }
+    $recipientMixChartRows = @(Get-CustomerRecipientTypeChartRows -RecipientRows $recipientRows)
+    $recipientDomainChartRows = @(Get-CustomerRecipientDomainChartRows -RecipientRows $recipientRows -Top 6)
+    $topRecipientDomainSummaryRows = @(
+        Get-CustomerRecipientDomainSummaryRows -RecipientRows $recipientRows -Top 6 |
+            ForEach-Object {
+                New-CustomerWordTableRow -Cells @($_.Domain, $_.Total, $_.Primary, $_.AliasOnly)
+            }
+    )
+    $externalExposureCategoryChartRows = @(Get-CustomerExternalExposureCategoryChartRows -ExternalExposureFindings $externalExposureFindings -Top 6)
     $mailboxLifecycleRows = if ($null -ne $messagingConsultativeSummary -and @($messagingConsultativeSummary.SecondaryRows).Count -gt 0) {
         Convert-CustomerConfigurationRowsToWordTableRows -Rows @($messagingConsultativeSummary.SecondaryRows)
     }
@@ -2999,6 +4103,7 @@ function New-CustomerAssessmentDocumentBlocks {
     else {
         @((New-CustomerWordTableRow -Cells @('Not surfaced in current source', 'Not surfaced in current source', 'Not surfaced in current source', 'Not surfaced in current source')))
     }
+    $largestCollaborationSiteListItems = @(Get-CustomerLargestSiteReviewListItems -SiteRows $largestSharePointSites -Max 5)
     $teamsGovernanceRows = @(
         @('Teams reviewed', $teamRows.Count),
         @('Ownerless Teams', (Get-CustomerObservationState -Observation $collaborationObservation -Signal 'Ownerless Teams')),
@@ -3149,55 +4254,91 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text "This section is intended to give leadership a decision-ready view of where risk is clustering and why those patterns matter now." -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $executiveDecisionSummary) { $executiveDecisionSummary.Narrative } else { $SourceModel.ExecutiveNarrative })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Risk Clusters' -Style 'Heading2')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Risk Cluster', 'What Stands Out', 'Why Leadership Should Care') -Rows $executiveRiskRows)) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Leadership Decision Brief' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Decision Focus', 'What Should Happen Next', 'Why Now') -Rows $leadershipDecisionRows)) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items (Get-CustomerExecutiveRiskBulletItems -Rows $executiveRiskRows))) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Leadership Decision Brief' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items (Get-CustomerLeadershipDecisionBulletItems -Rows $leadershipDecisionRows))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This brief highlights the short list of leadership approvals that would remove the biggest blockers to a cleaner operating baseline.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Overall Findings Summary' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Workstream', 'Severity / Impact', 'Open Findings', 'What Stands Out') -Rows $overallFindingsSummaryRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This table shows where findings are clustering before the report moves into the detailed sections.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Findings Legend' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Term', 'What It Means In This Report') -Rows @($findingsLegendRows | ForEach-Object { New-CustomerWordTableRow -Cells @($_.Term, $_.Meaning) }))) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'The full normalized finding inventory is included later in 15.10 Full Findings Inventory so each grouped issue can be traced back to its supporting evidence.' -Style 'Normal')) | Out-Null
+    $overallFindingsChartBlock = New-CustomerChartImageBlock -ChartType 'HorizontalBar' -Rows (Get-CustomerOverallFindingsChartRows -WorkstreamSummaries $workstreamSummaries) -AltText 'Overall Findings by Workstream' -WidthPx 720 -HeightPx 260
+    if ($null -ne $overallFindingsChartBlock) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Overall Findings by Workstream' -Style 'Heading3')) | Out-Null
+        $blocks.Add($overallFindingsChartBlock) | Out-Null
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Use 4.0 Modern Workplace Recommendations for the prioritized execution view and 15.10 Full Findings Inventory for the detailed evidence behind each grouped issue.' -Style 'Normal')) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '4.0 Modern Workplace Recommendations' -Style 'Heading1')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'This action matrix is the main execution view for the report. Use it to sequence the work, then use the section pages and 15.10 Full Findings Inventory to validate the supporting evidence.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Recommendation', 'Priority / Impact', 'First Step', 'Success Check', 'Level of Effort') -Rows $recommendationRows)) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'User Impact / Expected Experience' -Style 'Heading2')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Recommendation', 'User Impact / Expected Experience') -Rows $recommendationImpactRows)) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Level of Effort is intentionally left blank where the current source does not support a reliable time or complexity estimate. That field can be completed during delivery planning once the team confirms ownership, dependencies, and remediation scope.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'This section is the streamlined execution view for the report. Use it to prioritize the work, then use the detailed sections and 15.10 Full Findings Inventory to validate the evidence behind each recommendation.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordTableBlock -Headers @('Recommendation', 'Criticality', 'Level of Effort') -Rows $recommendationRows)) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Level of Effort is an initial delivery-planning estimate intended to help sequence work at a glance. Confirm the final effort, dependencies, and ownership during project scoping.' -Style 'Normal')) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.0 Entra ID Review: User and Device Inventory' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Review of the tenant configuration indicated that identity hygiene and device governance need to be read together in this environment. The same parts of the tenant that are carrying stale privileged access are also the parts of the environment where compliance-driven access control is least mature.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.1 Entra User' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'User Account Summary' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Metric', 'Current State') -Rows $userSummaryRows)) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ("The user inventory shows {0} internal member account(s) and {1} guest account(s) in the reviewed data. What stands out is not just the count itself, but the number of enabled member accounts that no longer show recent sign-in activity. That pattern usually points to lifecycle drift rather than a single isolated exception." -f $(if ($memberUsers.Count -gt 0 -or $userRows.Count -gt 0) { $memberUsers.Count } else { 'an unconfirmed number of' }), $(if ($guestUsers.Count -gt 0 -or $userRows.Count -gt 0) { $guestUsers.Count } else { 'an unconfirmed number of' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'User Account Status Comparison' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Account Type', 'Total', 'Enabled', 'Inactive') -Rows $userComparisonRows)) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'When viewed collectively, the identity inventory suggests that access cleanup is not limited to one user population. Internal members and guest identities both show evidence of stale access, which increases the chance that a dormant identity still retains a path into collaboration, messaging, or privileged workflows.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(
+        ("The user inventory shows {0} internal member account(s) and {1} guest account(s) in the reviewed data." -f $(if ($memberUsers.Count -gt 0 -or $userRows.Count -gt 0) { $memberUsers.Count } else { 'an unconfirmed number of' }), $(if ($guestUsers.Count -gt 0 -or $userRows.Count -gt 0) { $guestUsers.Count } else { 'an unconfirmed number of' })),
+        'Enabled member accounts with no recent sign-in activity usually point to lifecycle drift rather than a single isolated exception.',
+        'When viewed collectively, the identity inventory suggests that access cleanup is not limited to one user population.',
+        'Internal members and guest identities both show evidence of stale access, which increases the chance that a dormant identity still retains a path into collaboration, messaging, or privileged workflows.'
+    ))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.2 Entra Device' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Registration Summary' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Metric', 'Current State') -Rows $deviceSummaryRows)) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text (Convert-ToCustomerAssessmentNarrativeText -Text $deviceObservation.ObservedNarrative) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Device Platform Distribution' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Platform', 'Count', 'Share') -Rows $platformDistributionRows)) | Out-Null
+    $devicePlatformChartBlock = New-CustomerChartImageBlock -ChartType 'Donut' -Rows $devicePlatformChartRows -AltText 'Device Platform Distribution' -WidthPx 540 -HeightPx 280
+    if ($null -ne $devicePlatformChartBlock) {
+        $blocks.Add($devicePlatformChartBlock) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Device platform distribution was not surfaced clearly enough to render a chart from the reviewed data.' -Style 'Normal')) | Out-Null
+    }
+    $blocks.Add((New-CustomerWordListBlock -Items @(
+        @(
+            Convert-ToCustomerAssessmentNarrativeText -Text $deviceObservation.ObservedNarrative
+            ('Dominant platform: {0}' -f $dominantPlatform)
+            (Convert-ToCustomerAssessmentNarrativeText -Text $deviceObservation.WhyItMatters)
+            (Convert-ToCustomerAssessmentNarrativeText -Text $deviceObservation.PositiveNarrative)
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    ))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Device Registration and Compliance Gaps' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'The reviewed device inventory makes it possible to see where endpoint registration exists without the same level of follow-through in management and compliance. In this tenant, that gap is most visible where stale, unmanaged, or non-compliant devices remain part of the active footprint.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text (Convert-ToCustomerAssessmentNarrativeText -Text $deviceObservation.WhyItMatters) -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text (Convert-ToCustomerAssessmentNarrativeText -Text $deviceObservation.PositiveNarrative) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(
+        'The reviewed device inventory makes it possible to see where endpoint registration exists without the same level of follow-through in management and compliance.',
+        'In this tenant, that gap is most visible where stale, unmanaged, or non-compliant devices remain part of the active footprint.',
+        (Convert-ToCustomerAssessmentNarrativeText -Text $deviceObservation.WhyItMatters),
+        (Convert-ToCustomerAssessmentNarrativeText -Text $deviceObservation.PositiveNarrative)
+    ))) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.3 Entra Guest Access Configuration' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'External Access Snapshot' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Configuration Signal', 'Current State') -Rows $externalAccessSnapshotTableRows)) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ("The guest access review showed that external collaboration is active enough to require ongoing governance rather than periodic cleanup. Inactive guest accounts and externally permissive sharing signals rarely create visible pain day to day, but they expand the tenant surface area if ownership decisions are delayed. The current guest invitation control is shown as {0}, and the tenant currently has {1} configured cross-tenant partner relationship(s) in the reviewed data." -f $guestInvitationControlText, $crossTenantPartnerCountText) -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaWhyThisMattersText)) { $guestMfaWhyThisMattersText } else { ("This matters because guest access combines identity risk with collaboration exposure. Once guest lifecycle, sharing defaults, and sponsor accountability drift at the same time, it becomes harder to validate which external access is still justified. Default inbound MFA trust is currently shown as {0}, which means cross-tenant trust decisions should be reviewed alongside guest invitation settings rather than as a separate design concern." -f $defaultInboundMfaTrustText) })) -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaCurrentStateSummaryText)) { $guestMfaCurrentStateSummaryText } else { ("Default inbound MFA trust is currently shown as {0}, so guest MFA design should be reviewed alongside guest invitation settings rather than as a separate design concern." -f $defaultInboundMfaTrustText) })) -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaUserExperienceText)) { $guestMfaUserExperienceText } else { 'When guest MFA is enforced, the desired experience is to require strong authentication and trust the guest home-tenant MFA where that design is supported and approved.' })) -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if (-not [string]::IsNullOrWhiteSpace($guestMfaDesiredStateText)) { $guestMfaDesiredStateText } else { 'The desired baseline is strong guest authentication with trusted home-tenant MFA where supported and approved, not a blanket requirement for every guest to register separately in the resource tenant.' })) -Style 'Normal')) | Out-Null
-    if (-not [string]::IsNullOrWhiteSpace($guestMfaRecommendationStrategyText)) {
-        $blocks.Add((New-CustomerWordParagraphBlock -Text $guestMfaRecommendationStrategyText -Style 'Normal')) | Out-Null
+    $guestObservedSegments = @(
+        ('Guest invitation is {0}.' -f $guestInvitationControlText),
+        ('The tenant currently has {0} configured cross-tenant partner relationship(s).' -f $crossTenantPartnerCountText),
+        ('Default inbound MFA trust is shown as {0}.' -f $defaultInboundMfaTrustText),
+        $(if (-not [string]::IsNullOrWhiteSpace($guestMfaCurrentStateSummaryText)) { $guestMfaCurrentStateSummaryText } else { $null })
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $guestObservedText = (@($guestObservedSegments) -join ' ')
+    $guestWhyItMattersText = if (-not [string]::IsNullOrWhiteSpace($guestMfaWhyThisMattersText)) {
+        $guestMfaWhyThisMattersText
     }
+    else {
+        'Guest access combines identity risk with collaboration exposure, so invitation scope and inbound trust should be reviewed as one control story rather than as separate settings.'
+    }
+    $guestRecommendedNextStepParts = @(
+        $(if (-not [string]::IsNullOrWhiteSpace($guestMfaDesiredStateText)) { $guestMfaDesiredStateText } else { 'Require strong guest authentication through a guest-specific Conditional Access policy and review cross-tenant trust deliberately rather than broadly trusting every external tenant by default.' }),
+        $(if (-not [string]::IsNullOrWhiteSpace($guestMfaRecommendationStrategyText)) { $guestMfaRecommendationStrategyText } elseif (-not [string]::IsNullOrWhiteSpace($guestMfaUserExperienceText)) { $guestMfaUserExperienceText } else { $null })
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Observed Guest and B2B Posture' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text $guestObservedText -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Why It Matters' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text $guestWhyItMattersText -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommended Next Step' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ((@($guestRecommendedNextStepParts) -join ' ')) -Style 'Normal')) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.4 Entra Applications and Access Review' -Style 'Heading2')) | Out-Null
     if ($applicationInventoryClearlyEmpty) {
@@ -3250,15 +4391,38 @@ function New-CustomerAssessmentDocumentBlocks {
     else {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'The current review did not surface a usable enterprise application inventory. Validation note: this section should be treated as incomplete rather than as proof that no enterprise applications exist in the tenant.' -Style 'Normal')) | Out-Null
     }
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Application Inventory' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'This table is a prioritized review sample of enterprise applications that surfaced the most relevant SSO, privilege, credential, and activity cleanup signals from the current tenant data.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Application', 'SSO Enabled', 'SSO Mode', 'Observation') -Rows $applicationInventoryRows)) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Application Spotlight' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'This spotlight list highlights the enterprise applications that surfaced the strongest SSO, privilege, credential, and activity cleanup signals from the current tenant data.' -Style 'Normal')) | Out-Null
+    if ($applicationSpotlightListItems.Count -gt 0) {
+        $blocks.Add((New-CustomerWordListBlock -Items $applicationSpotlightListItems)) | Out-Null
+    }
+    elseif ($applicationInventoryClearlyEmpty) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'No enterprise applications were surfaced in the reviewed data. Treat that as a current-state result and validate it if the tenant expects third-party or line-of-business applications.' -Style 'Normal')) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'The current review did not surface enough enterprise application detail to build a confident spotlight list, so this section should be treated as an inventory validation note rather than a clean bill of health.' -Style 'Normal')) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'SSO-Enabled Applications' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Application', 'SSO Mode', 'Privilege / Activity', 'Observation') -Rows $ssoFocusedApplicationRows)) | Out-Null
+    if ($ssoApplicationListItems.Count -gt 0) {
+        $blocks.Add((New-CustomerWordListBlock -Items $ssoApplicationListItems)) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'No SSO-enabled applications surfaced an actionable SSO review signal from the reviewed data.' -Style 'Normal')) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Inactive or High-Privilege Applications' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Application', 'Cleanup Signal', 'Latest Activity', 'Observation') -Rows $cleanupOpportunityRows)) | Out-Null
+    if ($cleanupCandidateListItems.Count -gt 0) {
+        $blocks.Add((New-CustomerWordListBlock -Items $cleanupCandidateListItems)) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'No inactive or high-privilege applications surfaced as immediate cleanup candidates from the reviewed data.' -Style 'Normal')) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Credential Cleanup Opportunities' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Application', 'Credential State', 'Latest Activity', 'Observation') -Rows $credentialLifecycleRows)) | Out-Null
+    if ($credentialCleanupListItems.Count -gt 0) {
+        $blocks.Add((New-CustomerWordListBlock -Items $credentialCleanupListItems)) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'No expired or near-expiry credential cleanup candidates surfaced from the reviewed application set.' -Style 'Normal')) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Application Sign-In Activity and Security Analysis' -Style 'Heading3')) | Out-Null
     if ($applicationInventoryClearlyEmpty) {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'Because the current review did not surface enterprise application objects, this section does not point to a present app-governance concentration on its own. The next decision here is simply whether the observed zero-app result matches the tenant operating model or whether the inventory should be validated again.' -Style 'Normal')) | Out-Null
@@ -3499,26 +4663,43 @@ function New-CustomerAssessmentDocumentBlocks {
             $mfaGapInternalMemberRowsSorted |
                 Select-Object -First 15 |
                 ForEach-Object {
-                    $relatedPolicyText = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('RelatedPolicies')) -Default ''
-                    if ([string]::IsNullOrWhiteSpace($relatedPolicyText) -or $relatedPolicyText -eq 'Not validated from the reviewed data') {
-                        $relatedPolicyText = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('GapReason')) -Default 'Not validated from the reviewed data'
-                    }
+                    $coverageDriverText = Get-CustomerCompactMfaGapDriverText `
+                        -GapCategory (Get-ArrayaObjectValue -Object $_ -Names @('GapCategory')) `
+                        -GapReason (Get-ArrayaObjectValue -Object $_ -Names @('GapReason')) `
+                        -RelatedPolicies (Get-ArrayaObjectValue -Object $_ -Names @('RelatedPolicies'))
                     $userPrincipalName = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserPrincipalName')) -Default 'Not validated from the reviewed data'
-                    $userTypeText = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default ''
-                    $displayUserType = if ($userTypeText.ToLowerInvariant() -eq 'guest' -or $userPrincipalName -like '*#EXT#*') { 'Guest' } else { $(if ([string]::IsNullOrWhiteSpace($userTypeText)) { 'Member' } else { $userTypeText }) }
 
                     New-CustomerWordTableRow -Cells @(
                         (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName')) -Default 'Unnamed user'),
                         $userPrincipalName,
-                        $displayUserType,
                         (Get-CustomerMfaGapCategoryLabel -Value (Get-ArrayaObjectValue -Object $_ -Names @('GapCategory'))),
-                        $relatedPolicyText
+                        $coverageDriverText
                     )
                 }
         )
     }
     else {
-        @((New-CustomerWordTableRow -Cells @('No uncovered internal member users surfaced in the reviewed data', 'N/A', 'Member', 'N/A', 'Guest and external-user gaps remain summarized separately in this report and in the workbook tabs.')))
+        @((New-CustomerWordTableRow -Cells @('No uncovered internal member users surfaced in the reviewed data', 'N/A', 'N/A', 'Guest and external-user gaps remain summarized separately in this report and in the workbook tabs.')))
+    }
+    $mfaGapDriverSummaryItems = if ($mfaGapInternalMemberRowsSorted.Count -gt 0) {
+        @(
+            $mfaGapInternalMemberRowsSorted |
+                ForEach-Object {
+                    Get-CustomerCompactMfaGapDriverText `
+                        -GapCategory (Get-ArrayaObjectValue -Object $_ -Names @('GapCategory')) `
+                        -GapReason (Get-ArrayaObjectValue -Object $_ -Names @('GapReason')) `
+                        -RelatedPolicies (Get-ArrayaObjectValue -Object $_ -Names @('RelatedPolicies'))
+                } |
+                Group-Object |
+                Sort-Object -Property @{ Expression = 'Count'; Descending = $true }, @{ Expression = 'Name'; Descending = $false } |
+                Select-Object -First 4 |
+                ForEach-Object {
+                    "{0}: {1} uncovered internal member user(s)." -f $_.Name, $_.Count
+                }
+        )
+    }
+    else {
+        @('No repeated internal-member MFA coverage driver surfaced in the reviewed data.')
     }
     $guestScopeKeywordPattern = '(?i)guest|external|b2b|partner'
     $guestRelevantMfaScopeRows = @(
@@ -3706,9 +4887,11 @@ function New-CustomerAssessmentDocumentBlocks {
     else {
         'The current source did not surface uncovered-user totals, so the table below should be treated as representative evidence rather than a complete uncovered-user census.'
     }
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ("{0} The table below highlights the first {1} uncovered internal member identities so the team can see whether the current employee-focused gap is being driven by exclusions, narrow targeting, or both." -f $mfaGapNarrativeText, [math]::Min($mfaGapInternalMemberRowsSorted.Count, 15)) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("{0} The summary below shows the most repeated coverage drivers, and the compact user table then highlights the first {1} uncovered internal member identities for targeted follow-up." -f $mfaGapNarrativeText, [math]::Min($mfaGapInternalMemberRowsSorted.Count, 15)) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Common Coverage Drivers' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items $mfaGapDriverSummaryItems)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Top Internal Member Users Not Covered by Enabled MFA Enforcement' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Display Name', 'User Principal Name', 'User Type', 'Gap Category', 'Related Policy / Scope') -Rows $mfaGapDetailRows)) | Out-Null
+    $blocks.Add((New-CustomerWordTableBlock -Headers @('Display Name', 'User Principal Name', 'Gap Category', 'Coverage Driver') -Rows $mfaGapDetailRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Guest MFA Coverage Drivers' -Style 'Heading3')) | Out-Null
     $guestCoverageInterpretationText = if ($null -ne $mfaGuestUsersCoveredByEnabledPolicies) {
         "Guest users currently show $mfaGuestUsersCoveredByEnabledPolicies covered and $mfaUncoveredGuestCount uncovered account(s) in the reviewed enabled-user inventory."
@@ -3754,15 +4937,33 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'The current review did not surface a dedicated service-account inventory for privileged roles, but mailbox-based SMTP activity and application-related send patterns still provide useful clues about long-lived non-user access. Where service identities remain active, they should be reviewed with the same ownership and lifecycle discipline applied to privileged users.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('DisplayName', 'UserPrincipalName', 'Send Count', 'Last Activity') -Rows $smtpRelayServiceAccountRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Global Administrator Accounts' -Style 'Heading2')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'It is recommended to reduce the number of active Global Administrator assignments in the tenant. This should include removing the role entirely from inactive or stale Global Administrators so the standing privileged footprint is not carried forward by default.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Administrators who do not regularly need full tenant-wide change authority should be reviewed for lower-privilege roles such as Global Reader, with Global Administrator retained as an eligible role for activation that requires approval when elevated access is truly needed.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items $globalAdminRecommendationItems)) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('DisplayName', 'Created', 'UserPrincipalName', 'LastSignIn') -Rows $globalAdminTableRows)) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '9.0 Exchange Online: Mailboxes and Storage Overview' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'A review was performed on mailbox usage and the distribution of recipient objects. The primary goals of this assessment were to evaluate current storage patterns, identify resources that are no longer active, and document where mailbox lifecycle governance is becoming difficult to manage cleanly.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text '9.1 High-Level Observations and Recommendations' -Style 'Heading2')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Messaging Snapshot At A Glance' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '9.1 Recipient and Mailbox Footprint' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recipient and Mailbox Footprint' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Signal', 'Current State') -Rows $messagingSnapshotRows)) | Out-Null
+    $recipientMixChartBlock = New-CustomerChartImageBlock -ChartType 'Donut' -Rows $recipientMixChartRows -AltText 'Recipient Mix by Type' -WidthPx 540 -HeightPx 280
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recipient Mix by Type' -Style 'Heading3')) | Out-Null
+    if ($null -ne $recipientMixChartBlock) {
+        $blocks.Add($recipientMixChartBlock) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recipient mix was not surfaced clearly enough to render a chart from the reviewed data.' -Style 'Normal')) | Out-Null
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Top Recipient Domains' -Style 'Heading3')) | Out-Null
+    $recipientDomainChartBlock = New-CustomerChartImageBlock -ChartType 'HorizontalBar' -Rows $recipientDomainChartRows -AltText 'Top Recipient Domains' -WidthPx 720 -HeightPx 240
+    if ($null -ne $recipientDomainChartBlock) {
+        $blocks.Add($recipientDomainChartBlock) | Out-Null
+    }
+    if ($topRecipientDomainSummaryRows.Count -gt 0) {
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('Domain', 'Total', 'Primary', 'Alias-only') -Rows $topRecipientDomainSummaryRows)) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Top recipient domain concentration was not surfaced clearly enough for a summary table.' -Style 'Normal')) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Mailbox Lifecycle Summary' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Signal', 'Current State') -Rows $mailboxLifecycleRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Transport Exposure Summary' -Style 'Heading3')) | Out-Null
@@ -3778,6 +4979,10 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Inactive Mailboxes' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Metric', 'Current State') -Rows $inactiveMailboxSummaryRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Inactive mailboxes remain part of the tenant storage and lifecycle picture even when they are no longer part of routine operations. In this tenant, the inactive mailbox count is meaningful because it shows that mailbox retention and deprovisioning decisions continue to affect storage, compliance, and post-departure data handling.' -Style 'Normal')) | Out-Null
+    if ($inactiveMailboxExampleItems.Count -gt 0) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Inactive Mailbox Examples' -Style 'Heading4')) | Out-Null
+        $blocks.Add((New-CustomerWordListBlock -Items $inactiveMailboxExampleItems)) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Group Mailbox Utilization' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Metric', 'Current State') -Rows $groupMailboxUtilizationRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Group mailboxes are not carrying the same volume as the larger shared-mailbox footprint, but they are still a useful signal for collaboration hygiene. Where group mailboxes remain active while Teams and Microsoft 365 groups show ownership or dormancy drift, the collaboration story becomes harder to manage consistently.' -Style 'Normal')) | Out-Null
@@ -3810,12 +5015,22 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Configuration Signal', 'Current State') -Rows $externalSharingSnapshotRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'SharePoint Tenant Controls Snapshot' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Configuration Signal', 'Current State') -Rows $sharePointTenantControlRows)) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Observations and Recommendations' -Style 'Heading2')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Site Title', 'Owner', 'Storage Used (GB)', 'Last Content Modified') -Rows $sharePointStorageRows)) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Largest Collaboration Sites to Review' -Style 'Heading2')) | Out-Null
+    if ($largestCollaborationSiteListItems.Count -gt 0) {
+        $blocks.Add((New-CustomerWordListBlock -Items $largestCollaborationSiteListItems)) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'No large SharePoint sites were surfaced clearly enough in the reviewed data for a focused review list.' -Style 'Normal')) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("External sharing remains an important part of the collaboration posture in this tenant. Tenant-level sharing is currently shown as {0}, the default sharing link type is {1}, and {2} reviewed SharePoint site(s) surfaced an external-sharing capability in the source data. Team-connected sites account for {3} of the reviewed SharePoint locations, which reinforces how closely SharePoint governance is tied to broader Teams and group ownership patterns." -f $tenantSharingCapabilityText, $defaultSharingLinkTypeText, $sharePointSitesExternalSharingEnabled, $teamConnectedSites) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("The external-sharing summary also shows sharing domain restriction mode as {0}, with {1} site-level sharing override(s) identified in the reviewed site inventory. That combination is important because it shows whether external exposure is being controlled only at the tenant level or is also being shaped materially by site-level exceptions." -f $sharingDomainRestrictionModeText, $siteOverrideCountText) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("The broader SharePoint tenant settings also show whether operational controls are reinforcing the sharing baseline or leaving it to stand on its own. The current source records legacy auth protocols as {0}, custom app authentication disabled as {1}, unmanaged sync restriction as {2}, and deleted-user personal site retention as {3} day(s). Those settings matter because external collaboration risk is shaped not only by link defaults, but also by sync controls, client behavior, and how long stale personal content remains in the tenant." -f (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $sharePointSharingSummaryRecord -Names @('IsLegacyAuthProtocolsEnabled')) -Default 'Not surfaced in current source'), (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $sharePointSharingSummaryRecord -Names @('DisableCustomAppAuthentication')) -Default 'Not surfaced in current source'), (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $sharePointSharingSummaryRecord -Names @('IsUnmanagedSyncAppForTenantRestricted')) -Default 'Not surfaced in current source'), (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $sharePointSharingSummaryRecord -Names @('DeletedUserPersonalSiteRetentionPeriodInDays')) -Default 'Not surfaced in current source')) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'External Exposure Review' -Style 'Heading2')) | Out-Null
+    $externalExposureCategoryChartBlock = New-CustomerChartImageBlock -ChartType 'Donut' -Rows $externalExposureCategoryChartRows -AltText 'External Exposure by Category' -WidthPx 540 -HeightPx 280
+    if ($null -ne $externalExposureCategoryChartBlock) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'External Exposure by Category' -Style 'Heading3')) | Out-Null
+        $blocks.Add($externalExposureCategoryChartBlock) | Out-Null
+    }
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Workload', 'Asset Type', 'Title', 'Exposure Category', 'Gap Reason', 'Review Priority') -Rows $externalExposureReviewRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("The external exposure review currently surfaces {0} actionable row(s). The strongest concentrations are {1} stale externally exposed site or OneDrive row(s), {2} owner-drift or ownership-mismatch row(s), {3} guest-heavy or dormant collaboration row(s), and {4} baseline or override mismatch row(s). That mix is useful because it separates broad tenant posture from the specific workspaces that now deserve cleanup." -f $externalExposureFindings.Count, $staleExternalExposureCount, $ownerDriftExternalExposureCount, $guestHeavyExposureCount, $siteOverrideExposureCount) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This view is intentionally limited to app-only signals. It is not a file-permission crawl, but it is enough to show where tenant sharing settings, site-level exceptions, stale externally exposed content, and guest collaboration patterns have started to diverge from a tighter external-access baseline.' -Style 'Normal')) | Out-Null
@@ -3861,109 +5076,109 @@ function New-CustomerAssessmentDocumentBlocks {
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '15.1 Device Management' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Device management is central to maintaining security and compliance in a tenant where unmanaged and stale devices remain part of the current footprint. The references below support the endpoint observations documented in this assessment.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Microsoft Guidance', 'Why It Is Relevant') -Rows @(
-        (New-CustomerWordTableRow -Cells @('Get started with device compliance policies in Microsoft Intune - https://learn.microsoft.com/en-us/intune/intune-service/protect/device-compliance-get-started', 'Supports the compliance baseline and managed-device observations in the endpoint review.')),
-        (New-CustomerWordTableRow -Cells @('Require compliant or hybrid Microsoft Entra joined device - https://learn.microsoft.com/en-us/entra/identity/conditional-access/policy-all-users-device-compliance', 'Provides Microsoft guidance for tying device state to access-control enforcement.'))
-    ))) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
+        (New-CustomerDocumentationReference -Title 'Get started with device compliance policies in Microsoft Intune' -Url 'https://learn.microsoft.com/en-us/intune/intune-service/protect/device-compliance-get-started' -WhyItIsRelevant 'Supports the compliance baseline and managed-device observations in the endpoint review.'),
+        (New-CustomerDocumentationReference -Title 'Require compliant or hybrid Microsoft Entra joined device' -Url 'https://learn.microsoft.com/en-us/entra/identity/conditional-access/policy-all-users-device-compliance' -WhyItIsRelevant 'Provides Microsoft guidance for tying device state to access-control enforcement.')
+    )))) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '15.2 Entra Guest Access Best Practices' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Guest access best practices matter in this tenant because external collaboration, inactive guests, and sharing posture are all part of the current risk picture. These references support the guest lifecycle and external-access observations in the report.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Microsoft Guidance', 'Why It Is Relevant') -Rows @(
-        (New-CustomerWordTableRow -Cells @('B2B collaboration fundamentals - https://learn.microsoft.com/en-us/entra/external-id/b2b-fundamentals', 'Supports guest access governance and external collaboration design.')),
-        (New-CustomerWordTableRow -Cells @('Overview of external sharing in SharePoint and OneDrive - https://learn.microsoft.com/en-us/sharepoint/external-sharing-overview', 'Provides Microsoft guidance for the collaboration-sharing observations in this report.'))
-    ))) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
+        (New-CustomerDocumentationReference -Title 'B2B collaboration fundamentals' -Url 'https://learn.microsoft.com/en-us/entra/external-id/b2b-fundamentals' -WhyItIsRelevant 'Supports guest access governance and external collaboration design.'),
+        (New-CustomerDocumentationReference -Title 'Overview of external sharing in SharePoint and OneDrive' -Url 'https://learn.microsoft.com/en-us/sharepoint/external-sharing-overview' -WhyItIsRelevant 'Provides Microsoft guidance for the collaboration-sharing observations in this report.')
+    )))) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '15.3 Application Consent and Authentication Methods' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Application governance and authentication-method controls both affect how quickly identity exposure can grow in a tenant. The references in this appendix support the application-consent, MFA, and authentication-method observations documented earlier in the assessment.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Application User Consent Management' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Application user consent should be managed deliberately wherever users can authorize apps to access organizational data. In a tenant where privileged app permissions and consent workflow maturity are already part of the review, consent governance becomes an important control boundary.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommended Resources' -Style 'Heading4')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Microsoft Guidance', 'Why It Is Relevant') -Rows @(
-        (New-CustomerWordTableRow -Cells @('Configure the admin consent workflow - https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/configure-admin-consent-workflow', 'Supports the governance observations around application consent, approval workflow, and control maturity.')),
-        (New-CustomerWordTableRow -Cells @('Manage authentication methods - https://learn.microsoft.com/en-us/azure/active-directory/authentication/concept-authentication-methods-manage', 'Relevant where app access, MFA, and modern authentication governance are being reviewed together.'))
-    ))) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
+        (New-CustomerDocumentationReference -Title 'Configure the admin consent workflow' -Url 'https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/configure-admin-consent-workflow' -WhyItIsRelevant 'Supports the governance observations around application consent, approval workflow, and control maturity.'),
+        (New-CustomerDocumentationReference -Title 'Manage authentication methods' -Url 'https://learn.microsoft.com/en-us/azure/active-directory/authentication/concept-authentication-methods-manage' -WhyItIsRelevant 'Relevant where app access, MFA, and modern authentication governance are being reviewed together.')
+    )))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Authentication Methods Migration' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Migrating from legacy MFA and SSPR controls to the Authentication Methods policy becomes especially important when the tenant already shows mixed enforcement and uneven registration. The resources below support that transition.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Key Resources for Authentication Migration' -Style 'Heading4')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Microsoft Guidance', 'Why It Is Relevant') -Rows @(
-        (New-CustomerWordTableRow -Cells @('Manage authentication methods - https://learn.microsoft.com/en-us/azure/active-directory/authentication/concept-authentication-methods-manage', 'Supports migration away from legacy MFA and SSPR policy management.')),
-        (New-CustomerWordTableRow -Cells @('Self-service password reset deep dive - https://learn.microsoft.com/en-us/entra/identity/authentication/concept-sspr-howitworks', 'Provides Microsoft guidance for SSPR design and operational implications.'))
-    ))) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
+        (New-CustomerDocumentationReference -Title 'Manage authentication methods' -Url 'https://learn.microsoft.com/en-us/azure/active-directory/authentication/concept-authentication-methods-manage' -WhyItIsRelevant 'Supports migration away from legacy MFA and SSPR policy management.'),
+        (New-CustomerDocumentationReference -Title 'Self-service password reset deep dive' -Url 'https://learn.microsoft.com/en-us/entra/identity/authentication/concept-sspr-howitworks' -WhyItIsRelevant 'Provides Microsoft guidance for SSPR design and operational implications.')
+    )))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text '15.4 Access and Privileged Identity Management' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Conditional Access and privileged-role governance are two of the strongest levers available for reducing identity risk in this tenant. These references support the policy-state, exclusions, and standing-admin observations documented in the report.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Microsoft Guidance', 'Why It Is Relevant') -Rows @(
-        (New-CustomerWordTableRow -Cells @('Conditional Access overview - https://learn.microsoft.com/en-us/entra/identity/conditional-access/overview', 'Supports the policy coverage, exclusions, and enforcement observations.')),
-        (New-CustomerWordTableRow -Cells @('Privileged Identity Management overview - https://learn.microsoft.com/en-us/entra/id-governance/privileged-identity-management/pim-configure', 'Supports the recommendations related to privileged role hygiene and reducing standing access.'))
-    ))) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
+        (New-CustomerDocumentationReference -Title 'Conditional Access overview' -Url 'https://learn.microsoft.com/en-us/entra/identity/conditional-access/overview' -WhyItIsRelevant 'Supports the policy coverage, exclusions, and enforcement observations.'),
+        (New-CustomerDocumentationReference -Title 'Privileged Identity Management overview' -Url 'https://learn.microsoft.com/en-us/entra/id-governance/privileged-identity-management/pim-configure' -WhyItIsRelevant 'Supports the recommendations related to privileged role hygiene and reducing standing access.')
+    )))) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '15.5 Exchange Online Archives and SMTP Relay' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'The Exchange appendix supports the mailbox-growth, archive, forwarding, and relay observations documented in the assessment. These references are useful where mailbox lifecycle and transport controls are both part of the same remediation path.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Exchange Online Archives and Retention Policies' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Archive usage and mailbox retention are part of the same long-term lifecycle story. The references below support archive enablement, mailbox retention, and storage planning.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Microsoft Guidance', 'Why It Is Relevant') -Rows @(
-        (New-CustomerWordTableRow -Cells @('Learn about retention policies and retention labels - https://learn.microsoft.com/en-us/purview/retention', 'Supports retention-policy observations and mailbox lifecycle planning.')),
-        (New-CustomerWordTableRow -Cells @('On-premises password writeback with self-service password reset - https://learn.microsoft.com/en-us/entra/identity/authentication/concept-sspr-writeback', 'Relevant when archive, retention, and lifecycle handling intersect with hybrid identity operations.'))
-    ))) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
+        (New-CustomerDocumentationReference -Title 'Learn about retention policies and retention labels' -Url 'https://learn.microsoft.com/en-us/purview/retention' -WhyItIsRelevant 'Supports retention-policy observations and mailbox lifecycle planning.'),
+        (New-CustomerDocumentationReference -Title 'On-premises password writeback with self-service password reset' -Url 'https://learn.microsoft.com/en-us/entra/identity/authentication/concept-sspr-writeback' -WhyItIsRelevant 'Relevant when archive, retention, and lifecycle handling intersect with hybrid identity operations.')
+    )))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Third-Party SMTP Relay Configuration' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Relay and application-based sending paths should be documented as service patterns rather than left attached to mailbox accounts by default. These references support the SMTP relay observations in the messaging review.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Microsoft Guidance', 'Why It Is Relevant') -Rows @(
-        (New-CustomerWordTableRow -Cells @('Control automatic external email forwarding in Microsoft 365 - https://learn.microsoft.com/en-us/microsoft-365/security/office-365-security/outbound-spam-policies-external-email-forwarding', 'Supports the forwarding-control observations in the messaging section.')),
-        (New-CustomerWordTableRow -Cells @('How to set up a multifunction device or application to send email using Microsoft 365 or Office 365 - https://learn.microsoft.com/en-us/exchange/mail-flow-best-practices/how-to-set-up-a-multifunction-device-or-application-to-send-email-using-microsoft-365-or-office-365', 'Relevant to SMTP relay, connector, and mail-flow exception handling.'))
-    ))) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
+        (New-CustomerDocumentationReference -Title 'Control automatic external email forwarding in Microsoft 365' -Url 'https://learn.microsoft.com/en-us/microsoft-365/security/office-365-security/outbound-spam-policies-external-email-forwarding' -WhyItIsRelevant 'Supports the forwarding-control observations in the messaging section.'),
+        (New-CustomerDocumentationReference -Title 'How to set up a multifunction device or application to send email using Microsoft 365 or Office 365' -Url 'https://learn.microsoft.com/en-us/exchange/mail-flow-best-practices/how-to-set-up-a-multifunction-device-or-application-to-send-email-using-microsoft-365-or-office-365' -WhyItIsRelevant 'Relevant to SMTP relay, connector, and mail-flow exception handling.')
+    )))) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '15.6 Microsoft Teams and SharePoint Online' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Teams and SharePoint governance are closely linked in this tenant because collaboration growth, ownership, and sharing posture are moving together. The following Microsoft guidance supports the observations documented in the collaboration sections.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Microsoft Teams Governance' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Teams governance references are most relevant where ownerless workspaces, dormant collaboration spaces, and group-creation controls are part of the current-state review.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Microsoft Guidance', 'Why It Is Relevant') -Rows @(
-        (New-CustomerWordTableRow -Cells @('Manage who can create Microsoft 365 Groups - https://learn.microsoft.com/en-us/microsoft-365/solutions/manage-creation-of-groups', 'Supports governance of Teams-connected groups and workspace sprawl.')),
-        (New-CustomerWordTableRow -Cells @('Set expiration for Microsoft 365 groups - https://learn.microsoft.com/en-us/entra/identity/users/groups-lifecycle', 'Relevant to dormant collaboration spaces and lifecycle control.'))
-    ))) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
+        (New-CustomerDocumentationReference -Title 'Manage who can create Microsoft 365 Groups' -Url 'https://learn.microsoft.com/en-us/microsoft-365/solutions/manage-creation-of-groups' -WhyItIsRelevant 'Supports governance of Teams-connected groups and workspace sprawl.'),
+        (New-CustomerDocumentationReference -Title 'Set expiration for Microsoft 365 groups' -Url 'https://learn.microsoft.com/en-us/entra/identity/users/groups-lifecycle' -WhyItIsRelevant 'Relevant to dormant collaboration spaces and lifecycle control.')
+    )))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text '15.7 SharePoint Online Collaboration' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'SharePoint and OneDrive guidance is particularly relevant where storage growth, stale content, and external sharing need to be evaluated together rather than as separate issues.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Microsoft Guidance', 'Why It Is Relevant') -Rows @(
-        (New-CustomerWordTableRow -Cells @('Overview of external sharing in SharePoint and OneDrive - https://learn.microsoft.com/en-us/sharepoint/external-sharing-overview', 'Supports the collaboration-sharing observations in this report.')),
-        (New-CustomerWordTableRow -Cells @('Retention and deletion in OneDrive and SharePoint - https://learn.microsoft.com/en-us/sharepoint/retention-and-deletion', 'Relevant to stale OneDrive and SharePoint lifecycle handling.'))
-    ))) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
+        (New-CustomerDocumentationReference -Title 'Overview of external sharing in SharePoint and OneDrive' -Url 'https://learn.microsoft.com/en-us/sharepoint/external-sharing-overview' -WhyItIsRelevant 'Supports the collaboration-sharing observations in this report.'),
+        (New-CustomerDocumentationReference -Title 'Retention and deletion in OneDrive and SharePoint' -Url 'https://learn.microsoft.com/en-us/sharepoint/retention-and-deletion' -WhyItIsRelevant 'Relevant to stale OneDrive and SharePoint lifecycle handling.')
+    )))) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '15.8 DNS DMARC and OneDrive' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This appendix supports the domain-authentication, DMARC, and OneDrive lifecycle observations that surfaced during the review of accepted domains and collaboration services.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'DMARC Records' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'DMARC guidance is especially relevant where recipient volume is concentrated on a small set of accepted domains and mail-authentication posture is uneven across those namespaces.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Microsoft Guidance', 'Why It Is Relevant') -Rows @(
-        (New-CustomerWordTableRow -Cells @('Set up SPF in Microsoft 365 to help prevent spoofing - https://learn.microsoft.com/en-us/microsoft-365/security/office-365-security/set-up-spf-in-office-365-to-help-prevent-spoofing', 'Supports SPF and anti-spoofing guidance for the reviewed domains.')),
-        (New-CustomerWordTableRow -Cells @('Use DKIM to validate outbound email sent from your custom domain - https://learn.microsoft.com/en-us/defender-office-365/email-authentication-dkim-configure', 'Supports the observed DKIM posture for custom domains.')),
-        (New-CustomerWordTableRow -Cells @('Use DMARC to validate email, setup steps - https://learn.microsoft.com/en-us/defender-office-365/email-authentication-dmarc-configure', 'Supports DMARC record design, reporting, and policy progression.'))
-    ))) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
+        (New-CustomerDocumentationReference -Title 'Set up SPF in Microsoft 365 to help prevent spoofing' -Url 'https://learn.microsoft.com/en-us/microsoft-365/security/office-365-security/set-up-spf-in-office-365-to-help-prevent-spoofing' -WhyItIsRelevant 'Supports SPF and anti-spoofing guidance for the reviewed domains.'),
+        (New-CustomerDocumentationReference -Title 'Use DKIM to validate outbound email sent from your custom domain' -Url 'https://learn.microsoft.com/en-us/defender-office-365/email-authentication-dkim-configure' -WhyItIsRelevant 'Supports the observed DKIM posture for custom domains.'),
+        (New-CustomerDocumentationReference -Title 'Use DMARC to validate email, setup steps' -Url 'https://learn.microsoft.com/en-us/defender-office-365/email-authentication-dmarc-configure' -WhyItIsRelevant 'Supports DMARC record design, reporting, and policy progression.')
+    )))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'OneDrive' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'OneDrive guidance is relevant where user lifecycle, delegated stewardship, and stale personal content repositories are part of the current-state review.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Microsoft Guidance', 'Why It Is Relevant') -Rows @(
-        (New-CustomerWordTableRow -Cells @('Retention and deletion in OneDrive and SharePoint - https://learn.microsoft.com/en-us/sharepoint/retention-and-deletion', 'Relevant to stale OneDrive lifecycle handling and post-departure content management.'))
-    ))) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
+        (New-CustomerDocumentationReference -Title 'Retention and deletion in OneDrive and SharePoint' -Url 'https://learn.microsoft.com/en-us/sharepoint/retention-and-deletion' -WhyItIsRelevant 'Relevant to stale OneDrive lifecycle handling and post-departure content management.')
+    )))) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '15.9 Retention Policies and Data Loss Prevention' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Retention and DLP guidance becomes especially important where the tenant shows partial retention visibility, but not enough evidence to confirm a mature cross-workload lifecycle and data-protection program.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Additional Resources' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Microsoft Guidance', 'Why It Is Relevant') -Rows @(
-        (New-CustomerWordTableRow -Cells @('Learn about retention policies and retention labels - https://learn.microsoft.com/en-us/purview/retention', 'Supports retention-policy observations and the need for documented lifecycle controls.')),
-        (New-CustomerWordTableRow -Cells @('Learn about data loss prevention - https://learn.microsoft.com/en-us/purview/dlp-learn-about-dlp', 'Provides Microsoft guidance for DLP and data-protection governance.'))
-    ))) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
+        (New-CustomerDocumentationReference -Title 'Learn about retention policies and retention labels' -Url 'https://learn.microsoft.com/en-us/purview/retention' -WhyItIsRelevant 'Supports retention-policy observations and the need for documented lifecycle controls.'),
+        (New-CustomerDocumentationReference -Title 'Learn about data loss prevention' -Url 'https://learn.microsoft.com/en-us/purview/dlp-learn-about-dlp' -WhyItIsRelevant 'Provides Microsoft guidance for DLP and data-protection governance.')
+    )))) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '15.9 Pass-Through Authentication and Password Writeback' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Hybrid identity references are included here because directory synchronization, PTA, password writeback, and SSPR visibility all influence how identity operations can be supported safely and consistently.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Pass-Through Authentication (PTA)' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'PTA guidance is relevant anywhere the tenant depends on on-premises credential validation or is still deciding between hybrid sign-in approaches. These references support the hybrid identity observations surfaced in the report.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Microsoft Guidance', 'Why It Is Relevant') -Rows @(
-        (New-CustomerWordTableRow -Cells @('Microsoft Entra Connect: Pass-through Authentication - https://learn.microsoft.com/en-us/azure/active-directory/hybrid/how-to-connect-pta', 'Supports pass-through authentication design, agent requirements, and operational considerations.')),
-        (New-CustomerWordTableRow -Cells @('Microsoft Entra Connect: User sign-in - https://learn.microsoft.com/en-us/azure/active-directory/hybrid/plan-connect-user-signin', 'Provides comparison guidance for hybrid sign-in options and role selection.'))
-    ))) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
+        (New-CustomerDocumentationReference -Title 'Microsoft Entra Connect: Pass-through Authentication' -Url 'https://learn.microsoft.com/en-us/azure/active-directory/hybrid/how-to-connect-pta' -WhyItIsRelevant 'Supports pass-through authentication design, agent requirements, and operational considerations.'),
+        (New-CustomerDocumentationReference -Title 'Microsoft Entra Connect: User sign-in' -Url 'https://learn.microsoft.com/en-us/azure/active-directory/hybrid/plan-connect-user-signin' -WhyItIsRelevant 'Provides comparison guidance for hybrid sign-in options and role selection.')
+    )))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Password Writeback with AD Sync' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Password writeback and SSPR references are included because they directly affect password recovery, hybrid lifecycle handling, and end-user support workflows.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Microsoft Guidance', 'Why It Is Relevant') -Rows @(
-        (New-CustomerWordTableRow -Cells @('Self-service password reset deep dive - https://learn.microsoft.com/en-us/entra/identity/authentication/concept-sspr-howitworks', 'Supports the password reset and SSPR observations in the report.')),
-        (New-CustomerWordTableRow -Cells @('On-premises password writeback with self-service password reset - https://learn.microsoft.com/en-us/entra/identity/authentication/concept-sspr-writeback', 'Relevant to password writeback and hybrid credential-management considerations.')),
-        (New-CustomerWordTableRow -Cells @('Enable Microsoft Entra password writeback - https://learn.microsoft.com/en-us/azure/active-directory/authentication/tutorial-enable-sspr-writeback', 'Provides implementation guidance where password writeback is part of the target operating model.'))
-    ))) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
+        (New-CustomerDocumentationReference -Title 'Self-service password reset deep dive' -Url 'https://learn.microsoft.com/en-us/entra/identity/authentication/concept-sspr-howitworks' -WhyItIsRelevant 'Supports the password reset and SSPR observations in the report.'),
+        (New-CustomerDocumentationReference -Title 'On-premises password writeback with self-service password reset' -Url 'https://learn.microsoft.com/en-us/entra/identity/authentication/concept-sspr-writeback' -WhyItIsRelevant 'Relevant to password writeback and hybrid credential-management considerations.'),
+        (New-CustomerDocumentationReference -Title 'Enable Microsoft Entra password writeback' -Url 'https://learn.microsoft.com/en-us/azure/active-directory/authentication/tutorial-enable-sspr-writeback' -WhyItIsRelevant 'Provides implementation guidance where password writeback is part of the target operating model.')
+    )))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text '15.10 Full Findings Inventory' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This appendix table contains the full normalized findings inventory that supports the recommendations and workstream summaries in the main body of the report. The entries remain in the same order and preserve the same severity, priority, and recommendation text used throughout the assessment output.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Severity', 'Priority', 'Workstream', 'Rule / Finding', 'Why Flagged', 'Recommended Action', 'Success Criteria') -Rows $fullFindingsInventoryRows)) | Out-Null
