@@ -1149,9 +1149,9 @@ function Get-CustomerMfaGapCategoryLabel {
     param([AllowNull()]$Value)
 
     $text = Convert-ToCustomerAssessmentDisplayText -Value $Value -Default 'Not validated from the reviewed data'
-    switch ($text.ToLowerInvariant()) {
-        'excluded from enabled mfa ca policy' { return 'Explicitly excluded' }
-        'outside enabled mfa ca include scope' { return 'Outside include scope' }
+    switch -Regex ($text.ToLowerInvariant()) {
+        'excluded' { return 'Explicitly excluded' }
+        'outside.*include scope' { return 'Outside include scope' }
         default { return $text }
     }
 }
@@ -1172,7 +1172,7 @@ function Get-CustomerCompactMfaGapDriverText {
     $reasonText = Convert-ToCustomerAssessmentDisplayText -Value $GapReason -Default ''
     if (-not [string]::IsNullOrWhiteSpace($reasonText) -and $reasonText -ne 'Not validated from the reviewed data') {
         if ($reasonText -match '(?i)outside the include scope') {
-            return 'Outside enabled MFA include scope'
+            return 'Outside include scope'
         }
 
         if ($reasonText -match '(?i)excluded through group') {
@@ -2100,6 +2100,210 @@ function Get-CustomerExternalExposureCategoryChartRows {
                     Value = [double]$_.Count
                 }
             }
+    )
+}
+
+function Get-CustomerMfaMethodChartRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]$RegistrationSummaryRecord,
+        [Parameter(Mandatory = $false)]$EnrollmentSummaryRecord,
+        [Parameter(Mandatory = $false)][int]$Top = 6
+    )
+
+    $methodCounts = New-Object 'System.Collections.Generic.List[object]'
+    $methodCountSource = Get-ArrayaObjectValue -Object $RegistrationSummaryRecord -Names @('MethodCounts')
+
+    if ($methodCountSource -is [System.Collections.IDictionary]) {
+        foreach ($key in $methodCountSource.Keys) {
+            $label = Convert-ToCustomerAssessmentMfaMethodBreakdownText -Value $key -Default ''
+            $value = Convert-ArrayaToNumber $methodCountSource[$key]
+            if (-not [string]::IsNullOrWhiteSpace($label) -and $null -ne $value -and $value -gt 0) {
+                $methodCounts.Add([pscustomobject]@{
+                        Label = $label
+                        Value = [double]$value
+                    }) | Out-Null
+            }
+        }
+    }
+    elseif ($null -ne $methodCountSource -and $methodCountSource.PSObject) {
+        foreach ($property in $methodCountSource.PSObject.Properties) {
+            $label = Convert-ToCustomerAssessmentMfaMethodBreakdownText -Value $property.Name -Default ''
+            $value = Convert-ArrayaToNumber $property.Value
+            if (-not [string]::IsNullOrWhiteSpace($label) -and $null -ne $value -and $value -gt 0) {
+                $methodCounts.Add([pscustomobject]@{
+                        Label = $label
+                        Value = [double]$value
+                    }) | Out-Null
+            }
+        }
+    }
+
+    if ($methodCounts.Count -eq 0) {
+        $registeredMethodBreakdown = Convert-ToCustomerAssessmentMfaMethodBreakdownText -Value (Get-ArrayaObjectValue -Object $EnrollmentSummaryRecord -Names @('RegisteredMethodBreakdown')) -Default ''
+        foreach ($segment in @($registeredMethodBreakdown -split ';')) {
+            $trimmedSegment = ([string]$segment).Trim()
+            if ([string]::IsNullOrWhiteSpace($trimmedSegment) -or $trimmedSegment -notmatch '^(?<label>.+?)\s*=\s*(?<value>-?\d+(?:\.\d+)?)$') {
+                continue
+            }
+
+            $label = Convert-ToCustomerAssessmentMfaMethodBreakdownText -Value $Matches['label'] -Default ''
+            $value = Convert-ArrayaToNumber $Matches['value']
+            if (-not [string]::IsNullOrWhiteSpace($label) -and $null -ne $value -and $value -gt 0) {
+                $methodCounts.Add([pscustomobject]@{
+                        Label = $label
+                        Value = [double]$value
+                    }) | Out-Null
+            }
+        }
+    }
+
+    return @(
+        @($methodCounts.ToArray()) |
+            Group-Object Label |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Label = $_.Name
+                    Value = [double](($_.Group | Measure-Object -Property Value -Sum).Sum)
+                }
+            } |
+            Sort-Object Value, Label -Descending |
+            Select-Object -First $Top
+    )
+}
+
+function Test-CustomerMfaGapHasExclusionHit {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $false)]$GapRow)
+
+    $gapCategory = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $GapRow -Names @('GapCategory')) -Default ''
+    $gapReason = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $GapRow -Names @('GapReason')) -Default ''
+
+    return ($gapCategory -match '(?i)\bexcluded\b' -or $gapReason -match '(?i)\bexcluded\b')
+}
+
+function Get-CustomerMessageActivityTableRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Rows = @(),
+        [Parameter(Mandatory = $true)][string]$CountPropertyName,
+        [Parameter(Mandatory = $false)][int]$Top = 5
+    )
+
+    return @(
+        @(
+            $Rows |
+                Where-Object {
+                    $countValue = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @($CountPropertyName))
+                    $null -ne $countValue -and $countValue -gt 0
+                } |
+                Sort-Object `
+                    @{ Expression = { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @($CountPropertyName)) }; Descending = $true }, `
+                    @{ Expression = { (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserPrincipalName', 'DisplayName')) -Default '').ToLowerInvariant() } }
+        ) |
+            Select-Object -First $Top |
+            ForEach-Object {
+                $activityCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @($CountPropertyName))
+                New-CustomerWordTableRow -Cells @(
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName')) -Default 'Not surfaced in current source'),
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserPrincipalName')) -Default 'Not surfaced in current source'),
+                    $(if ($null -ne $activityCount) { [int64][Math]::Round([double]$activityCount, 0) } else { 'Not surfaced in current source' }),
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('LastActivityDate')) -Default 'Not surfaced in current source')
+                )
+            }
+    )
+}
+
+function Get-CustomerAdminActivityChartRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$EnabledAdminRows = @(),
+        [Parameter(Mandatory = $false)][int]$StaleThresholdDays = 180
+    )
+
+    if (@($EnabledAdminRows).Count -eq 0) {
+        return @()
+    }
+
+    $staleAdmins = @(
+        $EnabledAdminRows | Where-Object {
+            $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime', 'SignInActivityLastSignInDateTime'))
+            $null -eq $lastSignIn -or $lastSignIn -lt (Get-Date).AddDays(-1 * [Math]::Abs($StaleThresholdDays))
+        }
+    ).Count
+    $recentAdmins = [Math]::Max((@($EnabledAdminRows).Count - $staleAdmins), 0)
+
+    return @(
+        [pscustomobject]@{ Label = 'Recent admins'; Value = [double]$recentAdmins }
+        [pscustomobject]@{ Label = "Stale admins (>$StaleThresholdDays days or no sign-in)"; Value = [double]$staleAdmins }
+    )
+}
+
+function Get-CustomerDataFootprintChartRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$PrimaryMailboxStatsRows = @(),
+        [Parameter(Mandatory = $false)][object[]]$ArchiveMailboxStatsRows = @(),
+        [Parameter(Mandatory = $false)][object[]]$SharePointRows = @(),
+        [Parameter(Mandatory = $false)][object[]]$OneDriveRows = @()
+    )
+
+    $sumBytes = {
+        param([object[]]$Rows)
+
+        $total = 0.0
+        foreach ($row in @($Rows)) {
+            $value = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $row -Names @('TotalItemSizeBytes'))
+            if ($null -ne $value -and $value -gt 0) {
+                $total += [double]$value
+            }
+        }
+
+        return ($total / 1GB)
+    }
+
+    $sumSiteGb = {
+        param([object[]]$Rows)
+
+        $total = 0.0
+        foreach ($row in @($Rows)) {
+            $value = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $row -Names @('StorageUsedGB', 'StorageUsageCurrent'))
+            if ($null -ne $value -and $value -gt 0) {
+                $total += [double]$value
+            }
+        }
+
+        return $total
+    }
+
+    $exchangeMailboxRows = @(
+        $PrimaryMailboxStatsRows | Where-Object {
+            (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('MailboxType')) -Default '') -ne 'GroupMailbox'
+        }
+    )
+    $groupMailboxRows = @(
+        $PrimaryMailboxStatsRows | Where-Object {
+            (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('MailboxType')) -Default '') -eq 'GroupMailbox'
+        }
+    )
+    $teamConnectedSharePointRows = @(
+        $SharePointRows | Where-Object {
+            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsTeamsConnected'))) -eq $true
+        }
+    )
+    $standaloneSharePointRows = @(
+        $SharePointRows | Where-Object {
+            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsTeamsConnected'))) -ne $true
+        }
+    )
+
+    return @(
+        [pscustomobject]@{ Label = 'Exchange Mailboxes'; Value = [double](& $sumBytes $exchangeMailboxRows) }
+        [pscustomobject]@{ Label = 'Archive Mailboxes'; Value = [double](& $sumBytes $ArchiveMailboxStatsRows) }
+        [pscustomobject]@{ Label = 'Unified Group Mailboxes'; Value = [double](& $sumBytes $groupMailboxRows) }
+        [pscustomobject]@{ Label = 'Team-Connected SharePoint Sites'; Value = [double](& $sumSiteGb $teamConnectedSharePointRows) }
+        [pscustomobject]@{ Label = 'Standalone SharePoint Sites'; Value = [double](& $sumSiteGb $standaloneSharePointRows) }
+        [pscustomobject]@{ Label = 'OneDrive'; Value = [double](& $sumSiteGb $OneDriveRows) }
     )
 }
 
@@ -3144,6 +3348,7 @@ function New-CustomerAssessmentDocumentBlocks {
     $nonUserMailboxRows = Convert-ArrayaObjectToArray $Signals.NonUserMailboxes
     $emailActivitySummaryRecord = if ($Signals.EmailActivitySummary) { Get-ArrayaObjectValue -Object $Signals.EmailActivitySummary -Names @('Summary') } else { $null }
     $emailActivityTopSenders = Convert-ArrayaObjectToArray $Signals.EmailActivityTopSenders
+    $emailActivityTopReceivers = Convert-ArrayaObjectToArray $Signals.EmailActivityTopReceivers
     $smtpRelayConfigRecord = if ($Signals.SMTPRelayConfig) { Get-ArrayaObjectValue -Object $Signals.SMTPRelayConfig -Names @('Configuration', 'Summary') } else { $null }
     $smtpRelayServiceAccounts = Convert-ArrayaObjectToArray $Signals.SMTPRelayServiceAccounts
     $teamRows = Convert-ArrayaObjectToArray $Signals.AllTeams
@@ -4487,9 +4692,10 @@ function New-CustomerAssessmentDocumentBlocks {
         $mfaEnforcementGapUserRows |
             Sort-Object `
                 @{ Expression = {
-                    switch ((Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('GapCategory')) -Default '').ToLowerInvariant()) {
-                        'excluded from enabled mfa ca policy' { 0 }
-                        'outside enabled mfa ca include scope' { 1 }
+                    $gapCategoryText = (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('GapCategory')) -Default '').ToLowerInvariant()
+                    switch -Regex ($gapCategoryText) {
+                        'excluded' { 0 }
+                        'outside.*include scope' { 1 }
                         default { 2 }
                     }
                 } }, `
@@ -4520,10 +4726,10 @@ function New-CustomerAssessmentDocumentBlocks {
                 @{ Expression = { (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName', 'Identifier')) -Default '').ToLowerInvariant() } }
     )
     $mfaExcludedUserCount = @($mfaGapRowsSorted | Where-Object {
-        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('GapCategory')) -Default '').ToLowerInvariant() -eq 'excluded from enabled mfa ca policy'
+        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('GapCategory')) -Default '').ToLowerInvariant() -match 'excluded'
     }).Count
     $mfaOutsideIncludeUserCount = @($mfaGapRowsSorted | Where-Object {
-        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('GapCategory')) -Default '').ToLowerInvariant() -eq 'outside enabled mfa ca include scope'
+        (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('GapCategory')) -Default '').ToLowerInvariant() -match 'outside.*include scope'
     }).Count
     $mfaUncoveredMemberCount = @($mfaGapRowsSorted | Where-Object {
         $userTypeText = (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default '').ToLowerInvariant()
@@ -4800,6 +5006,55 @@ function New-CustomerAssessmentDocumentBlocks {
         @((New-CustomerWordTableRow -Cells @('Not validated from the reviewed data', 'Not validated from the reviewed data', 'Not validated from the reviewed data', 'Not validated from the reviewed data')))
     }
 
+    $mfaOutsideIncludeInternalMemberRows = @(
+        $mfaGapInternalMemberRowsSorted | Where-Object { -not (Test-CustomerMfaGapHasExclusionHit -GapRow $_) }
+    )
+    $mfaExcludedInternalMemberRows = @(
+        $mfaGapInternalMemberRowsSorted | Where-Object { Test-CustomerMfaGapHasExclusionHit -GapRow $_ }
+    )
+    $mfaOutsideIncludeDetailRows = @(
+        $mfaOutsideIncludeInternalMemberRows |
+            Select-Object -First 15 |
+            ForEach-Object {
+                New-CustomerWordTableRow -Cells @(
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName')) -Default 'Unnamed user'),
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserPrincipalName')) -Default 'Not validated from the reviewed data')
+                )
+            }
+    )
+    $mfaExcludedDetailRows = @(
+        $mfaExcludedInternalMemberRows |
+            Select-Object -First 15 |
+            ForEach-Object {
+                New-CustomerWordTableRow -Cells @(
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName')) -Default 'Unnamed user'),
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserPrincipalName')) -Default 'Not validated from the reviewed data')
+                )
+            }
+    )
+
+    $mfaEnrollmentStatusChartRows = @(
+        [pscustomobject]@{ Label = 'Registered'; Value = $(if ($null -ne $mfaRegisteredUsers) { [double]$mfaRegisteredUsers } else { 0.0 }) }
+        [pscustomobject]@{ Label = 'Not registered'; Value = $(if ($null -ne $mfaNotRegisteredUsers) { [double]$mfaNotRegisteredUsers } else { 0.0 }) }
+    )
+    $mfaEnrollmentMethodChartRows = Get-CustomerMfaMethodChartRows -RegistrationSummaryRecord $mfaRegistrationSummaryRecord -EnrollmentSummaryRecord $mfaEnrollmentSummaryRecord -Top 6
+    $mfaEnforcementCoverageChartRows = @(
+        [pscustomobject]@{ Label = 'Covered by active MFA enforcement'; Value = $(if ($null -ne $mfaUsersCoveredByEnabledPolicies) { [double]$mfaUsersCoveredByEnabledPolicies } else { 0.0 }) }
+        [pscustomobject]@{ Label = 'Not covered by active MFA enforcement'; Value = $(if ($null -ne $mfaUsersNotCoveredByEnabledPolicies) { [double]$mfaUsersNotCoveredByEnabledPolicies } else { 0.0 }) }
+    )
+    $mfaEnforcementDriverChartRows = @(
+        [pscustomobject]@{ Label = 'Outside active MFA include scope'; Value = [double]$mfaOutsideIncludeUserCount }
+        [pscustomobject]@{ Label = 'Excluded from active MFA policies'; Value = [double]$mfaExcludedUserCount }
+    )
+    $adminActivityChartRows = Get-CustomerAdminActivityChartRows -EnabledAdminRows $enabledAdminRows -StaleThresholdDays 180
+    $adminMfaCoverageChartRows = @(
+        [pscustomobject]@{ Label = 'Covered by active MFA enforcement'; Value = $(if ($null -ne $adminUsersCoveredByMfaEnforcement) { [double]$adminUsersCoveredByMfaEnforcement } else { 0.0 }) }
+        [pscustomobject]@{ Label = 'Not covered by active MFA enforcement'; Value = $(if ($null -ne $adminUsersNotCoveredByMfaEnforcement) { [double]$adminUsersNotCoveredByMfaEnforcement } else { 0.0 }) }
+    )
+    $dataFootprintChartRows = Get-CustomerDataFootprintChartRows -PrimaryMailboxStatsRows $primaryMailboxStatsRows -ArchiveMailboxStatsRows $archiveMailboxStatsRows -SharePointRows $sharePointRows -OneDriveRows $oneDriveRows
+    $topSenderTableRows = Get-CustomerMessageActivityTableRows -Rows $emailActivityTopSenders -CountPropertyName 'SendCount' -Top 5
+    $topReceiverTableRows = Get-CustomerMessageActivityTableRows -Rows $emailActivityTopReceivers -CountPropertyName 'ReceiveCount' -Top 5
+
     $blocks.Add((New-CustomerWordParagraphBlock -Text '6.0 Authentication Methods, MFA Enrollment, and MFA Enforcement' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This section separates MFA enrollment from MFA enforcement. Enrollment shows which authentication methods users have registered and whether weaker methods remain in use. Enforcement shows whether active access controls are actually requiring MFA during sign-in.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'MFA Enrollment' -Style 'Heading2')) | Out-Null
@@ -4816,6 +5071,22 @@ function New-CustomerAssessmentDocumentBlocks {
         @('Phishing-resistant method mix', $phishingResistantMethodMixText)
     ))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("Enrollment shows readiness, not enforcement. In the reviewed data, MFA enrollment is {0}, and {1} registered user(s) currently rely only on weaker methods while {2} default to a weaker MFA method. That means the tenant should evaluate method quality alongside raw registration coverage before treating MFA enrollment as mature." -f $(if ($null -ne $mfaEnrollmentRate) { "$mfaEnrollmentRate%" } else { 'not clearly validated' }), $(if ($null -eq $weakMethodsOnlyUsers) { 'an unconfirmed number of' } else { $weakMethodsOnlyUsers }), $(if ($null -eq $weakDefaultMethodUsers) { 'an unconfirmed number of users' } else { $weakDefaultMethodUsers })) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'MFA Enrollment Status' -Style 'Heading3')) | Out-Null
+    $mfaEnrollmentStatusChartBlock = New-CustomerChartImageBlock -ChartType 'Donut' -Rows $mfaEnrollmentStatusChartRows -AltText 'MFA Enrollment Status' -WidthPx 540 -HeightPx 280
+    if ($null -ne $mfaEnrollmentStatusChartBlock) {
+        $blocks.Add($mfaEnrollmentStatusChartBlock) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'MFA enrollment status was not surfaced clearly enough to render a chart from the reviewed data.' -Style 'Normal')) | Out-Null
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Registered MFA Method Mix' -Style 'Heading3')) | Out-Null
+    $mfaEnrollmentMethodChartBlock = New-CustomerChartImageBlock -ChartType 'HorizontalBar' -Rows $mfaEnrollmentMethodChartRows -AltText 'Registered MFA Method Mix' -WidthPx 720 -HeightPx 240
+    if ($null -ne $mfaEnrollmentMethodChartBlock) {
+        $blocks.Add($mfaEnrollmentMethodChartBlock) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Registered MFA method mix was not surfaced clearly enough to render a chart from the reviewed data.' -Style 'Normal')) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'MFA Enforcement' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Configuration Signal', 'Current State') -Rows @(
         @('Conditional Access policies reviewed', $(if ($null -ne $mfaConditionalAccessPoliciesReviewed) { $mfaConditionalAccessPoliciesReviewed } else { (Get-CustomerObservationState -Observation $identityObservation -Signal 'Conditional Access policies') })),
@@ -4856,7 +5127,24 @@ function New-CustomerAssessmentDocumentBlocks {
     else {
         'The current source did not surface enough enabled-user detail to calculate a reliable MFA coverage total.'
     }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Enrollment and enforcement are intentionally reported as separate views in this report. Users who are not enrolled in MFA remain an important readiness gap, but they are not added into the Conditional Access enforcement counts below.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("Enforcement shows whether users are actually being required to perform MFA, not just whether they have registered methods. In this review, the policy baseline shows {0} enabled Conditional Access policy/policies that require MFA and {1} still in report-only mode. {2} Report-only policies do not count as enforced coverage. Detailed uncovered-user and policy-scope review rows are available in the workbook tabs MfaEnforcementGapUsers and MfaEnforcementScopeReview." -f $(if ($null -eq $enabledMfaEnforcementPolicies) { 'an unconfirmed number of' } else { $enabledMfaEnforcementPolicies }), $(if ($null -eq $reportOnlyMfaEnforcementPolicies) { 'an unconfirmed number of policies' } else { $reportOnlyMfaEnforcementPolicies }), $mfaCoverageNarrativeText) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Covered vs Not Covered by Active MFA Enforcement' -Style 'Heading3')) | Out-Null
+    $mfaEnforcementCoverageChartBlock = New-CustomerChartImageBlock -ChartType 'Donut' -Rows $mfaEnforcementCoverageChartRows -AltText 'Covered vs Not Covered by Active MFA Enforcement' -WidthPx 540 -HeightPx 280
+    if ($null -ne $mfaEnforcementCoverageChartBlock) {
+        $blocks.Add($mfaEnforcementCoverageChartBlock) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Active MFA enforcement coverage was not surfaced clearly enough to render a chart from the reviewed data.' -Style 'Normal')) | Out-Null
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'MFA Enforcement Driver Breakdown' -Style 'Heading3')) | Out-Null
+    $mfaEnforcementDriverChartBlock = New-CustomerChartImageBlock -ChartType 'HorizontalBar' -Rows $mfaEnforcementDriverChartRows -AltText 'MFA Enforcement Driver Breakdown' -WidthPx 720 -HeightPx 240
+    if ($null -ne $mfaEnforcementDriverChartBlock) {
+        $blocks.Add($mfaEnforcementDriverChartBlock) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'The reviewed MFA enforcement gap data did not surface enough distinct driver categories to render a chart.' -Style 'Normal')) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("Guest MFA should be read as its own design question, not as a side effect of employee-only policies. {0}" -f $guestUserEnforcementStateText) -Style 'Normal')) | Out-Null
     $adminRegistrationNarrativeText = if ($null -ne $adminUsersNotRegisteredForMfa) {
         "$adminUsersNotRegisteredForMfa admin account(s) are not registered for MFA"
@@ -4887,11 +5175,25 @@ function New-CustomerAssessmentDocumentBlocks {
     else {
         'The current source did not surface uncovered-user totals, so the table below should be treated as representative evidence rather than a complete uncovered-user census.'
     }
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ("{0} The summary below shows the most repeated coverage drivers, and the compact user table then highlights the first {1} uncovered internal member identities for targeted follow-up." -f $mfaGapNarrativeText, [math]::Min($mfaGapInternalMemberRowsSorted.Count, 15)) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("{0} The summary below shows the most repeated coverage drivers, and the two concise user tables then separate internal members who fall outside the active MFA include scope from those who are explicitly excluded by enabled policies." -f $mfaGapNarrativeText) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Common Coverage Drivers' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordListBlock -Items $mfaGapDriverSummaryItems)) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Top Internal Member Users Not Covered by Enabled MFA Enforcement' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Display Name', 'User Principal Name', 'Gap Category', 'Coverage Driver') -Rows $mfaGapDetailRows)) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Internal Member Users Outside Active MFA Include Scope' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'These users are enabled internal members who were not surfaced inside the active MFA include scope and did not show an explicit exclusion-policy hit in the reviewed data. This bucket is usually the fastest way to find populations that were never targeted cleanly enough by the baseline.' -Style 'Normal')) | Out-Null
+    if ($mfaOutsideIncludeDetailRows.Count -gt 0) {
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('Display Name', 'User Principal Name') -Rows $mfaOutsideIncludeDetailRows)) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'No internal member users outside the active MFA include scope were surfaced in the reviewed data.' -Style 'Normal')) | Out-Null
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Internal Member Users Explicitly Excluded from Active MFA Policies' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'These users are enabled internal members who surfaced one or more explicit exclusion-policy hits in the reviewed MFA baseline. This bucket matters because exclusions can be intentional break-glass design, but they should be few, documented, and reviewed deliberately.' -Style 'Normal')) | Out-Null
+    if ($mfaExcludedDetailRows.Count -gt 0) {
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('Display Name', 'User Principal Name') -Rows $mfaExcludedDetailRows)) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'No internal member users explicitly excluded from active MFA policies were surfaced in the reviewed data.' -Style 'Normal')) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Guest MFA Coverage Drivers' -Style 'Heading3')) | Out-Null
     $guestCoverageInterpretationText = if ($null -ne $mfaGuestUsersCoveredByEnabledPolicies) {
         "Guest users currently show $mfaGuestUsersCoveredByEnabledPolicies covered and $mfaUncoveredGuestCount uncovered account(s) in the reviewed enabled-user inventory."
@@ -4930,6 +5232,23 @@ function New-CustomerAssessmentDocumentBlocks {
         @('Admin users not covered by enabled MFA enforcement policies', $(if ($null -ne $adminUsersNotCoveredByMfaEnforcement) { $adminUsersNotCoveredByMfaEnforcement } else { 'Not validated from the reviewed data' })),
         @('Example stale privileged identities', (Get-CustomerObservationState -Observation $identityObservation -Signal 'Example stale privileged identities'))
     ))) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recent vs Stale Admins' -Style 'Heading3')) | Out-Null
+    $adminActivityChartBlock = New-CustomerChartImageBlock -ChartType 'Donut' -Rows $adminActivityChartRows -AltText 'Recent vs Stale Admins' -WidthPx 540 -HeightPx 280
+    if ($null -ne $adminActivityChartBlock) {
+        $blocks.Add($adminActivityChartBlock) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Admin activity timing was not surfaced clearly enough to render a chart from the reviewed data.' -Style 'Normal')) | Out-Null
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Admins Covered vs Not Covered by Active MFA Enforcement' -Style 'Heading3')) | Out-Null
+    $adminMfaCoverageChartBlock = New-CustomerChartImageBlock -ChartType 'Donut' -Rows $adminMfaCoverageChartRows -AltText 'Admins Covered vs Not Covered by Active MFA Enforcement' -WidthPx 540 -HeightPx 280
+    if ($null -ne $adminMfaCoverageChartBlock) {
+        $blocks.Add($adminMfaCoverageChartBlock) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Admin MFA enforcement coverage was not surfaced clearly enough to render a chart from the reviewed data.' -Style 'Normal')) | Out-Null
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Admin registration gaps remain separate from admin enforcement gaps in this report. An admin can be enrolled but still sit outside the active enforcement baseline, and an unenrolled admin remains a readiness issue even where policy targeting is stronger.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Why This Matters' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $identityConsultativeSummary) { $identityConsultativeSummary.Narrative } else { 'Privileged access review matters most where stale administrative access and broad standing privileges begin to accumulate together.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $identityConsultativeSummary) { $identityConsultativeSummary.RecommendationSupport } else { 'This section supports the identity and access recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
@@ -4942,6 +5261,15 @@ function New-CustomerAssessmentDocumentBlocks {
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '9.0 Exchange Online: Mailboxes and Storage Overview' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'A review was performed on mailbox usage and the distribution of recipient objects. The primary goals of this assessment were to evaluate current storage patterns, identify resources that are no longer active, and document where mailbox lifecycle governance is becoming difficult to manage cleanly.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Data Footprint by Workload' -Style 'Heading2')) | Out-Null
+    $dataFootprintChartBlock = New-CustomerChartImageBlock -ChartType 'HorizontalBar' -Rows $dataFootprintChartRows -AltText 'Data Footprint by Workload' -WidthPx 720 -HeightPx 260
+    if ($null -ne $dataFootprintChartBlock) {
+        $blocks.Add($dataFootprintChartBlock) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'The reviewed storage signals were not complete enough to render a consolidated workload-footprint chart.' -Style 'Normal')) | Out-Null
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Teams storage is represented here through team-connected SharePoint site storage because separate Teams message-storage size is not collected in this report path.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text '9.1 Recipient and Mailbox Footprint' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recipient and Mailbox Footprint' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Signal', 'Current State') -Rows $messagingSnapshotRows)) | Out-Null
@@ -4963,6 +5291,14 @@ function New-CustomerAssessmentDocumentBlocks {
     }
     else {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'Top recipient domain concentration was not surfaced clearly enough for a summary table.' -Style 'Normal')) | Out-Null
+    }
+    if ($topSenderTableRows.Count -gt 0) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Top Senders' -Style 'Heading3')) | Out-Null
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('Display Name', 'User Principal Name', 'Send Count', 'Last Activity') -Rows $topSenderTableRows)) | Out-Null
+    }
+    if ($topReceiverTableRows.Count -gt 0) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Top Receivers' -Style 'Heading3')) | Out-Null
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('Display Name', 'User Principal Name', 'Receive Count', 'Last Activity') -Rows $topReceiverTableRows)) | Out-Null
     }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Mailbox Lifecycle Summary' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Signal', 'Current State') -Rows $mailboxLifecycleRows)) | Out-Null
