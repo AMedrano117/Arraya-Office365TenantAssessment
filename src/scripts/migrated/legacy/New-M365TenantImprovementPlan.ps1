@@ -721,7 +721,7 @@ function Get-FindingPresentationOverrides {
         }
         '^ADMIN-001$' {
             $override['WhyFlagged'] = 'The tenant has more standing Global Administrator accounts than the recommended operating threshold, increasing privileged access exposure.'
-            $override['Recommendation'] = 'Review every standing Global Administrator assignment, move day-to-day administration to lower-privilege roles where possible, and retain only the minimum approved permanent admins. Document break-glass coverage separately from routine admin access.'
+            $override['Recommendation'] = 'Review every standing Global Administrator assignment, remove the role entirely from inactive administrators, move infrequent administrators to lower-privilege roles such as Global Reader where possible, and retain only the minimum approved permanent admins. Where full tenant-wide access is only occasionally required, use Global Administrator as an eligible role that requires approval before activation. Document break-glass coverage separately from routine admin access.'
         }
         '^LIC-001$' {
             $override['WhyFlagged'] = 'One or more paid SKUs are at or near capacity, which can block onboarding and often indicates reclaimable or mismatched assignments.'
@@ -742,7 +742,7 @@ function Get-FindingPresentationOverrides {
     }
     elseif ($lookup -match 'global administrator') {
         $override['WhyFlagged'] = 'The tenant has more standing Global Administrator assignments than the recommended operating threshold, increasing privileged access exposure.'
-        $override['Recommendation'] = 'Review each standing Global Administrator assignment, remove routine admin users from the role, and retain only the minimum approved permanent admins plus documented emergency access accounts. Validate whether lower-privilege roles or eligible access can replace standing assignments.'
+        $override['Recommendation'] = 'Review each standing Global Administrator assignment, remove the role entirely from inactive or stale administrators, move infrequent admins to lower-privilege roles such as Global Reader where possible, and retain only the minimum approved permanent admins plus documented emergency access accounts. Validate whether Global Administrator should remain an eligible role that requires approval before activation instead of a standing assignment.'
         $override['TargetValue'] = 'Standing Global Administrator assignments reduced to the approved operating threshold'
     }
     elseif ($lookup -match 'not verified|unverified domain') {
@@ -5381,7 +5381,7 @@ if (-not (Test-DerivedCoverage -Tags @('mfa enforcement') -DerivedFindings $deri
 }
 
 if (-not (Test-DerivedCoverage -Tags @('global administrator', 'privileged') -DerivedFindings $derivedFindings) -and $snapshotMetrics.GlobalAdminCount -gt $MaxGlobalAdmins) {
-    Add-HeuristicFinding -Store $findingStore -RuleId 'ADMIN-001' -Area 'Identity Governance' -Category 'Privileged Access' -Severity 'High' -Finding 'Global administrator count exceeds the recommended threshold.' -Recommendation 'Reduce standing Global Administrator access and move privileged tasks to least privilege or eligible access where possible.' -CurrentValue "$($snapshotMetrics.GlobalAdminCount) accounts" -TargetValue "<= $MaxGlobalAdmins accounts" -RelatedWorksheet 'Admins' -RelatedSection 'Privileged Access'
+    Add-HeuristicFinding -Store $findingStore -RuleId 'ADMIN-001' -Area 'Identity Governance' -Category 'Privileged Access' -Severity 'High' -Finding 'Global administrator count exceeds the recommended threshold.' -Recommendation 'Reduce active Global Administrator assignments, remove stale admins from the role entirely, move infrequent administrators to lower-privilege roles such as Global Reader where possible, and use eligible activation with approval for full tenant-wide access where that operating model is supported.' -CurrentValue "$($snapshotMetrics.GlobalAdminCount) accounts" -TargetValue "<= $MaxGlobalAdmins accounts" -RelatedWorksheet 'Admins' -RelatedSection 'Privileged Access'
 }
 
 if (-not (Test-DerivedCoverage -Tags @('domain') -DerivedFindings $derivedFindings) -and $snapshotMetrics.UnverifiedDomainCount -gt 0) {
@@ -6028,6 +6028,7 @@ $customerAssessmentSignals = [pscustomobject]@{
     AdminMfaRegistrationGaps   = $adminMfaRegistrationGaps
     AdminMfaEnforcementGaps    = $adminMfaEnforcementGaps
     EnterpriseApplications     = $enterpriseApplications
+    AuthenticationSSOApplications = $authenticationSsoApplications
     EnterpriseApplicationSummary = $enterpriseApplicationSummary
     GuestSignInSummary         = $guestSignInSummary
     PrivilegedAccessSummary    = $privilegedAccessSummary
@@ -6087,10 +6088,11 @@ if (-not (Test-Path -Path $supportFolder)) {
 }
 
 $artifactPrefix = Get-TenantArtifactFilePrefix -TenantName $tenantName -Fallback $OutputPrefix
+$customerReportDeliveryDate = $generatedAt.ToString('yyyy-MM-dd')
 $jsonOutPath = Join-Path -Path $supportFolder -ChildPath ("{0}-Plan.json" -f $artifactPrefix)
 $csvOutPath = if ($IncludeLegacyArtifacts) { Join-Path -Path $supportFolder -ChildPath ("{0}-Plan.csv" -f $artifactPrefix) } else { $null }
 $mdOutPath = if ($IncludeLegacyArtifacts) { Join-Path -Path $supportFolder -ChildPath ("{0}-Plan.md" -f $artifactPrefix) } else { $null }
-$customerAssessmentReportOutPath = Join-Path -Path $supportFolder -ChildPath ("{0}-CustRpt.docx" -f $artifactPrefix)
+$customerAssessmentReportOutPath = Join-Path -Path $supportFolder -ChildPath ("{0}-Microsoft 365 Tenant Best Practices Assessment-{1}.docx" -f $artifactPrefix, $customerReportDeliveryDate)
 $customerAssessmentReportMarkdownOutPath = Join-Path -Path $supportFolder -ChildPath ("{0}-CustRpt.md" -f $artifactPrefix)
 $engineerMdOutPath = Join-Path -Path $supportFolder -ChildPath ("{0}-EngPack.md" -f $artifactPrefix)
 $snippetOutPath = Join-Path -Path $supportFolder -ChildPath ("{0}-Snips.ps1" -f $artifactPrefix)
