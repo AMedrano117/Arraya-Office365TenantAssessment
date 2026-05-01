@@ -36,6 +36,19 @@ Describe 'Improve workflow' {
             [xml](Get-TestDocxDocumentXmlText -Path $Path)
         }
 
+        function Get-TestDocxEntryNames {
+            param([Parameter(Mandatory = $true)][string]$Path)
+
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+            try {
+                return @($archive.Entries | ForEach-Object { $_.FullName })
+            }
+            finally {
+                $archive.Dispose()
+            }
+        }
+
         function New-TestEnterpriseApplicationSnapshot {
             param(
                 [Parameter(Mandatory = $true)]
@@ -835,6 +848,7 @@ Describe 'Improve workflow' {
 
         $customerReportDocument = Get-TestDocxDocumentXmlText -Path $result.CustomerAssessmentReportPath
         $customerReportXml = Get-TestDocxDocumentXml -Path $result.CustomerAssessmentReportPath
+        $customerReportEntryNames = Get-TestDocxEntryNames -Path $result.CustomerAssessmentReportPath
         $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
         $ns = New-Object System.Xml.XmlNamespaceManager($customerReportXml.NameTable)
         $ns.AddNamespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main')
@@ -844,14 +858,19 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match '2\.0 Project Scope'
         $customerReportDocument | Should -Match '3\.0 Executive Summary'
         $customerReportDocument | Should -Match 'Overall Findings Summary'
-        $customerReportDocument | Should -Match 'Findings Legend'
+        $customerReportDocument | Should -Match 'Risk Clusters'
         $customerReportDocument | Should -Match '4\.0 Modern Workplace Recommendations'
         $customerReportDocument | Should -Match '5\.0 Entra ID Review: User and Device Inventory'
         $customerReportDocument | Should -Match '5\.1 Entra User'
         $customerReportDocument | Should -Match '5\.2 Entra Device'
         $customerReportDocument | Should -Match 'Device Registration and Compliance Gaps'
+        $customerReportDocument | Should -Match 'Device Platform Distribution'
         $customerReportDocument | Should -Match '5\.3 Entra Guest Access Configuration'
         $customerReportDocument | Should -Match '5\.4 Entra Applications and Access Review'
+        $customerReportDocument | Should -Match 'Application Spotlight'
+        $customerReportDocument | Should -Match 'SSO-Enabled Applications'
+        $customerReportDocument | Should -Match 'Inactive or High-Privilege Applications'
+        $customerReportDocument | Should -Match 'Credential Cleanup Opportunities'
         $customerReportDocument | Should -Match '6\.0 Authentication Methods, MFA Enrollment, and MFA Enforcement'
         $customerReportDocument | Should -Match 'MFA Enrollment'
         $customerReportDocument | Should -Match 'MFA Enforcement'
@@ -866,14 +885,15 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'Users not covered by enabled MFA enforcement policies'
         $customerReportDocument | Should -Match 'MFA enforcement state'
         $customerReportDocument | Should -Match 'MFA Enforcement Gap Summary'
+        $customerReportDocument | Should -Match 'Common Coverage Drivers'
         $customerReportDocument | Should -Match 'Top Internal Member Users Not Covered by Enabled MFA Enforcement'
         $customerReportDocument | Should -Match 'Guest MFA Coverage Drivers'
         $customerReportDocument | Should -Match 'Representative MFA Scope Examples'
         $customerReportDocument | Should -Match 'Coverage Gap Signal'
-        $customerReportDocument | Should -Match 'Related Policy / Scope'
+        $customerReportDocument | Should -Match 'Coverage Driver'
         $customerReportDocument | Should -Match 'Uncovered Member'
         $customerReportDocument | Should -Not -Match 'Uncovered Guest'
-        $customerReportDocument | Should -Match 'Break Glass Exclusions'
+        $customerReportDocument | Should -Match 'Outside enabled MFA include scope'
         $customerReportDocument | Should -Match 'Outside include scope'
         $customerReportDocument | Should -Match 'Some Conditional Access policies naturally target employee, admin, or workload-specific populations'
         $customerReportDocument | Should -Match 'partner tenants with the most collaboration and a validated trust relationship'
@@ -883,7 +903,9 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match '8\.0 Authorization: Admin Access and Role Assignments'
         $customerReportDocument | Should -Match 'Service Accounts'
         $customerReportDocument | Should -Match '9\.0 Exchange Online: Mailboxes and Storage Overview'
-        $customerReportDocument | Should -Match '9\.1 High-Level Observations and Recommendations'
+        $customerReportDocument | Should -Match '9\.1 Recipient and Mailbox Footprint'
+        $customerReportDocument | Should -Match 'Recipient Mix by Type'
+        $customerReportDocument | Should -Match 'Top Recipient Domains'
         $customerReportDocument | Should -Match 'Mailbox Lifecycle Summary'
         $customerReportDocument | Should -Match 'Transport Exposure Summary'
         $customerReportDocument | Should -Match 'User Mailbox Growth'
@@ -896,6 +918,7 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'Key Findings'
         $customerReportDocument | Should -Match 'Opportunities for Cleanup'
         $customerReportDocument | Should -Match '11\.0 SharePoint Online Storage and External Sharing'
+        $customerReportDocument | Should -Match 'Largest Collaboration Sites to Review'
         $customerReportDocument | Should -Match '12\.0 Retention Policies and Data Loss Prevention'
         $customerReportDocument | Should -Match '13\.0 Domain Configuration and DNS Overview'
         $customerReportDocument | Should -Match '14\.0 Offboarding Recommendation'
@@ -911,12 +934,12 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'Configuration Signal'
         $customerReportDocument | Should -Match 'Current State'
         $customerReportDocument | Should -Match 'Leadership Decision Brief'
-        $customerReportDocument | Should -Match 'What Should Happen Next'
-        $customerReportDocument | Should -Match 'Why Now'
         $customerReportDocument | Should -Match 'Guest invitation control'
         $customerReportDocument | Should -Match 'Cross-tenant partner count'
         $customerReportDocument | Should -Match 'Default inbound MFA trust'
         $customerReportDocument | Should -Match 'External Access Snapshot'
+        $customerReportDocument | Should -Match 'Observed Guest and B2B Posture'
+        $customerReportDocument | Should -Match 'Recommended Next Step'
         $customerReportDocument | Should -Match 'Tenant External Sharing Snapshot'
         $customerReportDocument | Should -Match 'SharePoint Tenant Controls Snapshot'
         $customerReportDocument | Should -Match 'External Exposure Review'
@@ -928,20 +951,18 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'Prevent external users from resharing'
         $customerReportDocument | Should -Match 'Legacy auth protocols enabled'
         $customerReportDocument | Should -Match 'Deleted user personal site retention \(days\)'
-        $customerReportDocument | Should -Match 'Microsoft Guidance'
-        $customerReportDocument | Should -Match 'Why It Is Relevant'
+        $customerReportDocument | Should -Match 'Why it is relevant:'
         $customerReportDocument | Should -Match 'Recommendation'
-        $customerReportDocument | Should -Match 'Priority / Impact'
-        $customerReportDocument | Should -Match 'First Step'
-        $customerReportDocument | Should -Match 'Success Check'
+        $customerReportDocument | Should -Match 'Criticality'
         $customerReportDocument | Should -Match 'Level of Effort'
-        $customerReportDocument | Should -Match 'Messaging Snapshot At A Glance'
+        $customerReportDocument | Should -Match 'initial delivery-planning estimate'
+        $customerReportDocument | Should -Match 'w:fill="FCE5CD"'
+        $customerReportDocument | Should -Match 'w:fill="FFF2CC"'
         $customerReportDocument | Should -Match 'Workstream'
         $customerReportDocument | Should -Match 'Severity / Impact'
         $customerReportDocument | Should -Match 'Open Findings'
         $customerReportDocument | Should -Match 'What Stands Out'
         $customerReportDocument | Should -Match 'Open Findings'
-        $customerReportDocument | Should -Match 'What It Means In This Report'
         $customerReportDocument | Should -Match 'Rule / Finding'
         $customerReportDocument | Should -Match 'Why Flagged'
         $customerReportDocument | Should -Match 'Success Criteria'
@@ -959,9 +980,17 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Not -Match 'Domain Recommendations'
         $customerReportDocument | Should -Not -Match 'DNS Recommendations'
         $customerReportDocument | Should -Not -Match 'Enabled MFA Policy Scope Review'
+        $customerReportDocument | Should -Not -Match 'Findings Legend'
+        $customerReportDocument | Should -Not -Match 'What Should Happen Next'
+        $customerReportDocument | Should -Not -Match 'Priority / Impact'
+        $customerReportDocument | Should -Not -Match 'First Step'
+        $customerReportDocument | Should -Not -Match 'Success Check'
+        $customerReportDocument | Should -Not -Match 'User Impact / Expected Experience'
+        $customerReportDocument | Should -Not -Match 'SSO Mode'
         $customerReportDocument | Should -Not -Match 'Tier B'
         $customerReportDocument | Should -Not -Match 's of tw ar eO ne Ti me Pa ss co de'
         $customerReportDocument | Should -Not -Match 'Action:'
+        $customerReportDocument | Should -Not -Match 'What It Means In This Report'
         $customerReportDocument | Should -Match 'w:tblBorders'
         $customerTables.Count | Should -BeGreaterThan 12
         $customerTables[0].SelectNodes('./w:tr[1]/w:tc', $ns).Count | Should -Be 5
@@ -973,23 +1002,39 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match '### Assessment Snapshot At A Glance'
         $customerReportMarkdown | Should -Match '## 3\.0 Executive Summary'
         $customerReportMarkdown | Should -Match '### Overall Findings Summary'
-        $customerReportMarkdown | Should -Match '### Findings Legend'
-        $customerReportMarkdown | Should -Match '#### Leadership Decision Brief'
+        $customerReportMarkdown | Should -Match '### Leadership Decision Brief'
         $customerReportMarkdown | Should -Match '## 4\.0 Modern Workplace Recommendations'
-        $customerReportMarkdown | Should -Match '\| Recommendation \| Priority / Impact \| First Step \| Success Check \| Level of Effort \|'
-        $customerReportMarkdown | Should -Match '### User Impact / Expected Experience'
-        $customerReportMarkdown | Should -Match '\| Recommendation \| User Impact / Expected Experience \|'
+        $customerReportMarkdown | Should -Match '\| Recommendation \| Criticality \| Level of Effort \|'
+        $customerReportMarkdown | Should -Match '\| .+ \| (Critical|High|Medium|Low) \| (High|Medium|Low) \|'
+        $customerReportMarkdown | Should -Match 'Level of Effort is an initial delivery-planning estimate'
         $customerReportMarkdown | Should -Match '\| Workstream \| Severity / Impact \| Open Findings \| What Stands Out \|'
-        $customerReportMarkdown | Should -Match '\| Term \| What It Means In This Report \|'
         $customerReportMarkdown | Should -Match '### Risk Clusters'
+        $customerReportMarkdown | Should -Not -Match '### Findings Legend'
+        $customerReportMarkdown | Should -Not -Match '- Open Findings:'
+        $customerReportMarkdown | Should -Not -Match '- Severity / Impact:'
         $customerReportMarkdown | Should -Match '### 5\.3 Entra Guest Access Configuration'
         $customerReportMarkdown | Should -Match '#### External Access Snapshot'
         $customerReportMarkdown | Should -Match '\| Guest invitation control \|'
         $customerReportMarkdown | Should -Match '\| Cross-tenant partner count \|'
+        $customerReportMarkdown | Should -Match '#### Observed Guest and B2B Posture'
+        $customerReportMarkdown | Should -Match '#### Recommended Next Step'
         $customerReportMarkdown | Should -Match 'Admins and approved guest inviters can invite guests'
         $customerReportMarkdown | Should -Match 'Guest MFA enforcement matters because guest identities are external accounts with access into this tenant''s resources'
         $customerReportMarkdown | Should -Match 'home tenant instead of registering separately in this tenant'
+        $customerReportMarkdown | Should -Not -Match 'What should happen next:'
         $customerReportMarkdown | Should -Match 'Detailed admin gap rows are available in the workbook tabs AdminMfaRegistrationGaps and AdminMfaEnforcementGaps'
+        $customerReportMarkdown | Should -Match '### 5\.4 Entra Applications and Access Review'
+        $customerReportMarkdown | Should -Match '### Application Spotlight'
+        $customerReportMarkdown | Should -Match '- Applications: High Priv App'
+        $customerReportMarkdown | Should -Match 'Primary risk signal:'
+        $customerReportMarkdown | Should -Match 'Latest activity:'
+        $customerReportMarkdown | Should -Not -Match '\| Application \| SSO Mode \| Primary Risk Signal \| Latest Activity \|'
+        $customerReportMarkdown | Should -Match '### SSO-Enabled Applications'
+        $customerReportMarkdown | Should -Match '### Inactive or High-Privilege Applications'
+        $customerReportMarkdown | Should -Match '### Credential Cleanup Opportunities'
+        $customerReportMarkdown | Should -Match '- High Priv App - SAML;'
+        $customerReportMarkdown | Should -Match '1 expired client secret'
+        $customerReportMarkdown | Should -Match 'Latest activity 2026-04-12'
         $customerReportMarkdown | Should -Match '## 6\.0 Authentication Methods, MFA Enrollment, and MFA Enforcement'
         $customerReportMarkdown | Should -Match '### MFA Enrollment'
         $customerReportMarkdown | Should -Match '### MFA Enforcement'
@@ -1008,11 +1053,14 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match '\| Coverage Gap Signal \| Current State \|'
         $customerReportMarkdown | Should -Match '\| Users outside enabled MFA CA include scope \| 2 \|'
         $customerReportMarkdown | Should -Match '\| Users explicitly excluded from enabled MFA CA policies \| 0 \|'
+        $customerReportMarkdown | Should -Match '#### Common Coverage Drivers'
+        $customerReportMarkdown | Should -Match '- Outside enabled MFA include scope: 1 uncovered internal member user\(s\)\.'
         $customerReportMarkdown | Should -Match '#### Top Internal Member Users Not Covered by Enabled MFA Enforcement'
-        $customerReportMarkdown | Should -Match '\| Display Name \| User Principal Name \| User Type \| Gap Category \| Related Policy / Scope \|'
+        $customerReportMarkdown | Should -Match '\| Display Name \| User Principal Name \| Gap Category \| Coverage Driver \|'
         $customerReportMarkdown | Should -Match 'Uncovered Member'
         $customerReportMarkdown | Should -Not -Match 'Uncovered Guest'
         $customerReportMarkdown | Should -Match 'Outside include scope'
+        $customerReportMarkdown | Should -Not -Match 'Related Policy / Scope'
         $customerReportMarkdown | Should -Match 'The desired baseline is to require strong guest authentication through a guest-specific Conditional Access policy and to trust the guest home-tenant MFA where supported and approved'
         $customerReportMarkdown | Should -Match '#### Guest MFA Coverage Drivers'
         $customerReportMarkdown | Should -Match '#### Representative MFA Scope Examples'
@@ -1022,20 +1070,7 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match 'Break Glass Exclusions'
         $customerReportDocument | Should -Match 'Global Reader'
         $customerReportDocument | Should -Match 'eligible role that requires approval before activation'
-        $customerReportMarkdown | Should -Match 'Confirm the target identity protection baseline and decide which privileged, guest, and core user populations should be brought under it first'
-        $customerReportMarkdown | Should -Match 'Privileged and external access follow one approved protection model, with only documented exceptions remaining'
-        $customerReportMarkdown | Should -Match '### Application Inventory'
-        $customerReportMarkdown | Should -Match '\| Application \| SSO Enabled \| SSO Mode \| Observation \|'
-        $customerReportMarkdown | Should -Match '\| High Priv App \| Enabled \| SAML \|'
-        $customerReportMarkdown | Should -Match 'High Priv App uses SSO via SAML'
-        $customerReportMarkdown | Should -Match '1 expired client secret'
-        $customerReportMarkdown | Should -Match 'Latest activity 2026-04-12'
-        $customerReportMarkdown | Should -Match '### SSO-Enabled Applications'
-        $customerReportMarkdown | Should -Match '### Inactive or High-Privilege Applications'
-        $customerReportMarkdown | Should -Match '### Credential Cleanup Opportunities'
-        $customerReportMarkdown | Should -Match '\| Application \| SSO Mode \| Privilege / Activity \| Observation \|'
-        $customerReportMarkdown | Should -Match '\| Application \| Cleanup Signal \| Latest Activity \| Observation \|'
-        $customerReportMarkdown | Should -Match '\| Application \| Credential State \| Latest Activity \| Observation \|'
+        $customerReportMarkdown | Should -Match '\| Reduce privileged access and strengthen identity controls \| High \|'
         $customerReportMarkdown | Should -Match '\| Users with weak MFA methods only \|'
         $customerReportMarkdown | Should -Match '\| Enabled MFA enforcement policies \|'
         $customerReportMarkdown | Should -Match 'MfaEnforcementGapUsers'
@@ -1043,15 +1078,22 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match '## 11\.0 SharePoint Online Storage and External Sharing'
         $customerReportMarkdown | Should -Match '### Tenant External Sharing Snapshot'
         $customerReportMarkdown | Should -Match '### SharePoint Tenant Controls Snapshot'
+        $customerReportMarkdown | Should -Match '### External Exposure by Category'
         $customerReportMarkdown | Should -Match '\| Prevent external users from resharing \| Prevented \|'
         $customerReportMarkdown | Should -Match '\| Legacy auth protocols enabled \| Enabled \|'
         $customerReportMarkdown | Should -Match '\| Deleted user personal site retention \(days\) \| 30 \|'
         $customerReportMarkdown | Should -Match '### External Exposure Review'
         $customerReportMarkdown | Should -Match '\| Workload \| Asset Type \| Title \| Exposure Category \| Gap Reason \| Review Priority \|'
+        $customerReportMarkdown | Should -Match '## 9\.0 Exchange Online: Mailboxes and Storage Overview'
+        $customerReportMarkdown | Should -Match '### 9\.1 Recipient and Mailbox Footprint'
+        $customerReportMarkdown | Should -Match '### Recipient Mix by Type'
+        $customerReportMarkdown | Should -Match '### Top Recipient Domains'
+        $customerReportMarkdown | Should -Match '\| Domain \| Total \| Primary \| Alias-only \|'
+        $customerReportMarkdown | Should -Match '### Largest Collaboration Sites to Review'
+        $customerReportMarkdown | Should -Match '- '
         $customerReportMarkdown | Should -Match '## 12\.0 Retention Policies and Data Loss Prevention'
         $customerReportMarkdown | Should -Match '## 14\.0 Offboarding Recommendation'
         $customerReportMarkdown | Should -Match '### 15\.10 Full Findings Inventory'
-        $customerReportMarkdown | Should -Match '#### Messaging Snapshot At A Glance'
         $customerReportMarkdown | Should -Match '#### Mailbox Lifecycle Summary'
         $customerReportMarkdown | Should -Match '#### Transport Exposure Summary'
         $customerReportMarkdown | Should -Match '\| Severity \| Priority \| Workstream \| Rule / Finding \| Why Flagged \| Recommended Action \| Success Criteria \|'
@@ -1068,6 +1110,12 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Not -Match 'Action:'
         $customerReportMarkdown | Should -Not -Match 'Recommended Next Steps'
         $customerReportMarkdown | Should -Not -Match 'must register separately in this tenant'
+        $customerReportMarkdown | Should -Not -Match '\| Term \| What It Means In This Report \|'
+        $customerReportMarkdown | Should -Not -Match '\| Application \| SSO Enabled \| SSO Mode \| Observation \|'
+        $customerReportMarkdown | Should -Not -Match '\| Application \| SSO Mode \| Privilege / Activity \| Observation \|'
+        $customerReportMarkdown | Should -Not -Match '\| Application \| Cleanup Signal \| Latest Activity \| Observation \|'
+        $customerReportMarkdown | Should -Not -Match '\| Application \| Credential State \| Latest Activity \| Observation \|'
+        $customerReportMarkdown | Should -Not -Match '#### Messaging Snapshot At A Glance'
 
         $engineerPack = Get-Content -Raw $result.EngineerActionPackPath
         $engineerPack | Should -Match '## Engineering Summary'
@@ -1092,6 +1140,143 @@ Describe 'Improve workflow' {
         $snippetContent | Should -Match "Connect-MgGraph -Scopes 'Policy.Read.All'"
         $snippetContent | Should -Not -Match 'SecurityEvents.ReadWrite.All'
         $snippetContent | Should -Not -Match 'Policy.ReadWrite.ConditionalAccess'
+    }
+
+    It 'embeds customer-report chart images in the DOCX and skips them in markdown when chart datasets are renderable' {
+        $snapshot = New-ArrayaTenantSnapshot -Data @{
+            Identity = @{
+                Admins = @()
+                Users = @()
+                ConditionalAccessPolicies = @()
+                ConditionalAccessPolicySummary = @{
+                    Summary = [pscustomobject]@{
+                        TotalPolicies                 = 0
+                        EnabledPolicies               = 0
+                        ReportOnlyPolicies            = 0
+                        HasGuestCoverage              = $false
+                        HasPrivilegedRoleCoverage     = $false
+                        HasCompliantDeviceRequirement = $false
+                        HasRiskBasedCoverage          = $false
+                        PoliciesWithExclusions        = 0
+                    }
+                }
+                SecurityDefaultsPolicy = @{
+                    Summary = [pscustomobject]@{
+                        IsEnabled = $false
+                    }
+                }
+                AuthenticationConfig = [pscustomobject]@{
+                    AdminConsentWorkflowEnabled    = $false
+                    PermissionGrantPoliciesAssigned = @()
+                    PasswordlessMethods            = @()
+                }
+                LicenseSKUs = @()
+                DeviceDetails = @(
+                    [pscustomobject]@{
+                        OperatingSystem               = 'Windows'
+                        ApproximateLastSignInDateTime = (Get-Date).AddDays(-30).ToString('o')
+                        IsCompliant                   = $true
+                        MDMSolution                   = 'Intune'
+                    },
+                    [pscustomobject]@{
+                        OperatingSystem               = 'iOS'
+                        ApproximateLastSignInDateTime = (Get-Date).AddDays(-40).ToString('o')
+                        IsCompliant                   = $false
+                        MDMSolution                   = ''
+                    }
+                )
+                DeviceManagementSummary = @{
+                    Summary = [pscustomobject]@{
+                        TotalDevices         = 2
+                        UnmanagedDevices     = 1
+                        UnsupportedOsDevices = 0
+                    }
+                }
+                EnterpriseApplications = @{}
+                GuestAccessConfiguration = @{
+                    Summary = [pscustomobject]@{
+                        GuestInvitationControl       = 'adminsAndGuestInviters'
+                        ConditionalAccessGuestCoverage = $false
+                    }
+                }
+                ExternalIdentityRestrictions = @{
+                    Summary = [pscustomobject]@{
+                        AllowInvitesFrom           = 'adminsAndGuestInviters'
+                        CrossTenantPartnerCount    = 0
+                        HasCrossTenantAccessPolicy = $false
+                        DefaultInboundMfaTrust     = $false
+                        DefaultOutboundMfaTrust    = 'Not configured'
+                    }
+                }
+            }
+            Exchange = @{
+                AllRecipients = @(
+                    [pscustomobject]@{
+                        DisplayName          = 'User A'
+                        RecipientTypeDetails = 'UserMailbox'
+                        PrimarySmtpAddress   = 'usera@contoso.com'
+                    },
+                    [pscustomobject]@{
+                        DisplayName          = 'Shared A'
+                        RecipientTypeDetails = 'SharedMailbox'
+                        PrimarySmtpAddress   = 'shared@fabrikam.com'
+                    },
+                    [pscustomobject]@{
+                        DisplayName          = 'Group A'
+                        RecipientTypeDetails = 'GroupMailbox'
+                        PrimarySmtpAddress   = 'group@tailspintoys.com'
+                    }
+                )
+                AllMailboxes = @{}
+                MailFlowConnectors = @()
+                PublicFolderDetails = @()
+            }
+            Collaboration = @{
+                AllTeams    = @()
+                SharePoint  = @(
+                    [pscustomobject]@{
+                        Title                   = 'Projects'
+                        SharingCapability       = 'ExternalUserSharingOnly'
+                        StorageUsedGB           = 24
+                        LastContentModifiedDate = (Get-Date).AddDays(-12).ToString('o')
+                    }
+                )
+                OneDrive    = @()
+                ExternalExposureFindings = @(
+                    [pscustomobject]@{
+                        Workload         = 'SharePoint'
+                        AssetType        = 'Site'
+                        Title            = 'Projects'
+                        ExposureCategory = 'Stale externally shared content'
+                        GapReason        = 'Dormant site still externally available'
+                        ReviewPriority   = 'High'
+                    },
+                    [pscustomobject]@{
+                        Workload         = 'OneDrive'
+                        AssetType        = 'Personal Site'
+                        Title            = 'User A'
+                        ExposureCategory = 'Externally sharable OneDrive with ownership mismatch'
+                        GapReason        = 'Owner mismatch surfaced'
+                        ReviewPriority   = 'High'
+                    }
+                )
+            }
+        }
+
+        $snapshotPath = Join-Path $TestDrive 'chart-enabled-assessment.json'
+        Export-ArrayaTenantSnapshot -Snapshot $snapshot -Path $snapshotPath
+
+        $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
+        $customerReportEntryNames = Get-TestDocxEntryNames -Path $result.CustomerAssessmentReportPath
+        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
+
+        @($customerReportEntryNames | Where-Object { $_ -match '^word/media/customer-chart-\d+\.png$' }).Count | Should -BeGreaterOrEqual 4
+        $customerReportMarkdown | Should -Match '### Device Platform Distribution'
+        $customerReportMarkdown | Should -Match '### Recipient Mix by Type'
+        $customerReportMarkdown | Should -Match '### Top Recipient Domains'
+        $customerReportMarkdown | Should -Match '### External Exposure by Category'
+        $customerReportMarkdown | Should -Not -Match '!\['
+        $customerReportMarkdown | Should -Not -Match 'word/media/customer-chart'
     }
 
     It 'does not raise ID-010 and labels owner validation as incomplete when owner enrichment is unavailable' {
@@ -1219,7 +1404,9 @@ Describe 'Improve workflow' {
         $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
         $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
 
-        $customerReportMarkdown | Should -Match '\| Salesforce \| Enabled \| SAML \|'
+        $customerReportMarkdown | Should -Match '### SSO-Enabled Applications'
+        $customerReportMarkdown | Should -Match '- Salesforce - SAML;'
+        $customerReportMarkdown | Should -Match 'Applications: Salesforce; SSO: SAML;'
         $customerReportMarkdown | Should -Match '### SSO-Enabled Applications'
     }
 
@@ -1275,7 +1462,8 @@ Describe 'Improve workflow' {
         $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
         $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
 
-        $customerReportMarkdown | Should -Match '\| Zulu Risky App \| Enabled \| SAML \|'
+        $customerReportMarkdown | Should -Match 'Applications: Zulu Risky App; SSO: SAML;'
+        $customerReportMarkdown | Should -Match '- Zulu Risky App -'
     }
 
     It 'allows redirect-risk findings from partial data without emitting a zero-risk narrative' {
