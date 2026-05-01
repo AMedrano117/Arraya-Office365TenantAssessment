@@ -41,8 +41,43 @@ Describe 'Improve workflow' {
                 [Parameter(Mandatory = $true)]
                 $EnterpriseApplications,
                 [Parameter(Mandatory = $false)]
-                $EnterpriseApplicationSummary
+                $EnterpriseApplicationSummary,
+                [Parameter(Mandatory = $false)]
+                $AuthenticationSsoApplications = @()
             )
+
+            function Convert-TestApplicationCollection {
+                param(
+                    [Parameter(Mandatory = $false)]
+                    $Rows
+                )
+
+                if ($null -eq $Rows) {
+                    return @{}
+                }
+
+                if ($Rows -is [System.Collections.IDictionary]) {
+                    return $Rows
+                }
+
+                $normalized = [ordered]@{}
+                $rowIndex = 0
+                foreach ($row in @(Convert-ArrayaObjectToArray $Rows)) {
+                    if ($null -eq $row) {
+                        continue
+                    }
+
+                    $displayName = [string](Get-ArrayaObjectValue -Object $row -Names @('DisplayName'))
+                    if ([string]::IsNullOrWhiteSpace($displayName)) {
+                        $displayName = ('App-{0:D3}' -f ($rowIndex + 1))
+                    }
+
+                    $normalized[('{0:D3}-{1}' -f ($rowIndex + 1), $displayName)] = $row
+                    $rowIndex++
+                }
+
+                return $normalized
+            }
 
             $identityData = @{
                 Admins = @()
@@ -70,7 +105,8 @@ Describe 'Improve workflow' {
                     PermissionGrantPoliciesAssigned = @()
                     PasswordlessMethods           = @()
                 }
-                EnterpriseApplications = $EnterpriseApplications
+                EnterpriseApplications = Convert-TestApplicationCollection -Rows $EnterpriseApplications
+                AuthenticationSSOApplications = Convert-TestApplicationCollection -Rows $AuthenticationSsoApplications
             }
 
             if ($null -ne $EnterpriseApplicationSummary) {
@@ -193,6 +229,13 @@ Describe 'Improve workflow' {
                             OwnerSignalState              = 'Collected'
                             OwnerCount                    = 0
                             AppCredentials                = 'Client Secret'
+                            CredentialReviewState         = 'Collected'
+                            HasExpiredCredentials         = $true
+                            ExpiredCredentialCount        = 1
+                            ExpiredPasswordCredentialCount = 1
+                            HasCredentialsExpiringSoon    = $false
+                            ExpiringCredentialCount       = 0
+                            CredentialIssueSummary        = '1 expired client secret'
                             RedirectUriSignalState        = 'Collected'
                             InsecureRedirectUriCount      = 1
                             HasInsecureRedirectUris       = $true
@@ -236,6 +279,8 @@ Describe 'Improve workflow' {
                             ApplicationsWithInsecureRedirectUris = 1
                             ApplicationsWithNoRecentActivity = 1
                             SsoEnabledApplications        = 1
+                            ApplicationsWithExpiredCredentials = 1
+                            ApplicationsWithCredentialsExpiringSoon = 0
                             ApplicationSourceCoverageState = 'Collected'
                             ApplicationSourceCollectedCount = 2
                             ApplicationSourceUnavailableCount = 0
@@ -691,7 +736,7 @@ Describe 'Improve workflow' {
         $result.CsvPath | Should -BeNullOrEmpty
         $result.MarkdownPath | Should -BeNullOrEmpty
         Test-Path $result.CustomerAssessmentReportPath | Should -BeTrue
-        [System.IO.Path]::GetFileName($result.CustomerAssessmentReportPath) | Should -Match '.+-CustRpt\.docx$'
+        [System.IO.Path]::GetFileName($result.CustomerAssessmentReportPath) | Should -Match '.+-Microsoft 365 Tenant Best Practices Assessment-\d{4}-\d{2}-\d{2}\.docx$'
         Test-Path $result.CustomerAssessmentReportMarkdownPath | Should -BeTrue
         [System.IO.Path]::GetFileName($result.CustomerAssessmentReportMarkdownPath) | Should -Match '.+-CustRpt\.md$'
         if ($result.PSObject.Properties.Name -contains 'CustomerRemediationReportPath') {
@@ -975,15 +1020,22 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match 'partner tenants with the most collaboration and a validated trust relationship'
         $customerReportMarkdown | Should -Match '\| Policy \| Scope Type \| Scope Signal \| Why It Matters \|'
         $customerReportMarkdown | Should -Match 'Break Glass Exclusions'
+        $customerReportDocument | Should -Match 'Global Reader'
+        $customerReportDocument | Should -Match 'eligible role that requires approval before activation'
         $customerReportMarkdown | Should -Match 'Confirm the target identity protection baseline and decide which privileged, guest, and core user populations should be brought under it first'
         $customerReportMarkdown | Should -Match 'Privileged and external access follow one approved protection model, with only documented exceptions remaining'
         $customerReportMarkdown | Should -Match '### Application Inventory'
         $customerReportMarkdown | Should -Match '\| Application \| SSO Enabled \| SSO Mode \| Observation \|'
-        $customerReportMarkdown | Should -Match '\| High Priv App \| Enabled \| saml \|'
-        $customerReportMarkdown | Should -Match 'SSO is configured via saml'
-        $customerReportMarkdown | Should -Match 'Latest sign-in seen on .+ by Adele Vance'
-        $customerReportMarkdown | Should -Match 'Latest sign-in Conditional Access status: success'
-        $customerReportMarkdown | Should -Match 'Latest client app used: Browser'
+        $customerReportMarkdown | Should -Match '\| High Priv App \| Enabled \| SAML \|'
+        $customerReportMarkdown | Should -Match 'High Priv App uses SSO via SAML'
+        $customerReportMarkdown | Should -Match '1 expired client secret'
+        $customerReportMarkdown | Should -Match 'Latest activity 2026-04-12'
+        $customerReportMarkdown | Should -Match '### SSO-Enabled Applications'
+        $customerReportMarkdown | Should -Match '### Inactive or High-Privilege Applications'
+        $customerReportMarkdown | Should -Match '### Credential Cleanup Opportunities'
+        $customerReportMarkdown | Should -Match '\| Application \| SSO Mode \| Privilege / Activity \| Observation \|'
+        $customerReportMarkdown | Should -Match '\| Application \| Cleanup Signal \| Latest Activity \| Observation \|'
+        $customerReportMarkdown | Should -Match '\| Application \| Credential State \| Latest Activity \| Observation \|'
         $customerReportMarkdown | Should -Match '\| Users with weak MFA methods only \|'
         $customerReportMarkdown | Should -Match '\| Enabled MFA enforcement policies \|'
         $customerReportMarkdown | Should -Match 'MfaEnforcementGapUsers'
@@ -1145,6 +1197,32 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Not -Match 'without owner coverage'
     }
 
+    It 'merges AuthenticationSSOApplications into the customer report app section when raw enterprise rows are missing' {
+        $snapshot = New-TestEnterpriseApplicationSnapshot `
+            -EnterpriseApplications @{} `
+            -AuthenticationSsoApplications @(
+                [pscustomobject]@{
+                    AppId                     = '55555555-5555-5555-5555-555555555555'
+                    ServicePrincipalId        = '66666666-6666-6666-6666-666666666666'
+                    DisplayName               = 'Salesforce'
+                    SsoEnabled                = $true
+                    PreferredSingleSignOnMode = 'saml'
+                    SSOMode                   = 'saml'
+                    ActivitySignalState       = 'Collected'
+                    HasRecentActivity         = $true
+                }
+            )
+
+        $snapshotPath = Join-Path $TestDrive 'sso-merged-apps.json'
+        Export-ArrayaTenantSnapshot -Snapshot $snapshot -Path $snapshotPath
+
+        $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
+        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
+
+        $customerReportMarkdown | Should -Match '\| Salesforce \| Enabled \| SAML \|'
+        $customerReportMarkdown | Should -Match '### SSO-Enabled Applications'
+    }
+
     It 'surfaces a noteworthy app outside the alphabetical first eight in the customer report sample' {
         $enterpriseApplications = [ordered]@{}
         foreach ($name in @('Alpha App', 'Bravo App', 'Charlie App', 'Delta App', 'Echo App', 'Foxtrot App', 'Golf App', 'Hotel App')) {
@@ -1197,7 +1275,7 @@ Describe 'Improve workflow' {
         $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
         $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
 
-        $customerReportMarkdown | Should -Match '\| Zulu Risky App \| Enabled \| saml \|'
+        $customerReportMarkdown | Should -Match '\| Zulu Risky App \| Enabled \| SAML \|'
     }
 
     It 'allows redirect-risk findings from partial data without emitting a zero-risk narrative' {

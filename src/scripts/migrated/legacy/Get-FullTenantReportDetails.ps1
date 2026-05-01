@@ -11840,6 +11840,19 @@ function Get-AuthenticationConfiguration {
                 AppCredentials                = ''
                 KeyCredentialCount            = 0
                 PasswordCredentialCount       = 0
+                CredentialReviewState         = 'Unavailable'
+                CredentialCount               = 0
+                HasExpiredCredentials         = $null
+                ExpiredCredentialCount        = $null
+                ExpiredKeyCredentialCount     = $null
+                ExpiredPasswordCredentialCount = $null
+                HasCredentialsExpiringSoon    = $null
+                ExpiringCredentialCount       = $null
+                ExpiringKeyCredentialCount    = $null
+                ExpiringPasswordCredentialCount = $null
+                NextCredentialExpiryDateTime  = $null
+                LatestCredentialExpiryDateTime = $null
+                CredentialIssueSummary        = ''
                 SignInAudience                = $null
                 ApplicationCreatedDateTime    = $null
                 DelegatedPermissionScopes     = ''
@@ -12048,6 +12061,79 @@ function Get-AuthenticationConfiguration {
             )
         }
 
+        function Get-AssessmentEnterpriseApplicationCredentialMetadata {
+            param(
+                [Parameter(Mandatory = $false)]
+                $ApplicationRow,
+                [Parameter(Mandatory = $false)]
+                [int]$ExpiringWithinDays = 30
+            )
+
+            $now = Get-Date
+            $expiringThreshold = $now.AddDays($ExpiringWithinDays)
+            $credentialRows = New-Object System.Collections.Generic.List[object]
+
+            foreach ($keyCredential in @((Get-ArrayaObjectValue -Object $ApplicationRow -Names @('keyCredentials', 'KeyCredentials')))) {
+                $endDateTime = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $keyCredential -Names @('endDateTime', 'EndDateTime'))
+                $credentialRows.Add([pscustomobject]@{
+                    CredentialType = 'Client Certificate'
+                    EndDateTime    = $endDateTime
+                    IsExpired      = ($null -ne $endDateTime -and $endDateTime -lt $now)
+                    IsExpiringSoon = ($null -ne $endDateTime -and $endDateTime -ge $now -and $endDateTime -le $expiringThreshold)
+                }) | Out-Null
+            }
+
+            foreach ($passwordCredential in @((Get-ArrayaObjectValue -Object $ApplicationRow -Names @('passwordCredentials', 'PasswordCredentials')))) {
+                $endDateTime = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $passwordCredential -Names @('endDateTime', 'EndDateTime'))
+                $credentialRows.Add([pscustomobject]@{
+                    CredentialType = 'Client Secret'
+                    EndDateTime    = $endDateTime
+                    IsExpired      = ($null -ne $endDateTime -and $endDateTime -lt $now)
+                    IsExpiringSoon = ($null -ne $endDateTime -and $endDateTime -ge $now -and $endDateTime -le $expiringThreshold)
+                }) | Out-Null
+            }
+
+            $expiredRows = @($credentialRows | Where-Object { $_.IsExpired -eq $true })
+            $expiringRows = @($credentialRows | Where-Object { $_.IsExpiringSoon -eq $true })
+            $datedRows = @($credentialRows | Where-Object { $null -ne $_.EndDateTime })
+            $futureDatedRows = @($datedRows | Where-Object { $_.EndDateTime -ge $now })
+
+            $expiredSecretCount = @($expiredRows | Where-Object { $_.CredentialType -eq 'Client Secret' }).Count
+            $expiredCertificateCount = @($expiredRows | Where-Object { $_.CredentialType -eq 'Client Certificate' }).Count
+            $expiringSecretCount = @($expiringRows | Where-Object { $_.CredentialType -eq 'Client Secret' }).Count
+            $expiringCertificateCount = @($expiringRows | Where-Object { $_.CredentialType -eq 'Client Certificate' }).Count
+            $summarySegments = New-Object System.Collections.Generic.List[string]
+
+            if ($expiredSecretCount -gt 0) {
+                $summarySegments.Add(("{0} expired client secret{1}" -f $expiredSecretCount, $(if ($expiredSecretCount -eq 1) { '' } else { 's' }))) | Out-Null
+            }
+            if ($expiredCertificateCount -gt 0) {
+                $summarySegments.Add(("{0} expired client certificate{1}" -f $expiredCertificateCount, $(if ($expiredCertificateCount -eq 1) { '' } else { 's' }))) | Out-Null
+            }
+            if ($expiringSecretCount -gt 0) {
+                $summarySegments.Add(("{0} client secret{1} expiring within {2} days" -f $expiringSecretCount, $(if ($expiringSecretCount -eq 1) { '' } else { 's' }), $ExpiringWithinDays)) | Out-Null
+            }
+            if ($expiringCertificateCount -gt 0) {
+                $summarySegments.Add(("{0} client certificate{1} expiring within {2} days" -f $expiringCertificateCount, $(if ($expiringCertificateCount -eq 1) { '' } else { 's' }), $ExpiringWithinDays)) | Out-Null
+            }
+
+            return [pscustomobject]@{
+                CredentialReviewState             = 'Collected'
+                CredentialCount                   = $credentialRows.Count
+                HasExpiredCredentials             = ($expiredRows.Count -gt 0)
+                ExpiredCredentialCount            = $expiredRows.Count
+                ExpiredKeyCredentialCount         = $expiredCertificateCount
+                ExpiredPasswordCredentialCount    = $expiredSecretCount
+                HasCredentialsExpiringSoon        = ($expiringRows.Count -gt 0)
+                ExpiringCredentialCount           = $expiringRows.Count
+                ExpiringKeyCredentialCount        = $expiringCertificateCount
+                ExpiringPasswordCredentialCount   = $expiringSecretCount
+                NextCredentialExpiryDateTime      = $(if ($futureDatedRows.Count -gt 0) { @($futureDatedRows | Sort-Object EndDateTime | Select-Object -First 1)[0].EndDateTime } else { $null })
+                LatestCredentialExpiryDateTime    = $(if ($datedRows.Count -gt 0) { @($datedRows | Sort-Object EndDateTime -Descending | Select-Object -First 1)[0].EndDateTime } else { $null })
+                CredentialIssueSummary            = (@($summarySegments.ToArray()) -join '; ')
+            }
+        }
+
         function Get-AssessmentEnterpriseApplicationAppRegistrationMap {
             param(
                 [Parameter(Mandatory = $true)]
@@ -12156,6 +12242,8 @@ function Get-AuthenticationConfiguration {
                     $credentialTypes.Add('Client Secret') | Out-Null
                 }
 
+                $credentialMetadata = Get-AssessmentEnterpriseApplicationCredentialMetadata -ApplicationRow $applicationRow
+
                 $appRegistrationMap[$appId] = [pscustomobject]@{
                     AppRegistrationId          = $applicationObjectId
                     Owners                     = @($ownerValues.ToArray())
@@ -12167,6 +12255,19 @@ function Get-AuthenticationConfiguration {
                     AppCredentials             = (@($credentialTypes.ToArray()) -join ', ')
                     KeyCredentialCount         = $keyCredentialCount
                     PasswordCredentialCount    = $passwordCredentialCount
+                    CredentialReviewState      = $credentialMetadata.CredentialReviewState
+                    CredentialCount            = $credentialMetadata.CredentialCount
+                    HasExpiredCredentials      = $credentialMetadata.HasExpiredCredentials
+                    ExpiredCredentialCount     = $credentialMetadata.ExpiredCredentialCount
+                    ExpiredKeyCredentialCount  = $credentialMetadata.ExpiredKeyCredentialCount
+                    ExpiredPasswordCredentialCount = $credentialMetadata.ExpiredPasswordCredentialCount
+                    HasCredentialsExpiringSoon = $credentialMetadata.HasCredentialsExpiringSoon
+                    ExpiringCredentialCount    = $credentialMetadata.ExpiringCredentialCount
+                    ExpiringKeyCredentialCount = $credentialMetadata.ExpiringKeyCredentialCount
+                    ExpiringPasswordCredentialCount = $credentialMetadata.ExpiringPasswordCredentialCount
+                    NextCredentialExpiryDateTime = $credentialMetadata.NextCredentialExpiryDateTime
+                    LatestCredentialExpiryDateTime = $credentialMetadata.LatestCredentialExpiryDateTime
+                    CredentialIssueSummary     = $credentialMetadata.CredentialIssueSummary
                     SignInAudience             = Get-ArrayaObjectValue -Object $applicationRow -Names @('signInAudience', 'SignInAudience')
                     ApplicationCreatedDateTime = Get-ArrayaObjectValue -Object $applicationRow -Names @('createdDateTime', 'CreatedDateTime')
                 }
@@ -12816,6 +12917,19 @@ function Get-AuthenticationConfiguration {
                     AppCredentials                = $(if ($appRegistration) { [string]$appRegistration.AppCredentials } else { '' })
                     KeyCredentialCount            = $(if ($appRegistration) { [int]$appRegistration.KeyCredentialCount } else { 0 })
                     PasswordCredentialCount       = $(if ($appRegistration) { [int]$appRegistration.PasswordCredentialCount } else { 0 })
+                    CredentialReviewState         = $(if ($appRegistration) { [string]$appRegistration.CredentialReviewState } else { 'Unavailable' })
+                    CredentialCount               = $(if ($appRegistration) { [int]$appRegistration.CredentialCount } else { 0 })
+                    HasExpiredCredentials         = $(if ($appRegistration) { $appRegistration.HasExpiredCredentials } else { $null })
+                    ExpiredCredentialCount        = $(if ($appRegistration) { $appRegistration.ExpiredCredentialCount } else { $null })
+                    ExpiredKeyCredentialCount     = $(if ($appRegistration) { $appRegistration.ExpiredKeyCredentialCount } else { $null })
+                    ExpiredPasswordCredentialCount = $(if ($appRegistration) { $appRegistration.ExpiredPasswordCredentialCount } else { $null })
+                    HasCredentialsExpiringSoon    = $(if ($appRegistration) { $appRegistration.HasCredentialsExpiringSoon } else { $null })
+                    ExpiringCredentialCount       = $(if ($appRegistration) { $appRegistration.ExpiringCredentialCount } else { $null })
+                    ExpiringKeyCredentialCount    = $(if ($appRegistration) { $appRegistration.ExpiringKeyCredentialCount } else { $null })
+                    ExpiringPasswordCredentialCount = $(if ($appRegistration) { $appRegistration.ExpiringPasswordCredentialCount } else { $null })
+                    NextCredentialExpiryDateTime  = $(if ($appRegistration) { $appRegistration.NextCredentialExpiryDateTime } else { $null })
+                    LatestCredentialExpiryDateTime = $(if ($appRegistration) { $appRegistration.LatestCredentialExpiryDateTime } else { $null })
+                    CredentialIssueSummary        = $(if ($appRegistration) { [string]$appRegistration.CredentialIssueSummary } else { '' })
                     SignInAudience                = $(if ($appRegistration) { $appRegistration.SignInAudience } else { $null })
                     ApplicationCreatedDateTime    = $(if ($appRegistration) { $appRegistration.ApplicationCreatedDateTime } else { $null })
                     DelegatedLastSignIn           = $(if ($servicePrincipalActivity) { $servicePrincipalActivity.DelegatedLastSignIn } else { $null })
@@ -12989,6 +13103,8 @@ function Get-AuthenticationConfiguration {
             ApplicationsWithNoRecentActivity = @($enterpriseApplicationRows | Where-Object { ([string]$_.ActivitySignalState -eq 'Collected') -and ((Convert-ToAssessmentBoolean $_.HasRecentActivity) -eq $false) }).Count
             ApplicationsWithInsecureRedirectUris = @($enterpriseApplicationRows | Where-Object { (([string]$_.RedirectUriSignalState -eq 'Collected') -or ([string]$_.RedirectUriSignalState -eq 'Partial')) -and ((Convert-ToAssessmentBoolean $_.HasInsecureRedirectUris) -eq $true) }).Count
             SsoEnabledApplications           = $resolvedSsoApplicationRows.Count
+            ApplicationsWithExpiredCredentials = @($enterpriseApplicationRows | Where-Object { ([string]$_.CredentialReviewState -eq 'Collected') -and ((Convert-ToAssessmentBoolean $_.HasExpiredCredentials) -eq $true) }).Count
+            ApplicationsWithCredentialsExpiringSoon = @($enterpriseApplicationRows | Where-Object { ([string]$_.CredentialReviewState -eq 'Collected') -and ((Convert-ToAssessmentBoolean $_.HasCredentialsExpiringSoon) -eq $true) }).Count
             ApplicationSourceCoverageState   = $applicationSourceCoverageState
             ApplicationSourceCollectedCount  = $applicationSourceCollectedCount
             ApplicationSourceUnavailableCount = $applicationSourceUnavailableCount
