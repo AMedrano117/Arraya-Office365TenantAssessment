@@ -423,6 +423,22 @@ function Update-AssessmentArtifactManifestWithImproveOutputs {
             }
         }
     }
+    if ($ImproveResult.PSObject.Properties.Name -contains 'RoadmapRemediationPlanPath' -and -not [string]::IsNullOrWhiteSpace([string]$ImproveResult.RoadmapRemediationPlanPath)) {
+        $artifactEntries += [pscustomobject][ordered]@{
+            Type = 'Roadmap Remediation Plan'
+            Path = [string]$ImproveResult.RoadmapRemediationPlanPath
+        }
+    }
+    elseif ($ImproveResult.PSObject.Properties.Name -contains 'RoadmapRemediationPlanPaths') {
+        $roadmapIndex = 0
+        foreach ($roadmapPath in @($ImproveResult.RoadmapRemediationPlanPaths | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)) {
+            $roadmapIndex++
+            $artifactEntries += [pscustomobject][ordered]@{
+                Type = ('Roadmap Remediation Plan {0}' -f $roadmapIndex)
+                Path = [string]$roadmapPath
+            }
+        }
+    }
     $artifactEntries += [pscustomobject][ordered]@{
         Type = 'Engineer Action Pack'
         Path = [string]$ImproveResult.EngineerActionPackPath

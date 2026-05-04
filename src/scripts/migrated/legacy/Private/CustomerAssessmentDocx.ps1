@@ -10,6 +10,18 @@ function Get-CustomerAssessmentTemplatePath {
     return $templatePath
 }
 
+function Get-RoadmapRemediationTemplatePath {
+    [CmdletBinding()]
+    param()
+
+    $templatePath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\..\..\docs\templates\M365 - Roadmap Remediation Plan_05.01.26 - Empty Copy.docx'))
+    if (-not (Test-Path -Path $templatePath -PathType Leaf)) {
+        throw "Roadmap remediation template was not found: $templatePath"
+    }
+
+    return $templatePath
+}
+
 function New-CustomerWordParagraphBlock {
     [CmdletBinding()]
     param(
@@ -135,9 +147,10 @@ function Get-CustomerDistinctRoadmapActions {
         'Info'     = 4
     }
     $phaseRanks = @{
-        'Near Term' = 0
-        'Planned'   = 1
-        'Monitor'   = 2
+        'Immediate' = 0
+        'Near Term' = 1
+        'Planned'   = 2
+        'Monitor'   = 3
     }
 
     $groupedActions = @(
@@ -1484,7 +1497,7 @@ function Get-CustomerOverallFindingsSummaryRows {
             $standoutItems[0]
         }
         else {
-            'The reviewed signals in this workstream did not surface one concise standout summary, so use 15.10 Full Findings Inventory for the detailed item list.'
+            'The reviewed signals in this workstream did not surface one concise standout summary, so use the Engineer Pack for the detailed item list behind this grouped workstream.'
         }
 
         $rows.Add((New-CustomerWordTableRow -Cells @(
@@ -1531,7 +1544,7 @@ function Get-CustomerLeadershipDecisionRows {
         $rows.Add((New-CustomerWordTableRow -Cells @(
             'Priority work item not clearly surfaced',
             'Approve the remediation path that best matches the reviewed evidence.',
-            'The current source did not include a clear roadmap action ordering, so 15.10 Full Findings Inventory should be used for the detailed crosswalk.'
+            'The current review did not surface a clear roadmap ordering, so use the Engineer Pack and grouped recommendations for the detailed crosswalk.'
         ))) | Out-Null
     }
 
@@ -1950,13 +1963,32 @@ function New-CustomerChartImageBlock {
 function Get-CustomerOverallFindingsChartRows {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $false)][object[]]$WorkstreamSummaries = @()
+        [Parameter(Mandatory = $false)][object[]]$WorkstreamSummaries = @(),
+        [Parameter(Mandatory = $false)][object[]]$Findings = @()
     )
 
     return @(
-        foreach ($summary in @($WorkstreamSummaries | Where-Object { $null -ne $_ })) {
-            $workstream = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $summary -Names @('Workstream')) -Default ''
-            $openFindings = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $summary -Names @('OpenFindings'))
+        foreach ($group in @(
+                $WorkstreamSummaries |
+                    Where-Object { $null -ne $_ } |
+                    Group-Object { Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Workstream', 'OwnerTeam')) -Default 'Not validated from the reviewed data' } |
+                    Sort-Object `
+                        @{ Expression = { ($_.Group | ForEach-Object { Get-CustomerSeverityRank -Severity (Get-ArrayaObjectValue -Object $_ -Names @('Severity')) } | Measure-Object -Maximum).Maximum }; Descending = $true }, `
+                        @{ Expression = { ($_.Group | ForEach-Object { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('OpenFindings')) } | Where-Object { $null -ne $_ } | Measure-Object -Sum).Sum }; Descending = $true }, `
+                        Name
+            )) {
+            $workstream = [string]$group.Name
+            $openFindings = @(
+                $group.Group |
+                    ForEach-Object { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('OpenFindings')) } |
+                    Where-Object { $null -ne $_ } |
+                    Measure-Object -Sum
+            ).Sum
+
+            if ($null -eq $openFindings) {
+                $openFindings = @($Findings | Where-Object { ([string]$_.OwnerTeam) -eq $workstream }).Count
+            }
+
             if ([string]::IsNullOrWhiteSpace($workstream) -or $null -eq $openFindings -or $openFindings -le 0) {
                 continue
             }
@@ -2351,6 +2383,222 @@ function Get-CustomerLeadershipDecisionBulletItems {
             '{0}: {1} Why now: {2}' -f $focus, $next, $whyNow
         }
     )
+}
+
+function Get-CustomerRoadmapBucketHeading {
+    [CmdletBinding()]
+    param([AllowNull()][string]$RoadmapPhase)
+
+    switch (([string]$RoadmapPhase).Trim()) {
+        'Immediate' { return '0-30 Days (Foundation)' }
+        'Near Term' { return '31-60 Days (Enforcement & Cleanup)' }
+        'Planned' { return '61-90 Days (Stabilization)' }
+        default { return 'Operational Model' }
+    }
+}
+
+function Get-CustomerRoadmapDocumentInfoRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$TenantName,
+        [Parameter(Mandatory = $true)][datetime]$GeneratedAt,
+        [Parameter(Mandatory = $false)][string]$AssessmentVersion
+    )
+
+    return @(
+        New-CustomerWordTableRow -Cells @('Client', $TenantName)
+        New-CustomerWordTableRow -Cells @('Document Type', 'Microsoft 365 Remediation Roadmap')
+        New-CustomerWordTableRow -Cells @('Document Version', $(if ([string]::IsNullOrWhiteSpace($AssessmentVersion)) { '1.0' } else { $AssessmentVersion }))
+        New-CustomerWordTableRow -Cells @('Prepared By', 'Arraya Solutions')
+        New-CustomerWordTableRow -Cells @('Generated Date', $GeneratedAt.ToString('yyyy-MM-dd'))
+        New-CustomerWordTableRow -Cells @('Source of Detail', 'Use the Engineer Pack and support JSON for detailed technical evidence and validation paths.')
+    )
+}
+
+function Get-CustomerRoadmapEnvironmentReviewText {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$Signals)
+
+    $userCount = @(Convert-ArrayaObjectToArray $Signals.Users).Count
+    $adminCount = @(Convert-ArrayaObjectToArray $Signals.Admins).Count
+    $deviceCount = @(Convert-ArrayaObjectToArray $Signals.DeviceDetails).Count
+    $mailboxCount = @(Convert-ArrayaObjectToArray $Signals.AllMailboxes).Count
+    $teamCount = @(Convert-ArrayaObjectToArray $Signals.AllTeams).Count
+    $sharePointCount = @(Convert-ArrayaObjectToArray $Signals.SharePoint).Count
+    $oneDriveCount = @(Convert-ArrayaObjectToArray $Signals.OneDrive).Count
+    $domainCount = @(Convert-ArrayaObjectToArray $Signals.Domains).Count
+    $licenseCount = @(Convert-ArrayaObjectToArray $Signals.LicenseSKUs).Count
+
+    return ('The reviewed tenant snapshot surfaced {0} user account(s), {1} admin account(s), {2} device record(s), {3} mailbox(es), {4} Team(s), {5} SharePoint site(s), {6} OneDrive location(s), {7} accepted domain(s), and {8} license SKU record(s). The roadmap below focuses on the areas where the current review showed repeated control drift, concentrated exposure, or operational cleanup that now needs an accountable execution path.' -f $userCount, $adminCount, $deviceCount, $mailboxCount, $teamCount, $sharePointCount, $oneDriveCount, $domainCount, $licenseCount)
+}
+
+function Get-CustomerRoadmapSectionNarrative {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]$Observation,
+        [Parameter(Mandatory = $false)]$ConsultativeSummary,
+        [Parameter(Mandatory = $true)][string]$Fallback
+    )
+
+    $segments = New-Object System.Collections.Generic.List[string]
+    foreach ($candidate in @(
+            $(if ($null -ne $Observation) { Convert-ToCustomerAssessmentNarrativeText -Text ([string]$Observation.ObservedNarrative) } else { $null }),
+            $(if ($null -ne $ConsultativeSummary) { Convert-ToCustomerAssessmentNarrativeText -Text ([string]$ConsultativeSummary.Narrative) } else { $null }),
+            $(if ($null -ne $Observation) { Convert-ToCustomerAssessmentNarrativeText -Text ([string]$Observation.WhyItMatters) } else { $null }),
+            $(if ($null -ne $ConsultativeSummary) { Convert-ToCustomerAssessmentNarrativeText -Text ([string]$ConsultativeSummary.RecommendationSupport) } else { $null })
+        )) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+
+        if ($segments -notcontains $candidate) {
+            $segments.Add($candidate) | Out-Null
+        }
+    }
+
+    if ($segments.Count -eq 0) {
+        return $Fallback
+    }
+
+    return (($segments.ToArray() | Select-Object -First 3) -join ' ')
+}
+
+function Get-CustomerRoadmapActionBulletItems {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$RoadmapActions = @(),
+        [Parameter(Mandatory = $true)][string]$BucketHeading
+    )
+
+    return @(
+        foreach ($action in @($RoadmapActions | Where-Object { (Get-CustomerRoadmapBucketHeading -RoadmapPhase ([string]$_.RoadmapPhase)) -eq $BucketHeading })) {
+            $title = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $action -Names @('ActionTitle')) -Default 'Priority work item'
+            $phase = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $action -Names @('RoadmapPhase')) -Default 'Monitor'
+            $criticality = Get-CustomerActionCriticalityLabel -Severity ([string](Get-ArrayaObjectValue -Object $action -Names @('HighestSeverity')))
+            $owner = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $action -Names @('PrimaryOwner')) -Default 'Shared operational owner'
+            $nextStep = Convert-ToCustomerAssessmentNarrativeText -Text ([string](Get-ArrayaObjectValue -Object $action -Names @('RecommendedNextStep')))
+            $whyItMatters = Convert-ToCustomerAssessmentNarrativeText -Text ([string](Get-ArrayaObjectValue -Object $action -Names @('WhyItMatters')))
+            $successCheck = Convert-ToCustomerAssessmentNarrativeText -Text ([string](Get-ArrayaObjectValue -Object $action -Names @('SuccessCheck')))
+
+            $parts = @(
+                ('{0} [Phase label: {1}; Criticality: {2}; Owner: {3}]' -f $title, $phase, $criticality, $owner),
+                $(if (-not [string]::IsNullOrWhiteSpace($nextStep)) { 'Next step: ' + $nextStep }),
+                $(if (-not [string]::IsNullOrWhiteSpace($whyItMatters)) { 'Why it matters: ' + $whyItMatters }),
+                $(if (-not [string]::IsNullOrWhiteSpace($successCheck)) { 'Success signal: ' + $successCheck })
+            ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+            ($parts -join ' ')
+        }
+    )
+}
+
+function New-RoadmapRemediationDocumentBlocks {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$SourceModel,
+        [Parameter(Mandatory = $true)]$Signals,
+        [Parameter(Mandatory = $true)][datetime]$GeneratedAt
+    )
+
+    $tenantName = [string]$SourceModel.TenantName
+    $assessmentVersion = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $SourceModel -Names @('AssessmentVersion')) -Default '1.0'
+    $roadmapActions = @(Get-CustomerDistinctRoadmapActions -RoadmapActions $SourceModel.RoadmapActions)
+    $executiveDecisionSummary = $SourceModel.ExecutiveDecisionSummary
+    $riskRows = if ($null -ne $executiveDecisionSummary -and @($executiveDecisionSummary.RiskRows).Count -gt 0) {
+        Convert-CustomerThreeColumnRowsToWordTableRows -Rows @($executiveDecisionSummary.RiskRows) -PropertyNames @('RiskCluster', 'WhatStandsOut', 'WhyLeadershipShouldCare')
+    }
+    else {
+        @()
+    }
+    $decisionRows = if ($null -ne $executiveDecisionSummary -and @($executiveDecisionSummary.DecisionRows).Count -gt 0) {
+        Convert-CustomerThreeColumnRowsToWordTableRows -Rows @($executiveDecisionSummary.DecisionRows) -PropertyNames @('DecisionFocus', 'WhatShouldHappenNext', 'WhyNow')
+    }
+    else {
+        @()
+    }
+
+    $identityObservation = Get-CustomerTechnicalObservationByTitle -TechnicalObservations $SourceModel.TechnicalObservations -Title 'Identity & Access (Entra ID)'
+    $collaborationObservation = Get-CustomerTechnicalObservationByTitle -TechnicalObservations $SourceModel.TechnicalObservations -Title 'Collaboration (Teams, SharePoint, OneDrive)'
+    $endpointObservation = Get-CustomerTechnicalObservationByTitle -TechnicalObservations $SourceModel.TechnicalObservations -Title 'Devices & Endpoint Management'
+    $messagingObservation = Get-CustomerTechnicalObservationByTitle -TechnicalObservations $SourceModel.TechnicalObservations -Title 'Messaging (Exchange Online)'
+    $governanceObservation = Get-CustomerTechnicalObservationByTitle -TechnicalObservations $SourceModel.TechnicalObservations -Title 'Data Protection & Governance'
+    $lifecycleObservation = Get-CustomerTechnicalObservationByTitle -TechnicalObservations $SourceModel.TechnicalObservations -Title 'Offboarding & Lifecycle Management'
+
+    $keyHighlights = @(
+        Get-CustomerExecutiveRiskBulletItems -Rows $riskRows
+    )
+    if (@($keyHighlights).Count -eq 0) {
+        $keyHighlights = @('The reviewed data did not surface distinct executive highlights beyond the grouped recommendations.')
+    }
+
+    $leadershipDecisionItems = @(
+        Get-CustomerLeadershipDecisionBulletItems -Rows $decisionRows
+    )
+    if (@($leadershipDecisionItems).Count -eq 0) {
+        $leadershipDecisionItems = @('Leadership decisions were not clearly separated in the reviewed data, so the grouped recommendations should be used to confirm execution order.')
+    }
+
+    $blocks = New-Object System.Collections.Generic.List[object]
+    $blocks.Add((New-CustomerWordParagraphBlock -Text "$tenantName Microsoft 365 Remediation Roadmap" -Style 'Title')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Prepared by: Arraya Solutions' -Style 'Subtitle')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("Generated: {0}" -f $GeneratedAt.ToString('yyyy-MM-dd')) -Style 'Normal')) | Out-Null
+
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Version Control' -Style 'Heading1')) | Out-Null
+    $blocks.Add((New-CustomerWordTableBlock -Headers @('Date', 'Version', 'Prepared By', 'Description') -Rows @(
+        (New-CustomerWordTableRow -Cells @($GeneratedAt.ToString('yyyy-MM-dd'), $assessmentVersion, 'Arraya Solutions', 'Initial companion remediation roadmap generated from the reviewed tenant data.'))
+    ))) | Out-Null
+
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Document Information' -Style 'Heading1')) | Out-Null
+    $blocks.Add((New-CustomerWordTableBlock -Headers @('Field', 'Value') -Rows (Get-CustomerRoadmapDocumentInfoRows -TenantName $tenantName -GeneratedAt $GeneratedAt -AssessmentVersion $assessmentVersion))) | Out-Null
+
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Executive Summary' -Style 'Heading1')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $executiveDecisionSummary -and -not [string]::IsNullOrWhiteSpace([string]$executiveDecisionSummary.Narrative)) { [string]$executiveDecisionSummary.Narrative } else { [string]$SourceModel.ExecutiveNarrative })) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Key Highlights' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items $keyHighlights)) | Out-Null
+
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Current State Analysis' -Style 'Heading1')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Environment Review' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text (Get-CustomerRoadmapEnvironmentReviewText -Signals $Signals) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Identity & Access' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text (Get-CustomerRoadmapSectionNarrative -Observation $identityObservation -ConsultativeSummary $SourceModel.IdentityConsultativeSummary -Fallback 'Identity and access observations were not validated clearly enough in the reviewed data to generate a stronger roadmap narrative.') -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Collaboration & Lifecycle' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text (Get-CustomerRoadmapSectionNarrative -Observation $collaborationObservation -ConsultativeSummary $SourceModel.CollaborationConsultativeSummary -Fallback 'Collaboration and lifecycle observations were not validated clearly enough in the reviewed data to generate a stronger roadmap narrative.') -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Endpoint & Device Management' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text (Get-CustomerRoadmapSectionNarrative -Observation $endpointObservation -ConsultativeSummary $null -Fallback 'Endpoint and device-management observations were not validated clearly enough in the reviewed data to generate a stronger roadmap narrative.') -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Messaging & Security' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text (Get-CustomerRoadmapSectionNarrative -Observation $messagingObservation -ConsultativeSummary $SourceModel.MessagingConsultativeSummary -Fallback 'Messaging and security observations were not validated clearly enough in the reviewed data to generate a stronger roadmap narrative.') -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Governance & Licensing' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text (Get-CustomerRoadmapSectionNarrative -Observation $governanceObservation -ConsultativeSummary $SourceModel.GovernanceConsultativeSummary -Fallback 'Governance and licensing observations were not validated clearly enough in the reviewed data to generate a stronger roadmap narrative.') -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'What This Means' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text (Get-CustomerRoadmapSectionNarrative -Observation $lifecycleObservation -ConsultativeSummary $SourceModel.LifecycleConsultativeSummary -Fallback 'The reviewed data shows repeated control drift across the same operating areas that already carry the most day-to-day support load, so the roadmap emphasizes ownership, enforcement, and cleanup sequencing rather than isolated one-off fixes.') -Style 'Normal')) | Out-Null
+
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Solution Approach' -Style 'Heading1')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'The recommended approach is to sequence the highest-value controls first, assign accountable owners early, and use the Engineer Pack for the detailed technical validation path behind each grouped action.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(
+        'Start with the actions carrying the highest current impact or the broadest control drift.',
+        'Use the grouped recommendations to confirm delivery sequence, then validate implementation detail from the Engineer Pack before execution.',
+        'Treat cross-workload governance and lifecycle actions as part of the same operating model rather than as separate cleanup tracks.'
+    ))) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Implementation Approach' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'The roadmap is organized into 0-30 day, 31-60 day, 61-90 day, and ongoing operational-model buckets so the current findings can be translated into an execution cadence without losing the original internal phase labels already assigned during analysis.' -Style 'Normal')) | Out-Null
+
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Remediation Roadmap' -Style 'Heading1')) | Out-Null
+    foreach ($bucketHeading in @('0-30 Days (Foundation)', '31-60 Days (Enforcement & Cleanup)', '61-90 Days (Stabilization)', 'Operational Model')) {
+        $bucketItems = @(Get-CustomerRoadmapActionBulletItems -RoadmapActions $roadmapActions -BucketHeading $bucketHeading)
+        $blocks.Add((New-CustomerWordParagraphBlock -Text $bucketHeading -Style 'Heading2')) | Out-Null
+        if ($bucketItems.Count -gt 0) {
+            $blocks.Add((New-CustomerWordListBlock -Items $bucketItems)) | Out-Null
+        }
+        else {
+            $blocks.Add((New-CustomerWordParagraphBlock -Text 'No roadmap action was placed in this bucket from the reviewed data.' -Style 'Normal')) | Out-Null
+        }
+    }
+
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Executive Decision Required' -Style 'Heading1')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'These are the leadership approvals or owner decisions that would remove the biggest blockers to execution sequencing in the current roadmap.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items $leadershipDecisionItems)) | Out-Null
+
+    return @($blocks.ToArray())
 }
 
 function Get-CustomerApplicationPrimaryRiskSignalText {
@@ -2923,11 +3171,16 @@ function Set-CustomerAssessmentCoreProperties {
     param(
         [Parameter(Mandatory = $true)]$Archive,
         [Parameter(Mandatory = $true)][string]$TenantName,
-        [Parameter(Mandatory = $true)][datetime]$GeneratedAt
+        [Parameter(Mandatory = $true)][datetime]$GeneratedAt,
+        [Parameter(Mandatory = $false)][string]$DocumentTitle
     )
 
     $timestamp = $GeneratedAt.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-    $title = Convert-ToCustomerWordXmlText -Text "$TenantName Microsoft 365 Tenant Best Practices Assessment"
+    if ([string]::IsNullOrWhiteSpace($DocumentTitle)) {
+        $DocumentTitle = "$TenantName Microsoft 365 Tenant Best Practices Assessment"
+    }
+
+    $title = Convert-ToCustomerWordXmlText -Text $DocumentTitle
     $creator = Convert-ToCustomerWordXmlText -Text 'Arraya Solutions'
     $coreXml = @"
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -3072,7 +3325,8 @@ function Write-CustomerAssessmentDocxFromModel {
         [Parameter(Mandatory = $true)][string]$OutputPath,
         [Parameter(Mandatory = $true)][string]$TenantName,
         [Parameter(Mandatory = $true)][datetime]$GeneratedAt,
-        [Parameter(Mandatory = $true)][object[]]$Blocks
+        [Parameter(Mandatory = $true)][object[]]$Blocks,
+        [Parameter(Mandatory = $false)][string]$DocumentTitle
     )
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -3084,7 +3338,7 @@ function Write-CustomerAssessmentDocxFromModel {
     $archive = [System.IO.Compression.ZipFile]::Open($OutputPath, [System.IO.Compression.ZipArchiveMode]::Update)
     try {
         Set-CustomerZipTextEntry -Archive $Archive -EntryName 'word/document.xml' -Content $documentXml
-        Set-CustomerAssessmentCoreProperties -Archive $Archive -TenantName $TenantName -GeneratedAt $GeneratedAt
+        Set-CustomerAssessmentCoreProperties -Archive $Archive -TenantName $TenantName -GeneratedAt $GeneratedAt -DocumentTitle $DocumentTitle
         Set-CustomerAssessmentContentTypes -Archive $Archive -ImageBlocks $imageBlocks
         Set-CustomerAssessmentDocumentRelationships -Archive $Archive -ImageBlocks $imageBlocks
         foreach ($imageBlock in @($imageBlocks)) {
@@ -3305,7 +3559,6 @@ function New-CustomerAssessmentDocumentBlocks {
     $workstreamSummaries = @($SourceModel.WorkstreamSummaries)
     $executiveThemes = @($SourceModel.ExecutiveThemes)
     $sourceSummaryRows = @($SourceModel.SummaryRows)
-    $findingsLegendRows = @($SourceModel.FindingsLegendRows)
     $executiveDecisionSummary = $SourceModel.ExecutiveDecisionSummary
     $guestMfaExperienceSummary = $SourceModel.GuestMfaExperienceSummary
     $identityConsultativeSummary = $SourceModel.IdentityConsultativeSummary
@@ -4105,7 +4358,7 @@ function New-CustomerAssessmentDocumentBlocks {
     $globalAdminRecommendationItems = @(
         'Reduce the number of active Global Administrator assignments and remove the role entirely from inactive or stale privileged accounts.',
         'Move administrators who do not routinely need full tenant-wide change authority to lower-privilege roles such as Global Reader.',
-        'Retain Global Administrator as an eligible role requiring approval before activation when elevated access is only occasionally needed.'
+        'Retain Global Administrator as an eligible role that requires approval before activation when elevated access is only occasionally needed.'
     )
     $domainOverviewRows = if ($domainRows.Count -gt 0) {
         @(
@@ -4466,15 +4719,17 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Overall Findings Summary' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Workstream', 'Severity / Impact', 'Open Findings', 'What Stands Out') -Rows $overallFindingsSummaryRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This table shows where findings are clustering before the report moves into the detailed sections.' -Style 'Normal')) | Out-Null
-    $overallFindingsChartBlock = New-CustomerChartImageBlock -ChartType 'HorizontalBar' -Rows (Get-CustomerOverallFindingsChartRows -WorkstreamSummaries $workstreamSummaries) -AltText 'Overall Findings by Workstream' -WidthPx 720 -HeightPx 260
+    $overallFindingsChartRows = Get-CustomerOverallFindingsChartRows -WorkstreamSummaries $workstreamSummaries -Findings $findings
+    $overallFindingsChartHeight = [Math]::Max(220, (55 + (28 * @($overallFindingsChartRows).Count)))
+    $overallFindingsChartBlock = New-CustomerChartImageBlock -ChartType 'HorizontalBar' -Rows $overallFindingsChartRows -AltText 'Overall Findings by Workstream' -WidthPx 720 -HeightPx $overallFindingsChartHeight
     if ($null -ne $overallFindingsChartBlock) {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'Overall Findings by Workstream' -Style 'Heading3')) | Out-Null
         $blocks.Add($overallFindingsChartBlock) | Out-Null
     }
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Use 4.0 Modern Workplace Recommendations for the prioritized execution view and 15.10 Full Findings Inventory for the detailed evidence behind each grouped issue.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Use 4.0 Modern Workplace Recommendations for the prioritized execution view, the companion remediation roadmap for leadership sequencing, and the Engineer Pack for detailed evidence behind each grouped issue.' -Style 'Normal')) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '4.0 Modern Workplace Recommendations' -Style 'Heading1')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'This section is the streamlined execution view for the report. Use it to prioritize the work, then use the detailed sections and 15.10 Full Findings Inventory to validate the evidence behind each recommendation.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'This section is the streamlined execution view for the report. Use it to prioritize the work, then use the detailed sections, companion roadmap, and Engineer Pack to validate the evidence behind each recommendation.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Recommendation', 'Criticality', 'Level of Effort') -Rows $recommendationRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Level of Effort is an initial delivery-planning estimate intended to help sequence work at a glance. Confirm the final effort, dependencies, and ownership during project scoping.' -Style 'Normal')) | Out-Null
 
@@ -5515,9 +5770,5 @@ function New-CustomerAssessmentDocumentBlocks {
         (New-CustomerDocumentationReference -Title 'On-premises password writeback with self-service password reset' -Url 'https://learn.microsoft.com/en-us/entra/identity/authentication/concept-sspr-writeback' -WhyItIsRelevant 'Relevant to password writeback and hybrid credential-management considerations.'),
         (New-CustomerDocumentationReference -Title 'Enable Microsoft Entra password writeback' -Url 'https://learn.microsoft.com/en-us/azure/active-directory/authentication/tutorial-enable-sspr-writeback' -WhyItIsRelevant 'Provides implementation guidance where password writeback is part of the target operating model.')
     )))) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text '15.10 Full Findings Inventory' -Style 'Heading2')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'This appendix table contains the full normalized findings inventory that supports the recommendations and workstream summaries in the main body of the report. The entries remain in the same order and preserve the same severity, priority, and recommendation text used throughout the assessment output.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Severity', 'Priority', 'Workstream', 'Rule / Finding', 'Why Flagged', 'Recommended Action', 'Success Criteria') -Rows $fullFindingsInventoryRows)) | Out-Null
-
     return @($blocks.ToArray())
 }

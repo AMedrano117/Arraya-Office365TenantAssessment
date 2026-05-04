@@ -52,6 +52,7 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match 'Invoke-M365ImproveForAssessmentRun'
         $runnerSource | Should -Match 'Customer Assessment Report'
         $runnerSource | Should -Match 'Customer Assessment Report Markdown'
+        $runnerSource | Should -Match 'Roadmap Remediation Plan'
         $runnerSource | Should -Not -Match 'Customer Remediation HTML'
         $runnerSource | Should -Not -Match 'Customer Remediation Markdown'
         $runnerSource | Should -Match '\$invokeParams\.GenerateWorkbookOverride = \[bool\]\$plan\.GenerateWorkbook'
@@ -170,6 +171,7 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $improveResult = [pscustomobject]@{
             CustomerAssessmentReportPath         = 'C:\Temp\Contoso-CustRpt.docx'
             CustomerAssessmentReportMarkdownPath = 'C:\Temp\Contoso-CustRpt.md'
+            RoadmapRemediationPlanPath          = 'C:\Temp\Contoso-Roadmap.docx'
             EngineerActionPackPath               = 'C:\Temp\Contoso-EngPack.md'
             JsonPath                             = 'C:\Temp\Support\Contoso-Plan.json'
             RemediationPs1Path                   = 'C:\Temp\Support\Contoso-Snips.ps1'
@@ -188,6 +190,7 @@ Describe 'Arraya.M365.AssessmentRunner' {
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Assessment Snapshot JSON' }).Count | Should -Be 1
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Customer Assessment Report' }).Count | Should -Be 1
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Customer Assessment Report Markdown' }).Count | Should -Be 1
+        @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Roadmap Remediation Plan' }).Count | Should -Be 1
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Engineer Action Pack' }).Count | Should -Be 1
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Improvement Plan JSON' }).Count | Should -Be 1
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Remediation Snippets' }).Count | Should -Be 1

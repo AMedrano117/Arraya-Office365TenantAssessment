@@ -3995,11 +3995,11 @@ function Get-CustomerFindingsLegendRows {
         },
         [pscustomobject]@{
             Term    = 'Full Itemized Reference'
-            Meaning = 'See 15.10 Full Findings Inventory for the detailed finding-by-finding list used to build the recommendations.'
+            Meaning = 'Use the Engineer Pack for the detailed finding-by-finding evidence and validation path behind the grouped recommendations.'
         },
         [pscustomobject]@{
             Term    = 'How grouped rows map forward'
-            Meaning = 'Each workstream row rolls related findings into one customer-readable summary. Use 4.0 Modern Workplace Recommendations for execution planning and 15.10 Full Findings Inventory for the detailed crosswalk.'
+            Meaning = 'Each workstream row rolls related findings into one customer-readable summary. Use 4.0 Modern Workplace Recommendations for execution planning, the companion roadmap for leadership sequencing, and the Engineer Pack for the detailed crosswalk.'
         }
     )
 }
@@ -4026,8 +4026,12 @@ function Get-CustomerSourceSummaryRows {
             State  = '4.0 Modern Workplace Recommendations'
         },
         [pscustomobject]@{
-            Signal = 'Where the full itemized list appears'
-            State  = '15.10 Full Findings Inventory'
+            Signal = 'Where the leadership roadmap appears'
+            State  = 'Companion remediation roadmap in the Support folder'
+        },
+        [pscustomobject]@{
+            Signal = 'Where the detailed technical evidence appears'
+            State  = 'Engineer Pack in the Support folder'
         }
     )
 }
@@ -4794,6 +4798,7 @@ if ($inputSources.Count -gt 1) {
         $null = New-Item -ItemType Directory -Path $supportFolder -Force
     }
     $customerAssessmentReportMarkdownPaths = New-Object System.Collections.Generic.List[string]
+    $roadmapRemediationPlanPaths = New-Object System.Collections.Generic.List[string]
 
     $sourcePayloads = New-Object System.Collections.Generic.List[object]
     $tenantNames = New-Object System.Collections.Generic.List[string]
@@ -4838,6 +4843,9 @@ if ($inputSources.Count -gt 1) {
         }
         if ($sourceResult.PSObject.Properties.Name -contains 'CustomerAssessmentReportMarkdownPath' -and -not [string]::IsNullOrWhiteSpace([string]$sourceResult.CustomerAssessmentReportMarkdownPath)) {
             $customerAssessmentReportMarkdownPaths.Add([string]$sourceResult.CustomerAssessmentReportMarkdownPath) | Out-Null
+        }
+        if ($sourceResult.PSObject.Properties.Name -contains 'RoadmapRemediationPlanPath' -and -not [string]::IsNullOrWhiteSpace([string]$sourceResult.RoadmapRemediationPlanPath)) {
+            $roadmapRemediationPlanPaths.Add([string]$sourceResult.RoadmapRemediationPlanPath) | Out-Null
         }
 
         if (-not [string]::IsNullOrWhiteSpace([string]$sourceResult.RemediationPs1Path) -and (Test-Path -Path $sourceResult.RemediationPs1Path)) {
@@ -4884,6 +4892,8 @@ if ($inputSources.Count -gt 1) {
         CustomerAssessmentReportPaths        = $customerAssessmentReportPaths.ToArray()
         CustomerAssessmentReportMarkdownPath = $null
         CustomerAssessmentReportMarkdownPaths = $customerAssessmentReportMarkdownPaths.ToArray()
+        RoadmapRemediationPlanPath          = $null
+        RoadmapRemediationPlanPaths         = $roadmapRemediationPlanPaths.ToArray()
         EngineerActionPackPath               = $engineerMdOutPath
         RemediationPs1Path                   = $snippetOutPath
     }
@@ -4895,6 +4905,9 @@ if ($inputSources.Count -gt 1) {
         }
         foreach ($customerAssessmentMarkdownPath in $customerAssessmentReportMarkdownPaths.ToArray()) {
             Write-Host "  Customer markdown: $customerAssessmentMarkdownPath" -ForegroundColor DarkGreen
+        }
+        foreach ($roadmapRemediationPlanPath in $roadmapRemediationPlanPaths.ToArray()) {
+            Write-Host "  Roadmap report   : $roadmapRemediationPlanPath" -ForegroundColor Yellow
         }
         Write-Host "  Engineer pack    : $engineerMdOutPath" -ForegroundColor Cyan
         Write-Host "  Support folder   : $supportFolder" -ForegroundColor DarkGray
@@ -6164,6 +6177,7 @@ $csvOutPath = if ($IncludeLegacyArtifacts) { Join-Path -Path $supportFolder -Chi
 $mdOutPath = if ($IncludeLegacyArtifacts) { Join-Path -Path $supportFolder -ChildPath ("{0}-Plan.md" -f $artifactPrefix) } else { $null }
 $customerAssessmentReportOutPath = Join-Path -Path $supportFolder -ChildPath ("{0}-Microsoft 365 Tenant Best Practices Assessment-{1}.docx" -f $artifactPrefix, $customerReportDeliveryDate)
 $customerAssessmentReportMarkdownOutPath = Join-Path -Path $supportFolder -ChildPath ("{0}-CustRpt.md" -f $artifactPrefix)
+$roadmapRemediationPlanOutPath = Join-Path -Path $supportFolder -ChildPath ("{0}-Microsoft 365 Remediation Roadmap-{1}.docx" -f $artifactPrefix, $customerReportDeliveryDate)
 $engineerMdOutPath = Join-Path -Path $supportFolder -ChildPath ("{0}-EngPack.md" -f $artifactPrefix)
 $snippetOutPath = Join-Path -Path $supportFolder -ChildPath ("{0}-Snips.ps1" -f $artifactPrefix)
 
@@ -6171,6 +6185,7 @@ $deliverables = [ordered]@{
     ImprovementPlanJson       = $jsonOutPath
     CustomerAssessmentReport  = $customerAssessmentReportOutPath
     CustomerAssessmentReportMarkdown = $customerAssessmentReportMarkdownOutPath
+    RoadmapRemediationPlan    = $roadmapRemediationPlanOutPath
     EngineerActionPack        = $engineerMdOutPath
     RemediationSnippets       = $snippetOutPath
     SupportFolder             = $supportFolder
@@ -6244,6 +6259,9 @@ $customerAssessmentTemplatePath = Get-CustomerAssessmentTemplatePath
 $customerAssessmentBlocks = New-CustomerAssessmentDocumentBlocks -SourceModel $customerSourceModel -Signals $customerAssessmentSignals -GeneratedAt $generatedAt
 Write-CustomerAssessmentDocxFromModel -TemplatePath $customerAssessmentTemplatePath -OutputPath $customerAssessmentReportOutPath -TenantName $tenantName -GeneratedAt $generatedAt -Blocks $customerAssessmentBlocks
 Write-CustomerAssessmentMarkdownFromBlocks -Blocks $customerAssessmentBlocks -OutputPath $customerAssessmentReportMarkdownOutPath
+$roadmapRemediationTemplatePath = Get-RoadmapRemediationTemplatePath
+$roadmapRemediationBlocks = New-RoadmapRemediationDocumentBlocks -SourceModel $customerSourceModel -Signals $customerAssessmentSignals -GeneratedAt $generatedAt
+Write-CustomerAssessmentDocxFromModel -TemplatePath $roadmapRemediationTemplatePath -OutputPath $roadmapRemediationPlanOutPath -TenantName $tenantName -GeneratedAt $generatedAt -Blocks $roadmapRemediationBlocks -DocumentTitle "$tenantName Microsoft 365 Remediation Roadmap"
 
 $engineerActionPackMarkdown = New-EngineerActionPack -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt -JsonOutPath $jsonOutPath -CsvOutPath $csvOutPath -SnippetOutPath $snippetOutPath -SupportFolderPath $supportFolder
 Set-Content -Path $engineerMdOutPath -Value $engineerActionPackMarkdown -Encoding UTF8
@@ -6393,6 +6411,7 @@ $outputSummary = [PSCustomObject]@{
     MarkdownPath                  = $mdOutPath
     CustomerAssessmentReportPath  = $customerAssessmentReportOutPath
     CustomerAssessmentReportMarkdownPath = $customerAssessmentReportMarkdownOutPath
+    RoadmapRemediationPlanPath    = $roadmapRemediationPlanOutPath
     CustomerRemediationReportPath = $null
     CustomerRemediationReportMarkdownPath = $null
     EngineerActionPackPath        = $engineerMdOutPath
@@ -6403,6 +6422,7 @@ if (-not $Quiet) {
     Write-Host 'Improvement plan generated.'
     Write-Host "  Customer report  : $customerAssessmentReportOutPath" -ForegroundColor Green
     Write-Host "  Customer markdown: $customerAssessmentReportMarkdownOutPath" -ForegroundColor DarkGreen
+    Write-Host "  Roadmap report   : $roadmapRemediationPlanOutPath" -ForegroundColor Yellow
     Write-Host "  Engineer pack    : $engineerMdOutPath" -ForegroundColor Cyan
     Write-Host "  Support folder   : $supportFolder" -ForegroundColor DarkGray
 }

@@ -386,7 +386,7 @@ Add `-IncludeLegacyAssessmentArtifacts` when you also want the older assessment 
 The `Improve` workflow now produces this simplified default output set:
 
 - top level: `*-CustomerAssessmentReport.docx`, `*-EngineerActionPack.md`
-- support folder: `*-AssessmentSnapshot.json`, `*-ImprovementPlan.json`, `*.manifest.json`, `*-RemediationSnippets.ps1`
+- support folder: `*-Microsoft 365 Remediation Roadmap-<date>.docx`, `*-AssessmentSnapshot.json`, `*-ImprovementPlan.json`, `*.manifest.json`, `*-RemediationSnippets.ps1`
 
 If you still need the older technical CSV and Markdown artifacts, generate them explicitly with `-IncludeLegacyArtifacts` when calling the reporting wrapper directly.
 
@@ -426,6 +426,7 @@ Default `M365` now creates these top-level operator deliverables:
 
 It also creates these support artifacts under `Support\...`:
 
+- `Support\*-Microsoft 365 Remediation Roadmap-<date>.docx`
 - `Support\*-ImprovementPlan.json`
 - `Support\*.manifest.json`
 - `Support\*-RemediationSnippets.ps1`

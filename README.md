@@ -144,6 +144,7 @@ Examples:
 For a default `-Action M365` run, the top-level operator deliverables are now:
 
 - `*-CustomerAssessmentReport.docx`: the primary customer-facing deliverable generated from `Improve`
+- `Support\*-Microsoft 365 Remediation Roadmap-<date>.docx`: the companion executive remediation roadmap generated alongside the customer report
 - `*-EngineerActionPack.md`: the primary engineer-facing remediation deliverable
 
 Support and machine-readable artifacts are written under `Support\...`:
