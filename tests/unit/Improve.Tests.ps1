@@ -824,6 +824,8 @@ Describe 'Improve workflow' {
         [System.IO.Path]::GetFileName($result.CustomerAssessmentReportPath) | Should -Match '.+-Microsoft 365 Tenant Best Practices Assessment-\d{4}-\d{2}-\d{2}\.docx$'
         Test-Path $result.CustomerAssessmentReportMarkdownPath | Should -BeTrue
         [System.IO.Path]::GetFileName($result.CustomerAssessmentReportMarkdownPath) | Should -Match '.+-CustRpt\.md$'
+        Test-Path $result.RoadmapRemediationPlanPath | Should -BeTrue
+        [System.IO.Path]::GetFileName($result.RoadmapRemediationPlanPath) | Should -Match '.+-Microsoft 365 Remediation Roadmap-\d{4}-\d{2}-\d{2}\.docx$'
         if ($result.PSObject.Properties.Name -contains 'CustomerRemediationReportPath') {
             $result.CustomerRemediationReportPath | Should -BeNullOrEmpty
         }
@@ -838,6 +840,7 @@ Describe 'Improve workflow' {
         $result.SupportFolderPath | Should -Be (Join-Path $TestDrive 'Support')
 
         $payload = Get-Content -Raw $result.JsonPath | ConvertFrom-Json -Depth 20
+        $payload.Deliverables.RoadmapRemediationPlan | Should -Be $result.RoadmapRemediationPlanPath
         $roadmapActionTitles = @($payload.RoadmapActions | ForEach-Object { [string]$_.ActionTitle } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $payload.Findings.Count | Should -BeGreaterThan 0
         $roadmapActionTitles.Count | Should -Be (@($roadmapActionTitles | Select-Object -Unique).Count)
@@ -921,6 +924,7 @@ Describe 'Improve workflow' {
         $customerReportDocument = Get-TestDocxDocumentXmlText -Path $result.CustomerAssessmentReportPath
         $customerReportXml = Get-TestDocxDocumentXml -Path $result.CustomerAssessmentReportPath
         $customerReportEntryNames = Get-TestDocxEntryNames -Path $result.CustomerAssessmentReportPath
+        $roadmapDocument = Get-TestDocxDocumentXmlText -Path $result.RoadmapRemediationPlanPath
         $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
         $ns = New-Object System.Xml.XmlNamespaceManager($customerReportXml.NameTable)
         $ns.AddNamespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main')
@@ -1006,7 +1010,6 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match '13\.0 Domain Configuration and DNS Overview'
         $customerReportDocument | Should -Match '14\.0 Offboarding Recommendation'
         $customerReportDocument | Should -Match '15\.0 Appendix'
-        $customerReportDocument | Should -Match '15\.10 Full Findings Inventory'
         $customerReportDocument | Should -Match 'Application User Consent Management'
         $customerReportDocument | Should -Match 'Authentication Methods Migration'
         $customerReportDocument | Should -Match 'DMARC Records'
@@ -1046,9 +1049,6 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'Open Findings'
         $customerReportDocument | Should -Match 'What Stands Out'
         $customerReportDocument | Should -Match 'Open Findings'
-        $customerReportDocument | Should -Match 'Rule / Finding'
-        $customerReportDocument | Should -Match 'Why Flagged'
-        $customerReportDocument | Should -Match 'Success Criteria'
         $customerReportDocument | Should -Match 'DMARC'
         $customerReportDocument | Should -Not -Match 'The clearest concentration in this tenant appears in'
         $customerReportDocument | Should -Not -Match 'AREA-'
@@ -1075,6 +1075,7 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Not -Match 's of tw ar eO ne Ti me Pa ss co de'
         $customerReportDocument | Should -Not -Match 'Action:'
         $customerReportDocument | Should -Not -Match 'What It Means In This Report'
+        $customerReportDocument | Should -Not -Match '15\.10 Full Findings Inventory'
         $customerReportDocument | Should -Match 'w:tblBorders'
         $customerTables.Count | Should -BeGreaterThan 12
         $customerTables[0].SelectNodes('./w:tr[1]/w:tc', $ns).Count | Should -Be 5
@@ -1191,10 +1192,8 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match '- '
         $customerReportMarkdown | Should -Match '## 12\.0 Retention Policies and Data Loss Prevention'
         $customerReportMarkdown | Should -Match '## 14\.0 Offboarding Recommendation'
-        $customerReportMarkdown | Should -Match '### 15\.10 Full Findings Inventory'
         $customerReportMarkdown | Should -Match '#### Mailbox Lifecycle Summary'
         $customerReportMarkdown | Should -Match '#### Transport Exposure Summary'
-        $customerReportMarkdown | Should -Match '\| Severity \| Priority \| Workstream \| Rule / Finding \| Why Flagged \| Recommended Action \| Success Criteria \|'
         $customerReportMarkdown | Should -Match 'Only explicitly allowed domains may be shared externally'
         $customerReportMarkdown | Should -Match 'Guest invitation control'
         $customerReportMarkdown | Should -Not -Match 'Priority: Near Term'
@@ -1210,12 +1209,29 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Not -Match 'Action:'
         $customerReportMarkdown | Should -Not -Match 'Recommended Next Steps'
         $customerReportMarkdown | Should -Not -Match 'must register separately in this tenant'
+        $customerReportMarkdown | Should -Not -Match '15\.10 Full Findings Inventory'
         $customerReportMarkdown | Should -Not -Match '\| Term \| What It Means In This Report \|'
         $customerReportMarkdown | Should -Not -Match '\| Application \| SSO Enabled \| SSO Mode \| Observation \|'
         $customerReportMarkdown | Should -Not -Match '\| Application \| SSO Mode \| Privilege / Activity \| Observation \|'
         $customerReportMarkdown | Should -Not -Match '\| Application \| Cleanup Signal \| Latest Activity \| Observation \|'
         $customerReportMarkdown | Should -Not -Match '\| Application \| Credential State \| Latest Activity \| Observation \|'
         $customerReportMarkdown | Should -Not -Match '#### Messaging Snapshot At A Glance'
+
+        $roadmapDocument | Should -Match 'Microsoft 365 Remediation Roadmap'
+        $roadmapDocument | Should -Match 'Executive Summary'
+        $roadmapDocument | Should -Match 'Current State Analysis'
+        $roadmapDocument | Should -Match 'Environment Review'
+        $roadmapDocument | Should -Match 'Identity &amp; Access'
+        $roadmapDocument | Should -Match 'Solution Approach'
+        $roadmapDocument | Should -Match 'Remediation Roadmap'
+        $roadmapDocument | Should -Match '0-30 Days \(Foundation\)'
+        $roadmapDocument | Should -Match '31-60 Days \(Enforcement &amp; Cleanup\)'
+        $roadmapDocument | Should -Match '61-90 Days \(Stabilization\)'
+        $roadmapDocument | Should -Match 'Operational Model'
+        $roadmapDocument | Should -Match 'Executive Decision Required'
+        $roadmapDocument | Should -Match 'Phase label:'
+        $roadmapDocument | Should -Not -Match '\[Insert '
+        $roadmapDocument | Should -Not -Match '15\.10 Full Findings Inventory'
 
         $engineerPack = Get-Content -Raw $result.EngineerActionPackPath
         $engineerPack | Should -Match '## Engineering Summary'
@@ -1240,6 +1256,21 @@ Describe 'Improve workflow' {
         $snippetContent | Should -Match "Connect-MgGraph -Scopes 'Policy.Read.All'"
         $snippetContent | Should -Not -Match 'SecurityEvents.ReadWrite.All'
         $snippetContent | Should -Not -Match 'Policy.ReadWrite.ConditionalAccess'
+    }
+
+    It 'uses grouped distinct workstreams for the overall findings chart and emits the companion roadmap deliverable' {
+        $customerDocxSource = Get-Content -Raw -Path (Join-Path $script:repoRoot 'src\scripts\migrated\legacy\Private\CustomerAssessmentDocx.ps1')
+        $improveSource = Get-Content -Raw -Path $script:improveScriptPath
+
+        $customerDocxSource | Should -Match 'function Get-CustomerOverallFindingsChartRows'
+        $customerDocxSource | Should -Match '\[Parameter\(Mandatory = \$false\)\]\[object\[\]\]\$Findings = @\(\)'
+        $customerDocxSource | Should -Match 'Get-CustomerOverallFindingsChartRows -WorkstreamSummaries \$workstreamSummaries -Findings \$findings'
+        $customerDocxSource | Should -Match '\$overallFindingsChartHeight = \[Math\]::Max\(220, \(55 \+ \(28 \* @\(\$overallFindingsChartRows\)\.Count\)\)\)'
+        $customerDocxSource | Should -Match 'function New-RoadmapRemediationDocumentBlocks'
+
+        $improveSource | Should -Match 'RoadmapRemediationPlan'
+        $improveSource | Should -Match 'Get-RoadmapRemediationTemplatePath'
+        $improveSource | Should -Match 'New-RoadmapRemediationDocumentBlocks'
     }
 
     It 'embeds customer-report chart images in the DOCX and skips them in markdown when chart datasets are renderable' {
