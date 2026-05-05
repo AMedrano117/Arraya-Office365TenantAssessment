@@ -848,6 +848,11 @@ Describe 'Improve workflow' {
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'PriorityBand'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'OwnerTeam'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'RoadmapPhase'
+        ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'ExecutionPattern'
+        ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'EffortTier'
+        ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'DependencyTier'
+        ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'QuickWinEligible'
+        ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'EstimatedPsHours'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'CustomerSummary'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'EngineerNotes'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'WhyFlagged'
@@ -856,6 +861,7 @@ Describe 'Improve workflow' {
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'TechnicalRemediation'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'RelatedWorksheet'
         ($payload.Findings | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'RelatedSection'
+        ($payload.RoadmapActions | Select-Object -First 1).PSObject.Properties.Name | Should -Contain 'EstimatedPsHours'
         $payload.PSObject.Properties.Name | Should -Contain 'WorkstreamSummaries'
         $payload.PSObject.Properties.Name | Should -Contain 'ExternalExposureFindings'
         $payload.PSObject.Properties.Name | Should -Contain 'ConsultativeSummaries'
@@ -906,6 +912,16 @@ Describe 'Improve workflow' {
         $id011 = @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-011' }) | Select-Object -First 1
         $id011.CurrentValue | Should -Match 'redirect URI'
 
+        $admin001 = @($payload.Findings | Where-Object { $_.RuleId -eq 'ADMIN-001' }) | Select-Object -First 1
+        $admin001.PriorityBand | Should -Be 'Near Term'
+        $admin001.RoadmapPhase | Should -Be 'Immediate'
+        $admin001.QuickWinEligible | Should -BeTrue
+        $admin001.EstimatedPsHours | Should -Match 'hours'
+
+        $ca010 = @($payload.Findings | Where-Object { $_.RuleId -eq 'CA-010' }) | Select-Object -First 1
+        $ca010.RoadmapPhase | Should -Be 'Monitor'
+        $ca010.EstimatedPsHours | Should -Match 'hours'
+
         $col002 = @($payload.Findings | Where-Object { $_.RuleId -eq 'COL-002' }) | Select-Object -First 1
         $col002.Finding | Should -Be 'OneDrive delegated ownership review is required.'
 
@@ -936,6 +952,9 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'Overall Findings Summary'
         $customerReportDocument | Should -Match 'Risk Clusters'
         $customerReportDocument | Should -Match '4\.0 Modern Workplace Recommendations'
+        $customerReportDocument | Should -Match 'Rough PS Hours'
+        $customerReportDocument | Should -Match 'Document revision: 1\.0'
+        $customerReportDocument | Should -Not -Match 'Assessment version:'
         $customerReportDocument | Should -Match '5\.0 Entra ID Review: User and Device Inventory'
         $customerReportDocument | Should -Match '5\.1 Entra User'
         $customerReportDocument | Should -Match '5\.2 Entra Device'
@@ -1041,6 +1060,7 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'Recommendation'
         $customerReportDocument | Should -Match 'Criticality'
         $customerReportDocument | Should -Match 'Level of Effort'
+        $customerReportDocument | Should -Match 'combined engineering and project-management estimate'
         $customerReportDocument | Should -Match 'initial delivery-planning estimate'
         $customerReportDocument | Should -Match 'w:fill="FCE5CD"'
         $customerReportDocument | Should -Match 'w:fill="FFF2CC"'
@@ -1081,7 +1101,6 @@ Describe 'Improve workflow' {
         $customerTables[0].SelectNodes('./w:tr[1]/w:tc', $ns).Count | Should -Be 5
         $customerTables[0].SelectNodes('./w:tr[2]/w:tc', $ns).Count | Should -Be 5
         @($customerTables | Where-Object { $_.SelectNodes('./w:tr[1]/w:tc', $ns).Count -eq 4 }).Count | Should -BeGreaterThan 0
-        @($customerTables | Where-Object { $_.SelectNodes('./w:tr[1]/w:tc', $ns).Count -eq 3 }).Count | Should -BeGreaterThan 0
         $customerReportMarkdown | Should -Match '# .+ Microsoft 365 Tenant Best Practices Assessment'
         $customerReportMarkdown | Should -Match '## 1\.0 Introduction'
         $customerReportMarkdown | Should -Match '### Assessment Snapshot At A Glance'
@@ -1089,9 +1108,10 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match '### Overall Findings Summary'
         $customerReportMarkdown | Should -Match '### Leadership Decision Brief'
         $customerReportMarkdown | Should -Match '## 4\.0 Modern Workplace Recommendations'
-        $customerReportMarkdown | Should -Match '\| Recommendation \| Criticality \| Level of Effort \|'
-        $customerReportMarkdown | Should -Match '\| .+ \| (Critical|High|Medium|Low) \| (High|Medium|Low) \|'
+        $customerReportMarkdown | Should -Match '\| Recommendation \| Criticality \| Level of Effort \| Rough PS Hours \|'
+        $customerReportMarkdown | Should -Match '\| .+ \| (Critical|High|Medium|Low) \| (Quick|Standard|Complex|Programmatic|High|Medium|Low) \| .+hours \|'
         $customerReportMarkdown | Should -Match 'Level of Effort is an initial delivery-planning estimate'
+        $customerReportMarkdown | Should -Match 'Rough PS Hours is a combined engineering and project-management estimate'
         $customerReportMarkdown | Should -Match '\| Workstream \| Severity / Impact \| Open Findings \| What Stands Out \|'
         $customerReportMarkdown | Should -Match '### Risk Clusters'
         $customerReportMarkdown | Should -Not -Match '### Findings Legend'
@@ -1218,10 +1238,15 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Not -Match '#### Messaging Snapshot At A Glance'
 
         $roadmapDocument | Should -Match 'Microsoft 365 Remediation Roadmap'
+        $roadmapDocument | Should -Match 'Document revision: 1\.0'
         $roadmapDocument | Should -Match 'Executive Summary'
         $roadmapDocument | Should -Match 'Current State Analysis'
         $roadmapDocument | Should -Match 'Environment Review'
         $roadmapDocument | Should -Match 'Identity &amp; Access'
+        $roadmapDocument | Should -Match 'Reviewed footprint:'
+        $roadmapDocument | Should -Match 'How to use this roadmap:'
+        $roadmapDocument | Should -Match 'Current state:'
+        $roadmapDocument | Should -Match 'Recommendation focus:'
         $roadmapDocument | Should -Match 'Solution Approach'
         $roadmapDocument | Should -Match 'Remediation Roadmap'
         $roadmapDocument | Should -Match '0-30 Days \(Foundation\)'
@@ -1230,6 +1255,7 @@ Describe 'Improve workflow' {
         $roadmapDocument | Should -Match 'Operational Model'
         $roadmapDocument | Should -Match 'Executive Decision Required'
         $roadmapDocument | Should -Match 'Phase label:'
+        $roadmapDocument | Should -Match 'Rough PS Hours:'
         $roadmapDocument | Should -Not -Match '\[Insert '
         $roadmapDocument | Should -Not -Match '15\.10 Full Findings Inventory'
 
