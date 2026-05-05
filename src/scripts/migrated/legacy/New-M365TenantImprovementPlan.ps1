@@ -371,6 +371,148 @@ function Get-PriorityBand {
     }
 }
 
+function Get-EffortTierRank {
+    [CmdletBinding()]
+    param([AllowNull()][string]$EffortTier)
+
+    switch (([string]$EffortTier).Trim().ToLowerInvariant()) {
+        'quick' { return 1 }
+        'standard' { return 2 }
+        'complex' { return 3 }
+        'programmatic' { return 4 }
+        default { return 5 }
+    }
+}
+
+function Get-DependencyTierRank {
+    [CmdletBinding()]
+    param([AllowNull()][string]$DependencyTier)
+
+    switch (([string]$DependencyTier).Trim().ToLowerInvariant()) {
+        'low' { return 1 }
+        'moderate' { return 2 }
+        'high' { return 3 }
+        default { return 4 }
+    }
+}
+
+function Get-RoughPsHoursLabel {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$EffortTier,
+        [Parameter(Mandatory = $true)][string]$DependencyTier,
+        [AllowNull()][string]$Override
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($Override)) {
+        return $Override
+    }
+
+    switch (([string]$EffortTier).Trim()) {
+        'Quick' { $minimum = 8; $maximum = 14 }
+        'Standard' { $minimum = 14; $maximum = 24 }
+        'Complex' { $minimum = 24; $maximum = 40 }
+        'Programmatic' { $minimum = 40; $maximum = 72 }
+        default { $minimum = 14; $maximum = 24 }
+    }
+
+    switch (([string]$DependencyTier).Trim()) {
+        'Moderate' {
+            $minimum += 4
+            $maximum += 8
+        }
+        'High' {
+            $minimum += 8
+            $maximum += 16
+        }
+    }
+
+    return ('{0}-{1} hours' -f $minimum, $maximum)
+}
+
+function Get-FindingExecutionOverrides {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$RuleId,
+        [Parameter(Mandatory = $false)][string]$Area,
+        [Parameter(Mandatory = $false)][string]$Category,
+        [Parameter(Mandatory = $false)][string]$Finding,
+        [Parameter(Mandatory = $false)][string]$Recommendation
+    )
+
+    $override = [ordered]@{}
+    $lookup = ('{0} {1} {2} {3} {4}' -f $RuleId, $Area, $Category, $Finding, $Recommendation).ToLowerInvariant()
+
+    switch -Regex ($RuleId) {
+        '^ADMIN-001$' {
+            $override['ExecutionPattern'] = 'Privileged access hygiene cleanup'
+            $override['EffortTier'] = 'Quick'
+            $override['DependencyTier'] = 'Moderate'
+            $override['QuickWinEligible'] = $true
+        }
+        '^ID-003$|^ID-005$|^ID-006$|^ID-011$|^ID-012$|^SEC-003$' {
+            $override['EffortTier'] = 'Quick'
+            $override['DependencyTier'] = 'Moderate'
+            $override['QuickWinEligible'] = $true
+        }
+        '^LIC-001$' {
+            $override['ExecutionPattern'] = 'Licensing capacity reconciliation'
+            $override['EffortTier'] = 'Quick'
+            $override['DependencyTier'] = 'Low'
+            $override['QuickWinEligible'] = $true
+        }
+        '^EX-001$|^EX-006$' {
+            $override['ExecutionPattern'] = 'Messaging hygiene cleanup'
+            $override['EffortTier'] = 'Standard'
+            $override['DependencyTier'] = 'Moderate'
+            $override['QuickWinEligible'] = $true
+        }
+        '^DEV-005$|^DEV-006$' {
+            $override['ExecutionPattern'] = 'Endpoint remediation'
+            $override['EffortTier'] = 'Complex'
+            $override['DependencyTier'] = 'High'
+            $override['QuickWinEligible'] = $false
+        }
+        '^CA-010$|^CA-011$|^SEC-004$|^EX-007$|^TM-005$|^TM-006$' {
+            $override['ExecutionPattern'] = 'Operational governance sustainment'
+            $override['EffortTier'] = 'Programmatic'
+            $override['DependencyTier'] = 'High'
+            $override['QuickWinEligible'] = $false
+            $override['RoadmapPhase'] = 'Monitor'
+        }
+        '^CA-008$|^CA-009$|^CA-012$|^CA-013$|^ID-007$|^ID-008$|^ID-009$|^ID-010$|^COL-005$|^COL-006$|^COL-007$|^TM-001$|^TM-004$|^TM-007$|^TM-008$' {
+            $override['EffortTier'] = 'Standard'
+            $override['DependencyTier'] = 'Moderate'
+            $override['QuickWinEligible'] = $false
+        }
+    }
+
+    if ($override.Count -eq 0) {
+        if ($lookup -match 'global administrator|stale privileged|stale guest|inactive guest|redirect uri|inactive enterprise app|license|sku|unverified domain|permission grant policy') {
+            $override['EffortTier'] = 'Quick'
+            $override['DependencyTier'] = 'Moderate'
+            $override['QuickWinEligible'] = $true
+        }
+        elseif ($lookup -match 'device compliance|unmanaged-device|unsupported endpoint|managed endpoint') {
+            $override['EffortTier'] = 'Complex'
+            $override['DependencyTier'] = 'High'
+            $override['QuickWinEligible'] = $false
+        }
+        elseif ($lookup -match 'external forwarding|mail flow|smtp|connector|remote domain|conditional access|guest coverage|privileged-role coverage|third-party app|high-privilege enterprise|cross-tenant trust|external invitation|sharing') {
+            $override['EffortTier'] = 'Standard'
+            $override['DependencyTier'] = 'Moderate'
+            $override['QuickWinEligible'] = $false
+        }
+        elseif ($lookup -match 'ownerless|dormant|lifecycle|stale collaboration|ownership') {
+            $override['EffortTier'] = 'Complex'
+            $override['DependencyTier'] = 'Moderate'
+            $override['QuickWinEligible'] = $false
+        }
+    }
+
+    return $override
+}
+
 function Get-OwnerTeam {
     [CmdletBinding()]
     param(
@@ -390,13 +532,122 @@ function Get-OwnerTeam {
 
 function Get-RoadmapPhase {
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][string]$PriorityBand)
+    param(
+        [Parameter(Mandatory = $true)][string]$PriorityBand,
+        [Parameter(Mandatory = $false)][string]$EffortTier,
+        [Parameter(Mandatory = $false)][string]$DependencyTier,
+        [Parameter(Mandatory = $false)][bool]$QuickWinEligible = $false,
+        [Parameter(Mandatory = $false)][string]$ExecutionPattern
+    )
+
+    if ([string]::IsNullOrWhiteSpace($EffortTier) -or [string]::IsNullOrWhiteSpace($DependencyTier)) {
+        switch ($PriorityBand) {
+            'Immediate' { return 'Immediate' }
+            'Near Term' { return 'Near Term' }
+            'Planned' { return 'Planned' }
+            default { return 'Monitor' }
+        }
+    }
+
+    if (([string]$ExecutionPattern).ToLowerInvariant() -match 'operational governance sustainment|operational model|sustainment') {
+        return 'Monitor'
+    }
+
+    $effortRank = Get-EffortTierRank -EffortTier $EffortTier
+    $dependencyRank = Get-DependencyTierRank -DependencyTier $DependencyTier
 
     switch ($PriorityBand) {
-        'Immediate' { return 'Immediate' }
-        'Near Term' { return 'Near Term' }
-        'Planned' { return 'Planned' }
-        default { return 'Monitor' }
+        'Immediate' {
+            if ($dependencyRank -ge 3 -or $effortRank -ge 4) { return 'Near Term' }
+            return 'Immediate'
+        }
+        'Near Term' {
+            if ($QuickWinEligible -and $effortRank -le 2 -and $dependencyRank -le 2) { return 'Immediate' }
+            if ($effortRank -ge 4 -and $dependencyRank -ge 3) { return 'Planned' }
+            return 'Near Term'
+        }
+        'Planned' {
+            if ($QuickWinEligible -and $effortRank -eq 1 -and $dependencyRank -le 2) { return 'Near Term' }
+            if ($effortRank -ge 4 -and $dependencyRank -ge 3) { return 'Monitor' }
+            return 'Planned'
+        }
+        default {
+            if ($QuickWinEligible -and $effortRank -eq 1 -and $dependencyRank -le 2) { return 'Planned' }
+            return 'Monitor'
+        }
+    }
+}
+
+function Get-FindingExecutionProfile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$RuleId,
+        [Parameter(Mandatory = $true)][string]$PriorityBand,
+        [Parameter(Mandatory = $false)][string]$Area,
+        [Parameter(Mandatory = $false)][string]$Category,
+        [Parameter(Mandatory = $false)][string]$Severity,
+        [Parameter(Mandatory = $false)][string]$Finding,
+        [Parameter(Mandatory = $false)][string]$Recommendation,
+        [Parameter(Mandatory = $false)][string]$OwnerTeam
+    )
+
+    $lookup = ('{0} {1} {2} {3} {4} {5}' -f $RuleId, $Area, $Category, $Finding, $Recommendation, $OwnerTeam).ToLowerInvariant()
+    $executionPattern = 'Targeted remediation'
+    $effortTier = 'Standard'
+    $dependencyTier = 'Moderate'
+    $quickWinEligible = $false
+    $roadmapPhaseOverride = $null
+    $estimatedPsHoursOverride = $null
+
+    if ($lookup -match 'global administrator|stale privileged|stale guest|inactive guest|redirect uri|inactive enterprise app|license|sku|unverified domain|permission grant policy') {
+        $executionPattern = 'Targeted hygiene cleanup'
+        $effortTier = 'Quick'
+        $dependencyTier = 'Moderate'
+        $quickWinEligible = $true
+    }
+    elseif ($lookup -match 'device compliance|unmanaged-device|unsupported endpoint|managed endpoint') {
+        $executionPattern = 'Endpoint remediation'
+        $effortTier = 'Complex'
+        $dependencyTier = 'High'
+    }
+    elseif ($lookup -match 'ownerless|dormant|lifecycle|stale collaboration|ownership') {
+        $executionPattern = 'Collaboration lifecycle governance'
+        $effortTier = 'Complex'
+        $dependencyTier = 'Moderate'
+    }
+    elseif ($lookup -match 'external forwarding|mail flow|smtp|connector|remote domain') {
+        $executionPattern = 'Messaging routing cleanup'
+        $effortTier = 'Standard'
+        $dependencyTier = 'Moderate'
+    }
+    elseif ($lookup -match 'conditional access|guest coverage|privileged-role coverage|security defaults|high-privilege enterprise|third-party app|cross-tenant trust|external invitation|sharing') {
+        $executionPattern = 'Policy and governance refinement'
+        $effortTier = 'Standard'
+        $dependencyTier = 'Moderate'
+    }
+
+    $overrides = Get-FindingExecutionOverrides -RuleId $RuleId -Area $Area -Category $Category -Finding $Finding -Recommendation $Recommendation
+    if ($overrides.Contains('ExecutionPattern')) { $executionPattern = [string]$overrides['ExecutionPattern'] }
+    if ($overrides.Contains('EffortTier')) { $effortTier = [string]$overrides['EffortTier'] }
+    if ($overrides.Contains('DependencyTier')) { $dependencyTier = [string]$overrides['DependencyTier'] }
+    if ($overrides.Contains('QuickWinEligible')) { $quickWinEligible = [bool]$overrides['QuickWinEligible'] }
+    if ($overrides.Contains('RoadmapPhase')) { $roadmapPhaseOverride = [string]$overrides['RoadmapPhase'] }
+    if ($overrides.Contains('EstimatedPsHours')) { $estimatedPsHoursOverride = [string]$overrides['EstimatedPsHours'] }
+
+    $roadmapPhase = if (-not [string]::IsNullOrWhiteSpace($roadmapPhaseOverride)) {
+        $roadmapPhaseOverride
+    }
+    else {
+        Get-RoadmapPhase -PriorityBand $PriorityBand -EffortTier $effortTier -DependencyTier $dependencyTier -QuickWinEligible:$quickWinEligible -ExecutionPattern $executionPattern
+    }
+
+    return [pscustomobject]@{
+        ExecutionPattern = $executionPattern
+        EffortTier       = $effortTier
+        DependencyTier   = $dependencyTier
+        QuickWinEligible = $quickWinEligible
+        RoadmapPhase     = $roadmapPhase
+        EstimatedPsHours = (Get-RoughPsHoursLabel -EffortTier $effortTier -DependencyTier $dependencyTier -Override $estimatedPsHoursOverride)
     }
 }
 
@@ -810,7 +1061,18 @@ function New-Finding {
     }
 
     if ([string]::IsNullOrWhiteSpace($OwnerTeam)) { $OwnerTeam = Get-OwnerTeam -Area $Area -Category $Category }
-    if ([string]::IsNullOrWhiteSpace($RoadmapPhase)) { $RoadmapPhase = Get-RoadmapPhase -PriorityBand $priorityBand }
+
+    $executionProfile = Get-FindingExecutionProfile `
+        -RuleId $RuleId `
+        -PriorityBand $priorityBand `
+        -Area $Area `
+        -Category $Category `
+        -Severity $normalizedSeverity `
+        -Finding $Finding `
+        -Recommendation $Recommendation `
+        -OwnerTeam $OwnerTeam
+
+    if ([string]::IsNullOrWhiteSpace($RoadmapPhase)) { $RoadmapPhase = [string]$executionProfile.RoadmapPhase }
 
     if ([string]::IsNullOrWhiteSpace($WhyFlagged)) {
         if ($presentationOverrides.ContainsKey('WhyFlagged')) {
@@ -846,6 +1108,11 @@ function New-Finding {
         Category         = $Category
         Severity         = $normalizedSeverity
         PriorityBand     = $priorityBand
+        ExecutionPattern = [string]$executionProfile.ExecutionPattern
+        EffortTier       = [string]$executionProfile.EffortTier
+        DependencyTier   = [string]$executionProfile.DependencyTier
+        QuickWinEligible = [bool]$executionProfile.QuickWinEligible
+        EstimatedPsHours = [string]$executionProfile.EstimatedPsHours
         Finding          = $Finding
         Recommendation   = $Recommendation
         CurrentValue     = $valueText
@@ -1004,6 +1271,24 @@ function Resolve-FindingRecommendation {
     return 'Review this recommendation and assign an implementation owner.'
 }
 
+function Get-DerivedFindingRuleIdOverride {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][string]$Area,
+        [Parameter(Mandatory = $false)][string]$Category,
+        [Parameter(Mandatory = $false)][string]$Finding,
+        [Parameter(Mandatory = $false)][string]$Recommendation
+    )
+
+    $haystack = ('{0} {1} {2} {3}' -f $Area, $Category, $Finding, $Recommendation).ToLowerInvariant()
+
+    if ($haystack -match 'global administrator' -and $haystack -match 'threshold|standing|privileged') {
+        return 'ADMIN-001'
+    }
+
+    return $null
+}
+
 function New-DerivedFindingFromRow {
     [CmdletBinding()]
     param(
@@ -1023,6 +1308,9 @@ function New-DerivedFindingFromRow {
     $severity = Get-NormalizedSeverity -Value (Get-ArrayaObjectValue -Object $Row -Names @('Severity', 'Status')) -Priority (Get-ArrayaObjectValue -Object $Row -Names @('Priority'))
     $recommendation = Resolve-FindingRecommendation -Row $Row
     $ruleId = [string](Get-ArrayaObjectValue -Object $Row -Names @('RecommendationId', 'RuleId'))
+    if ([string]::IsNullOrWhiteSpace($ruleId)) {
+        $ruleId = Get-DerivedFindingRuleIdOverride -Area $area -Category $category -Finding $findingText -Recommendation $recommendation
+    }
     if ([string]::IsNullOrWhiteSpace($ruleId)) {
         $prefix = ($area -replace '[^A-Za-z0-9]', '').ToUpperInvariant()
         if ([string]::IsNullOrWhiteSpace($prefix)) { $prefix = 'DERIVED' }
@@ -1898,6 +2186,88 @@ function Add-CustomerRoadmapActionExperienceNotes {
     )
 }
 
+function Get-CustomerRoadmapActionExecutionProfile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$ActionTitle,
+        [Parameter(Mandatory = $true)][string]$PriorityBand,
+        [Parameter(Mandatory = $false)][string]$Workstream,
+        [Parameter(Mandatory = $false)][int]$FindingCount = 1
+    )
+
+    $executionPattern = 'Targeted remediation sequencing'
+    $effortTier = 'Standard'
+    $dependencyTier = 'Moderate'
+    $quickWinEligible = $false
+
+    switch ($ActionTitle) {
+        'Reduce privileged access and strengthen identity controls' {
+            $executionPattern = 'Privileged access and identity hygiene'
+            $effortTier = 'Standard'
+            $dependencyTier = 'Moderate'
+            $quickWinEligible = $true
+        }
+        'Review external forwarding and mail flow exposure' {
+            $executionPattern = 'Messaging routing cleanup'
+            $effortTier = 'Standard'
+            $dependencyTier = 'Moderate'
+            $quickWinEligible = $true
+        }
+        'Reconcile license capacity and tenant governance gaps' {
+            $executionPattern = 'Governance and licensing reconciliation'
+            $effortTier = 'Standard'
+            $dependencyTier = 'Moderate'
+        }
+        'Strengthen domain and anti-spoofing controls' {
+            $executionPattern = 'Domain and mail-authentication hardening'
+            $effortTier = 'Standard'
+            $dependencyTier = 'Moderate'
+        }
+        'Improve device compliance and managed endpoint coverage' {
+            $executionPattern = 'Endpoint remediation'
+            $effortTier = 'Complex'
+            $dependencyTier = 'High'
+        }
+        'Establish accountable ownership for collaboration spaces' {
+            $executionPattern = 'Collaboration lifecycle governance'
+            $effortTier = 'Complex'
+            $dependencyTier = 'High'
+        }
+        'Strengthen baseline security and access protections' {
+            $executionPattern = 'Security baseline enforcement'
+            $effortTier = 'Complex'
+            $dependencyTier = 'High'
+        }
+        default {
+            if (([string]$Workstream).ToLowerInvariant() -match 'endpoint') {
+                $executionPattern = 'Endpoint remediation'
+                $effortTier = 'Complex'
+                $dependencyTier = 'High'
+            }
+            elseif (([string]$Workstream).ToLowerInvariant() -match 'governance') {
+                $executionPattern = 'Operational governance sustainment'
+                $effortTier = 'Programmatic'
+                $dependencyTier = 'High'
+            }
+        }
+    }
+
+    if ($FindingCount -ge 5 -and $effortTier -eq 'Standard') {
+        $effortTier = 'Complex'
+    }
+
+    $roadmapPhase = Get-RoadmapPhase -PriorityBand $PriorityBand -EffortTier $effortTier -DependencyTier $dependencyTier -QuickWinEligible:$quickWinEligible -ExecutionPattern $executionPattern
+
+    return [pscustomobject]@{
+        ExecutionPattern = $executionPattern
+        EffortTier       = $effortTier
+        DependencyTier   = $dependencyTier
+        QuickWinEligible = $quickWinEligible
+        RoadmapPhase     = $roadmapPhase
+        EstimatedPsHours = (Get-RoughPsHoursLabel -EffortTier $effortTier -DependencyTier $dependencyTier)
+    }
+}
+
 function Get-CustomerRoadmapActions {
     [CmdletBinding()]
     param(
@@ -1941,19 +2311,27 @@ function Get-CustomerRoadmapActions {
                 Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
                 Select-Object -Unique
         )
-        $roadmapPhase = [string](@(
+        $priorityBand = [string](@(
             $orderedRows |
-                Sort-Object @{ Expression = { Get-RoadmapPhaseRank -Phase ([string]$_.RoadmapPhase) }; Descending = $false } |
+                Sort-Object @{ Expression = { Get-CustomerPriorityRank -Priority ([string]$_.PriorityBand) }; Descending = $false } |
                 Select-Object -First 1
-        )[0].RoadmapPhase)
+        )[0].PriorityBand)
         $highestSeverity = [string](@(
             $orderedRows |
                 Sort-Object @{ Expression = { Get-SeverityWeight -Severity $_.Severity }; Descending = $true } |
                 Select-Object -First 1
         )[0].Severity)
+        $actionExecutionProfile = Get-CustomerRoadmapActionExecutionProfile -ActionTitle $profile.ActionTitle -PriorityBand $priorityBand -Workstream $(if ($workstreams.Count -gt 0) { $workstreams[0] } else { [string]$leadFinding.OwnerTeam }) -FindingCount $orderedRows.Count
 
         $actions.Add([pscustomobject]@{
-            RoadmapPhase        = $roadmapPhase
+            PriorityBand        = $priorityBand
+            Priority            = $priorityBand
+            RoadmapPhase        = [string]$actionExecutionProfile.RoadmapPhase
+            ExecutionPattern    = [string]$actionExecutionProfile.ExecutionPattern
+            EffortTier          = [string]$actionExecutionProfile.EffortTier
+            DependencyTier      = [string]$actionExecutionProfile.DependencyTier
+            QuickWinEligible    = [bool]$actionExecutionProfile.QuickWinEligible
+            EstimatedPsHours    = [string]$actionExecutionProfile.EstimatedPsHours
             ActionTitle         = $profile.ActionTitle
             Theme               = $profile.Theme
             Workstream          = $(if ($workstreams.Count -gt 0) { $workstreams[0] } else { [string]$leadFinding.OwnerTeam })
@@ -6163,7 +6541,8 @@ $customerAssessmentSignals = [pscustomobject]@{
     Users                      = $userRows
 }
 $technicalObservations = Get-CustomerTechnicalObservations -Signals $customerAssessmentSignals -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries
-$consultativeSummaries = Get-CustomerConsultativeSummaries -Signals $customerAssessmentSignals -Findings $sortedFindings -ExecutiveThemes (Get-CustomerExecutiveThemes -Findings $sortedFindings -Count 5) -RoadmapActions (Get-CustomerRoadmapActions -Findings $sortedFindings -MaxPerPhase 5) -OwnerGroups @($sortedFindings | Group-Object OwnerTeam | Sort-Object Count -Descending)
+$roadmapActions = Get-CustomerRoadmapActions -Findings $sortedFindings -MaxPerPhase 5
+$consultativeSummaries = Get-CustomerConsultativeSummaries -Signals $customerAssessmentSignals -Findings $sortedFindings -ExecutiveThemes (Get-CustomerExecutiveThemes -Findings $sortedFindings -Count 5) -RoadmapActions $roadmapActions -OwnerGroups @($sortedFindings | Group-Object OwnerTeam | Sort-Object Count -Descending)
 
 $supportFolder = Join-Path -Path $OutputFolder -ChildPath 'Support'
 if (-not (Test-Path -Path $supportFolder)) {
@@ -6205,6 +6584,7 @@ $payload = [PSCustomObject]@{
     }
     Deliverables = [PSCustomObject]$deliverables
     WorkstreamSummaries = $sortedWorkstreamSummaries
+    RoadmapActions      = $roadmapActions
     Findings           = $sortedFindings
     TechnicalObservations = $technicalObservations
     ConsultativeSummaries = $consultativeSummaries

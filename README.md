@@ -147,6 +147,13 @@ For a default `-Action M365` run, the top-level operator deliverables are now:
 - `Support\*-Microsoft 365 Remediation Roadmap-<date>.docx`: the companion executive remediation roadmap generated alongside the customer report
 - `*-EngineerActionPack.md`: the primary engineer-facing remediation deliverable
 
+Customer-facing document conventions now follow this model:
+
+- the customer assessment report and remediation roadmap use a customer document revision label (`1.0`) instead of exposing the internal collector or script build version
+- `4.0 Modern Workplace Recommendations` includes `Recommendation`, `Criticality`, `Level of Effort`, and `Rough PS Hours`
+- `Rough PS Hours` is a combined engineering + project-management planning range for prep, review, presentation, implementation, QA, and finalization
+- the companion remediation roadmap uses heuristic timing buckets (`0-30 Days`, `31-60 Days`, `61-90 Days`, `Operational Model`) derived from urgency, effort, dependency, and quick-win eligibility rather than severity alone
+
 Support and machine-readable artifacts are written under `Support\...`:
 
 - `Support\*-ImprovementPlan.json`: the machine-readable remediation payload
