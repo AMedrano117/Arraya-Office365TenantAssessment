@@ -436,6 +436,182 @@ function Convert-ToCustomerAssessmentNarrativeText {
     return $normalized
 }
 
+function Get-CustomerCompactNarrativeSentences {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$Text,
+        [Parameter(Mandatory = $false)][int]$MaxSentences = 2,
+        [Parameter(Mandatory = $false)][int]$MaxLength = 180
+    )
+
+    $normalized = Convert-ToCustomerAssessmentNarrativeText -Text $Text
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return @()
+    }
+
+    $sentences = @(
+        ($normalized -split '(?<=[.!?])\s+') |
+            ForEach-Object { ($_ -replace '\s+', ' ').Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+
+    if ($sentences.Count -eq 0) {
+        $sentences = @((($normalized -replace '\s+', ' ').Trim()))
+    }
+
+    return @(
+        $sentences |
+            Select-Object -First ([Math]::Max(1, $MaxSentences)) |
+            ForEach-Object {
+                if ($_.Length -gt $MaxLength) {
+                    ($_.Substring(0, [Math]::Max(1, $MaxLength - 3)).TrimEnd() + '...')
+                }
+                else {
+                    $_
+                }
+            }
+    )
+}
+
+function Get-CustomerCompactNarrativeLine {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$Text,
+        [Parameter(Mandatory = $false)][int]$MaxSentences = 1,
+        [Parameter(Mandatory = $false)][int]$MaxLength = 160
+    )
+
+    $segments = @(Get-CustomerCompactNarrativeSentences -Text $Text -MaxSentences $MaxSentences -MaxLength $MaxLength)
+    if ($segments.Count -eq 0) {
+        return $null
+    }
+
+    return ($segments -join ' ')
+}
+
+function Get-CustomerLabeledNarrativeBulletItems {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [AllowNull()][string]$Text,
+        [Parameter(Mandatory = $false)][string]$ContinuationLabel,
+        [Parameter(Mandatory = $false)][int]$MaxSentences = 1,
+        [Parameter(Mandatory = $false)][int]$MaxLength = 180
+    )
+
+    $segments = @(Get-CustomerCompactNarrativeSentences -Text $Text -MaxSentences $MaxSentences -MaxLength $MaxLength)
+    if ($segments.Count -eq 0) {
+        return @()
+    }
+
+    return @(
+        for ($index = 0; $index -lt $segments.Count; $index++) {
+            $currentLabel = if ($index -eq 0 -or [string]::IsNullOrWhiteSpace($ContinuationLabel)) {
+                $Label
+            }
+            else {
+                $ContinuationLabel
+            }
+
+            '{0}: {1}' -f $currentLabel, $segments[$index]
+        }
+    )
+}
+
+function Get-CustomerRoadmapNarrativeSegments {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$Text,
+        [Parameter(Mandatory = $false)][int]$MaxSentences = 3,
+        [Parameter(Mandatory = $false)][int]$MaxLength = 155
+    )
+
+    $normalized = Convert-ToCustomerAssessmentNarrativeText -Text $Text
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return @()
+    }
+
+    $sentences = @(
+        ($normalized -split '(?<=[.!?])\s+') |
+            ForEach-Object { ($_ -replace '\s+', ' ').Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -First ([Math]::Max(1, $MaxSentences))
+    )
+
+    if ($sentences.Count -eq 0) {
+        $sentences = @((($normalized -replace '\s+', ' ').Trim()))
+    }
+
+    function Format-CustomerRoadmapNarrativeSegment {
+        param([AllowNull()][string]$Segment)
+
+        $clean = (($Segment -replace '\s+', ' ').Trim() -replace '^(?i)(and|but|so)\s+', '')
+        if ([string]::IsNullOrWhiteSpace($clean)) {
+            return $null
+        }
+
+        if ($clean.Length -gt 1 -and [char]::IsLower($clean[0])) {
+            return ([char]::ToUpperInvariant($clean[0]) + $clean.Substring(1))
+        }
+
+        return $clean
+    }
+
+    $segments = New-Object System.Collections.Generic.List[string]
+    foreach ($sentence in $sentences) {
+        if ($sentence.Length -le $MaxLength) {
+            $formattedSentence = Format-CustomerRoadmapNarrativeSegment -Segment $sentence
+            if (-not [string]::IsNullOrWhiteSpace($formattedSentence)) {
+                $segments.Add($formattedSentence) | Out-Null
+            }
+            continue
+        }
+
+        $pieces = @(
+            ($sentence -split ';\s+') |
+                ForEach-Object { ($_ -replace '\s+', ' ').Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+
+        if ($pieces.Count -le 1) {
+            $segments.Add(($sentence.Substring(0, [Math]::Max(1, $MaxLength - 3)).TrimEnd() + '...')) | Out-Null
+            continue
+        }
+
+        $current = ''
+        foreach ($piece in $pieces) {
+            $candidate = if ([string]::IsNullOrWhiteSpace($current)) { $piece } else { "$current, $piece" }
+            if ($candidate.Length -le $MaxLength) {
+                $current = $candidate
+                continue
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($current)) {
+                $formattedCurrent = Format-CustomerRoadmapNarrativeSegment -Segment $current
+                if (-not [string]::IsNullOrWhiteSpace($formattedCurrent)) {
+                    $segments.Add($formattedCurrent) | Out-Null
+                }
+            }
+
+            $current = if ($piece.Length -gt $MaxLength) {
+                $piece.Substring(0, [Math]::Max(1, $MaxLength - 3)).TrimEnd() + '...'
+            }
+            else {
+                $piece
+            }
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($current)) {
+            $formattedCurrent = Format-CustomerRoadmapNarrativeSegment -Segment $current
+            if (-not [string]::IsNullOrWhiteSpace($formattedCurrent)) {
+                $segments.Add($formattedCurrent) | Out-Null
+            }
+        }
+    }
+
+    return @($segments.ToArray() | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+
 function Get-CustomerEnterpriseApplicationSignalState {
     [CmdletBinding()]
     param(
@@ -2378,7 +2554,22 @@ function Get-CustomerExecutiveRiskBulletItems {
                 continue
             }
 
-            '{0}: {1} Why leadership should care: {2}' -f $cluster, $standout, $care
+            $standoutLine = Get-CustomerCompactNarrativeLine -Text $standout -MaxSentences 1 -MaxLength 120
+            $careLine = Get-CustomerCompactNarrativeLine -Text $care -MaxSentences 1 -MaxLength 110
+
+            if (-not [string]::IsNullOrWhiteSpace($standoutLine) -and -not [string]::IsNullOrWhiteSpace($careLine)) {
+                '{0}: {1} Leadership impact: {2}' -f $cluster, $standoutLine, $careLine
+                continue
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($standoutLine)) {
+                '{0}: {1}' -f $cluster, $standoutLine
+                continue
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($careLine)) {
+                '{0}: Leadership impact: {1}' -f $cluster, $careLine
+            }
         }
     )
 }
@@ -2401,9 +2592,94 @@ function Get-CustomerLeadershipDecisionBulletItems {
                 continue
             }
 
-            '{0}: {1} Why now: {2}' -f $focus, $next, $whyNow
+            $nextLine = Get-CustomerCompactNarrativeLine -Text $next -MaxSentences 1 -MaxLength 120
+            $whyNowLine = Get-CustomerCompactNarrativeLine -Text $whyNow -MaxSentences 1 -MaxLength 110
+
+            if (-not [string]::IsNullOrWhiteSpace($nextLine) -and -not [string]::IsNullOrWhiteSpace($whyNowLine)) {
+                '{0}: {1} Why now: {2}' -f $focus, $nextLine, $whyNowLine
+                continue
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($nextLine)) {
+                '{0}: {1}' -f $focus, $nextLine
+                continue
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($whyNowLine)) {
+                '{0}: Why now: {1}' -f $focus, $whyNowLine
+            }
         }
     )
+}
+
+function New-CustomerExecutiveRiskBlocks {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $false)][object[]]$Rows = @())
+
+    $blocks = New-Object System.Collections.Generic.List[object]
+    foreach ($row in @($Rows)) {
+        $cells = @(Get-CustomerTableRowCells -Row $row)
+        if ($cells.Count -lt 3) {
+            continue
+        }
+
+        $cluster = Convert-ToCustomerAssessmentDisplayText -Value $cells[0] -Default ''
+        $standout = Convert-ToCustomerAssessmentDisplayText -Value $cells[1] -Default ''
+        $care = Convert-ToCustomerAssessmentDisplayText -Value $cells[2] -Default ''
+        if ([string]::IsNullOrWhiteSpace($cluster)) {
+            continue
+        }
+
+        $blocks.Add((New-CustomerWordParagraphBlock -Text $cluster -Style 'Heading3')) | Out-Null
+        $standoutItems = @(Get-CustomerRoadmapNarrativeSegments -Text $standout -MaxSentences 2 -MaxLength 155)
+        if ($standoutItems.Count -gt 0) {
+            $blocks.Add((New-CustomerWordParagraphBlock -Text 'What stands out' -Style 'Heading4')) | Out-Null
+            $blocks.Add((New-CustomerWordListBlock -Items $standoutItems)) | Out-Null
+        }
+
+        $careItems = @(Get-CustomerRoadmapNarrativeSegments -Text $care -MaxSentences 2 -MaxLength 155)
+        if ($careItems.Count -gt 0) {
+            $blocks.Add((New-CustomerWordParagraphBlock -Text 'Leadership impact' -Style 'Heading4')) | Out-Null
+            $blocks.Add((New-CustomerWordListBlock -Items $careItems)) | Out-Null
+        }
+    }
+
+    return @($blocks.ToArray())
+}
+
+function New-CustomerLeadershipDecisionBlocks {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $false)][object[]]$Rows = @())
+
+    $blocks = New-Object System.Collections.Generic.List[object]
+    foreach ($row in @($Rows)) {
+        $cells = @(Get-CustomerTableRowCells -Row $row)
+        if ($cells.Count -lt 3) {
+            continue
+        }
+
+        $focus = Convert-ToCustomerAssessmentDisplayText -Value $cells[0] -Default ''
+        $next = Convert-ToCustomerAssessmentDisplayText -Value $cells[1] -Default ''
+        $whyNow = Convert-ToCustomerAssessmentDisplayText -Value $cells[2] -Default ''
+        if ([string]::IsNullOrWhiteSpace($focus)) {
+            continue
+        }
+
+        $blocks.Add((New-CustomerWordParagraphBlock -Text $focus -Style 'Heading3')) | Out-Null
+        $nextItems = @(Get-CustomerRoadmapNarrativeSegments -Text $next -MaxSentences 2 -MaxLength 155)
+        if ($nextItems.Count -gt 0) {
+            $blocks.Add((New-CustomerWordParagraphBlock -Text 'Decision needed' -Style 'Heading4')) | Out-Null
+            $blocks.Add((New-CustomerWordListBlock -Items $nextItems)) | Out-Null
+        }
+
+        $whyNowItems = @(Get-CustomerRoadmapNarrativeSegments -Text $whyNow -MaxSentences 2 -MaxLength 155)
+        if ($whyNowItems.Count -gt 0) {
+            $blocks.Add((New-CustomerWordParagraphBlock -Text 'Why now' -Style 'Heading4')) | Out-Null
+            $blocks.Add((New-CustomerWordListBlock -Items $whyNowItems)) | Out-Null
+        }
+    }
+
+    return @($blocks.ToArray())
 }
 
 function Get-CustomerRoadmapBucketHeading {
@@ -2467,15 +2743,80 @@ function Get-CustomerRoadmapEnvironmentReviewBulletItems {
         [Parameter(Mandatory = $false)]$ExecutiveDecisionSummary
     )
 
+    $userCount = @(Convert-ArrayaObjectToArray $Signals.Users).Count
+    $adminCount = @(Convert-ArrayaObjectToArray $Signals.Admins).Count
+    $deviceCount = @(Convert-ArrayaObjectToArray $Signals.DeviceDetails).Count
+    $mailboxCount = @(Convert-ArrayaObjectToArray $Signals.AllMailboxes).Count
+    $teamCount = @(Convert-ArrayaObjectToArray $Signals.AllTeams).Count
+    $sharePointCount = @(Convert-ArrayaObjectToArray $Signals.SharePoint).Count
+    $oneDriveCount = @(Convert-ArrayaObjectToArray $Signals.OneDrive).Count
+    $domainCount = @(Convert-ArrayaObjectToArray $Signals.Domains).Count
+    $licenseCount = @(Convert-ArrayaObjectToArray $Signals.LicenseSKUs).Count
+
     $items = New-Object System.Collections.Generic.List[string]
-    $items.Add(('Reviewed footprint: {0}' -f (Get-CustomerRoadmapEnvironmentReviewText -Signals $Signals))) | Out-Null
+    $items.Add(('Reviewed footprint: {0} user account(s), {1} admin account(s), and {2} device record(s) were included in the reviewed snapshot.' -f $userCount, $adminCount, $deviceCount)) | Out-Null
+    $items.Add(('Reviewed workloads: {0} mailbox(es), {1} Team(s), {2} SharePoint site(s), and {3} OneDrive location(s) were assessed for this roadmap.' -f $mailboxCount, $teamCount, $sharePointCount, $oneDriveCount)) | Out-Null
+    $items.Add(('Tenant context: {0} accepted domain(s) and {1} license SKU record(s) were part of the reviewed baseline.' -f $domainCount, $licenseCount)) | Out-Null
 
     if ($null -ne $ExecutiveDecisionSummary -and -not [string]::IsNullOrWhiteSpace([string]$ExecutiveDecisionSummary.Narrative)) {
-        $items.Add(('Leadership framing: {0}' -f (Convert-ToCustomerAssessmentNarrativeText -Text ([string]$ExecutiveDecisionSummary.Narrative)))) | Out-Null
+        $leadershipFraming = Get-CustomerCompactNarrativeLine -Text ([string]$ExecutiveDecisionSummary.Narrative) -MaxSentences 2 -MaxLength 150
+        if (-not [string]::IsNullOrWhiteSpace($leadershipFraming)) {
+            $items.Add(('Leadership framing: {0}' -f $leadershipFraming)) | Out-Null
+        }
     }
 
-    $items.Add('How to use this roadmap: use it as the executive sequencing layer, then use the Engineer Pack for the detailed technical evidence and validation path behind each grouped action.') | Out-Null
+    $items.Add('How to use this roadmap: use it for executive sequencing first, then use the Engineer Pack for the technical evidence and validation path behind each grouped action.') | Out-Null
     return @($items.ToArray() | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+
+function New-CustomerRoadmapEnvironmentReviewBlocks {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$Signals,
+        [Parameter(Mandatory = $false)]$ExecutiveDecisionSummary
+    )
+
+    $userCount = @(Convert-ArrayaObjectToArray $Signals.Users).Count
+    $adminCount = @(Convert-ArrayaObjectToArray $Signals.Admins).Count
+    $deviceCount = @(Convert-ArrayaObjectToArray $Signals.DeviceDetails).Count
+    $mailboxCount = @(Convert-ArrayaObjectToArray $Signals.AllMailboxes).Count
+    $teamCount = @(Convert-ArrayaObjectToArray $Signals.AllTeams).Count
+    $sharePointCount = @(Convert-ArrayaObjectToArray $Signals.SharePoint).Count
+    $oneDriveCount = @(Convert-ArrayaObjectToArray $Signals.OneDrive).Count
+    $domainCount = @(Convert-ArrayaObjectToArray $Signals.Domains).Count
+    $licenseCount = @(Convert-ArrayaObjectToArray $Signals.LicenseSKUs).Count
+
+    $blocks = New-Object System.Collections.Generic.List[object]
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Reviewed footprint' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(
+                ('Identity: {0} user account(s) and {1} admin account(s).' -f $userCount, $adminCount),
+                ('Endpoint: {0} device record(s).' -f $deviceCount),
+                ('Messaging: {0} mailbox(es).' -f $mailboxCount),
+                ('Collaboration: {0} Team(s), {1} SharePoint site(s), and {2} OneDrive location(s).' -f $teamCount, $sharePointCount, $oneDriveCount),
+                ('Tenant context: {0} accepted domain(s) and {1} license SKU record(s).' -f $domainCount, $licenseCount)
+            ))) | Out-Null
+
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Roadmap focus' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(
+                'Prioritize repeated control drift, concentrated exposure, and operational cleanup with clear owners.',
+                'Use this document for executive sequencing before stepping into technical validation.'
+            ))) | Out-Null
+
+    if ($null -ne $ExecutiveDecisionSummary -and -not [string]::IsNullOrWhiteSpace([string]$ExecutiveDecisionSummary.Narrative)) {
+        $leadershipItems = @(Get-CustomerRoadmapNarrativeSegments -Text ([string]$ExecutiveDecisionSummary.Narrative) -MaxSentences 3 -MaxLength 155)
+        if ($leadershipItems.Count -gt 0) {
+            $blocks.Add((New-CustomerWordParagraphBlock -Text 'Leadership framing' -Style 'Heading3')) | Out-Null
+            $blocks.Add((New-CustomerWordListBlock -Items $leadershipItems)) | Out-Null
+        }
+    }
+
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'How to use this roadmap' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(
+                'Confirm sequencing and ownership in this roadmap.',
+                'Use the Engineer Pack for evidence, validation paths, and implementation detail behind each grouped action.'
+            ))) | Out-Null
+
+    return @($blocks.ToArray())
 }
 
 function Get-CustomerRoadmapSectionNarrative {
@@ -2550,54 +2891,151 @@ function Get-CustomerRoadmapSectionBulletItems {
         $null
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($currentState)) {
-        $items.Add('Current state: ' + $currentState) | Out-Null
+    foreach ($item in @(Get-CustomerLabeledNarrativeBulletItems -Label 'Current state' -ContinuationLabel 'Current state detail' -Text $currentState -MaxSentences 2 -MaxLength 180)) {
+        $items.Add($item) | Out-Null
     }
-    if (-not [string]::IsNullOrWhiteSpace($whyItMatters)) {
-        $items.Add('Why it matters: ' + $whyItMatters) | Out-Null
+    foreach ($item in @(Get-CustomerLabeledNarrativeBulletItems -Label 'Why it matters' -Text $whyItMatters -MaxSentences 1 -MaxLength 170)) {
+        $items.Add($item) | Out-Null
     }
-    if (-not [string]::IsNullOrWhiteSpace($positiveSignal)) {
-        $items.Add('Positive signal: ' + $positiveSignal) | Out-Null
+    foreach ($item in @(Get-CustomerLabeledNarrativeBulletItems -Label 'Positive signal' -Text $positiveSignal -MaxSentences 1 -MaxLength 170)) {
+        $items.Add($item) | Out-Null
     }
-    if (-not [string]::IsNullOrWhiteSpace($recommendationFocus) -and $items -notcontains ('Recommendation focus: ' + $recommendationFocus)) {
-        $items.Add('Recommendation focus: ' + $recommendationFocus) | Out-Null
+    foreach ($item in @(Get-CustomerLabeledNarrativeBulletItems -Label 'Recommendation focus' -Text $recommendationFocus -MaxSentences 1 -MaxLength 170)) {
+        if ($items -notcontains $item) {
+            $items.Add($item) | Out-Null
+        }
     }
 
     if ($items.Count -eq 0) {
-        $items.Add($Fallback) | Out-Null
+        $fallbackLine = Get-CustomerCompactNarrativeLine -Text $Fallback -MaxSentences 1 -MaxLength 180
+        $items.Add($(if ([string]::IsNullOrWhiteSpace($fallbackLine)) { $Fallback } else { $fallbackLine })) | Out-Null
     }
 
     return @($items.ToArray())
 }
 
-function Get-CustomerRoadmapActionBulletItems {
+function New-CustomerRoadmapNarrativeBlocks {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Heading,
+        [AllowNull()][string]$Text,
+        [Parameter(Mandatory = $false)][int]$MaxSentences = 3,
+        [Parameter(Mandatory = $false)][int]$MaxLength = 155
+    )
+
+    $items = @(Get-CustomerRoadmapNarrativeSegments -Text $Text -MaxSentences $MaxSentences -MaxLength $MaxLength)
+    if ($items.Count -eq 0) {
+        return @()
+    }
+
+    return @(
+        New-CustomerWordParagraphBlock -Text $Heading -Style 'Heading3'
+        New-CustomerWordListBlock -Items $items
+    )
+}
+
+function New-CustomerRoadmapSectionBlocks {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]$Observation,
+        [Parameter(Mandatory = $false)]$ConsultativeSummary,
+        [Parameter(Mandatory = $true)][string]$Fallback
+    )
+
+    $currentState = if ($null -ne $Observation -and -not [string]::IsNullOrWhiteSpace([string]$Observation.ObservedNarrative)) {
+        Convert-ToCustomerAssessmentNarrativeText -Text ([string]$Observation.ObservedNarrative)
+    }
+    elseif ($null -ne $ConsultativeSummary -and -not [string]::IsNullOrWhiteSpace([string]$ConsultativeSummary.Narrative)) {
+        Convert-ToCustomerAssessmentNarrativeText -Text ([string]$ConsultativeSummary.Narrative)
+    }
+    else {
+        $null
+    }
+
+    $whyItMatters = if ($null -ne $Observation -and -not [string]::IsNullOrWhiteSpace([string]$Observation.WhyItMatters)) {
+        Convert-ToCustomerAssessmentNarrativeText -Text ([string]$Observation.WhyItMatters)
+    }
+    else {
+        $null
+    }
+
+    $positiveSignal = if ($null -ne $Observation -and -not [string]::IsNullOrWhiteSpace([string]$Observation.PositiveNarrative)) {
+        Convert-ToCustomerAssessmentNarrativeText -Text ([string]$Observation.PositiveNarrative)
+    }
+    else {
+        $null
+    }
+
+    $recommendationFocus = if ($null -ne $ConsultativeSummary -and -not [string]::IsNullOrWhiteSpace([string]$ConsultativeSummary.RecommendationSupport)) {
+        Convert-ToCustomerAssessmentNarrativeText -Text ([string]$ConsultativeSummary.RecommendationSupport)
+    }
+    else {
+        $null
+    }
+
+    $blocks = New-Object System.Collections.Generic.List[object]
+    foreach ($block in @(New-CustomerRoadmapNarrativeBlocks -Heading 'Current state' -Text $currentState -MaxSentences 3 -MaxLength 155)) {
+        $blocks.Add($block) | Out-Null
+    }
+    foreach ($block in @(New-CustomerRoadmapNarrativeBlocks -Heading 'Why it matters' -Text $whyItMatters -MaxSentences 2 -MaxLength 155)) {
+        $blocks.Add($block) | Out-Null
+    }
+    foreach ($block in @(New-CustomerRoadmapNarrativeBlocks -Heading 'Positive signal' -Text $positiveSignal -MaxSentences 2 -MaxLength 155)) {
+        $blocks.Add($block) | Out-Null
+    }
+    foreach ($block in @(New-CustomerRoadmapNarrativeBlocks -Heading 'Recommendation focus' -Text $recommendationFocus -MaxSentences 2 -MaxLength 155)) {
+        $blocks.Add($block) | Out-Null
+    }
+
+    if ($blocks.Count -eq 0) {
+        $fallbackItems = @(Get-CustomerRoadmapNarrativeSegments -Text $Fallback -MaxSentences 2 -MaxLength 155)
+        if ($fallbackItems.Count -gt 0) {
+            $blocks.Add((New-CustomerWordListBlock -Items $fallbackItems)) | Out-Null
+        }
+    }
+
+    return @($blocks.ToArray())
+}
+
+function New-CustomerRoadmapActionBlocks {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)][object[]]$RoadmapActions = @(),
         [Parameter(Mandatory = $true)][string]$BucketHeading
     )
 
-    return @(
-        foreach ($action in @($RoadmapActions | Where-Object { (Get-CustomerRoadmapBucketHeading -RoadmapPhase ([string]$_.RoadmapPhase)) -eq $BucketHeading })) {
+    $blocks = New-Object System.Collections.Generic.List[object]
+    foreach ($action in @($RoadmapActions | Where-Object { (Get-CustomerRoadmapBucketHeading -RoadmapPhase ([string]$_.RoadmapPhase)) -eq $BucketHeading })) {
             $title = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $action -Names @('ActionTitle')) -Default 'Priority work item'
             $phase = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $action -Names @('RoadmapPhase')) -Default 'Monitor'
             $criticality = Get-CustomerActionCriticalityLabel -Severity ([string](Get-ArrayaObjectValue -Object $action -Names @('HighestSeverity')))
             $estimatedPsHours = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $action -Names @('EstimatedPsHours')) -Default 'Not validated from the reviewed data'
             $owner = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $action -Names @('PrimaryOwner')) -Default 'Shared operational owner'
-            $nextStep = Convert-ToCustomerAssessmentNarrativeText -Text ([string](Get-ArrayaObjectValue -Object $action -Names @('RecommendedNextStep')))
-            $whyItMatters = Convert-ToCustomerAssessmentNarrativeText -Text ([string](Get-ArrayaObjectValue -Object $action -Names @('WhyItMatters')))
-            $successCheck = Convert-ToCustomerAssessmentNarrativeText -Text ([string](Get-ArrayaObjectValue -Object $action -Names @('SuccessCheck')))
+            $nextStep = [string](Get-ArrayaObjectValue -Object $action -Names @('RecommendedNextStep'))
+            $whyItMatters = [string](Get-ArrayaObjectValue -Object $action -Names @('WhyItMatters'))
+            $successCheck = [string](Get-ArrayaObjectValue -Object $action -Names @('SuccessCheck'))
 
-            $parts = @(
-                ('{0} [Phase label: {1}; Criticality: {2}; Rough PS Hours: {3}; Owner: {4}]' -f $title, $phase, $criticality, $estimatedPsHours, $owner),
-                $(if (-not [string]::IsNullOrWhiteSpace($nextStep)) { 'Next step: ' + $nextStep }),
-                $(if (-not [string]::IsNullOrWhiteSpace($whyItMatters)) { 'Why it matters: ' + $whyItMatters }),
-                $(if (-not [string]::IsNullOrWhiteSpace($successCheck)) { 'Success signal: ' + $successCheck })
-            ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            $detailItems = New-Object System.Collections.Generic.List[string]
+            $detailItems.Add(('Phase label: {0}' -f $phase)) | Out-Null
+            $detailItems.Add(('Criticality: {0}' -f $criticality)) | Out-Null
+            $detailItems.Add(('Rough PS Hours: {0}' -f $estimatedPsHours)) | Out-Null
+            $detailItems.Add(('Owner: {0}' -f $owner)) | Out-Null
 
-            ($parts -join ' ')
+            foreach ($item in @(Get-CustomerLabeledNarrativeBulletItems -Label 'Next step' -Text $nextStep -MaxSentences 1 -MaxLength 170)) {
+                $detailItems.Add($item) | Out-Null
+            }
+            foreach ($item in @(Get-CustomerLabeledNarrativeBulletItems -Label 'Why it matters' -Text $whyItMatters -MaxSentences 1 -MaxLength 170)) {
+                $detailItems.Add($item) | Out-Null
+            }
+            foreach ($item in @(Get-CustomerLabeledNarrativeBulletItems -Label 'Success signal' -Text $successCheck -MaxSentences 1 -MaxLength 170)) {
+                $detailItems.Add($item) | Out-Null
+            }
+
+            $blocks.Add((New-CustomerWordParagraphBlock -Text $title -Style 'Heading3')) | Out-Null
+            $blocks.Add((New-CustomerWordListBlock -Items @($detailItems.ToArray()))) | Out-Null
         }
-    )
+
+    return @($blocks.ToArray())
 }
 
 function New-RoadmapRemediationDocumentBlocks {
@@ -2632,19 +3070,8 @@ function New-RoadmapRemediationDocumentBlocks {
     $governanceObservation = Get-CustomerTechnicalObservationByTitle -TechnicalObservations $SourceModel.TechnicalObservations -Title 'Data Protection & Governance'
     $lifecycleObservation = Get-CustomerTechnicalObservationByTitle -TechnicalObservations $SourceModel.TechnicalObservations -Title 'Offboarding & Lifecycle Management'
 
-    $keyHighlights = @(
-        Get-CustomerExecutiveRiskBulletItems -Rows $riskRows
-    )
-    if (@($keyHighlights).Count -eq 0) {
-        $keyHighlights = @('The reviewed data did not surface distinct executive highlights beyond the grouped recommendations.')
-    }
-
-    $leadershipDecisionItems = @(
-        Get-CustomerLeadershipDecisionBulletItems -Rows $decisionRows
-    )
-    if (@($leadershipDecisionItems).Count -eq 0) {
-        $leadershipDecisionItems = @('Leadership decisions were not clearly separated in the reviewed data, so the grouped recommendations should be used to confirm execution order.')
-    }
+    $keyHighlightBlocks = @(New-CustomerExecutiveRiskBlocks -Rows $riskRows)
+    $leadershipDecisionBlocks = @(New-CustomerLeadershipDecisionBlocks -Rows $decisionRows)
 
     $blocks = New-Object System.Collections.Generic.List[object]
     $blocks.Add((New-CustomerWordParagraphBlock -Text "$tenantName Microsoft 365 Remediation Roadmap" -Style 'Title')) | Out-Null
@@ -2661,25 +3088,56 @@ function New-RoadmapRemediationDocumentBlocks {
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Field', 'Value') -Rows (Get-CustomerRoadmapDocumentInfoRows -TenantName $tenantName -GeneratedAt $GeneratedAt -DocumentRevision $documentRevision))) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Executive Summary' -Style 'Heading1')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $executiveDecisionSummary -and -not [string]::IsNullOrWhiteSpace([string]$executiveDecisionSummary.Narrative)) { [string]$executiveDecisionSummary.Narrative } else { [string]$SourceModel.ExecutiveNarrative })) -Style 'Normal')) | Out-Null
+    $executiveSummaryNarrative = if ($null -ne $executiveDecisionSummary -and -not [string]::IsNullOrWhiteSpace([string]$executiveDecisionSummary.Narrative)) {
+        [string]$executiveDecisionSummary.Narrative
+    }
+    else {
+        [string]$SourceModel.ExecutiveNarrative
+    }
+    $compactExecutiveSummary = Get-CustomerCompactNarrativeLine -Text $executiveSummaryNarrative -MaxSentences 2 -MaxLength 180
+    if ([string]::IsNullOrWhiteSpace($compactExecutiveSummary)) {
+        $compactExecutiveSummary = 'This roadmap summarizes the highest-value Microsoft 365 remediation themes surfaced from the reviewed tenant data.'
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text $compactExecutiveSummary -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Key Highlights' -Style 'Heading2')) | Out-Null
-    $blocks.Add((New-CustomerWordListBlock -Items $keyHighlights)) | Out-Null
+    if ($keyHighlightBlocks.Count -gt 0) {
+        foreach ($block in $keyHighlightBlocks) {
+            $blocks.Add($block) | Out-Null
+        }
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'The reviewed data did not surface distinct executive highlights beyond the grouped recommendations.' -Style 'Normal')) | Out-Null
+    }
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Current State Analysis' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Environment Review' -Style 'Heading2')) | Out-Null
-    $blocks.Add((New-CustomerWordListBlock -Items (Get-CustomerRoadmapEnvironmentReviewBulletItems -Signals $Signals -ExecutiveDecisionSummary $executiveDecisionSummary))) | Out-Null
+    foreach ($block in @(New-CustomerRoadmapEnvironmentReviewBlocks -Signals $Signals -ExecutiveDecisionSummary $executiveDecisionSummary)) {
+        $blocks.Add($block) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Identity & Access' -Style 'Heading2')) | Out-Null
-    $blocks.Add((New-CustomerWordListBlock -Items (Get-CustomerRoadmapSectionBulletItems -Observation $identityObservation -ConsultativeSummary $SourceModel.IdentityConsultativeSummary -Fallback 'Identity and access observations were not validated clearly enough in the reviewed data to generate a stronger roadmap narrative.'))) | Out-Null
+    foreach ($block in @(New-CustomerRoadmapSectionBlocks -Observation $identityObservation -ConsultativeSummary $SourceModel.IdentityConsultativeSummary -Fallback 'Identity and access observations were not validated clearly enough in the reviewed data to generate a stronger roadmap narrative.')) {
+        $blocks.Add($block) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Collaboration & Lifecycle' -Style 'Heading2')) | Out-Null
-    $blocks.Add((New-CustomerWordListBlock -Items (Get-CustomerRoadmapSectionBulletItems -Observation $collaborationObservation -ConsultativeSummary $SourceModel.CollaborationConsultativeSummary -Fallback 'Collaboration and lifecycle observations were not validated clearly enough in the reviewed data to generate a stronger roadmap narrative.'))) | Out-Null
+    foreach ($block in @(New-CustomerRoadmapSectionBlocks -Observation $collaborationObservation -ConsultativeSummary $SourceModel.CollaborationConsultativeSummary -Fallback 'Collaboration and lifecycle observations were not validated clearly enough in the reviewed data to generate a stronger roadmap narrative.')) {
+        $blocks.Add($block) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Endpoint & Device Management' -Style 'Heading2')) | Out-Null
-    $blocks.Add((New-CustomerWordListBlock -Items (Get-CustomerRoadmapSectionBulletItems -Observation $endpointObservation -ConsultativeSummary $null -Fallback 'Endpoint and device-management observations were not validated clearly enough in the reviewed data to generate a stronger roadmap narrative.'))) | Out-Null
+    foreach ($block in @(New-CustomerRoadmapSectionBlocks -Observation $endpointObservation -ConsultativeSummary $null -Fallback 'Endpoint and device-management observations were not validated clearly enough in the reviewed data to generate a stronger roadmap narrative.')) {
+        $blocks.Add($block) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Messaging & Security' -Style 'Heading2')) | Out-Null
-    $blocks.Add((New-CustomerWordListBlock -Items (Get-CustomerRoadmapSectionBulletItems -Observation $messagingObservation -ConsultativeSummary $SourceModel.MessagingConsultativeSummary -Fallback 'Messaging and security observations were not validated clearly enough in the reviewed data to generate a stronger roadmap narrative.'))) | Out-Null
+    foreach ($block in @(New-CustomerRoadmapSectionBlocks -Observation $messagingObservation -ConsultativeSummary $SourceModel.MessagingConsultativeSummary -Fallback 'Messaging and security observations were not validated clearly enough in the reviewed data to generate a stronger roadmap narrative.')) {
+        $blocks.Add($block) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Governance & Licensing' -Style 'Heading2')) | Out-Null
-    $blocks.Add((New-CustomerWordListBlock -Items (Get-CustomerRoadmapSectionBulletItems -Observation $governanceObservation -ConsultativeSummary $SourceModel.GovernanceConsultativeSummary -Fallback 'Governance and licensing observations were not validated clearly enough in the reviewed data to generate a stronger roadmap narrative.'))) | Out-Null
+    foreach ($block in @(New-CustomerRoadmapSectionBlocks -Observation $governanceObservation -ConsultativeSummary $SourceModel.GovernanceConsultativeSummary -Fallback 'Governance and licensing observations were not validated clearly enough in the reviewed data to generate a stronger roadmap narrative.')) {
+        $blocks.Add($block) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'What This Means' -Style 'Heading2')) | Out-Null
-    $blocks.Add((New-CustomerWordListBlock -Items (Get-CustomerRoadmapSectionBulletItems -Observation $lifecycleObservation -ConsultativeSummary $SourceModel.LifecycleConsultativeSummary -Fallback 'The reviewed data shows repeated control drift across the same operating areas that already carry the most day-to-day support load, so the roadmap emphasizes ownership, enforcement, and cleanup sequencing rather than isolated one-off fixes.'))) | Out-Null
+    foreach ($block in @(New-CustomerRoadmapSectionBlocks -Observation $lifecycleObservation -ConsultativeSummary $SourceModel.LifecycleConsultativeSummary -Fallback 'The reviewed data shows repeated control drift across the same operating areas that already carry the most day-to-day support load, so the roadmap emphasizes ownership, enforcement, and cleanup sequencing rather than isolated one-off fixes.')) {
+        $blocks.Add($block) | Out-Null
+    }
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Solution Approach' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordListBlock -Items @(
@@ -2698,10 +3156,12 @@ function New-RoadmapRemediationDocumentBlocks {
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Remediation Roadmap' -Style 'Heading1')) | Out-Null
     foreach ($bucketHeading in @('0-30 Days (Foundation)', '31-60 Days (Enforcement & Cleanup)', '61-90 Days (Stabilization)', 'Operational Model')) {
-        $bucketItems = @(Get-CustomerRoadmapActionBulletItems -RoadmapActions $roadmapActions -BucketHeading $bucketHeading)
+        $bucketBlocks = @(New-CustomerRoadmapActionBlocks -RoadmapActions $roadmapActions -BucketHeading $bucketHeading)
         $blocks.Add((New-CustomerWordParagraphBlock -Text $bucketHeading -Style 'Heading2')) | Out-Null
-        if ($bucketItems.Count -gt 0) {
-            $blocks.Add((New-CustomerWordListBlock -Items $bucketItems)) | Out-Null
+        if ($bucketBlocks.Count -gt 0) {
+            foreach ($block in $bucketBlocks) {
+                $blocks.Add($block) | Out-Null
+            }
         }
         else {
             $blocks.Add((New-CustomerWordParagraphBlock -Text 'No roadmap action was placed in this bucket from the reviewed data.' -Style 'Normal')) | Out-Null
@@ -2710,7 +3170,14 @@ function New-RoadmapRemediationDocumentBlocks {
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Executive Decision Required' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'These are the leadership approvals or owner decisions that would remove the biggest blockers to execution sequencing in the current roadmap.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordListBlock -Items $leadershipDecisionItems)) | Out-Null
+    if ($leadershipDecisionBlocks.Count -gt 0) {
+        foreach ($block in $leadershipDecisionBlocks) {
+            $blocks.Add($block) | Out-Null
+        }
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Leadership decisions were not clearly separated in the reviewed data, so the grouped recommendations should be used to confirm execution order.' -Style 'Normal')) | Out-Null
+    }
 
     return @($blocks.ToArray())
 }
