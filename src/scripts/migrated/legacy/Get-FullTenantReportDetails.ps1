@@ -8193,7 +8193,7 @@ function Get-AllUserDetails {
     $graphUsersProgressId = 71
     $userDetailsProgressId = 72
     $DesiredProperties = @(
-        "DisplayName", "AssignedLicenses", "UserPrincipalName"
+        "DisplayName", "AssignedLicenses", "LicenseAssignmentStates", "UserPrincipalName"
         "UserType", "Id", "AccountEnabled"
         "CreatedDateTime", "Mail", "JobTitle"
         "Department", "CompanyName", "OfficeLocation"
@@ -8251,6 +8251,31 @@ function Get-AllUserDetails {
                 $script:ServicePlanLookupById = @{}
             }
 
+            function Resolve-UserLicenseSkuDisplay {
+                param([AllowNull()]$SkuId)
+
+                if ($null -eq $SkuId) {
+                    return $null
+                }
+
+                $skuIdText = ([string]$SkuId).Trim()
+                if ([string]::IsNullOrWhiteSpace($skuIdText)) {
+                    return $null
+                }
+
+                if ($script:SkuLookupById.ContainsKey($skuIdText)) {
+                    $skuLookup = $script:SkuLookupById[$skuIdText]
+                    if ($skuLookup -and -not [string]::IsNullOrWhiteSpace([string]$skuLookup.FriendlyName)) {
+                        return [string]$skuLookup.FriendlyName
+                    }
+                    if ($skuLookup -and -not [string]::IsNullOrWhiteSpace([string]$skuLookup.SkuPartNumber)) {
+                        return [string]$skuLookup.SkuPartNumber
+                    }
+                }
+
+                return $skuIdText
+            }
+
             $userCollectionState.ProcessedUserCount++
             if ($userCollectionState.ProcessedUserCount -eq 1 -or ($userCollectionState.ProcessedUserCount % $progressStatusInterval) -eq 0) {
                 Write-Progress -Id $userDetailsProgressId -Activity "Gathering Tenant User Details" -Status "Processed $($userCollectionState.ProcessedUserCount) user(s): $scriptLabel"
@@ -8274,6 +8299,7 @@ function Get-AllUserDetails {
             else {
                 $userProperties['DisplayName'] = $UserRecord.DisplayName
                 $userProperties['AssignedLicenses'] = $UserRecord.AssignedLicenses
+                $userProperties['LicenseAssignmentStates'] = if ($UserRecord.PSObject.Properties['LicenseAssignmentStates']) { $UserRecord.LicenseAssignmentStates } else { $null }
                 $userProperties['UserPrincipalName'] = $UserRecord.UserPrincipalName
                 $userProperties['UserType'] = $UserRecord.UserType
                 $userProperties['Id'] = $UserRecord.Id
@@ -8397,6 +8423,55 @@ function Get-AllUserDetails {
                 $userProperties['AssignedLicensesFriendly'] = $assignedLicensesFriendlyString
                 $userProperties['License-DisabledArray'] = $disabledPlans
                 $userProperties['EnabledServicePlans'] = $enabledServicePlans
+
+                $licenseAssignmentStates = @()
+                if ($UserRecord.PSObject.Properties['LicenseAssignmentStates'] -and $UserRecord.LicenseAssignmentStates) {
+                    $licenseAssignmentStates = @($UserRecord.LicenseAssignmentStates | Where-Object { $null -ne $_ })
+                }
+                $licenseAssignmentStateRows = New-Object System.Collections.Generic.List[object]
+                $directAssignedLicenseNames = New-Object 'System.Collections.Generic.HashSet[string]'
+                $groupAssignedLicenseNames = New-Object 'System.Collections.Generic.HashSet[string]'
+                $licenseAssignmentErrorMessages = New-Object 'System.Collections.Generic.List[string]'
+                foreach ($licenseAssignmentState in @($licenseAssignmentStates)) {
+                    $stateSkuId = if ($licenseAssignmentState.PSObject.Properties['SkuId']) { $licenseAssignmentState.SkuId } elseif ($licenseAssignmentState.PSObject.Properties['skuId']) { $licenseAssignmentState.skuId } else { $null }
+                    $assignedByGroup = if ($licenseAssignmentState.PSObject.Properties['AssignedByGroup']) { $licenseAssignmentState.AssignedByGroup } elseif ($licenseAssignmentState.PSObject.Properties['assignedByGroup']) { $licenseAssignmentState.assignedByGroup } else { $null }
+                    $assignmentState = if ($licenseAssignmentState.PSObject.Properties['State']) { $licenseAssignmentState.State } elseif ($licenseAssignmentState.PSObject.Properties['state']) { $licenseAssignmentState.state } else { $null }
+                    $assignmentError = if ($licenseAssignmentState.PSObject.Properties['Error']) { $licenseAssignmentState.Error } elseif ($licenseAssignmentState.PSObject.Properties['error']) { $licenseAssignmentState.error } else { $null }
+                    $skuDisplayName = Resolve-UserLicenseSkuDisplay -SkuId $stateSkuId
+                    $assignmentSource = if ([string]::IsNullOrWhiteSpace([string]$assignedByGroup) -or [string]$assignedByGroup -eq '00000000-0000-0000-0000-000000000000') { 'Direct' } else { 'Group' }
+
+                    if (-not [string]::IsNullOrWhiteSpace([string]$skuDisplayName)) {
+                        if ($assignmentSource -eq 'Direct') {
+                            [void]$directAssignedLicenseNames.Add([string]$skuDisplayName)
+                        }
+                        else {
+                            [void]$groupAssignedLicenseNames.Add([string]$skuDisplayName)
+                        }
+                    }
+
+                    if (-not [string]::IsNullOrWhiteSpace([string]$assignmentError) -and [string]$assignmentError -notmatch '^(?i)none|noerror|success$') {
+                        $licenseAssignmentErrorMessages.Add(("{0}: {1}" -f $skuDisplayName, $assignmentError)) | Out-Null
+                    }
+
+                    $licenseAssignmentStateRows.Add([pscustomobject]@{
+                        SkuId           = if ($stateSkuId) { [string]$stateSkuId } else { $null }
+                        SkuName         = $skuDisplayName
+                        AssignedByGroup = if ([string]::IsNullOrWhiteSpace([string]$assignedByGroup)) { $null } else { [string]$assignedByGroup }
+                        AssignmentSource = $assignmentSource
+                        State           = if ($null -ne $assignmentState) { [string]$assignmentState } else { $null }
+                        Error           = if ($null -ne $assignmentError) { [string]$assignmentError } else { $null }
+                    }) | Out-Null
+                }
+                $userProperties['LicenseAssignmentStates'] = @($licenseAssignmentStateRows.ToArray())
+                $userProperties['DirectAssignedLicenses'] = ($directAssignedLicenseNames | ForEach-Object { $_ }) -join ','
+                $userProperties['GroupAssignedLicenses'] = ($groupAssignedLicenseNames | ForEach-Object { $_ }) -join ','
+                $userProperties['LicenseAssignmentErrors'] = ($licenseAssignmentErrorMessages.ToArray()) -join '; '
+                $userProperties['LicenseAssignmentStateSummary'] = if ($licenseAssignmentStateRows.Count -gt 0) {
+                    ('{0} direct; {1} group-based; {2} error(s)' -f $directAssignedLicenseNames.Count, $groupAssignedLicenseNames.Count, $licenseAssignmentErrorMessages.Count)
+                }
+                else {
+                    'Not surfaced in current source'
+                }
                 $userProperties['LastNonInteractiveSignInDateTime'] = if ($signInActivity) { $signInActivity.LastNonInteractiveSignInDateTime } else { $null }
                 if ($collectExtendedUserDetails) {
                     $userProperties['LastNonInteractiveSignInRequestId'] = if ($signInActivity) { $signInActivity.LastNonInteractiveSignInRequestId } else { $null }

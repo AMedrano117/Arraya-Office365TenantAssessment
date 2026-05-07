@@ -7,6 +7,8 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:exportPipelineSource = Get-Content -Raw -Path $script:exportPipelinePath
         $script:graphDataPath = Join-Path $script:repoRoot 'src\vendor\Office365Custom\1.2.1\Public\Get-GraphData.ps1'
         $script:graphDataSource = Get-Content -Raw -Path $script:graphDataPath
+        $script:entraGroupsPath = Join-Path $script:repoRoot 'src\modules\Arraya.M365.Graph\Public\Get-EntraIDGroups.ps1'
+        $script:entraGroupsSource = Get-Content -Raw -Path $script:entraGroupsPath
     }
 
     It 'defines a permission preflight with an explicit skip switch and invokes it before collection starts by default' {
@@ -121,6 +123,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'CollectDevices'
         $script:collectorSource | Should -Match 'CollectSecuritySecureScore'
         $script:collectorSource | Should -Match 'CollectEntraGroups'
+        $script:collectorSource | Should -Match 'CollectEntraGroupLicenseChecks'
         $script:collectorSource | Should -Match 'CollectSharePointAndOneDriveSites'
         $script:collectorSource | Should -Match 'BuildMigrationReadinessTables'
         $script:collectorSource | Should -Match 'Get-ArrayaCollectionDepthPolicy -ReportingMode \(\(Get-Culture\)\.TextInfo\.ToTitleCase\(\$reportingMode\)\) -CollectionScopePolicy \$effectiveCollectionScopePolicy'
@@ -134,6 +137,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match '\$plan\.CollectConditionalAccessPolicies = \$false'
         $script:collectorSource | Should -Match '\$plan\.CollectMfaRegistrationDetails = \$false'
         $script:collectorSource | Should -Match '\$plan\.CollectUnifiedGroups = \$false'
+        $script:collectorSource | Should -Match '\$policy \| Add-Member -MemberType NoteProperty -Name CollectEntraGroupLicenseChecks -Value \$false -Force'
         $script:collectorSource | Should -Match '\$plan\.BuildExternalExposureSummaries = \$false'
         $script:collectorSource | Should -Match '\$plan\.BuildAssessmentReportTables = \$false'
         $script:collectorSource | Should -Match '\$plan\.BuildMigrationReadinessTables = \$true'
@@ -141,6 +145,19 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'if \(\$needsDeviceData\)'
         $script:collectorSource | Should -Match 'if \(\$needsSecureScore\)'
         $script:collectorSource | Should -Match 'if \(\$needsReportsData\)'
+    }
+
+    It 'collects practical licensing signals for full assessment governance analysis' {
+        $script:collectorSource | Should -Match '"DisplayName", "AssignedLicenses", "LicenseAssignmentStates", "UserPrincipalName"'
+        $script:collectorSource | Should -Match 'DirectAssignedLicenses'
+        $script:collectorSource | Should -Match 'GroupAssignedLicenses'
+        $script:collectorSource | Should -Match 'LicenseAssignmentErrors'
+        $script:collectorSource | Should -Match 'LicenseAssignmentStateSummary'
+
+        $script:entraGroupsSource | Should -Match 'CollectEntraGroupLicenseChecks'
+        $script:entraGroupsSource | Should -Match 'AssignedLicenseSkuIds'
+        $script:entraGroupsSource | Should -Match 'AssignedLicenseSkuPartNumbers'
+        $script:entraGroupsSource | Should -Match 'AssignedLicenseFriendlyNames'
     }
 
     It 'builds a dedicated action-only T2T migration readiness checklist dataset with split mail-flow and mailbox-prep rows' {

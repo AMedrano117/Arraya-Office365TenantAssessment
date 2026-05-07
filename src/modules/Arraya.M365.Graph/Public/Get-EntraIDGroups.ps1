@@ -24,6 +24,7 @@ function Get-EntraIDGroups {
     $collectGroupOwnerCounts = ($depthPolicy.CollectEntraGroupOwnerCounts -eq $true)
     $groupMemberCountLookup = @{}
     $groupOwnerCountLookup = @{}
+    $licenseSkuLookupById = @{}
     $tenantStatsHash['EntraIDGroups'] = @{}
     $groupSelectProperties = @(
         'id',
@@ -41,6 +42,31 @@ function Get-EntraIDGroups {
         'membershipRule',
         'assignedLicenses'
     )
+
+    if ($tenantStatsHash -and $tenantStatsHash.ContainsKey('LicenseSKUs') -and $tenantStatsHash['LicenseSKUs']) {
+        $licenseSkuRows = if ($tenantStatsHash['LicenseSKUs'] -is [System.Collections.IDictionary]) {
+            @($tenantStatsHash['LicenseSKUs'].Values)
+        }
+        else {
+            @($tenantStatsHash['LicenseSKUs'])
+        }
+        foreach ($licenseSkuRow in @($licenseSkuRows)) {
+            if ($null -eq $licenseSkuRow) {
+                continue
+            }
+
+            $skuId = [string](Get-ArrayaObjectValue -Object $licenseSkuRow -Names @('SkuId', 'skuId', 'Id'))
+            if ([string]::IsNullOrWhiteSpace($skuId)) {
+                continue
+            }
+
+            $licenseSkuLookupById[$skuId] = [pscustomobject]@{
+                SkuId         = $skuId
+                SkuPartNumber = [string](Get-ArrayaObjectValue -Object $licenseSkuRow -Names @('SkuPartNumber', 'skuPartNumber'))
+                FriendlyName  = [string](Get-ArrayaObjectValue -Object $licenseSkuRow -Names @('FriendlyName', 'Name', 'SkuPartNumber', 'skuPartNumber'))
+            }
+        }
+    }
 
     function Get-EntraGroupCountLookups {
         param(
@@ -158,6 +184,37 @@ function Get-EntraIDGroups {
         $classification = Get-ArrayaEntraGroupClassification -GroupDetails $groupDetails
         $isDynamicDistributionGroup = ($groupDetails.groupTypes -contains 'DynamicMembership') -and ($groupDetails.mailEnabled -eq $true) -and ($groupDetails.securityEnabled -eq $false) -and (-not ($groupDetails.groupTypes -contains 'Unified'))
         $assignedLicenses = @((Get-ArrayaObjectValue -Object $groupDetails -Names @('assignedLicenses')))
+        $assignedLicenseSkuIds = New-Object 'System.Collections.Generic.List[string]'
+        $assignedLicenseSkuPartNumbers = New-Object 'System.Collections.Generic.List[string]'
+        $assignedLicenseFriendlyNames = New-Object 'System.Collections.Generic.List[string]'
+
+        if ($collectGroupLicenseChecks) {
+            foreach ($assignedLicense in @($assignedLicenses)) {
+                if ($null -eq $assignedLicense) {
+                    continue
+                }
+
+                $skuId = [string](Get-ArrayaObjectValue -Object $assignedLicense -Names @('skuId', 'SkuId'))
+                if ([string]::IsNullOrWhiteSpace($skuId)) {
+                    continue
+                }
+
+                $assignedLicenseSkuIds.Add($skuId) | Out-Null
+                if ($licenseSkuLookupById.ContainsKey($skuId)) {
+                    $skuLookup = $licenseSkuLookupById[$skuId]
+                    if (-not [string]::IsNullOrWhiteSpace([string]$skuLookup.SkuPartNumber)) {
+                        $assignedLicenseSkuPartNumbers.Add([string]$skuLookup.SkuPartNumber) | Out-Null
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace([string]$skuLookup.FriendlyName)) {
+                        $assignedLicenseFriendlyNames.Add([string]$skuLookup.FriendlyName) | Out-Null
+                    }
+                }
+                else {
+                    $assignedLicenseSkuPartNumbers.Add($skuId) | Out-Null
+                    $assignedLicenseFriendlyNames.Add($skuId) | Out-Null
+                }
+            }
+        }
 
         $isManagingLicenses = if ($collectGroupLicenseChecks) {
             $assignedLicenses.Count -gt 0
@@ -208,6 +265,10 @@ function Get-EntraIDGroups {
             OnPremisesSyncEnabled      = $groupDetails.onPremisesSyncEnabled
             OnPremisesLastSyncDateTime = $groupDetails.onPremisesLastSyncDateTime
             IsManagingLicenses         = $isManagingLicenses
+            AssignedLicenseCount       = if ($collectGroupLicenseChecks) { $assignedLicenseSkuIds.Count } else { 'NotCollected (minimum mode)' }
+            AssignedLicenseSkuIds      = if ($collectGroupLicenseChecks) { ($assignedLicenseSkuIds.ToArray() -join ',') } else { 'NotCollected (minimum mode)' }
+            AssignedLicenseSkuPartNumbers = if ($collectGroupLicenseChecks) { ($assignedLicenseSkuPartNumbers.ToArray() | Select-Object -Unique) -join ',' } else { 'NotCollected (minimum mode)' }
+            AssignedLicenseFriendlyNames = if ($collectGroupLicenseChecks) { ($assignedLicenseFriendlyNames.ToArray() | Select-Object -Unique) -join ',' } else { 'NotCollected (minimum mode)' }
             IsAssignableToRole         = $groupDetails.isAssignableToRole
             Mail                       = $groupDetails.mail
             MailEnabled                = $groupDetails.mailEnabled
