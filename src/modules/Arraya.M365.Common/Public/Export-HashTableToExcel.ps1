@@ -34,12 +34,14 @@ function Export-HashTableToExcel {
         'Office365GroupsActivityTopGroups' = 'O365GroupsActivityTop'
         'EmployeeExperienceInsightsSummary' = 'EmployeeExpInsights'
         'MailboxCalendarDelegatePermissions' = 'MailboxCalendarDelegatePerms'
+        'PrivilegedAccessRemediationSummary' = 'PrivilegedAccessRemediation'
     }
 
     $worksheetCleanupAliases = @{
         'Office365GroupsActivityTopGroups' = @('Office365GroupsActivityTopGroups', 'Office365GroupsActivityTopGroup', 'O365GroupsActivityTop')
         'EmployeeExperienceInsightsSummary' = @('EmployeeExperienceInsightsSummary', 'EmployeeExperienceInsightsSumma', 'EmployeeExpInsights')
         'MailboxCalendarDelegatePermissions' = @('MailboxCalendarDelegatePermissions', 'MailboxCalendarDelegatePermissi', 'MailboxCalendarDelegatePerms')
+        'PrivilegedAccessRemediationSummary' = @('PrivilegedAccessRemediationSummary', 'PrivilegedAccessRemediationSumm', 'PrivilegedAccessRemediation')
     }
 
     function Resolve-WorksheetExportName {
@@ -83,7 +85,13 @@ function Export-HashTableToExcel {
         'ExternalSharingSiteOverrides',
         'MailboxCalendarDelegatePermissions',
         'MfaEnforcementGapUsers',
-        'MfaEnforcementScopeReview'
+        'MfaEnforcementScopeReview',
+        'ConditionalAccessOptimization',
+        'MfaMethodPostureSummary',
+        'PrivilegedAccessRemediationSummary',
+        'TeamsGroupsCleanupCandidates',
+        'GroupLicensingSummary',
+        'LicenseOptimizationCandidates'
     )
 
     $defaultExcludedWorksheets = @(
@@ -306,14 +314,14 @@ function Export-HashTableToExcel {
     # === Sheet ordering ===
     $defaultDesiredOrder = @(
         # Tenant Overview
-        "TenantInfo", "LicenseSKUs", "AdConnectConfiguration",
+        "TenantInfo", "LicenseSKUs", "GroupLicensingSummary", "LicenseOptimizationCandidates", "AdConnectConfiguration",
 
         # Identity
         "Users", "UserFullDetails", "Admins", "EntraIDGroups", "Domains",
         "AuthenticationMethods", "AuthenticationSSOApplications", "EnterpriseApplications", "AuthenticationConfig",
-        "MfaEnrollmentSummary", "MfaEnforcementSummary", "MfaEnforcementGapUsers", "MfaEnforcementScopeReview",
-        "ConditionalAccessPolicySummary", "ConditionalAccessPolicies", "SecurityDefaultsPolicy", "GuestSignInSummary",
-        "GuestAccessConfiguration", "ExternalIdentityRestrictions", "PrivilegedAccessSummary",
+        "MfaEnrollmentSummary", "MfaMethodPostureSummary", "MfaEnforcementSummary", "MfaEnforcementGapUsers", "MfaEnforcementScopeReview",
+        "ConditionalAccessPolicySummary", "ConditionalAccessOptimization", "ConditionalAccessPolicies", "SecurityDefaultsPolicy", "GuestSignInSummary",
+        "GuestAccessConfiguration", "ExternalIdentityRestrictions", "PrivilegedAccessSummary", "PrivilegedAccessRemediationSummary",
 
         # Exchange
         "HybridConfiguration",
@@ -325,7 +333,7 @@ function Export-HashTableToExcel {
         "ForwardingPolicySummary", "InboxRuleForwardingSummary", "InboxRulesExternalForwarding",
 
         # Collaboration
-        "UnifiedGroups", "AllTeams", "TeamsVoiceSummary", "SharePoint", "OneDrive",
+        "UnifiedGroups", "AllTeams", "TeamsGroupsCleanupCandidates", "TeamsVoiceSummary", "SharePoint", "OneDrive",
         "SharePointSharingSummary", "TeamsActivityTopUsers", "Office365GroupsActivityTopGroups",
         "EmployeeExperienceInsightsSummary", "CollaborationActivitySummary",
 
@@ -378,7 +386,9 @@ function Export-HashTableToExcel {
         'EmployeeExperienceInsightsSummary', 'DeviceDetails', 'DeviceManagementSummary', 'LitigationHoldMailboxes',
         'NonUserMailboxes', 'InactiveMailboxes', 'PublicFolderPerms', 'RetentionPolicies', 'DlpPolicies',
         'UnmanagedObjects', 'OneDriveOwnerMismatches', 'ExternalSharingSummary', 'ExternalSharingSiteOverrides',
-        'SharePointSharingSummary', 'AllExchangeGroups', 'MigrationReadiness'
+        'SharePointSharingSummary', 'AllExchangeGroups', 'MigrationReadiness', 'ConditionalAccessOptimization',
+        'MfaMethodPostureSummary', 'PrivilegedAccessRemediationSummary', 'TeamsGroupsCleanupCandidates',
+        'GroupLicensingSummary', 'LicenseOptimizationCandidates'
     )
 
     $desiredOrder = $defaultDesiredOrder

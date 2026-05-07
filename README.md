@@ -104,6 +104,54 @@ $clientSecret = Read-Host 'Client secret' -AsSecureString
   -OutputProfile SolutionsEngineer,ExecutiveLevel
 ```
 
+## Customer onboarding flow
+Use the `onboarding` scripts when a customer tenant needs to authorize your multitenant Microsoft Entra app registration for app-only Exchange Online automation. Customer tenants do not create their own app registrations. Your app registration is the shared blueprint, and its client ID is the same for every customer.
+
+1. The customer admin grants Microsoft 365 tenant-wide admin consent for your multitenant app. The app registration must already include the Office 365 Exchange Online application permission `Exchange.ManageAsApp`.
+2. Admin consent creates the Enterprise Application, also called the service principal, in the customer tenant. The app client ID stays the same across customers, but the service principal object ID is different in each customer tenant.
+3. The Exchange role bootstrap assigns `Exchange Administrator` to the customer tenant service principal by resolving the service principal from your app ID. Consent grants `Exchange.ManageAsApp`, but consent does not assign `Exchange Administrator`.
+4. The existing assessment script connects with the same client ID, the local certificate thumbprint, and the customer organization value:
+
+```powershell
+Connect-ExchangeOnline `
+  -AppId '<your-client-id>' `
+  -CertificateThumbprint '<thumbprint>' `
+  -Organization '<customer-onmicrosoft-domain>'
+```
+
+`Connect-ExchangeOnline -Organization` should use the customer's `.onmicrosoft.com` domain. For least privilege, `Exchange Administrator` can later be replaced with a narrower Exchange RBAC approach once the exact cmdlets required by the assessment are known.
+
+The local callback helper stores development consent status in `onboarding/customers.json`, which is ignored by Git. Do not store state signing secrets, private keys, or customer-specific secrets in source code.
+
+Example consent URL generation:
+
+```powershell
+.\onboarding\Get-M365AdminConsentUrl.ps1 `
+  -ClientId "00000000-0000-0000-0000-000000000000" `
+  -RedirectUri "https://example.com/m365/consent/callback" `
+  -Tenant "organizations" `
+  -State "signed-state" `
+  -IncludeExchangeScope
+```
+
+Example Exchange role assignment:
+
+```powershell
+.\onboarding\Grant-ExchangeServicePrincipalRole.ps1 `
+  -CustomerTenantId "11111111-1111-1111-1111-111111111111" `
+  -AppId "00000000-0000-0000-0000-000000000000" `
+  -RoleName "Exchange Administrator"
+```
+
+Example Exchange test:
+
+```powershell
+.\onboarding\Test-ExchangeAppOnlyConnection.ps1 `
+  -AppId "00000000-0000-0000-0000-000000000000" `
+  -CertificateThumbprint "ABCDEF1234567890ABCDEF1234567890ABCDEF12" `
+  -CustomerOrganization "customer.onmicrosoft.com"
+```
+
 ## Collection Vs Export
 The M365 workflow now supports explicit separation between data collection and artifact export:
 
@@ -209,6 +257,7 @@ Reporting scope is not prompted interactively. Scope is automatically derived fr
 ## Runtime Notes
 - In `Minimum` scope profiles, the collector depth policy trims high-cardinality enrichment to reduce runtime and memory pressure.
 - Examples: Entra group deep membership/license expansion and detailed SSO app inventory are reduced in `Minimum`.
+- Full assessment profiles such as `SolutionsEngineer`, `Improve`, `Machine`, and `Geek` now derive practical governance datasets for Conditional Access optimization, MFA method posture, privileged-access cleanup, Teams/group cleanup, group-based licensing, and license optimization. The reduced `TenantToTenantMigration` scope intentionally does not add those broad best-practice collectors or worksheets.
 - The output contract is preserved: workbook tabs and report artifacts still generate with compatible values.
 - Run logs now include collector duration and memory summaries (`[CollectorMetrics]`) plus inventory row counts (`[CollectorInventory]`) for hotspot review.
 

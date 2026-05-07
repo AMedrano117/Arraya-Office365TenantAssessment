@@ -3387,6 +3387,600 @@ function Get-TenantIdentityDetails {
     }
 }
 
+function Get-AssessmentRuleValue {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$Record,
+        [Parameter(Mandatory)][string[]]$Names
+    )
+
+    if ($null -eq $Record) {
+        return $null
+    }
+
+    foreach ($name in @($Names)) {
+        if ([string]::IsNullOrWhiteSpace($name)) {
+            continue
+        }
+        if ($Record -is [System.Collections.IDictionary] -and $Record.Contains($name)) {
+            return $Record[$name]
+        }
+        if ($Record -is [System.Collections.Specialized.OrderedDictionary] -and $Record.Contains($name)) {
+            return $Record[$name]
+        }
+        if ($Record.PSObject -and $Record.PSObject.Properties[$name]) {
+            return $Record.PSObject.Properties[$name].Value
+        }
+
+        $camelName = if ($name.Length -gt 1) { '{0}{1}' -f $name.Substring(0, 1).ToLowerInvariant(), $name.Substring(1) } else { $name.ToLowerInvariant() }
+        if ($Record.PSObject -and $Record.PSObject.Properties[$camelName]) {
+            return $Record.PSObject.Properties[$camelName].Value
+        }
+    }
+
+    return $null
+}
+
+function Convert-AssessmentRuleValueToBoolean {
+    [CmdletBinding()]
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [bool]) { return [bool]$Value }
+
+    switch -Regex (([string]$Value).Trim().ToLowerInvariant()) {
+        '^(true|yes|enabled|on|1)$' { return $true }
+        '^(false|no|disabled|off|0)$' { return $false }
+        default { return $null }
+    }
+}
+
+function Convert-AssessmentRuleValueToNumber {
+    [CmdletBinding()]
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal]) { return [double]$Value }
+
+    $text = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    $text = $text -replace ',', ''
+    $number = 0.0
+    if ([double]::TryParse($text, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$number)) {
+        return $number
+    }
+
+    return $null
+}
+
+function Convert-AssessmentRuleValueToStringList {
+    [CmdletBinding()]
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) { return @() }
+    if ($Value -is [string]) {
+        if ([string]::IsNullOrWhiteSpace($Value)) { return @() }
+        return @(
+            $Value -split '[,;|]' |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+    }
+
+    return @(
+        Convert-AssessmentHtmlArray -InputObject $Value |
+            ForEach-Object { [string]$_ } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+}
+
+function Get-AssessmentLicenseSkuLookup {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $false)][object[]]$Licenses = @())
+
+    $lookup = @{}
+    foreach ($license in @($Licenses)) {
+        if ($null -eq $license) { continue }
+        $skuId = [string](Get-AssessmentRuleValue -Record $license -Names @('SkuId', 'skuId', 'Id'))
+        $skuPartNumber = [string](Get-AssessmentRuleValue -Record $license -Names @('SkuPartNumber', 'skuPartNumber', 'AccountSkuId'))
+        $friendlyName = [string](Get-AssessmentRuleValue -Record $license -Names @('FriendlyName', 'Name', 'SkuPartNumber', 'skuPartNumber'))
+        $skuRecord = [pscustomobject]@{
+            SkuId         = $skuId
+            SkuPartNumber = $skuPartNumber
+            FriendlyName  = if ([string]::IsNullOrWhiteSpace($friendlyName)) { $skuPartNumber } else { $friendlyName }
+        }
+        foreach ($key in @($skuId, $skuPartNumber, $friendlyName)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$key)) {
+                $lookup[[string]$key] = $skuRecord
+            }
+        }
+    }
+
+    return $lookup
+}
+
+function Resolve-AssessmentLicenseSkuName {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$SkuValue,
+        [Parameter(Mandatory = $false)][hashtable]$SkuLookup = @{}
+    )
+
+    $skuText = ([string]$SkuValue).Trim()
+    if ([string]::IsNullOrWhiteSpace($skuText)) {
+        return $null
+    }
+
+    if ($SkuLookup.ContainsKey($skuText)) {
+        $skuRecord = $SkuLookup[$skuText]
+        if (-not [string]::IsNullOrWhiteSpace([string]$skuRecord.FriendlyName)) { return [string]$skuRecord.FriendlyName }
+        if (-not [string]::IsNullOrWhiteSpace([string]$skuRecord.SkuPartNumber)) { return [string]$skuRecord.SkuPartNumber }
+    }
+
+    return $skuText
+}
+
+function Get-AssessmentUserLicenseAssignmentRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]$User,
+        [Parameter(Mandatory = $false)][hashtable]$SkuLookup = @{}
+    )
+
+    $stateValue = Get-AssessmentRuleValue -Record $User -Names @('LicenseAssignmentStates', 'licenseAssignmentStates')
+    $stateRows = @()
+    if ($stateValue) {
+        if ($stateValue -is [System.Collections.IDictionary] -and $stateValue.Contains('SkuId')) {
+            $stateRows = @($stateValue)
+        }
+        else {
+            $stateRows = @(Convert-AssessmentHtmlArray -InputObject $stateValue)
+        }
+    }
+
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($stateRow in @($stateRows)) {
+        if ($null -eq $stateRow) { continue }
+        if ($stateRow -is [string]) {
+            continue
+        }
+
+        $skuId = [string](Get-AssessmentRuleValue -Record $stateRow -Names @('SkuId', 'skuId'))
+        $skuName = [string](Get-AssessmentRuleValue -Record $stateRow -Names @('SkuName', 'SkuPartNumber', 'FriendlyName'))
+        if ([string]::IsNullOrWhiteSpace($skuName)) {
+            $skuName = Resolve-AssessmentLicenseSkuName -SkuValue $skuId -SkuLookup $SkuLookup
+        }
+        $assignedByGroup = [string](Get-AssessmentRuleValue -Record $stateRow -Names @('AssignedByGroup', 'assignedByGroup'))
+        $assignmentSource = [string](Get-AssessmentRuleValue -Record $stateRow -Names @('AssignmentSource', 'Source'))
+        if ([string]::IsNullOrWhiteSpace($assignmentSource)) {
+            $assignmentSource = if ([string]::IsNullOrWhiteSpace($assignedByGroup) -or $assignedByGroup -eq '00000000-0000-0000-0000-000000000000') { 'Direct' } else { 'Group' }
+        }
+        $assignmentError = [string](Get-AssessmentRuleValue -Record $stateRow -Names @('Error', 'error'))
+        $assignmentState = [string](Get-AssessmentRuleValue -Record $stateRow -Names @('State', 'state'))
+
+        $rows.Add([pscustomobject]@{
+            SkuId            = $skuId
+            SkuName          = if ([string]::IsNullOrWhiteSpace($skuName)) { $skuId } else { $skuName }
+            AssignedByGroup  = $assignedByGroup
+            AssignmentSource = $assignmentSource
+            State            = $assignmentState
+            Error            = $assignmentError
+        }) | Out-Null
+    }
+
+    return @($rows.ToArray())
+}
+
+function Get-AssessmentLicenseSuiteFamily {
+    [CmdletBinding()]
+    param([AllowNull()][string]$SkuName)
+
+    if ([string]::IsNullOrWhiteSpace($SkuName)) {
+        return $null
+    }
+
+    $normalized = $SkuName.ToUpperInvariant()
+    if ($normalized -match 'SPE_E5|MICROSOFT 365 E5|M365 E5|ENTERPRISEPREMIUM|OFFICE 365 E5|O365 E5|SPE_E3|MICROSOFT 365 E3|M365 E3|ENTERPRISEPACK|OFFICE 365 E3|O365 E3|SPE_F1|MICROSOFT 365 F3|M365 F3|DESKLESSPACK|OFFICE 365 F3|O365 F3') {
+        return 'Microsoft 365 / Office 365 suite'
+    }
+
+    if ($normalized -match 'EMS|ENTERPRISE MOBILITY') {
+        return 'Enterprise Mobility + Security'
+    }
+
+    return $null
+}
+
+function New-AssessmentConditionalAccessOptimizationRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$ConditionalAccessPolicies = @(),
+        [Parameter(Mandatory = $false)]$ConditionalAccessSummary
+    )
+
+    $rows = New-Object System.Collections.Generic.List[object]
+    $policyRows = @($ConditionalAccessPolicies | Where-Object { $null -ne $_ })
+    $summaryRecord = if ($ConditionalAccessSummary) { Get-AssessmentRuleValue -Record $ConditionalAccessSummary -Names @('Summary', 'Configuration') } else { $null }
+    if (-not $summaryRecord -and $ConditionalAccessSummary) { $summaryRecord = $ConditionalAccessSummary }
+
+    function Test-PolicyEnabled {
+        param($Policy)
+        return ([string](Get-AssessmentRuleValue -Record $Policy -Names @('State', 'state'))).ToLowerInvariant() -eq 'enabled'
+    }
+    function Test-PolicyReportOnly {
+        param($Policy)
+        return ([string](Get-AssessmentRuleValue -Record $Policy -Names @('State', 'state'))).ToLowerInvariant() -match 'report'
+    }
+    function Test-PolicyRequiresMfa {
+        param($Policy)
+        $explicit = Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $Policy -Names @('RequiresMfaEnforcement', 'RequiresMfa', 'UsesAuthenticationStrengthForMfa'))
+        if ($explicit -eq $true) { return $true }
+        $text = ($Policy | ConvertTo-Json -Depth 8 -Compress)
+        return ($text -match '(?i)mfa|multiFactorAuthentication|authenticationStrength')
+    }
+    function Test-PolicySignal {
+        param($Policy, [string[]]$BooleanNames, [string]$Regex)
+        foreach ($name in @($BooleanNames)) {
+            $value = Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $Policy -Names @($name))
+            if ($value -eq $true) { return $true }
+        }
+        $text = ($Policy | ConvertTo-Json -Depth 8 -Compress)
+        if (-not [string]::IsNullOrWhiteSpace($Regex) -and $text -match $Regex) { return $true }
+        $nameText = [string](Get-AssessmentRuleValue -Record $Policy -Names @('DisplayName', 'Name'))
+        return (-not [string]::IsNullOrWhiteSpace($Regex) -and $nameText -match $Regex)
+    }
+    function Add-OptimizationRow {
+        param(
+            [string]$Signal,
+            [string]$Status,
+            [string]$Severity,
+            [object[]]$Policies,
+            [string]$CurrentState,
+            [string]$Recommendation,
+            [string]$Evidence
+        )
+        $policyNames = @($Policies | ForEach-Object { [string](Get-AssessmentRuleValue -Record $_ -Names @('DisplayName', 'Name')) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 8)
+        $rows.Add([pscustomobject]@{
+            Signal           = $Signal
+            Status           = $Status
+            Severity         = $Severity
+            PolicyCount      = @($Policies).Count
+            PolicyNames      = ($policyNames -join '; ')
+            CurrentState     = $CurrentState
+            Recommendation   = $Recommendation
+            Evidence         = $Evidence
+            SourceWorksheet  = 'ConditionalAccessPolicies'
+        }) | Out-Null
+    }
+
+    $enabledPolicies = @($policyRows | Where-Object { Test-PolicyEnabled -Policy $_ })
+    $reportOnlyPolicies = @($policyRows | Where-Object { Test-PolicyReportOnly -Policy $_ })
+    $disabledPolicies = @($policyRows | Where-Object { ([string](Get-AssessmentRuleValue -Record $_ -Names @('State', 'state'))).ToLowerInvariant() -eq 'disabled' })
+    $adminMfaPolicies = @($enabledPolicies | Where-Object { (Test-PolicyRequiresMfa -Policy $_) -and (Test-PolicySignal -Policy $_ -BooleanNames @('TargetsPrivilegedRoles') -Regex '(?i)admin|privileged|global administrator|directoryRole') })
+    $legacyPolicies = @($enabledPolicies | Where-Object { Test-PolicySignal -Policy $_ -BooleanNames @('BlocksLegacyAuth') -Regex '(?i)legacy|exchangeActiveSync|other clients|clientAppTypes' })
+    $guestPolicies = @($enabledPolicies | Where-Object { Test-PolicySignal -Policy $_ -BooleanNames @('TargetsGuestsOrExternalUsers') -Regex '(?i)guest|external|b2b|includeGuestsOrExternalUsers' })
+    $riskPolicies = @($enabledPolicies | Where-Object { Test-PolicySignal -Policy $_ -BooleanNames @('UsesRiskSignals') -Regex '(?i)risk|signInRisk|userRisk' })
+    $devicePolicies = @($enabledPolicies | Where-Object { Test-PolicySignal -Policy $_ -BooleanNames @('RequiresCompliantDevice') -Regex '(?i)compliantDevice|device compliance' })
+    $exclusionPolicies = @($policyRows | Where-Object { (Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $_ -Names @('HasExclusions'))) -eq $true -or (($_ | ConvertTo-Json -Depth 8 -Compress) -match '(?i)"exclude') })
+
+    Add-OptimizationRow -Signal 'Admin MFA baseline coverage' -Status $(if ($adminMfaPolicies.Count -gt 0) { 'Observed' } else { 'Review' }) -Severity $(if ($adminMfaPolicies.Count -gt 0) { 'Info' } else { 'High' }) -Policies $adminMfaPolicies -CurrentState ("{0} enabled admin/privileged MFA policy signal(s)" -f $adminMfaPolicies.Count) -Recommendation 'Validate that privileged roles are protected by enabled Conditional Access requiring strong MFA or authentication strength, with only documented emergency-access exclusions.' -Evidence 'TargetsPrivilegedRoles and MFA grant/authentication-strength signals.'
+    Add-OptimizationRow -Signal 'Legacy authentication blocking' -Status $(if ($legacyPolicies.Count -gt 0) { 'Observed' } else { 'Review' }) -Severity $(if ($legacyPolicies.Count -gt 0) { 'Info' } else { 'High' }) -Policies $legacyPolicies -CurrentState ("{0} enabled legacy-authentication protection signal(s)" -f $legacyPolicies.Count) -Recommendation 'Validate that legacy client authentication is blocked through an enabled policy and that exceptions are explicit.' -Evidence 'BlocksLegacyAuth, client app, grant-control, and policy-name signals.'
+    Add-OptimizationRow -Signal 'Guest and external access coverage' -Status $(if ($guestPolicies.Count -gt 0) { 'Observed' } else { 'Review' }) -Severity $(if ($guestPolicies.Count -gt 0) { 'Info' } else { 'Medium' }) -Policies $guestPolicies -CurrentState ("{0} enabled guest/external policy signal(s)" -f $guestPolicies.Count) -Recommendation 'Confirm guest/external users have a deliberate access baseline, including MFA or trusted inbound MFA where appropriate.' -Evidence 'Guest/external target signals.'
+    Add-OptimizationRow -Signal 'Risk-based access coverage' -Status $(if ($riskPolicies.Count -gt 0) { 'Observed' } else { 'Review' }) -Severity $(if ($riskPolicies.Count -gt 0) { 'Info' } else { 'Medium' }) -Policies $riskPolicies -CurrentState ("{0} enabled risk-based policy signal(s)" -f $riskPolicies.Count) -Recommendation 'Review user-risk and sign-in-risk policy coverage for high-value users and high-risk access paths.' -Evidence 'User risk and sign-in risk condition signals.'
+    Add-OptimizationRow -Signal 'Compliant-device access scenarios' -Status $(if ($devicePolicies.Count -gt 0) { 'Observed' } else { 'Review' }) -Severity 'Low' -Policies $devicePolicies -CurrentState ("{0} enabled compliant-device requirement signal(s)" -f $devicePolicies.Count) -Recommendation 'Decide which managed-access scenarios should require compliant devices and validate those controls in report-only or pilot before enforcement.' -Evidence 'Grant-control compliant-device signals.'
+    Add-OptimizationRow -Signal 'Report-only policy backlog' -Status $(if ($reportOnlyPolicies.Count -gt 0) { 'Review' } else { 'Observed' }) -Severity $(if ($reportOnlyPolicies.Count -gt 0) { 'Medium' } else { 'Info' }) -Policies $reportOnlyPolicies -CurrentState ("{0} report-only policy/policies" -f $reportOnlyPolicies.Count) -Recommendation 'Review report-only impact, document expected behavior, and move validated policies into enabled enforcement.' -Evidence 'Policy state.'
+    Add-OptimizationRow -Signal 'Disabled policy backlog' -Status $(if ($disabledPolicies.Count -gt 0) { 'Review' } else { 'Observed' }) -Severity 'Low' -Policies $disabledPolicies -CurrentState ("{0} disabled policy/policies" -f $disabledPolicies.Count) -Recommendation 'Retire obsolete disabled policies or document why they remain as staged/preserved policy definitions.' -Evidence 'Policy state.'
+    Add-OptimizationRow -Signal 'Exclusion-heavy policy review' -Status $(if ($exclusionPolicies.Count -ge 3) { 'Review' } else { 'Observed' }) -Severity $(if ($exclusionPolicies.Count -ge 3) { 'Medium' } else { 'Info' }) -Policies $exclusionPolicies -CurrentState ("{0} policy/policies with exclusion signals" -f $exclusionPolicies.Count) -Recommendation 'Minimize exclusions, reserve them for break-glass or validated operational exceptions, and periodically review membership drift.' -Evidence 'Exclude users/groups/roles/app/client signals.'
+
+    $signatureGroups = @(
+        $policyRows |
+            Group-Object {
+                $state = ([string](Get-AssessmentRuleValue -Record $_ -Names @('State', 'state'))).ToLowerInvariant()
+                $includeUsers = [string](Get-AssessmentRuleValue -Record $_ -Names @('IncludedUsers', 'IncludeUsers', 'Users'))
+                $includeGroups = [string](Get-AssessmentRuleValue -Record $_ -Names @('IncludedGroups', 'IncludeGroups'))
+                $includeRoles = [string](Get-AssessmentRuleValue -Record $_ -Names @('IncludedRoles', 'IncludeRoles'))
+                $applications = [string](Get-AssessmentRuleValue -Record $_ -Names @('Applications', 'IncludedApplications', 'CloudApps'))
+                $clientApps = [string](Get-AssessmentRuleValue -Record $_ -Names @('ClientAppTypes', 'ClientApps'))
+                $risk = [string](Get-AssessmentRuleValue -Record $_ -Names @('SignInRiskLevels', 'UserRiskLevels'))
+                $platforms = [string](Get-AssessmentRuleValue -Record $_ -Names @('IncludePlatforms', 'Platforms'))
+                $grant = [string](Get-AssessmentRuleValue -Record $_ -Names @('GrantControls'))
+                $session = [string](Get-AssessmentRuleValue -Record $_ -Names @('SessionControls'))
+                "$state|$includeUsers|$includeGroups|$includeRoles|$applications|$clientApps|$risk|$platforms|$grant|$session".ToLowerInvariant()
+            } |
+            Where-Object { $_.Count -gt 1 -and -not [string]::IsNullOrWhiteSpace([string]$_.Name) }
+    )
+    foreach ($signatureGroup in @($signatureGroups)) {
+        Add-OptimizationRow -Signal 'Possible overlapping Conditional Access policies' -Status 'Review' -Severity 'Low' -Policies @($signatureGroup.Group) -CurrentState ("{0} policy/policies share a similar target, condition, grant, and session-control signature" -f $signatureGroup.Count) -Recommendation 'Compare these policies for duplicate scope, conflicting controls, and opportunities to consolidate or clarify ownership.' -Evidence 'Deterministic policy-signature grouping.'
+    }
+
+    return @($rows.ToArray())
+}
+
+function New-AssessmentMfaMethodPostureSummaryRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]$MfaEnrollmentSummary,
+        [Parameter(Mandatory = $false)][object[]]$MfaRegistrationDetails = @()
+    )
+
+    $summaryRecord = if ($MfaEnrollmentSummary) { Get-AssessmentRuleValue -Record $MfaEnrollmentSummary -Names @('Summary', 'Configuration') } else { $null }
+    if (-not $summaryRecord -and $MfaEnrollmentSummary) { $summaryRecord = $MfaEnrollmentSummary }
+    $totalUsers = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $summaryRecord -Names @('TotalUsers', 'UserCount', 'TotalUserCount'))
+    $registeredUsers = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $summaryRecord -Names @('RegisteredUsers', 'RegisteredUserCount', 'MfaRegisteredUsers'))
+    $notRegisteredUsers = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $summaryRecord -Names @('NotRegisteredUsers', 'UsersNotRegisteredForMfa', 'NotRegisteredUserCount'))
+    if ($null -eq $notRegisteredUsers -and $null -ne $totalUsers -and $null -ne $registeredUsers) {
+        $notRegisteredUsers = [Math]::Max(($totalUsers - $registeredUsers), 0)
+    }
+    $weakMethodOnlyUsers = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $summaryRecord -Names @('UsersWithWeakMethodsOnly'))
+    $weakDefaultMethodUsers = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $summaryRecord -Names @('UsersWithWeakDefaultMethod'))
+    $phishingResistantUsers = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $summaryRecord -Names @('UsersWithPhishingResistantMethods', 'PhishingResistantUsers'))
+    $weakBreakdown = [string](Get-AssessmentRuleValue -Record $summaryRecord -Names @('WeakMethodBreakdown'))
+    $registeredBreakdown = [string](Get-AssessmentRuleValue -Record $summaryRecord -Names @('RegisteredMethodBreakdown'))
+
+    if (($null -eq $totalUsers -or $null -eq $registeredUsers) -and @($MfaRegistrationDetails).Count -gt 0) {
+        $totalUsers = @($MfaRegistrationDetails).Count
+        $registeredUsers = @($MfaRegistrationDetails | Where-Object { (Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $_ -Names @('IsMfaRegistered', 'IsRegistered', 'MfaRegistered'))) -eq $true }).Count
+        $notRegisteredUsers = [Math]::Max(($totalUsers - $registeredUsers), 0)
+    }
+
+    return @(
+        [pscustomobject]@{ Signal = 'MFA registration coverage'; Status = if ($null -ne $notRegisteredUsers -and $notRegisteredUsers -gt 0) { 'Review' } else { 'Observed' }; UserCount = $registeredUsers; CurrentState = ("{0} registered / {1} not registered" -f $(if ($null -eq $registeredUsers) { 'Unknown' } else { [int]$registeredUsers }), $(if ($null -eq $notRegisteredUsers) { 'Unknown' } else { [int]$notRegisteredUsers })); Recommendation = 'Keep enrollment separate from enforcement and drive remaining users through registration readiness.'; SourceWorksheet = 'MfaEnrollmentSummary' },
+        [pscustomobject]@{ Signal = 'Weak MFA method reliance'; Status = if ((($null -ne $weakMethodOnlyUsers -and $weakMethodOnlyUsers -gt 0) -or ($null -ne $weakDefaultMethodUsers -and $weakDefaultMethodUsers -gt 0))) { 'Review' } else { 'Observed' }; UserCount = $(if ($null -ne $weakMethodOnlyUsers) { [int]$weakMethodOnlyUsers } else { $null }); CurrentState = ("{0} weak-only user(s); {1} weak default user(s); {2}" -f $(if ($null -eq $weakMethodOnlyUsers) { 'Unknown' } else { [int]$weakMethodOnlyUsers }), $(if ($null -eq $weakDefaultMethodUsers) { 'Unknown' } else { [int]$weakDefaultMethodUsers }), $(if ([string]::IsNullOrWhiteSpace($weakBreakdown)) { 'Weak-method breakdown not surfaced' } else { $weakBreakdown })); Recommendation = 'Reduce SMS, voice, and email OTP reliance; encourage Microsoft Authenticator, passwordless, FIDO2/passkeys, or other phishing-resistant methods for privileged access.'; SourceWorksheet = 'MfaEnrollmentSummary' },
+        [pscustomobject]@{ Signal = 'Phishing-resistant method adoption'; Status = if ($null -ne $phishingResistantUsers -and $phishingResistantUsers -gt 0) { 'Observed' } else { 'Review' }; UserCount = $phishingResistantUsers; CurrentState = $(if ($null -eq $phishingResistantUsers) { 'Phishing-resistant method count not surfaced' } else { "$([int]$phishingResistantUsers) user(s)" }); Recommendation = 'Prioritize phishing-resistant authentication for privileged and high-risk populations where licensing and device readiness support it.'; SourceWorksheet = 'MfaEnrollmentSummary' },
+        [pscustomobject]@{ Signal = 'Registered method mix'; Status = 'Observed'; UserCount = $registeredUsers; CurrentState = $(if ([string]::IsNullOrWhiteSpace($registeredBreakdown)) { 'Registered method mix not surfaced' } else { $registeredBreakdown }); Recommendation = 'Use the method mix to target communications, registration campaigns, and weak-method retirement waves.'; SourceWorksheet = 'MfaEnrollmentSummary' }
+    )
+}
+
+function New-AssessmentPrivilegedAccessRemediationSummaryRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Admins = @(),
+        [Parameter(Mandatory = $false)]$AdminMfaSummary,
+        [Parameter(Mandatory = $false)][object[]]$AdminMfaRegistrationGaps = @(),
+        [Parameter(Mandatory = $false)][object[]]$AdminMfaEnforcementGaps = @()
+    )
+
+    $enabledAdmins = @($Admins | Where-Object { (Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false })
+    $globalAdmins = @($enabledAdmins | Where-Object { [string](Get-AssessmentRuleValue -Record $_ -Names @('Role', 'DirectoryRole', 'AdminRole', 'RoleName')) -match 'Global Administrator' })
+    $staleAdmins = @($enabledAdmins | Where-Object {
+        $lastSignIn = $null
+        try { $lastSignIn = [datetime](Get-AssessmentRuleValue -Record $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime')) } catch { $lastSignIn = $null }
+        $lastSignIn -and $lastSignIn -lt (Get-Date).AddDays(-90)
+    })
+    $cloudOnlyGlobalAdmins = @($globalAdmins | Where-Object { (Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $_ -Names @('OnPremisesSyncEnabled', 'DirSyncEnabled', 'IsSynced'))) -ne $true })
+    $summaryRecord = if ($AdminMfaSummary) { Get-AssessmentRuleValue -Record $AdminMfaSummary -Names @('Summary', 'Configuration') } else { $null }
+    if (-not $summaryRecord -and $AdminMfaSummary) { $summaryRecord = $AdminMfaSummary }
+    $notRegistered = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $summaryRecord -Names @('AdminUsersNotRegisteredForMfa'))
+    if ($null -eq $notRegistered) { $notRegistered = @($AdminMfaRegistrationGaps).Count }
+    $notCovered = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $summaryRecord -Names @('AdminUsersNotCoveredByMfaEnforcement'))
+    if ($null -eq $notCovered) { $notCovered = @($AdminMfaEnforcementGaps).Count }
+
+    return @(
+        [pscustomobject]@{ Signal = 'Standing Global Administrator assignments'; Status = if ($globalAdmins.Count -gt 5) { 'Review' } else { 'Observed' }; Count = $globalAdmins.Count; CurrentState = "$($globalAdmins.Count) enabled Global Administrator assignment(s)"; RecommendedAction = 'Reduce standing Global Administrators, remove stale assignments, use lower-privilege roles such as Global Reader where appropriate, and prefer PIM eligible activation with approval where supported.'; SourceWorksheet = 'Admins' },
+        [pscustomobject]@{ Signal = 'Stale privileged admin accounts'; Status = if ($staleAdmins.Count -gt 0) { 'Review' } else { 'Observed' }; Count = $staleAdmins.Count; CurrentState = "$($staleAdmins.Count) enabled admin account(s) appear stale"; RecommendedAction = 'Validate stale admin accounts and remove, disable, or downgrade privileges that are no longer required.'; SourceWorksheet = 'Admins' },
+        [pscustomobject]@{ Signal = 'Admin MFA registration gaps'; Status = if ($notRegistered -gt 0) { 'Review' } else { 'Observed' }; Count = $notRegistered; CurrentState = "$([int]$notRegistered) enabled admin account(s) not registered for MFA"; RecommendedAction = 'Drive admin registration completion separately from Conditional Access enforcement validation.'; SourceWorksheet = 'AdminMfaRegistrationGaps' },
+        [pscustomobject]@{ Signal = 'Admin MFA enforcement gaps'; Status = if ($notCovered -gt 0) { 'Review' } else { 'Observed' }; Count = $notCovered; CurrentState = "$([int]$notCovered) enabled admin account(s) not covered by active MFA enforcement"; RecommendedAction = 'Validate enabled Conditional Access enforcement for privileged roles and minimize exclusions to approved emergency-access accounts.'; SourceWorksheet = 'AdminMfaEnforcementGaps' },
+        [pscustomobject]@{ Signal = 'Cloud-only emergency access coverage'; Status = if ($cloudOnlyGlobalAdmins.Count -lt 2) { 'Review' } else { 'Observed' }; Count = $cloudOnlyGlobalAdmins.Count; CurrentState = "$($cloudOnlyGlobalAdmins.Count) enabled cloud-only Global Administrator account(s) surfaced"; RecommendedAction = 'Maintain at least two cloud-only emergency-access accounts and test their Conditional Access exclusion and monitoring process.'; SourceWorksheet = 'Admins' }
+    )
+}
+
+function New-AssessmentTeamsGroupsCleanupCandidateRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Teams = @(),
+        [Parameter(Mandatory = $false)][object[]]$Groups = @()
+    )
+
+    $rows = New-Object System.Collections.Generic.List[object]
+    function Add-CleanupCandidate {
+        param($ObjectType, $Name, $OwnerCount, $MemberCount, $GuestCount, $LastActivityDate, $StorageGB, $IsManagingLicenses, $RiskSignal, $RecommendedAction, $SourceWorksheet)
+        $rows.Add([pscustomobject]@{
+            ObjectType        = $ObjectType
+            Name              = $Name
+            OwnerCount        = $OwnerCount
+            MemberCount       = $MemberCount
+            GuestCount        = $GuestCount
+            LastActivityDate  = $LastActivityDate
+            StorageGB         = $StorageGB
+            IsManagingLicenses = $IsManagingLicenses
+            RiskSignal        = $RiskSignal
+            RecommendedAction = $RecommendedAction
+            SourceWorksheet   = $SourceWorksheet
+        }) | Out-Null
+    }
+    function Resolve-AssessmentMemberCount {
+        param($Record)
+
+        $explicitCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $Record -Names @('MemberCount', 'MembersCount', 'GroupMemberCount', 'MemberTotalCount'))
+        if ($null -ne $explicitCount) {
+            return $explicitCount
+        }
+
+        $membersValue = Get-AssessmentRuleValue -Record $Record -Names @('Members', 'GroupMembers')
+        if ($null -eq $membersValue -or $membersValue -is [string]) {
+            return $null
+        }
+
+        return @(Convert-AssessmentHtmlArray -InputObject $membersValue).Count
+    }
+
+    foreach ($team in @($Teams)) {
+        $name = [string](Get-AssessmentRuleValue -Record $team -Names @('DisplayName', 'Name'))
+        $ownerCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $team -Names @('OwnerCount', 'Owners'))
+        $memberCount = Resolve-AssessmentMemberCount -Record $team
+        $guestCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $team -Names @('GuestCount', 'Guests'))
+        $privateChannelCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $team -Names @('PrivateChannelCount'))
+        $sharedChannelCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $team -Names @('SharedChannelCount'))
+        $lastActivity = Get-AssessmentRuleValue -Record $team -Names @('LastActivityDate', 'LastActivityDateTime')
+        $storage = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $team -Names @('SiteSize-GB', 'StorageUsedGB'))
+        $riskSignals = @()
+        if ($null -ne $ownerCount -and $ownerCount -le 0) { $riskSignals += 'Ownerless Team' }
+        if ($null -ne $memberCount -and $memberCount -le 0) { $riskSignals += 'No members' }
+        if ($null -ne $guestCount -and $null -ne $memberCount -and $memberCount -gt 0 -and (($guestCount / $memberCount) -ge 0.4)) { $riskSignals += 'Guest-heavy Team' }
+        if (($null -ne $privateChannelCount -and $privateChannelCount -ge 5) -or ($null -ne $sharedChannelCount -and $sharedChannelCount -ge 1)) { $riskSignals += 'Private/shared channel review' }
+        try {
+            if ($lastActivity -and ([datetime]$lastActivity) -lt (Get-Date).AddDays(-90)) { $riskSignals += 'Dormant Team' }
+        } catch {}
+        if ($riskSignals.Count -gt 0) {
+            Add-CleanupCandidate -ObjectType 'Team' -Name $name -OwnerCount $ownerCount -MemberCount $memberCount -GuestCount $guestCount -LastActivityDate $lastActivity -StorageGB $storage -IsManagingLicenses $false -RiskSignal ($riskSignals -join '; ') -RecommendedAction 'Confirm owner accountability, guest access, channel lifecycle, and whether this Team should remain active, be archived, or be retired.' -SourceWorksheet 'AllTeams'
+        }
+    }
+
+    foreach ($group in @($Groups)) {
+        $name = [string](Get-AssessmentRuleValue -Record $group -Names @('DisplayName', 'Name'))
+        $ownerCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $group -Names @('OwnerCount', 'Owners'))
+        $memberCount = Resolve-AssessmentMemberCount -Record $group
+        $isManagingLicenses = Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $group -Names @('IsManagingLicenses'))
+        $riskSignals = @()
+        if ($null -ne $ownerCount -and $ownerCount -le 0) { $riskSignals += 'Ownerless group' }
+        if ($null -ne $memberCount -and $memberCount -le 0) { $riskSignals += 'No members' }
+        if ($isManagingLicenses -eq $true -and ($null -eq $ownerCount -or $ownerCount -le 0)) { $riskSignals += 'License-managing group without owner' }
+        if ($riskSignals.Count -gt 0) {
+            Add-CleanupCandidate -ObjectType 'Microsoft 365 / Entra group' -Name $name -OwnerCount $ownerCount -MemberCount $memberCount -GuestCount $null -LastActivityDate (Get-AssessmentRuleValue -Record $group -Names @('LastActivityDate', 'LastActivityDateTime')) -StorageGB $null -IsManagingLicenses $isManagingLicenses -RiskSignal ($riskSignals -join '; ') -RecommendedAction 'Confirm owner accountability, membership purpose, and whether the group should remain active, be assigned lifecycle ownership, or be retired.' -SourceWorksheet 'EntraIDGroups'
+        }
+    }
+
+    return @($rows.ToArray())
+}
+
+function New-AssessmentGroupLicensingSummaryRows {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $false)][object[]]$Groups = @())
+
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($group in @($Groups)) {
+        $isManagingLicenses = Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $group -Names @('IsManagingLicenses'))
+        $assignedLicenseCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $group -Names @('AssignedLicenseCount'))
+        if ($isManagingLicenses -ne $true -and (($null -eq $assignedLicenseCount) -or $assignedLicenseCount -le 0)) {
+            continue
+        }
+
+        $ownerCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $group -Names @('OwnerCount'))
+        $rows.Add([pscustomobject]@{
+            GroupName                    = [string](Get-AssessmentRuleValue -Record $group -Names @('DisplayName', 'Name'))
+            GroupId                      = [string](Get-AssessmentRuleValue -Record $group -Names @('Id', 'ID'))
+            OwnerCount                   = $ownerCount
+            MemberCount                  = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $group -Names @('MemberCount'))
+            AssignedLicenseCount         = if ($null -ne $assignedLicenseCount) { [int]$assignedLicenseCount } else { $null }
+            AssignedLicenseSkuIds        = [string](Get-AssessmentRuleValue -Record $group -Names @('AssignedLicenseSkuIds'))
+            AssignedLicenseSkuPartNumbers = [string](Get-AssessmentRuleValue -Record $group -Names @('AssignedLicenseSkuPartNumbers'))
+            AssignedLicenseFriendlyNames = [string](Get-AssessmentRuleValue -Record $group -Names @('AssignedLicenseFriendlyNames'))
+            RiskSignal                   = if ($null -ne $ownerCount -and $ownerCount -le 0) { 'License-managing group without owner' } else { 'Group-based licensing in use' }
+            Recommendation               = 'Document license group ownership, assignment intent, and error-review cadence before relying on the group as a lifecycle control.'
+            SourceWorksheet              = 'EntraIDGroups'
+        }) | Out-Null
+    }
+
+    return @($rows.ToArray())
+}
+
+function New-AssessmentLicenseOptimizationCandidateRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Users = @(),
+        [Parameter(Mandatory = $false)][object[]]$Groups = @(),
+        [Parameter(Mandatory = $false)][object[]]$Licenses = @()
+    )
+
+    $skuLookup = Get-AssessmentLicenseSkuLookup -Licenses $Licenses
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($group in @($Groups)) {
+        $isManagingLicenses = Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $group -Names @('IsManagingLicenses'))
+        if ($isManagingLicenses -eq $true) {
+            $ownerCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $group -Names @('OwnerCount'))
+            if ($null -eq $ownerCount -or $ownerCount -le 0) {
+                $rows.Add([pscustomobject]@{
+                    ObjectType        = 'Group'
+                    DisplayName       = [string](Get-AssessmentRuleValue -Record $group -Names @('DisplayName', 'Name'))
+                    UserPrincipalName = $null
+                    SkuFamily         = 'Group-based licensing'
+                    SkuNames          = [string](Get-AssessmentRuleValue -Record $group -Names @('AssignedLicenseFriendlyNames', 'AssignedLicenseSkuPartNumbers'))
+                    AssignmentSource  = 'Group'
+                    Issue             = 'License-managing group without owner'
+                    RecommendedAction = 'Assign accountable owners to licensing groups and document change-control expectations.'
+                    SourceWorksheet   = 'EntraIDGroups'
+                }) | Out-Null
+            }
+        }
+    }
+
+    foreach ($user in @($Users)) {
+        $displayName = [string](Get-AssessmentRuleValue -Record $user -Names @('DisplayName'))
+        $upn = [string](Get-AssessmentRuleValue -Record $user -Names @('UserPrincipalName'))
+        $assignmentRows = @(Get-AssessmentUserLicenseAssignmentRows -User $user -SkuLookup $skuLookup)
+        foreach ($skuGroup in @($assignmentRows | Group-Object { if (-not [string]::IsNullOrWhiteSpace([string]$_.SkuName)) { [string]$_.SkuName } else { [string]$_.SkuId } })) {
+            if ([string]::IsNullOrWhiteSpace([string]$skuGroup.Name)) { continue }
+            $hasDirect = @($skuGroup.Group | Where-Object { [string]$_.AssignmentSource -eq 'Direct' }).Count -gt 0
+            $hasGroup = @($skuGroup.Group | Where-Object { [string]$_.AssignmentSource -eq 'Group' }).Count -gt 0
+            if ($hasDirect -and $hasGroup) {
+                $rows.Add([pscustomobject]@{
+                    ObjectType        = 'User'
+                    DisplayName       = $displayName
+                    UserPrincipalName = $upn
+                    SkuFamily         = 'Duplicate assignment source'
+                    SkuNames          = [string]$skuGroup.Name
+                    AssignmentSource  = 'Direct + Group'
+                    Issue             = 'Same SKU assigned directly and by group'
+                    RecommendedAction = 'Remove duplicate direct assignments after confirming the group-based assignment is intentional and healthy.'
+                    SourceWorksheet   = 'Users'
+                }) | Out-Null
+            }
+        }
+
+        foreach ($assignmentRow in @($assignmentRows)) {
+            $assignmentError = [string]$assignmentRow.Error
+            $assignmentState = [string]$assignmentRow.State
+            $hasAssignmentError = (
+                (-not [string]::IsNullOrWhiteSpace($assignmentError) -and $assignmentError -notmatch '^(?i)none|noerror|success$') -or
+                (-not [string]::IsNullOrWhiteSpace($assignmentState) -and $assignmentState -match '(?i)error|failed|failure')
+            )
+            if ($hasAssignmentError) {
+                $errorDetail = if (-not [string]::IsNullOrWhiteSpace($assignmentError) -and $assignmentError -notmatch '^(?i)none|noerror|success$') { $assignmentError } else { $assignmentState }
+                $rows.Add([pscustomobject]@{
+                    ObjectType        = 'User'
+                    DisplayName       = $displayName
+                    UserPrincipalName = $upn
+                    SkuFamily         = 'Assignment error'
+                    SkuNames          = $assignmentRow.SkuName
+                    AssignmentSource  = $assignmentRow.AssignmentSource
+                    Issue             = "License assignment error: $errorDetail"
+                    RecommendedAction = 'Review Graph license assignment errors and resolve failed group-based or direct license assignments.'
+                    SourceWorksheet   = 'Users'
+                }) | Out-Null
+            }
+        }
+
+        $assignedLicenseNames = @($assignmentRows | ForEach-Object { [string]$_.SkuName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($assignedLicenseNames.Count -eq 0) {
+            $assignedLicenseNames = Convert-AssessmentRuleValueToStringList (Get-AssessmentRuleValue -Record $user -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
+        }
+        $suiteGroups = @(
+            $assignedLicenseNames |
+                ForEach-Object {
+                    [pscustomobject]@{ Name = $_; Family = Get-AssessmentLicenseSuiteFamily -SkuName $_ }
+                } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Family) } |
+                Group-Object Family |
+                Where-Object { $_.Count -gt 1 }
+        )
+        foreach ($suiteGroup in @($suiteGroups)) {
+            $rows.Add([pscustomobject]@{
+                ObjectType        = 'User'
+                DisplayName       = $displayName
+                UserPrincipalName = $upn
+                SkuFamily         = [string]$suiteGroup.Name
+                SkuNames          = (@($suiteGroup.Group | ForEach-Object { $_.Name }) -join '; ')
+                AssignmentSource  = 'Mixed/Unknown'
+                Issue             = 'Likely duplicate suite assignment'
+                RecommendedAction = 'Review stacked Microsoft 365 / Office 365 suite assignments and retain the license set that matches the user role and required services.'
+                SourceWorksheet   = 'Users'
+            }) | Out-Null
+        }
+    }
+
+    return @($rows.ToArray())
+}
+
 function Update-AssessmentReportTables {
     [CmdletBinding()]
     param(
@@ -3415,6 +4009,34 @@ function Update-AssessmentReportTables {
     $summaryIndex = 0
     $findingIndex = 0
     $migrationIndex = 0
+    $isTenantToTenantCutover = (
+        $script:ProfileCollectionPlan -and
+        [string]$script:ProfileCollectionPlan.CollectionScopePolicy -eq 'TenantToTenantCutover' -and
+        [string]$script:ProfileCollectionPlan.OutputProfile -eq 'TenantToTenantMigration'
+    )
+    $collectionDepthMode = if ($script:CollectionDepthPolicy -and $script:CollectionDepthPolicy.PSObject.Properties['ReportingMode']) {
+        [string]$script:CollectionDepthPolicy.ReportingMode
+    }
+    else {
+        ''
+    }
+    $isFullAssessmentGovernanceScope = (
+        -not $isTenantToTenantCutover -and
+        (
+            [string]::IsNullOrWhiteSpace($collectionDepthMode) -or
+            $collectionDepthMode -in @('Operator', 'Automation', 'Geek', 'All')
+        )
+    )
+
+    function Get-AssessmentReportTableValue {
+        param([Parameter(Mandatory = $true)][string]$Name)
+
+        if ($TenantStatsHash.ContainsKey($Name)) {
+            return $TenantStatsHash[$Name]
+        }
+
+        return $null
+    }
 
     function Add-AreaSummary {
         param(
@@ -3532,6 +4154,39 @@ function Update-AssessmentReportTables {
             MigrationAction  = $MigrationAction
             SourceWorksheet  = $SourceWorksheet
         }) | Out-Null
+    }
+
+    if ($IncludeBestPracticeTables -and $isFullAssessmentGovernanceScope) {
+        Write-AssessmentOptionalSubstep -Message 'Assessment reporting: building full-assessment governance optimization datasets'
+        $mfaRegistrationDetailsRows = @(Convert-AssessmentHtmlArray -InputObject (Get-AssessmentReportTableValue -Name 'MfaRegistrationDetails'))
+        $adminMfaRegistrationGapRows = @(Convert-AssessmentHtmlArray -InputObject (Get-AssessmentReportTableValue -Name 'AdminMfaRegistrationGaps'))
+        $adminMfaEnforcementGapRows = @(Convert-AssessmentHtmlArray -InputObject (Get-AssessmentReportTableValue -Name 'AdminMfaEnforcementGaps'))
+        $TenantStatsHash['ConditionalAccessOptimization'] = @(
+            New-AssessmentConditionalAccessOptimizationRows `
+                -ConditionalAccessPolicies $context.ConditionalAccess `
+                -ConditionalAccessSummary (Get-AssessmentReportTableValue -Name 'ConditionalAccessPolicySummary')
+        )
+        $TenantStatsHash['MfaMethodPostureSummary'] = @(
+            New-AssessmentMfaMethodPostureSummaryRows `
+                -MfaEnrollmentSummary (Get-AssessmentReportTableValue -Name 'MfaEnrollmentSummary') `
+                -MfaRegistrationDetails $mfaRegistrationDetailsRows
+        )
+        $TenantStatsHash['PrivilegedAccessRemediationSummary'] = @(
+            New-AssessmentPrivilegedAccessRemediationSummaryRows `
+                -Admins $context.Admins `
+                -AdminMfaSummary (Get-AssessmentReportTableValue -Name 'AdminMfaSummary') `
+                -AdminMfaRegistrationGaps $adminMfaRegistrationGapRows `
+                -AdminMfaEnforcementGaps $adminMfaEnforcementGapRows
+        )
+        $TenantStatsHash['TeamsGroupsCleanupCandidates'] = @(
+            New-AssessmentTeamsGroupsCleanupCandidateRows -Teams $context.Teams -Groups $context.Groups
+        )
+        $TenantStatsHash['GroupLicensingSummary'] = @(
+            New-AssessmentGroupLicensingSummaryRows -Groups $context.Groups
+        )
+        $TenantStatsHash['LicenseOptimizationCandidates'] = @(
+            New-AssessmentLicenseOptimizationCandidateRows -Users $context.Users -Groups $context.Groups -Licenses $context.Licenses
+        )
     }
 
     if ($IncludeBestPracticeTables) {

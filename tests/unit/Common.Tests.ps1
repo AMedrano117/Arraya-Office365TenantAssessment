@@ -911,6 +911,30 @@ Describe 'Arraya.M365.Common' {
         $script:exportExcelSource | Should -Match '\$autoSizeRowLimit = 1000'
         $script:exportExcelSource | Should -Match '\$autoSizeSheet = \(\$sourceCount -le \$autoSizeRowLimit -and \$WorkbookExportPolicy -ne ''TenantToTenantCutover''\)'
         $script:exportExcelSource | Should -Match 'Set-TenantToTenantWorksheetColumnWidths -ExcelPackage \$excelPackage -WorksheetName \$worksheetName -Columns \$explicitColumns'
+        $script:exportExcelSource | Should -Match "'PrivilegedAccessRemediationSummary' = 'PrivilegedAccessRemediation'"
+        $script:exportExcelSource | Should -Match "'PrivilegedAccessRemediationSummary' = @\('PrivilegedAccessRemediationSummary', 'PrivilegedAccessRemediationSumm', 'PrivilegedAccessRemediation'\)"
+    }
+
+    It 'adds full-assessment governance datasets to workbook export while excluding them from T2T output' {
+        $script:htmlHelperSource | Should -Match '\$isFullAssessmentGovernanceScope = \('
+        $script:htmlHelperSource | Should -Match "\$collectionDepthMode -in @\('Operator', 'Automation', 'Geek', 'All'\)"
+        $script:htmlHelperSource | Should -Match 'if \(\$IncludeBestPracticeTables -and \$isFullAssessmentGovernanceScope\)'
+
+        @(
+            'ConditionalAccessOptimization'
+            'MfaMethodPostureSummary'
+            'PrivilegedAccessRemediationSummary'
+            'TeamsGroupsCleanupCandidates'
+            'GroupLicensingSummary'
+            'LicenseOptimizationCandidates'
+        ) | ForEach-Object {
+            $script:exportExcelSource | Should -Match ([regex]::Escape("'$_'"))
+            $script:exportExcelSource | Should -Match ([regex]::Escape("""$_"""))
+        }
+
+        $script:exportExcelSource | Should -Match "'SharePointSharingSummary', 'AllExchangeGroups', 'MigrationReadiness', 'ConditionalAccessOptimization'"
+        $script:exportExcelSource | Should -Match "'MfaMethodPostureSummary', 'PrivilegedAccessRemediationSummary', 'TeamsGroupsCleanupCandidates'"
+        $script:exportExcelSource | Should -Match "'GroupLicensingSummary', 'LicenseOptimizationCandidates'"
     }
 
     It 'narrows the workbook to the migration-focused sheet set for tenant-to-tenant exports' {

@@ -49,6 +49,27 @@ Describe 'Improve workflow' {
             }
         }
 
+        function Get-TestDocxEntryInfo {
+            param([Parameter(Mandatory = $true)][string]$Path)
+
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+            try {
+                return @(
+                    $archive.Entries |
+                        ForEach-Object {
+                            [pscustomobject]@{
+                                FullName = [string]$_.FullName
+                                Length   = [int64]$_.Length
+                            }
+                        }
+                )
+            }
+            finally {
+                $archive.Dispose()
+            }
+        }
+
         function New-TestEnterpriseApplicationSnapshot {
             param(
                 [Parameter(Mandatory = $true)]
@@ -182,6 +203,54 @@ Describe 'Improve workflow' {
                             AccountEnabled    = $true
                             LastSignInDateTime = (Get-Date).AddDays(-200).ToString('o')
                             AssignedLicensesFriendly = @()
+                        },
+                        [pscustomobject]@{
+                            DisplayName       = 'Stacked License User'
+                            UserPrincipalName = 'stacked.license@contoso.com'
+                            UserType          = 'Member'
+                            AccountEnabled    = $true
+                            AssignedLicensesFriendly = @('Microsoft 365 E3', 'Office 365 E3')
+                            LicenseAssignmentStates = @(
+                                [pscustomobject]@{
+                                    SkuId            = '11111111-1111-1111-1111-111111111113'
+                                    SkuName          = 'Microsoft 365 E3'
+                                    AssignmentSource = 'Direct'
+                                    State            = 'Active'
+                                    Error            = 'None'
+                                },
+                                [pscustomobject]@{
+                                    SkuId            = '11111111-1111-1111-1111-111111111113'
+                                    SkuName          = 'Microsoft 365 E3'
+                                    AssignedByGroup  = 'group-licensing-001'
+                                    AssignmentSource = 'Group'
+                                    State            = 'Active'
+                                    Error            = 'None'
+                                },
+                                [pscustomobject]@{
+                                    SkuId            = '11111111-1111-1111-1111-111111111114'
+                                    SkuName          = 'Office 365 E3'
+                                    AssignmentSource = 'Direct'
+                                    State            = 'Active'
+                                    Error            = 'None'
+                                }
+                            )
+                        },
+                        [pscustomobject]@{
+                            DisplayName       = 'License Error User'
+                            UserPrincipalName = 'license.error@contoso.com'
+                            UserType          = 'Member'
+                            AccountEnabled    = $true
+                            AssignedLicensesFriendly = @('Microsoft 365 E5')
+                            LicenseAssignmentStates = @(
+                                [pscustomobject]@{
+                                    SkuId            = '11111111-1111-1111-1111-111111111115'
+                                    SkuName          = 'Microsoft 365 E5'
+                                    AssignedByGroup  = 'group-licensing-001'
+                                    AssignmentSource = 'Group'
+                                    State            = 'Error'
+                                    Error            = 'MutuallyExclusiveViolation'
+                                }
+                            )
                         }
                     )
                     ConditionalAccessPolicies = @(
@@ -190,8 +259,24 @@ Describe 'Improve workflow' {
                     )
                     LicenseSKUs = @(
                         [pscustomobject]@{
+                            SkuId         = '11111111-1111-1111-1111-111111111113'
                             SkuPartNumber = 'ENTERPRISEPACK'
+                            FriendlyName  = 'Microsoft 365 E3'
                             ConsumedUnits = 99
+                            ActiveUnits   = 100
+                        },
+                        [pscustomobject]@{
+                            SkuId         = '11111111-1111-1111-1111-111111111114'
+                            SkuPartNumber = 'OFFICE_E3'
+                            FriendlyName  = 'Office 365 E3'
+                            ConsumedUnits = 10
+                            ActiveUnits   = 100
+                        },
+                        [pscustomobject]@{
+                            SkuId         = '11111111-1111-1111-1111-111111111115'
+                            SkuPartNumber = 'SPE_E5'
+                            FriendlyName  = 'Microsoft 365 E5'
+                            ConsumedUnits = 2
                             ActiveUnits   = 100
                         }
                     )
@@ -616,13 +701,31 @@ Describe 'Improve workflow' {
                 Collaboration = @{
                     AllTeams = @(
                         [pscustomobject]@{
+                            DisplayName          = 'Ownerless Empty Team'
                             OwnerCount          = 0
+                            MemberCount         = 0
                             PrivateChannelCount = 6
                             SharedChannelCount  = 0
                         }
                     )
                     UnifiedGroups = @(
-                        [pscustomobject]@{ OwnerCount = 0 }
+                        [pscustomobject]@{ OwnerCount = 0 },
+                        [pscustomobject]@{
+                            DisplayName = 'No Member Group'
+                            OwnerCount  = 1
+                            Members     = @()
+                        },
+                        [pscustomobject]@{
+                            Id                           = 'group-licensing-001'
+                            DisplayName                  = 'M365 E3 License Group'
+                            OwnerCount                   = 0
+                            MemberCount                  = 2
+                            IsManagingLicenses           = $true
+                            AssignedLicenseCount         = 1
+                            AssignedLicenseSkuIds        = '11111111-1111-1111-1111-111111111113'
+                            AssignedLicenseSkuPartNumbers = 'ENTERPRISEPACK'
+                            AssignedLicenseFriendlyNames = 'Microsoft 365 E3'
+                        }
                     )
                     SharePoint = @(
                         [pscustomobject]@{
@@ -865,6 +968,19 @@ Describe 'Improve workflow' {
         $payload.PSObject.Properties.Name | Should -Contain 'WorkstreamSummaries'
         $payload.PSObject.Properties.Name | Should -Contain 'ExternalExposureFindings'
         $payload.PSObject.Properties.Name | Should -Contain 'ConsultativeSummaries'
+        $payload.PSObject.Properties.Name | Should -Contain 'ConditionalAccessOptimization'
+        $payload.PSObject.Properties.Name | Should -Contain 'MfaMethodPostureSummary'
+        $payload.PSObject.Properties.Name | Should -Contain 'PrivilegedAccessRemediationSummary'
+        $payload.PSObject.Properties.Name | Should -Contain 'TeamsGroupsCleanupCandidates'
+        $payload.PSObject.Properties.Name | Should -Contain 'GroupLicensingSummary'
+        $payload.PSObject.Properties.Name | Should -Contain 'LicenseOptimizationCandidates'
+        @($payload.ConditionalAccessOptimization | Where-Object { $_.Signal -eq 'Admin MFA baseline coverage' }).Count | Should -BeGreaterThan 0
+        @($payload.MfaMethodPostureSummary | Where-Object { $_.Signal -eq 'Weak MFA method reliance' }).Count | Should -BeGreaterThan 0
+        @($payload.PrivilegedAccessRemediationSummary | Where-Object { $_.Signal -eq 'Admin MFA enforcement gaps' }).Count | Should -BeGreaterThan 0
+        @($payload.TeamsGroupsCleanupCandidates).Count | Should -BeGreaterThan 0
+        @($payload.TeamsGroupsCleanupCandidates | Where-Object { [string]$_.RiskSignal -match 'No members' }).Count | Should -BeGreaterThan 0
+        @($payload.GroupLicensingSummary).Count | Should -BeGreaterThan 0
+        @($payload.LicenseOptimizationCandidates | Where-Object { $_.Issue -eq 'Same SKU assigned directly and by group' }).Count | Should -BeGreaterThan 0
         @($payload.WorkstreamSummaries).Count | Should -BeGreaterThan 0
         @($payload.ExternalExposureFindings).Count | Should -Be 2
         $payload.ConsultativeSummaries.PSObject.Properties.Name | Should -Contain 'ExecutiveDecisionSummary'
@@ -890,6 +1006,15 @@ Describe 'Improve workflow' {
         @($payload.Findings | Where-Object { $_.RuleId -eq 'CA-002' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'CA-010' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'CA-012' }).Count | Should -BeGreaterThan 0
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'ADMIN-002' }).Count | Should -BeGreaterThan 0
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'ADMIN-003' }).Count | Should -BeGreaterThan 0
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'CA-014' }).Count | Should -BeGreaterThan 0
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'LIC-003' }).Count | Should -BeGreaterThan 0
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'LIC-004' }).Count | Should -BeGreaterThan 0
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'LIC-005' }).Count | Should -BeGreaterThan 0
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'LIC-006' }).Count | Should -BeGreaterThan 0
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'LIC-007' }).Count | Should -BeGreaterThan 0
+        @($payload.Findings | Where-Object { $_.RuleId -eq 'TM-009' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'EX-001' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'EX-006' }).Count | Should -BeGreaterThan 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'EX-007' }).Count | Should -BeGreaterThan 0
@@ -905,6 +1030,9 @@ Describe 'Improve workflow' {
         $id007.WhyFlagged | Should -Match 'permission'
         $id007.EvidenceLocation | Should -Match 'EnterpriseApplications'
         $id007.TechnicalRemediation | Should -Match 'business owner|permissions|broad consent'
+        $id007.Recommendation | Should -Match 'owner'
+        $id007.Recommendation | Should -Match 'permissions'
+        $id007.Recommendation | Should -Match 'consent|credential'
 
         $id010 = @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-010' }) | Select-Object -First 1
         $id010.CurrentValue | Should -Match 'owner signal'
@@ -917,13 +1045,22 @@ Describe 'Improve workflow' {
         $admin001.RoadmapPhase | Should -Be 'Immediate'
         $admin001.QuickWinEligible | Should -BeTrue
         $admin001.EstimatedPsHours | Should -Match 'hours'
+        $admin001.Recommendation | Should -Match 'least-privilege'
+        $admin001.Recommendation | Should -Match 'Global Reader'
+        $admin001.Recommendation | Should -Match 'Privileged Identity Management'
+        $admin001.Recommendation | Should -Match 'approval'
+        $admin001.Recommendation | Should -Match 'break-glass'
 
         $ca010 = @($payload.Findings | Where-Object { $_.RuleId -eq 'CA-010' }) | Select-Object -First 1
         $ca010.RoadmapPhase | Should -Be 'Monitor'
         $ca010.EstimatedPsHours | Should -Match 'hours'
+        $ca010.Recommendation | Should -Match 'report-only|pilot'
+        $ca010.Recommendation | Should -Match 'exclusions'
+        $ca010.Recommendation | Should -Match 'Security Defaults'
 
         $col002 = @($payload.Findings | Where-Object { $_.RuleId -eq 'COL-002' }) | Select-Object -First 1
         $col002.Finding | Should -Be 'OneDrive delegated ownership review is required.'
+        $col002.Recommendation | Should -Match 'ownership|lifecycle|retention'
 
         $ex001 = @($payload.Findings | Where-Object { $_.RuleId -eq 'EX-001' }) | Select-Object -First 1
         $ex001.CurrentValue | Should -Match '^1 mailbox\(es\) with forwarding configured'
@@ -931,6 +1068,10 @@ Describe 'Improve workflow' {
         $ex001.CurrentValue | Should -Match '1 remote domain\(s\) have AutoForwardEnabled'
         $ex001.CurrentValue | Should -Match 'Default remote domain AutoForwardEnabled=False'
         $ex001.TargetValue | Should -Be 'All mailbox forwarding configurations reviewed and either approved or removed, with tenant forwarding policy aligned to the approved baseline'
+        $ex001.Recommendation | Should -Match 'SPF'
+        $ex001.Recommendation | Should -Match 'DKIM'
+        $ex001.Recommendation | Should -Match 'DMARC'
+        $ex001.Recommendation | Should -Match 'remote domains|connectors|relay'
 
         $ex006 = @($payload.Findings | Where-Object { $_.RuleId -eq 'EX-006' }) | Select-Object -First 1
         $ex006.CurrentValue | Should -Match 'external-forwarding inbox rule\(s\)'
@@ -941,6 +1082,7 @@ Describe 'Improve workflow' {
         $customerReportXml = Get-TestDocxDocumentXml -Path $result.CustomerAssessmentReportPath
         $customerReportEntryNames = Get-TestDocxEntryNames -Path $result.CustomerAssessmentReportPath
         $roadmapDocument = Get-TestDocxDocumentXmlText -Path $result.RoadmapRemediationPlanPath
+        $roadmapEntryInfo = Get-TestDocxEntryInfo -Path $result.RoadmapRemediationPlanPath
         $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
         $ns = New-Object System.Xml.XmlNamespaceManager($customerReportXml.NameTable)
         $ns.AddNamespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main')
@@ -1104,6 +1246,8 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match '# .+ Microsoft 365 Tenant Best Practices Assessment'
         $customerReportMarkdown | Should -Match '## 1\.0 Introduction'
         $customerReportMarkdown | Should -Match '### Assessment Snapshot At A Glance'
+        $customerReportMarkdown | Should -Match 'Purview / Compliance validation'
+        $customerReportMarkdown | Should -Match 'Purview retention and DLP policy data was surfaced'
         $customerReportMarkdown | Should -Match '## 3\.0 Executive Summary'
         $customerReportMarkdown | Should -Match '### Overall Findings Summary'
         $customerReportMarkdown | Should -Match '### Leadership Decision Brief'
@@ -1240,16 +1384,17 @@ Describe 'Improve workflow' {
         $roadmapDocument | Should -Match 'Microsoft 365 Remediation Roadmap'
         $roadmapDocument | Should -Match 'Document revision: 1\.0'
         $roadmapDocument | Should -Match 'Executive Summary'
-        $roadmapDocument | Should -Match 'Current State Analysis'
-        $roadmapDocument | Should -Match 'Environment Review'
-        $roadmapDocument | Should -Match 'Identity &amp; Access'
-        $roadmapDocument | Should -Match 'Reviewed footprint'
-        $roadmapDocument | Should -Match 'Roadmap focus'
-        $roadmapDocument | Should -Match 'How to use this roadmap'
-        $roadmapDocument | Should -Match 'What stands out'
-        $roadmapDocument | Should -Match 'Leadership impact'
-        $roadmapDocument | Should -Match 'Current state'
-        $roadmapDocument | Should -Match 'Recommendation focus'
+        $roadmapDocument | Should -Match 'Reviewed Footprint'
+        $roadmapDocument | Should -Match 'Workload'
+        $roadmapDocument | Should -Match 'Reviewed Count'
+        $roadmapDocument | Should -Match 'Purview / Compliance'
+        $roadmapDocument | Should -Match 'DLP policy record'
+        $roadmapDocument | Should -Not -Match 'Current State Analysis'
+        $roadmapDocument | Should -Not -Match 'Environment Review'
+        $roadmapDocument | Should -Not -Match 'Why it matters'
+        $roadmapDocument | Should -Not -Match 'Positive signal'
+        $roadmapDocument | Should -Not -Match 'Recommendation focus'
+        $roadmapDocument | Should -Not -Match '\.\.\.'
         $roadmapDocument | Should -Match 'Solution Approach'
         $roadmapDocument | Should -Match 'Remediation Roadmap'
         $roadmapDocument | Should -Match '0-30 Days \(Foundation\)'
@@ -1257,12 +1402,13 @@ Describe 'Improve workflow' {
         $roadmapDocument | Should -Match '61-90 Days \(Stabilization\)'
         $roadmapDocument | Should -Match 'Operational Model'
         $roadmapDocument | Should -Match 'Executive Decision Required'
-        $roadmapDocument | Should -Match 'Phase label:'
+        $roadmapDocument | Should -Match 'Phase:'
+        $roadmapDocument | Should -Match 'Level of Effort:'
         $roadmapDocument | Should -Match 'Rough PS Hours:'
-        $roadmapDocument | Should -Match 'Next step:'
-        $roadmapDocument | Should -Match 'Success signal:'
+        $roadmapDocument | Should -Match 'Detailed Recommendation:'
+        $roadmapDocument | Should -Match 'Success Signal:'
         $roadmapDocument | Should -Match 'Heading3'
-        $roadmapDocument | Should -Match 'Heading4'
+        @($roadmapEntryInfo | Where-Object { $_.FullName -match '^word/media/.+\.png$' -and $_.Length -gt 300KB }).Count | Should -Be 0
         $roadmapDocument | Should -Not -Match '\[Phase label:'
         $roadmapDocument | Should -Not -Match '\[Insert '
         $roadmapDocument | Should -Not -Match '15\.10 Full Findings Inventory'
@@ -1302,11 +1448,15 @@ Describe 'Improve workflow' {
         $customerDocxSource | Should -Match '\$overallFindingsChartHeight = \[Math\]::Max\(220, \(55 \+ \(28 \* @\(\$overallFindingsChartRows\)\.Count\)\)\)'
         $customerDocxSource | Should -Match 'function New-RoadmapRemediationDocumentBlocks'
         $customerDocxSource | Should -Match 'function New-CustomerRoadmapActionBlocks'
+        $customerDocxSource | Should -Match 'function Optimize-CustomerRoadmapDocxMedia'
+        $customerDocxSource | Should -Match 'Detailed Recommendation:'
         $customerDocxSource | Should -Match 'New-CustomerWordParagraphBlock -Text \$title -Style ''Heading3'''
 
         $improveSource | Should -Match 'RoadmapRemediationPlan'
         $improveSource | Should -Match 'Get-RoadmapRemediationTemplatePath'
         $improveSource | Should -Match 'New-RoadmapRemediationDocumentBlocks'
+        $improveSource | Should -Match 'Get-M365GuidanceBaselineMap'
+        $improveSource | Should -Match 'OptimizeMedia'
     }
 
     It 'embeds customer-report chart images in the DOCX and skips them in markdown when chart datasets are renderable' {

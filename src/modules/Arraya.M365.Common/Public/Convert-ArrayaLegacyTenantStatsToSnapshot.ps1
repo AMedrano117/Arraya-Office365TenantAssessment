@@ -224,13 +224,15 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
             'MfaEnrollmentSummary', 'MfaEnforcementSummary', 'MfaEnforcementGapUsers', 'MfaEnforcementScopeReview',
             'ConditionalAccessPolicySummary', 'EnterpriseApplications', 'EnterpriseApplicationSummary',
             'SecurityDefaultsPolicy', 'GuestSignInSummary', 'PrivilegedAccessSummary', 'DeviceManagementSummary',
-            'ExternalIdentityRestrictions', 'GuestAccessConfiguration'
+            'ExternalIdentityRestrictions', 'GuestAccessConfiguration',
+            'ConditionalAccessOptimization', 'MfaMethodPostureSummary', 'PrivilegedAccessRemediationSummary',
+            'GroupLicensingSummary', 'LicenseOptimizationCandidates'
         )
         Collaboration = @(
             'UnifiedGroups', 'AllTeams', 'TeamsVoice', 'TeamsVoiceSummary',
             'SharePoint', 'OneDrive', 'TeamsActivityTopUsers', 'Office365GroupsActivityTopGroups',
             'UnmanagedObjects', 'OneDriveOwnerMismatches', 'OwnershipGovernanceSummary',
-            'SharePointSharingSummary', 'CollaborationActivitySummary'
+            'SharePointSharingSummary', 'CollaborationActivitySummary', 'TeamsGroupsCleanupCandidates'
         )
         Security = @(
             'SecuritySecureScore', 'SecureScoreActions', 'SpamFilteringConfig', 'SpamFilteringSummary',
