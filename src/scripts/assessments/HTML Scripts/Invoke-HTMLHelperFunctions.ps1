@@ -3483,7 +3483,7 @@ function Get-AssessmentLicenseSkuLookup {
         if ($null -eq $license) { continue }
         $skuId = [string](Get-AssessmentRuleValue -Record $license -Names @('SkuId', 'skuId', 'Id'))
         $skuPartNumber = [string](Get-AssessmentRuleValue -Record $license -Names @('SkuPartNumber', 'skuPartNumber', 'AccountSkuId'))
-        $friendlyName = [string](Get-AssessmentRuleValue -Record $license -Names @('FriendlyName', 'Name', 'SkuPartNumber', 'skuPartNumber'))
+        $friendlyName = [string](Get-AssessmentRuleValue -Record $license -Names @('FriendlyName', 'SkuFriendlyName', 'SkuDisplayName', 'ProductName', 'DisplayName', 'Name', 'SkuPartNumber', 'skuPartNumber'))
         $skuRecord = [pscustomobject]@{
             SkuId         = $skuId
             SkuPartNumber = $skuPartNumber
@@ -3565,10 +3565,60 @@ function Get-AssessmentUserLicenseAssignmentRows {
             AssignmentSource = $assignmentSource
             State            = $assignmentState
             Error            = $assignmentError
+            LastUpdatedDateTime = [string](Get-AssessmentRuleValue -Record $stateRow -Names @('LastUpdatedDateTime', 'lastUpdatedDateTime'))
         }) | Out-Null
     }
 
     return @($rows.ToArray())
+}
+
+function Get-AssessmentGroupLicenseAssignedUserCountLookup {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Users = @(),
+        [Parameter(Mandatory = $false)][object[]]$Licenses = @()
+    )
+
+    $skuLookup = Get-AssessmentLicenseSkuLookup -Licenses $Licenses
+    $userKeysByGroupId = @{}
+    $hasAssignmentStateData = $false
+    foreach ($user in @($Users)) {
+        if ($null -eq $user) {
+            continue
+        }
+
+        $assignmentRows = @(Get-AssessmentUserLicenseAssignmentRows -User $user -SkuLookup $skuLookup)
+        if ($assignmentRows.Count -gt 0) {
+            $hasAssignmentStateData = $true
+        }
+
+        $userKey = [string](Get-AssessmentRuleValue -Record $user -Names @('Id', 'ID', 'UserPrincipalName', 'Mail', 'DisplayName'))
+        if ([string]::IsNullOrWhiteSpace($userKey)) {
+            $userKey = [guid]::NewGuid().ToString()
+        }
+
+        foreach ($assignmentRow in @($assignmentRows)) {
+            $assignedByGroup = ([string]$assignmentRow.AssignedByGroup).Trim()
+            if ([string]::IsNullOrWhiteSpace($assignedByGroup) -or $assignedByGroup -eq '00000000-0000-0000-0000-000000000000') {
+                continue
+            }
+
+            if (-not $userKeysByGroupId.ContainsKey($assignedByGroup)) {
+                $userKeysByGroupId[$assignedByGroup] = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+            }
+            [void]$userKeysByGroupId[$assignedByGroup].Add($userKey)
+        }
+    }
+
+    $countLookup = @{}
+    foreach ($groupId in @($userKeysByGroupId.Keys)) {
+        $countLookup[$groupId] = [int]$userKeysByGroupId[$groupId].Count
+    }
+
+    return [pscustomobject]@{
+        Counts = $countLookup
+        HasAssignmentStateData = $hasAssignmentStateData
+    }
 }
 
 function Get-AssessmentLicenseSuiteFamily {
@@ -3764,6 +3814,213 @@ function New-AssessmentPrivilegedAccessRemediationSummaryRows {
     )
 }
 
+function Test-AssessmentGroupManagesLicenses {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Record
+    )
+
+    if ($null -eq $Record) {
+        return $false
+    }
+
+    $assignedLicenseCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $Record -Names @('AssignedLicenseCount'))
+    if ($null -ne $assignedLicenseCount) {
+        return ($assignedLicenseCount -gt 0)
+    }
+
+    $assignedLicenseSignals = @(
+        'AssignedLicenseSkuIds',
+        'AssignedLicenseSkuPartNumbers',
+        'AssignedLicenseFriendlyNames'
+    ) | ForEach-Object {
+        [string](Get-AssessmentRuleValue -Record $Record -Names @($_))
+    } | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_) -and $_ -notmatch '^(?i)notcollected|not surfaced'
+    }
+
+    if (@($assignedLicenseSignals).Count -gt 0) {
+        return $true
+    }
+
+    return ((Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $Record -Names @('IsManagingLicenses'))) -eq $true)
+}
+
+function Convert-ToAssessmentLicenseDate {
+    [CmdletBinding()]
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    try {
+        return [datetime]$Value
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-AssessmentNormalizedPrincipalKey {
+    [CmdletBinding()]
+    param([AllowNull()][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return ''
+    }
+
+    return $Value.Trim().ToLowerInvariant()
+}
+
+function New-AssessmentActivityLookup {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Rows = @(),
+        [Parameter(Mandatory = $false)][string[]]$PrincipalNames = @('UserPrincipalName', 'UPN', 'Mail', 'PrimarySmtpAddress')
+    )
+
+    $lookup = @{}
+    foreach ($row in @($Rows)) {
+        if ($null -eq $row) {
+            continue
+        }
+
+        foreach ($principalName in @($PrincipalNames)) {
+            $principal = Get-AssessmentNormalizedPrincipalKey -Value ([string](Get-AssessmentRuleValue -Record $row -Names @($principalName)))
+            if ([string]::IsNullOrWhiteSpace($principal)) {
+                continue
+            }
+
+            if (-not $lookup.ContainsKey($principal)) {
+                $lookup[$principal] = New-Object System.Collections.Generic.List[object]
+            }
+
+            $lookup[$principal].Add($row) | Out-Null
+        }
+    }
+
+    return $lookup
+}
+
+function Get-AssessmentLatestDateFromRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Rows = @(),
+        [Parameter(Mandatory = $false)][string[]]$DateNames = @('LastActivityDate', 'LastActivityDateTime', 'LastSignInDateTime', 'LastSuccessfulSignInDateTime')
+    )
+
+    $dates = @(
+        foreach ($row in @($Rows)) {
+            $date = Convert-ToAssessmentLicenseDate -Value (Get-AssessmentRuleValue -Record $row -Names $DateNames)
+            if ($null -ne $date) {
+                $date
+            }
+        }
+    )
+
+    if ($dates.Count -eq 0) {
+        return $null
+    }
+
+    return ($dates | Sort-Object -Descending | Select-Object -First 1)
+}
+
+function Get-AssessmentDateText {
+    [CmdletBinding()]
+    param([AllowNull()]$Date)
+
+    if ($null -eq $Date) {
+        return 'Not surfaced in current source'
+    }
+
+    try {
+        return ([datetime]$Date).ToString('yyyy-MM-dd')
+    }
+    catch {
+        return [string]$Date
+    }
+}
+
+function Get-AssessmentUserLicenseActivityState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]$User,
+        [Parameter(Mandatory = $false)]$EmailActivityLookup = @{},
+        [Parameter(Mandatory = $false)]$TeamsActivityLookup = @{},
+        [Parameter(Mandatory = $false)]$Microsoft365ActivityLookup = @{}
+    )
+
+    if (-not ($EmailActivityLookup -is [System.Collections.IDictionary])) {
+        $EmailActivityLookup = @{}
+    }
+    if (-not ($TeamsActivityLookup -is [System.Collections.IDictionary])) {
+        $TeamsActivityLookup = @{}
+    }
+    if (-not ($Microsoft365ActivityLookup -is [System.Collections.IDictionary])) {
+        $Microsoft365ActivityLookup = @{}
+    }
+
+    $principalKeys = @(
+        Get-AssessmentNormalizedPrincipalKey -Value ([string](Get-AssessmentRuleValue -Record $User -Names @('UserPrincipalName')))
+        Get-AssessmentNormalizedPrincipalKey -Value ([string](Get-AssessmentRuleValue -Record $User -Names @('Mail', 'PrimarySmtpAddress')))
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+
+    $emailRows = New-Object System.Collections.Generic.List[object]
+    $teamsRows = New-Object System.Collections.Generic.List[object]
+    $m365Rows = New-Object System.Collections.Generic.List[object]
+    foreach ($principalKey in @($principalKeys)) {
+        if ($EmailActivityLookup.ContainsKey($principalKey)) {
+            foreach ($row in @($EmailActivityLookup[$principalKey])) { $emailRows.Add($row) | Out-Null }
+        }
+        if ($TeamsActivityLookup.ContainsKey($principalKey)) {
+            foreach ($row in @($TeamsActivityLookup[$principalKey])) { $teamsRows.Add($row) | Out-Null }
+        }
+        if ($Microsoft365ActivityLookup.ContainsKey($principalKey)) {
+            foreach ($row in @($Microsoft365ActivityLookup[$principalKey])) { $m365Rows.Add($row) | Out-Null }
+        }
+    }
+
+    $lastSignInDate = Get-AssessmentLatestDateFromRows -Rows @($User) -DateNames @(
+        'LastSuccessfulSignInDateTime',
+        'LastSignInDateTime',
+        'LastNonInteractiveSignInDateTime',
+        'SignInActivityLastSignInDateTime',
+        'SignInActivityLastSuccessfulSignInDateTime'
+    )
+    $lastExchangeActivityDate = Get-AssessmentLatestDateFromRows -Rows @(@($emailRows.ToArray()) + @($User)) -DateNames @('LastExchangeActivityDate', 'ExchangeLastActivityDate', 'LastActivityDate', 'LastActivityDateTime')
+    $lastTeamsActivityDate = Get-AssessmentLatestDateFromRows -Rows @(@($teamsRows.ToArray()) + @($User)) -DateNames @('LastTeamsActivityDate', 'TeamsLastActivityDate', 'LastActivityDate', 'LastActivityDateTime')
+    $lastMicrosoft365ActivityDate = Get-AssessmentLatestDateFromRows -Rows @(@($m365Rows.ToArray()) + @($User)) -DateNames @(
+        'LastMicrosoft365ActivityDate',
+        'Microsoft365LastActivityDate',
+        'LastActivityDate',
+        'LastActivityDateTime'
+    )
+    $availableDates = @(
+        $lastSignInDate
+        $lastExchangeActivityDate
+        $lastTeamsActivityDate
+        $lastMicrosoft365ActivityDate
+    ) | Where-Object { $null -ne $_ }
+    $lastActivityDate = if ($availableDates.Count -gt 0) {
+        $availableDates | Sort-Object -Descending | Select-Object -First 1
+    }
+    else {
+        $null
+    }
+
+    return [pscustomobject]@{
+        LastSignInDateTime          = $lastSignInDate
+        LastExchangeActivityDate    = $lastExchangeActivityDate
+        LastTeamsActivityDate       = $lastTeamsActivityDate
+        LastMicrosoft365ActivityDate = $lastMicrosoft365ActivityDate
+        LastActivityDate            = $lastActivityDate
+        AvailableSignalCount        = $availableDates.Count
+    }
+}
+
 function New-AssessmentTeamsGroupsCleanupCandidateRows {
     [CmdletBinding()]
     param(
@@ -3803,7 +4060,6 @@ function New-AssessmentTeamsGroupsCleanupCandidateRows {
 
         return @(Convert-AssessmentHtmlArray -InputObject $membersValue).Count
     }
-
     foreach ($team in @($Teams)) {
         $name = [string](Get-AssessmentRuleValue -Record $team -Names @('DisplayName', 'Name'))
         $ownerCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $team -Names @('OwnerCount', 'Owners'))
@@ -3830,7 +4086,7 @@ function New-AssessmentTeamsGroupsCleanupCandidateRows {
         $name = [string](Get-AssessmentRuleValue -Record $group -Names @('DisplayName', 'Name'))
         $ownerCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $group -Names @('OwnerCount', 'Owners'))
         $memberCount = Resolve-AssessmentMemberCount -Record $group
-        $isManagingLicenses = Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $group -Names @('IsManagingLicenses'))
+        $isManagingLicenses = Test-AssessmentGroupManagesLicenses -Record $group
         $riskSignals = @()
         if ($null -ne $ownerCount -and $ownerCount -le 0) { $riskSignals += 'Ownerless group' }
         if ($null -ne $memberCount -and $memberCount -le 0) { $riskSignals += 'No members' }
@@ -3845,26 +4101,50 @@ function New-AssessmentTeamsGroupsCleanupCandidateRows {
 
 function New-AssessmentGroupLicensingSummaryRows {
     [CmdletBinding()]
-    param([Parameter(Mandatory = $false)][object[]]$Groups = @())
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Groups = @(),
+        [Parameter(Mandatory = $false)][object[]]$Users = @(),
+        [Parameter(Mandatory = $false)][object[]]$Licenses = @()
+    )
 
+    $assignedUserCountLookup = Get-AssessmentGroupLicenseAssignedUserCountLookup -Users $Users -Licenses $Licenses
     $rows = New-Object System.Collections.Generic.List[object]
     foreach ($group in @($Groups)) {
-        $isManagingLicenses = Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $group -Names @('IsManagingLicenses'))
+        $isManagingLicenses = Test-AssessmentGroupManagesLicenses -Record $group
         $assignedLicenseCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $group -Names @('AssignedLicenseCount'))
-        if ($isManagingLicenses -ne $true -and (($null -eq $assignedLicenseCount) -or $assignedLicenseCount -le 0)) {
+        if ($isManagingLicenses -ne $true) {
             continue
         }
 
         $ownerCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $group -Names @('OwnerCount'))
+        $groupId = [string](Get-AssessmentRuleValue -Record $group -Names @('Id', 'ID'))
+        $memberCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $group -Names @('MemberCount'))
+        $memberCountSource = [string](Get-AssessmentRuleValue -Record $group -Names @('MemberCountSource'))
+        $licensedUserCount = $null
+        if ($assignedUserCountLookup.HasAssignmentStateData -eq $true) {
+            $licensedUserCount = if (-not [string]::IsNullOrWhiteSpace($groupId) -and $assignedUserCountLookup.Counts.ContainsKey($groupId)) {
+                [int]$assignedUserCountLookup.Counts[$groupId]
+            }
+            else {
+                0
+            }
+        }
+        $effectiveMemberCount = if ($null -ne $licensedUserCount) { $licensedUserCount } else { $memberCount }
+        $membershipCountSource = if ($null -ne $licensedUserCount) { 'User licenseAssignmentStates assignedByGroup' } else { 'Group member count' }
         $rows.Add([pscustomobject]@{
             GroupName                    = [string](Get-AssessmentRuleValue -Record $group -Names @('DisplayName', 'Name'))
-            GroupId                      = [string](Get-AssessmentRuleValue -Record $group -Names @('Id', 'ID'))
+            GroupId                      = $groupId
             OwnerCount                   = $ownerCount
-            MemberCount                  = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $group -Names @('MemberCount'))
+            MemberCount                  = $memberCount
+            MemberCountSource            = $memberCountSource
+            LicensedUserCount            = $licensedUserCount
+            EffectiveMemberCount         = $effectiveMemberCount
+            MembershipCountSource        = $membershipCountSource
             AssignedLicenseCount         = if ($null -ne $assignedLicenseCount) { [int]$assignedLicenseCount } else { $null }
             AssignedLicenseSkuIds        = [string](Get-AssessmentRuleValue -Record $group -Names @('AssignedLicenseSkuIds'))
             AssignedLicenseSkuPartNumbers = [string](Get-AssessmentRuleValue -Record $group -Names @('AssignedLicenseSkuPartNumbers'))
             AssignedLicenseFriendlyNames = [string](Get-AssessmentRuleValue -Record $group -Names @('AssignedLicenseFriendlyNames'))
+            LicenseProcessingState       = [string](Get-AssessmentRuleValue -Record $group -Names @('LicenseProcessingState', 'licenseProcessingState'))
             RiskSignal                   = if ($null -ne $ownerCount -and $ownerCount -le 0) { 'License-managing group without owner' } else { 'Group-based licensing in use' }
             Recommendation               = 'Document license group ownership, assignment intent, and error-review cadence before relying on the group as a lifecycle control.'
             SourceWorksheet              = 'EntraIDGroups'
@@ -3879,13 +4159,21 @@ function New-AssessmentLicenseOptimizationCandidateRows {
     param(
         [Parameter(Mandatory = $false)][object[]]$Users = @(),
         [Parameter(Mandatory = $false)][object[]]$Groups = @(),
-        [Parameter(Mandatory = $false)][object[]]$Licenses = @()
+        [Parameter(Mandatory = $false)][object[]]$Licenses = @(),
+        [Parameter(Mandatory = $false)][object[]]$EmailActivityRows = @(),
+        [Parameter(Mandatory = $false)][object[]]$TeamsActivityRows = @(),
+        [Parameter(Mandatory = $false)][object[]]$Microsoft365ActivityRows = @(),
+        [Parameter(Mandatory = $false)][int]$InactiveDaysThreshold = 90
     )
 
     $skuLookup = Get-AssessmentLicenseSkuLookup -Licenses $Licenses
+    $emailActivityLookup = New-AssessmentActivityLookup -Rows $EmailActivityRows -PrincipalNames @('UserPrincipalName', 'UPN', 'Mail', 'PrimarySmtpAddress')
+    $teamsActivityLookup = New-AssessmentActivityLookup -Rows $TeamsActivityRows -PrincipalNames @('UserPrincipalName', 'UPN', 'Mail', 'PrimarySmtpAddress')
+    $microsoft365ActivityLookup = New-AssessmentActivityLookup -Rows $Microsoft365ActivityRows -PrincipalNames @('UserPrincipalName', 'UPN', 'Mail', 'PrimarySmtpAddress')
+    $inactiveCutoff = (Get-Date).AddDays(-1 * [Math]::Abs($InactiveDaysThreshold))
     $rows = New-Object System.Collections.Generic.List[object]
     foreach ($group in @($Groups)) {
-        $isManagingLicenses = Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $group -Names @('IsManagingLicenses'))
+        $isManagingLicenses = Test-AssessmentGroupManagesLicenses -Record $group
         if ($isManagingLicenses -eq $true) {
             $ownerCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $group -Names @('OwnerCount'))
             if ($null -eq $ownerCount -or $ownerCount -le 0) {
@@ -3896,6 +4184,7 @@ function New-AssessmentLicenseOptimizationCandidateRows {
                     SkuFamily         = 'Group-based licensing'
                     SkuNames          = [string](Get-AssessmentRuleValue -Record $group -Names @('AssignedLicenseFriendlyNames', 'AssignedLicenseSkuPartNumbers'))
                     AssignmentSource  = 'Group'
+                    LicenseProcessingState = [string](Get-AssessmentRuleValue -Record $group -Names @('LicenseProcessingState', 'licenseProcessingState'))
                     Issue             = 'License-managing group without owner'
                     RecommendedAction = 'Assign accountable owners to licensing groups and document change-control expectations.'
                     SourceWorksheet   = 'EntraIDGroups'
@@ -3933,21 +4222,25 @@ function New-AssessmentLicenseOptimizationCandidateRows {
             $hasAssignmentError = (
                 (-not [string]::IsNullOrWhiteSpace($assignmentError) -and $assignmentError -notmatch '^(?i)none|noerror|success$') -or
                 (-not [string]::IsNullOrWhiteSpace($assignmentState) -and $assignmentState -match '(?i)error|failed|failure')
-            )
-            if ($hasAssignmentError) {
-                $errorDetail = if (-not [string]::IsNullOrWhiteSpace($assignmentError) -and $assignmentError -notmatch '^(?i)none|noerror|success$') { $assignmentError } else { $assignmentState }
-                $rows.Add([pscustomobject]@{
-                    ObjectType        = 'User'
-                    DisplayName       = $displayName
-                    UserPrincipalName = $upn
-                    SkuFamily         = 'Assignment error'
-                    SkuNames          = $assignmentRow.SkuName
-                    AssignmentSource  = $assignmentRow.AssignmentSource
-                    Issue             = "License assignment error: $errorDetail"
-                    RecommendedAction = 'Review Graph license assignment errors and resolve failed group-based or direct license assignments.'
-                    SourceWorksheet   = 'Users'
-                }) | Out-Null
-            }
+                )
+                if ($hasAssignmentError) {
+                    $errorDetail = if (-not [string]::IsNullOrWhiteSpace($assignmentError) -and $assignmentError -notmatch '^(?i)none|noerror|success$') { $assignmentError } else { $assignmentState }
+                    $rows.Add([pscustomobject]@{
+                        ObjectType        = 'User'
+                        DisplayName       = $displayName
+                        UserPrincipalName = $upn
+                        SkuFamily         = 'Assignment error'
+                        SkuNames          = $assignmentRow.SkuName
+                        AssignmentSource  = $assignmentRow.AssignmentSource
+                        AssignmentState   = $assignmentState
+                        ErrorCode         = $errorDetail
+                        AssignedByGroup   = $assignmentRow.AssignedByGroup
+                        LastUpdatedDateTime = $assignmentRow.LastUpdatedDateTime
+                        Issue             = "License assignment error: $errorDetail"
+                        RecommendedAction = 'Review Microsoft Graph license assignment errors, resolve the assignment conflict or capacity/usage-location issue, and reprocess group-based license assignment where appropriate.'
+                        SourceWorksheet   = 'Users'
+                    }) | Out-Null
+                }
         }
 
         $assignedLicenseNames = @($assignmentRows | ForEach-Object { [string]$_.SkuName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -3975,6 +4268,61 @@ function New-AssessmentLicenseOptimizationCandidateRows {
                 RecommendedAction = 'Review stacked Microsoft 365 / Office 365 suite assignments and retain the license set that matches the user role and required services.'
                 SourceWorksheet   = 'Users'
             }) | Out-Null
+        }
+
+        if ($assignedLicenseNames.Count -gt 0) {
+            $enabled = Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $user -Names @('AccountEnabled', 'Enabled'))
+            try {
+                $activityState = Get-AssessmentUserLicenseActivityState `
+                    -User $user `
+                    -EmailActivityLookup $emailActivityLookup `
+                    -TeamsActivityLookup $teamsActivityLookup `
+                    -Microsoft365ActivityLookup $microsoft365ActivityLookup
+            }
+            catch {
+                $activityState = [pscustomobject]@{
+                    LastSignInDateTime           = $null
+                    LastExchangeActivityDate     = $null
+                    LastTeamsActivityDate        = $null
+                    LastMicrosoft365ActivityDate = $null
+                    LastActivityDate             = $null
+                    AvailableSignalCount         = 0
+                }
+            }
+            $isDisabledLicensedUser = ($enabled -eq $false)
+            $isInactiveLicensedUser = (
+                -not $isDisabledLicensedUser -and
+                $activityState.AvailableSignalCount -gt 0 -and
+                $activityState.LastActivityDate -and
+                $activityState.LastActivityDate -lt $inactiveCutoff
+            )
+
+            if ($isDisabledLicensedUser -or $isInactiveLicensedUser) {
+                $basis = if ($isDisabledLicensedUser) {
+                    'Account disabled'
+                }
+                else {
+                    "No recent activity in surfaced sign-in or workload signals for $InactiveDaysThreshold+ days"
+                }
+                $rows.Add([pscustomobject]@{
+                    ObjectType                   = 'User'
+                    DisplayName                  = $displayName
+                    UserPrincipalName            = $upn
+                    Enabled                      = $enabled
+                    SkuFamily                    = 'Inactive licensed user'
+                    SkuNames                     = (($assignedLicenseNames | Select-Object -Unique) -join '; ')
+                    AssignmentSource             = if (@($assignmentRows | Where-Object { [string]$_.AssignmentSource -eq 'Group' }).Count -gt 0) { 'Direct/Group review' } else { 'Direct/Unknown' }
+                    Issue                        = if ($isDisabledLicensedUser) { 'Disabled user with assigned licenses' } else { 'Inactive licensed user with assigned licenses' }
+                    LastSignInDateTime           = Get-AssessmentDateText -Date $activityState.LastSignInDateTime
+                    LastExchangeActivityDate     = Get-AssessmentDateText -Date $activityState.LastExchangeActivityDate
+                    LastTeamsActivityDate        = Get-AssessmentDateText -Date $activityState.LastTeamsActivityDate
+                    LastMicrosoft365ActivityDate = Get-AssessmentDateText -Date $activityState.LastMicrosoft365ActivityDate
+                    LastActivityDate             = Get-AssessmentDateText -Date $activityState.LastActivityDate
+                    InactivityBasis              = $basis
+                    RecommendedAction            = 'Validate whether the user still requires paid Microsoft 365 licensing; reclaim or right-size licenses after confirming mailbox, OneDrive, Teams, and compliance hold requirements.'
+                    SourceWorksheet              = 'Users'
+                }) | Out-Null
+            }
         }
     }
 
@@ -4182,10 +4530,16 @@ function Update-AssessmentReportTables {
             New-AssessmentTeamsGroupsCleanupCandidateRows -Teams $context.Teams -Groups $context.Groups
         )
         $TenantStatsHash['GroupLicensingSummary'] = @(
-            New-AssessmentGroupLicensingSummaryRows -Groups $context.Groups
+            New-AssessmentGroupLicensingSummaryRows -Groups $context.Groups -Users $context.Users -Licenses $context.Licenses
         )
         $TenantStatsHash['LicenseOptimizationCandidates'] = @(
-            New-AssessmentLicenseOptimizationCandidateRows -Users $context.Users -Groups $context.Groups -Licenses $context.Licenses
+            New-AssessmentLicenseOptimizationCandidateRows `
+                -Users $context.Users `
+                -Groups $context.Groups `
+                -Licenses $context.Licenses `
+                -EmailActivityRows @(@($context.EmailActivityTopSenders) + @($context.EmailActivityTopReceivers)) `
+                -TeamsActivityRows $context.TeamsActivityTopUsers `
+                -InactiveDaysThreshold 90
         )
     }
 

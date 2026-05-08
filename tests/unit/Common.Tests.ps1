@@ -745,6 +745,40 @@ Describe 'Arraya.M365.Common' {
                     ConsumedUnits = 42
                 }
             )
+            GroupLicensingSummary = @(
+                [pscustomobject]@{
+                    GroupName                    = 'Empty Assigned License Signal Group'
+                    IsManagingLicenses           = $true
+                    AssignedLicenseCount         = 0
+                    AssignedLicenseFriendlyNames = ''
+                },
+                [pscustomobject]@{
+                    GroupName                    = 'M365 E3 License Group'
+                    IsManagingLicenses           = $true
+                    AssignedLicenseCount         = 1
+                    AssignedLicenseFriendlyNames = 'Microsoft 365 E3'
+                }
+            )
+            LicenseOptimizationCandidates = @(
+                [pscustomobject]@{
+                    ObjectType  = 'Group'
+                    DisplayName = 'Empty Assigned License Signal Group'
+                    Issue       = 'Licensing group has no owner'
+                    SkuNames    = ''
+                },
+                [pscustomobject]@{
+                    ObjectType  = 'Group'
+                    DisplayName = 'M365 E3 License Group'
+                    Issue       = 'Licensing group has no owner'
+                    SkuNames    = ''
+                },
+                [pscustomobject]@{
+                    ObjectType  = 'User'
+                    DisplayName = 'Licensed User'
+                    Issue       = 'Same SKU assigned directly and by group'
+                    SkuNames    = 'Microsoft 365 E3'
+                }
+            )
             AdConnectConfiguration = @(
                 [pscustomobject]@{
                     DirectorySyncEnabled = $true
@@ -881,9 +915,13 @@ Describe 'Arraya.M365.Common' {
         ($worksheetNames -contains 'ExternalSharingSiteOverrides') | Should -BeTrue
         ($worksheetNames -contains 'ExternalExposureFindings') | Should -BeTrue
         ($worksheetNames -contains 'LicenseSKUs') | Should -BeTrue
+        ($worksheetNames -contains 'GroupLicensingSummary') | Should -BeTrue
+        ($worksheetNames -contains 'LicenseOptimizationCandidates') | Should -BeTrue
         ($worksheetNames -contains 'HybridConfiguration') | Should -BeTrue
         $worksheetNames.IndexOf('TenantInfo') | Should -BeLessThan $worksheetNames.IndexOf('GuestSignInSummary')
         $worksheetNames.IndexOf('TenantInfo') | Should -BeLessThan $worksheetNames.IndexOf('LicenseSKUs')
+        $worksheetNames.IndexOf('LicenseSKUs') | Should -BeLessThan $worksheetNames.IndexOf('GroupLicensingSummary')
+        $worksheetNames.IndexOf('GroupLicensingSummary') | Should -BeLessThan $worksheetNames.IndexOf('LicenseOptimizationCandidates')
         $worksheetNames.IndexOf('LicenseSKUs') | Should -BeLessThan $worksheetNames.IndexOf('GuestSignInSummary')
         $worksheetNames.IndexOf('GuestSignInSummary') | Should -BeLessThan $worksheetNames.IndexOf('GuestAccessConfiguration')
         $worksheetNames.IndexOf('AuthenticationConfig') | Should -BeLessThan $worksheetNames.IndexOf('MfaEnrollmentSummary')
@@ -902,6 +940,15 @@ Describe 'Arraya.M365.Common' {
         $worksheetNames.IndexOf('SharePointSharingSummary') | Should -BeLessThan $worksheetNames.IndexOf('ExternalSharingSummary')
         $worksheetNames.IndexOf('ExternalSharingSummary') | Should -BeLessThan $worksheetNames.IndexOf('ExternalSharingSiteOverrides')
         $worksheetNames.IndexOf('ExternalSharingSiteOverrides') | Should -BeLessThan $worksheetNames.IndexOf('ExternalExposureFindings')
+
+        $groupLicensingRows = @(Import-Excel -Path $exportPath -WorksheetName 'GroupLicensingSummary')
+        $groupLicensingRows.Count | Should -Be 1
+        $groupLicensingRows[0].GroupName | Should -Be 'M365 E3 License Group'
+
+        $licenseOptimizationRows = @(Import-Excel -Path $exportPath -WorksheetName 'LicenseOptimizationCandidates')
+        $licenseOptimizationRows.Count | Should -Be 2
+        @($licenseOptimizationRows | Where-Object { $_.DisplayName -eq 'Empty Assigned License Signal Group' }).Count | Should -Be 0
+        @($licenseOptimizationRows | Where-Object { $_.ObjectType -eq 'User' }).Count | Should -Be 1
     }
 
     It 'uses a single workbook package session for faster Excel export' {
@@ -909,6 +956,7 @@ Describe 'Arraya.M365.Common' {
         $script:exportExcelSource | Should -Match 'Export-Excel -ExcelPackage \$excelPackage'
         $script:exportExcelSource | Should -Match 'Close-ExcelPackage -ExcelPackage \$excelPackage'
         $script:exportExcelSource | Should -Match '\$autoSizeRowLimit = 1000'
+        $script:exportExcelSource | Should -Match "\$singleRecordWorksheets = @\('TenantInfo'\)"
         $script:exportExcelSource | Should -Match '\$autoSizeSheet = \(\$sourceCount -le \$autoSizeRowLimit -and \$WorkbookExportPolicy -ne ''TenantToTenantCutover''\)'
         $script:exportExcelSource | Should -Match 'Set-TenantToTenantWorksheetColumnWidths -ExcelPackage \$excelPackage -WorksheetName \$worksheetName -Columns \$explicitColumns'
         $script:exportExcelSource | Should -Match "'PrivilegedAccessRemediationSummary' = 'PrivilegedAccessRemediation'"

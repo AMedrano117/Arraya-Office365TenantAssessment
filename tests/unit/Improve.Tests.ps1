@@ -236,6 +236,31 @@ Describe 'Improve workflow' {
                             )
                         },
                         [pscustomobject]@{
+                            DisplayName       = 'Corey Bell'
+                            UserPrincipalName = 'corey.bell@contoso.com'
+                            UserType          = 'Member'
+                            AccountEnabled    = $true
+                            LastSignInDateTime = (Get-Date).AddDays(-7).ToString('o')
+                            AssignedLicensesFriendly = @('Office 365 E3', 'Microsoft 365 E5')
+                            LicenseAssignmentStates = @(
+                                [pscustomobject]@{
+                                    SkuId            = '11111111-1111-1111-1111-111111111114'
+                                    SkuName          = 'Office 365 E3'
+                                    AssignmentSource = 'Direct'
+                                    State            = 'Active'
+                                    Error            = 'None'
+                                },
+                                [pscustomobject]@{
+                                    SkuId            = '11111111-1111-1111-1111-111111111115'
+                                    SkuName          = 'Microsoft 365 E5'
+                                    AssignedByGroup  = 'group-licensing-e5'
+                                    AssignmentSource = 'Group'
+                                    State            = 'Active'
+                                    Error            = 'None'
+                                }
+                            )
+                        },
+                        [pscustomobject]@{
                             DisplayName       = 'License Error User'
                             UserPrincipalName = 'license.error@contoso.com'
                             UserType          = 'Member'
@@ -249,6 +274,58 @@ Describe 'Improve workflow' {
                                     AssignmentSource = 'Group'
                                     State            = 'Error'
                                     Error            = 'MutuallyExclusiveViolation'
+                                    LastUpdatedDateTime = '2026-04-20T12:00:00Z'
+                                }
+                            )
+                        },
+                        [pscustomobject]@{
+                            DisplayName       = 'Disabled Licensed User'
+                            UserPrincipalName = 'disabled.licensed@contoso.com'
+                            UserType          = 'Member'
+                            AccountEnabled    = $false
+                            AssignedLicensesFriendly = @('Microsoft 365 E5')
+                            LicenseAssignmentStates = @(
+                                [pscustomobject]@{
+                                    SkuId            = '11111111-1111-1111-1111-111111111115'
+                                    SkuName          = 'Microsoft 365 E5'
+                                    AssignmentSource = 'Direct'
+                                    State            = 'Active'
+                                    Error            = 'None'
+                                }
+                            )
+                        },
+                        [pscustomobject]@{
+                            DisplayName       = 'Stale Licensed User'
+                            UserPrincipalName = 'stale.licensed@contoso.com'
+                            UserType          = 'Member'
+                            AccountEnabled    = $true
+                            LastSignInDateTime = (Get-Date).AddDays(-140).ToString('o')
+                            AssignedLicensesFriendly = @('Microsoft 365 E5')
+                            LicenseAssignmentStates = @(
+                                [pscustomobject]@{
+                                    SkuId            = '11111111-1111-1111-1111-111111111115'
+                                    SkuName          = 'Microsoft 365 E5'
+                                    AssignmentSource = 'Direct'
+                                    State            = 'Active'
+                                    Error            = 'None'
+                                }
+                            )
+                        },
+                        [pscustomobject]@{
+                            DisplayName       = 'Recent Teams Licensed User'
+                            UserPrincipalName = 'recent.teams.licensed@contoso.com'
+                            UserType          = 'Member'
+                            AccountEnabled    = $true
+                            LastSignInDateTime = (Get-Date).AddDays(-140).ToString('o')
+                            LastTeamsActivityDate = (Get-Date).AddDays(-3).ToString('o')
+                            AssignedLicensesFriendly = @('Microsoft 365 E5')
+                            LicenseAssignmentStates = @(
+                                [pscustomobject]@{
+                                    SkuId            = '11111111-1111-1111-1111-111111111115'
+                                    SkuName          = 'Microsoft 365 E5'
+                                    AssignmentSource = 'Direct'
+                                    State            = 'Active'
+                                    Error            = 'None'
                                 }
                             )
                         }
@@ -273,11 +350,11 @@ Describe 'Improve workflow' {
                             ActiveUnits   = 100
                         },
                         [pscustomobject]@{
-                            SkuId         = '11111111-1111-1111-1111-111111111115'
-                            SkuPartNumber = 'SPE_E5'
-                            FriendlyName  = 'Microsoft 365 E5'
-                            ConsumedUnits = 2
-                            ActiveUnits   = 100
+                            SkuId           = '11111111-1111-1111-1111-111111111115'
+                            SkuPartNumber   = 'SPE_E5'
+                            SkuFriendlyName = 'Microsoft 365 E5'
+                            ConsumedUnits   = 2
+                            ActiveUnits     = 100
                         }
                     )
                     DeviceDetails = @(
@@ -716,6 +793,17 @@ Describe 'Improve workflow' {
                             Members     = @()
                         },
                         [pscustomobject]@{
+                            Id                           = 'not-license-group-001'
+                            DisplayName                  = 'Empty Assigned License Signal Group'
+                            OwnerCount                   = 0
+                            MemberCount                  = 4
+                            IsManagingLicenses           = $true
+                            AssignedLicenseCount         = 0
+                            AssignedLicenseSkuIds        = ''
+                            AssignedLicenseSkuPartNumbers = ''
+                            AssignedLicenseFriendlyNames = ''
+                        },
+                        [pscustomobject]@{
                             Id                           = 'group-licensing-001'
                             DisplayName                  = 'M365 E3 License Group'
                             OwnerCount                   = 0
@@ -725,6 +813,27 @@ Describe 'Improve workflow' {
                             AssignedLicenseSkuIds        = '11111111-1111-1111-1111-111111111113'
                             AssignedLicenseSkuPartNumbers = 'ENTERPRISEPACK'
                             AssignedLicenseFriendlyNames = 'Microsoft 365 E3'
+                            LicenseProcessingState       = 'ProcessingComplete'
+                        },
+                        [pscustomobject]@{
+                            Id                           = 'group-licensing-e5'
+                            DisplayName                  = 'E5 Users (Automated)'
+                            OwnerCount                   = 1
+                            MemberCount                  = 0
+                            IsManagingLicenses           = $true
+                            AssignedLicenseCount         = 1
+                            AssignedLicenseSkuIds        = '11111111-1111-1111-1111-111111111115'
+                            AssignedLicenseSkuPartNumbers = 'SPE_E5'
+                            AssignedLicenseFriendlyNames = 'Microsoft 365 E5'
+                            LicenseProcessingState       = 'ProcessingComplete'
+                        }
+                    )
+                    TeamsActivityTopUsers = @(
+                        [pscustomobject]@{
+                            DisplayName       = 'Recent Teams Licensed User'
+                            UserPrincipalName = 'recent.teams.licensed@contoso.com'
+                            ActivityScore     = 5
+                            LastActivityDate  = (Get-Date).AddDays(-3).ToString('yyyy-MM-dd')
                         }
                     )
                     SharePoint = @(
@@ -980,7 +1089,27 @@ Describe 'Improve workflow' {
         @($payload.TeamsGroupsCleanupCandidates).Count | Should -BeGreaterThan 0
         @($payload.TeamsGroupsCleanupCandidates | Where-Object { [string]$_.RiskSignal -match 'No members' }).Count | Should -BeGreaterThan 0
         @($payload.GroupLicensingSummary).Count | Should -BeGreaterThan 0
+        $e5GroupLicensingRow = @($payload.GroupLicensingSummary | Where-Object { $_.GroupName -eq 'E5 Users (Automated)' }) | Select-Object -First 1
+        $e5GroupLicensingRow | Should -Not -BeNullOrEmpty
+        $e5GroupLicensingRow.AssignedLicenseSkuPartNumbers | Should -Be 'SPE_E5'
+        $e5GroupLicensingRow.AssignedLicenseFriendlyNames | Should -Be 'Microsoft 365 E5'
+        $e5GroupLicensingRow.LicenseProcessingState | Should -Be 'ProcessingComplete'
+        $e5GroupLicensingRow.MemberCount | Should -Be 0
+        $e5GroupLicensingRow.LicensedUserCount | Should -Be 1
+        $e5GroupLicensingRow.EffectiveMemberCount | Should -Be 1
+        $e5GroupLicensingRow.MembershipCountSource | Should -Be 'User licenseAssignmentStates assignedByGroup'
+        @($payload.GroupLicensingSummary | Where-Object { $_.GroupName -eq 'Empty Assigned License Signal Group' }).Count | Should -Be 0
+        @($payload.LicenseOptimizationCandidates | Where-Object { $_.DisplayName -eq 'Empty Assigned License Signal Group' }).Count | Should -Be 0
         @($payload.LicenseOptimizationCandidates | Where-Object { $_.Issue -eq 'Same SKU assigned directly and by group' }).Count | Should -BeGreaterThan 0
+        @($payload.LicenseOptimizationCandidates | Where-Object { $_.DisplayName -eq 'Corey Bell' -and $_.Issue -eq 'Likely duplicate suite assignment' -and $_.SkuNames -match 'Office 365 E3' -and $_.SkuNames -match 'Microsoft 365 E5' }).Count | Should -BeGreaterThan 0
+        @($payload.LicenseOptimizationCandidates | Where-Object { $_.DisplayName -eq 'Disabled Licensed User' -and $_.Issue -eq 'Disabled user with assigned licenses' }).Count | Should -BeGreaterThan 0
+        @($payload.LicenseOptimizationCandidates | Where-Object { $_.DisplayName -eq 'Stale Licensed User' -and $_.Issue -eq 'Inactive licensed user with assigned licenses' -and $_.InactivityBasis -match '90\+ days' }).Count | Should -BeGreaterThan 0
+        @($payload.LicenseOptimizationCandidates | Where-Object { $_.DisplayName -eq 'Recent Teams Licensed User' -and $_.Issue -match 'Inactive licensed user|Disabled user' }).Count | Should -Be 0
+        $licenseErrorCandidate = @($payload.LicenseOptimizationCandidates | Where-Object { $_.Issue -eq 'License assignment error: MutuallyExclusiveViolation' }) | Select-Object -First 1
+        $licenseErrorCandidate | Should -Not -BeNullOrEmpty
+        $licenseErrorCandidate.ErrorCode | Should -Be 'MutuallyExclusiveViolation'
+        $licenseErrorCandidate.AssignmentState | Should -Be 'Error'
+        ([datetime]$licenseErrorCandidate.LastUpdatedDateTime).ToString('yyyy-MM-dd') | Should -Be '2026-04-20'
         @($payload.WorkstreamSummaries).Count | Should -BeGreaterThan 0
         @($payload.ExternalExposureFindings).Count | Should -Be 2
         $payload.ConsultativeSummaries.PSObject.Properties.Name | Should -Contain 'ExecutiveDecisionSummary'
@@ -1108,6 +1237,25 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'SSO-Enabled Applications'
         $customerReportDocument | Should -Match 'Inactive or High-Privilege Applications'
         $customerReportDocument | Should -Match 'Credential Cleanup Opportunities'
+        $customerReportDocument | Should -Match '5\.5 Microsoft 365 Licensing Governance'
+        $customerReportDocument | Should -Match 'Licensing Governance Snapshot'
+        $customerReportDocument | Should -Match 'License SKU Utilization'
+        $customerReportDocument | Should -Match 'SKU Part Number'
+        $customerReportDocument | Should -Match '99%'
+        $customerReportDocument | Should -Match 'Group-Based Licensing Groups'
+        $customerReportDocument | Should -Match 'licenseAssignmentStates'
+        $customerReportDocument | Should -Match 'E5 Users \(Automated\)'
+        $customerReportDocument | Should -Match 'Microsoft 365 E5'
+        $customerReportDocument | Should -Match 'ProcessingComplete'
+        $customerReportDocument | Should -Match 'License Optimization Candidates to Review'
+        $customerReportDocument | Should -Match 'Corey Bell'
+        $customerReportDocument | Should -Match 'Inactive Licensed Users to Review'
+        $customerReportDocument | Should -Match 'Disabled Licensed User'
+        $customerReportDocument | Should -Match 'Stale Licensed User'
+        $customerReportDocument | Should -Match 'User license optimization candidates'
+        $customerReportDocument | Should -Match 'Group license optimization candidates'
+        $customerReportDocument | Should -Match 'License Assignment Errors to Resolve'
+        $customerReportDocument | Should -Match 'MutuallyExclusiveViolation'
         $customerReportDocument | Should -Match '6\.0 Authentication Methods, MFA Enrollment, and MFA Enforcement'
         $customerReportDocument | Should -Match 'MFA Enrollment'
         $customerReportDocument | Should -Match 'MFA Enrollment Status'
@@ -1284,6 +1432,23 @@ Describe 'Improve workflow' {
         $customerReportMarkdown | Should -Match '- High Priv App - SAML;'
         $customerReportMarkdown | Should -Match '1 expired client secret'
         $customerReportMarkdown | Should -Match 'Latest activity 2026-04-12'
+        $customerReportMarkdown | Should -Match '### 5\.5 Microsoft 365 Licensing Governance'
+        $customerReportMarkdown | Should -Match '#### Licensing Governance Snapshot'
+        $customerReportMarkdown | Should -Match '#### License SKU Utilization'
+        $customerReportMarkdown | Should -Match 'SKU Part Number'
+        $customerReportMarkdown | Should -Match '99%'
+        $customerReportMarkdown | Should -Match '#### Group-Based Licensing Groups'
+        $customerReportMarkdown | Should -Match 'E5 Users \(Automated\)'
+        $customerReportMarkdown | Should -Match 'Microsoft 365 E5'
+        $customerReportMarkdown | Should -Match 'ProcessingComplete'
+        $customerReportMarkdown | Should -Match '#### License Optimization Candidates to Review'
+        $customerReportMarkdown | Should -Match 'Corey Bell'
+        $customerReportMarkdown | Should -Match '#### Inactive Licensed Users to Review'
+        $customerReportMarkdown | Should -Match 'Disabled Licensed User'
+        $customerReportMarkdown | Should -Match 'Stale Licensed User'
+        $customerReportMarkdown | Should -Match '\| User license optimization candidates \|'
+        $customerReportMarkdown | Should -Match '#### License Assignment Errors to Resolve'
+        $customerReportMarkdown | Should -Match 'MutuallyExclusiveViolation'
         $customerReportMarkdown | Should -Match '## 6\.0 Authentication Methods, MFA Enrollment, and MFA Enforcement'
         $customerReportMarkdown | Should -Match '### MFA Enrollment'
         $customerReportMarkdown | Should -Match '#### MFA Enrollment Status'

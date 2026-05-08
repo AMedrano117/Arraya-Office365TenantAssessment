@@ -24,6 +24,7 @@ function Get-EntraIDGroups {
     $collectGroupOwnerCounts = ($depthPolicy.CollectEntraGroupOwnerCounts -eq $true)
     $groupMemberCountLookup = @{}
     $groupOwnerCountLookup = @{}
+    $licensedGroupLookupById = @{}
     $licenseSkuLookupById = @{}
     $tenantStatsHash['EntraIDGroups'] = @{}
     $groupSelectProperties = @(
@@ -63,7 +64,7 @@ function Get-EntraIDGroups {
             $licenseSkuLookupById[$skuId] = [pscustomobject]@{
                 SkuId         = $skuId
                 SkuPartNumber = [string](Get-ArrayaObjectValue -Object $licenseSkuRow -Names @('SkuPartNumber', 'skuPartNumber'))
-                FriendlyName  = [string](Get-ArrayaObjectValue -Object $licenseSkuRow -Names @('FriendlyName', 'Name', 'SkuPartNumber', 'skuPartNumber'))
+                FriendlyName  = [string](Get-ArrayaObjectValue -Object $licenseSkuRow -Names @('FriendlyName', 'SkuFriendlyName', 'SkuDisplayName', 'ProductName', 'DisplayName', 'Name', 'SkuPartNumber', 'skuPartNumber'))
             }
         }
     }
@@ -158,6 +159,112 @@ function Get-EntraIDGroups {
         return $lookups
     }
 
+    function Convert-EntraGroupLicenseCollection {
+        param([AllowNull()]$Value)
+
+        if ($null -eq $Value) {
+            return @()
+        }
+
+        if (($Value -is [System.Collections.IEnumerable]) -and -not ($Value -is [string]) -and -not ($Value -is [System.Collections.IDictionary])) {
+            return @($Value)
+        }
+
+        return @($Value)
+    }
+
+    function Get-EntraGroupLicenseProcessingStateText {
+        param(
+            [AllowNull()]$Primary,
+            [AllowNull()]$Fallback
+        )
+
+        $licenseProcessingState = Get-ArrayaObjectValue -Object $Primary -Names @('licenseProcessingState', 'LicenseProcessingState')
+        if ($null -eq $licenseProcessingState) {
+            $licenseProcessingState = Get-ArrayaObjectValue -Object $Fallback -Names @('licenseProcessingState', 'LicenseProcessingState')
+        }
+
+        if ($null -eq $licenseProcessingState) {
+            return ''
+        }
+
+        if ($licenseProcessingState -is [string]) {
+            return $licenseProcessingState
+        }
+
+        $stateText = [string](Get-ArrayaObjectValue -Object $licenseProcessingState -Names @('state', 'State'))
+        if (-not [string]::IsNullOrWhiteSpace($stateText)) {
+            return $stateText
+        }
+
+        return [string]$licenseProcessingState
+    }
+
+    function Get-EntraLicensedGroupLookup {
+        [CmdletBinding()]
+        param()
+
+        $lookup = @{}
+        if (-not $collectGroupLicenseChecks) {
+            return $lookup
+        }
+
+        try {
+            $licensedGroupsEndpoint = "https://graph.microsoft.com/v1.0/groups?`$filter=assignedLicenses/any()&`$select=id,displayName,assignedLicenses,licenseProcessingState"
+            Write-Host '    > Entra groups: license assignment prefetch' -ForegroundColor DarkCyan
+            Write-Log -Type INFO -Message '[Get-EntraIDGroups] Prefetching authoritative group-based licensing assignments via Graph assignedLicenses/any().' -ExportFileLocation $exportDetails
+            $licensedGroups = @(Office365Custom\Get-GraphData -PageSize 999 -Uri $licensedGroupsEndpoint -Id $groupDetailProgressId -Activity 'Gathering Group License Assignments' -SuppressProgress)
+            foreach ($licensedGroup in @($licensedGroups)) {
+                if ($null -eq $licensedGroup) {
+                    continue
+                }
+
+                $licensedGroupId = [string](Get-ArrayaObjectValue -Object $licensedGroup -Names @('id', 'Id', 'ID'))
+                if ([string]::IsNullOrWhiteSpace($licensedGroupId)) {
+                    continue
+                }
+
+                $lookup[$licensedGroupId] = $licensedGroup
+            }
+
+            Write-Log -Type INFO -Message "[Get-EntraIDGroups] Group license assignment prefetch complete. LicensedGroups=$($lookup.Count)" -ExportFileLocation $exportDetails
+        }
+        catch {
+            Write-Log -Type WARNING -Message "[Get-EntraIDGroups] Group license assignment prefetch failed: $($_.Exception.Message). Falling back to group inventory assignedLicenses fields." -ExportFileLocation $exportDetails
+        }
+
+        return $lookup
+    }
+
+    function Get-EntraLicenseGroupDirectMemberCount {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)][string]$GroupId,
+            [Parameter(Mandatory = $false)][AllowNull()]$FallbackCount
+        )
+
+        if ([string]::IsNullOrWhiteSpace($GroupId)) {
+            return $FallbackCount
+        }
+
+        try {
+            $memberRows = @(
+                Office365Custom\Get-GraphData `
+                    -PageSize 999 `
+                    -Uri "https://graph.microsoft.com/v1.0/groups/$GroupId/members?`$select=id&`$top=999" `
+                    -Id $groupDetailProgressId `
+                    -Activity 'Counting License Group Members' `
+                    -SuppressProgress
+            )
+
+            return [int]$memberRows.Count
+        }
+        catch {
+            Write-Log -Type WARNING -Message "[Get-EntraIDGroups] Direct member count failed for license-managing group $GroupId`: $($_.Exception.Message). Falling back to generic group count." -ExportFileLocation $exportDetails
+            return $FallbackCount
+        }
+    }
+
     function Get-EntraGroupDetails {
         param(
             [Parameter(Mandatory = $true)]
@@ -183,7 +290,20 @@ function Get-EntraIDGroups {
 
         $classification = Get-ArrayaEntraGroupClassification -GroupDetails $groupDetails
         $isDynamicDistributionGroup = ($groupDetails.groupTypes -contains 'DynamicMembership') -and ($groupDetails.mailEnabled -eq $true) -and ($groupDetails.securityEnabled -eq $false) -and (-not ($groupDetails.groupTypes -contains 'Unified'))
-        $assignedLicenses = @((Get-ArrayaObjectValue -Object $groupDetails -Names @('assignedLicenses')))
+        $licensedGroupRecord = $null
+        if ($collectGroupLicenseChecks -and $licensedGroupLookupById.ContainsKey($groupId)) {
+            $licensedGroupRecord = $licensedGroupLookupById[$groupId]
+        }
+
+        $assignedLicenseValue = Get-ArrayaObjectValue -Object $licensedGroupRecord -Names @('assignedLicenses', 'AssignedLicenses')
+        if ($null -eq $assignedLicenseValue) {
+            $assignedLicenseValue = Get-ArrayaObjectValue -Object $groupDetails -Names @('assignedLicenses', 'AssignedLicenses')
+        }
+        if ($null -eq $assignedLicenseValue) {
+            $assignedLicenseValue = Get-ArrayaObjectValue -Object $Group -Names @('assignedLicenses', 'AssignedLicenses')
+        }
+        $assignedLicenses = Convert-EntraGroupLicenseCollection -Value $assignedLicenseValue
+        $licenseProcessingStateText = Get-EntraGroupLicenseProcessingStateText -Primary $licensedGroupRecord -Fallback $groupDetails
         $assignedLicenseSkuIds = New-Object 'System.Collections.Generic.List[string]'
         $assignedLicenseSkuPartNumbers = New-Object 'System.Collections.Generic.List[string]'
         $assignedLicenseFriendlyNames = New-Object 'System.Collections.Generic.List[string]'
@@ -217,7 +337,7 @@ function Get-EntraIDGroups {
         }
 
         $isManagingLicenses = if ($collectGroupLicenseChecks) {
-            $assignedLicenses.Count -gt 0
+            $assignedLicenseSkuIds.Count -gt 0
         }
         else {
             'NotCollected (minimum mode)'
@@ -235,6 +355,11 @@ function Get-EntraIDGroups {
         else {
             $memberResult = Office365Custom\Get-GraphData -Uri "https://graph.microsoft.com/v1.0/groups/$groupId/members/`$count" -Id $groupDetailProgressId -Activity 'Counting Members'
             if ($memberResult -is [array]) { [int]($memberResult | Select-Object -First 1) } else { [int]$memberResult }
+        }
+        $memberCountSource = 'Generic group member count'
+        if ($isManagingLicenses -eq $true -and $collectGroupMemberCounts -and -not $isDynamicDistributionGroup) {
+            $memberCount = Get-EntraLicenseGroupDirectMemberCount -GroupId $groupId -FallbackCount $memberCount
+            $memberCountSource = 'Direct member enumeration for license-managing group'
         }
 
         $ownerCount = if ($isDynamicDistributionGroup) {
@@ -269,11 +394,13 @@ function Get-EntraIDGroups {
             AssignedLicenseSkuIds      = if ($collectGroupLicenseChecks) { ($assignedLicenseSkuIds.ToArray() -join ',') } else { 'NotCollected (minimum mode)' }
             AssignedLicenseSkuPartNumbers = if ($collectGroupLicenseChecks) { ($assignedLicenseSkuPartNumbers.ToArray() | Select-Object -Unique) -join ',' } else { 'NotCollected (minimum mode)' }
             AssignedLicenseFriendlyNames = if ($collectGroupLicenseChecks) { ($assignedLicenseFriendlyNames.ToArray() | Select-Object -Unique) -join ',' } else { 'NotCollected (minimum mode)' }
+            LicenseProcessingState      = if ($collectGroupLicenseChecks) { $licenseProcessingStateText } else { 'NotCollected (minimum mode)' }
             IsAssignableToRole         = $groupDetails.isAssignableToRole
             Mail                       = $groupDetails.mail
             MailEnabled                = $groupDetails.mailEnabled
             SecurityEnabled            = $groupDetails.securityEnabled
             MemberCount                = $memberCount
+            MemberCountSource          = $memberCountSource
             OwnerCount                 = $ownerCount
         }
     }
@@ -283,6 +410,9 @@ function Get-EntraIDGroups {
         Write-Host '    > Entra groups: inventory retrieval' -ForegroundColor DarkCyan
         Write-Log -Type INFO -Message 'Fetching initial Entra Groups' -ExportFileLocation $exportDetails
         $groups = @(Office365Custom\Get-GraphData -PageSize 999 -Uri $groupsEndpoint -Id $groupFetchProgressId -Activity 'Gathering Group Details')
+        if ($collectGroupLicenseChecks) {
+            $licensedGroupLookupById = Get-EntraLicensedGroupLookup
+        }
         if ($collectDeepGroupDetails -and ($collectGroupMemberCounts -or $collectGroupOwnerCounts) -and $groups.Count -gt 0) {
             $countLookups = Get-EntraGroupCountLookups -Groups $groups
             $groupMemberCountLookup = $countLookups.Members

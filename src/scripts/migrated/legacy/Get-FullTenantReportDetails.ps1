@@ -8437,6 +8437,7 @@ function Get-AllUserDetails {
                     $assignedByGroup = if ($licenseAssignmentState.PSObject.Properties['AssignedByGroup']) { $licenseAssignmentState.AssignedByGroup } elseif ($licenseAssignmentState.PSObject.Properties['assignedByGroup']) { $licenseAssignmentState.assignedByGroup } else { $null }
                     $assignmentState = if ($licenseAssignmentState.PSObject.Properties['State']) { $licenseAssignmentState.State } elseif ($licenseAssignmentState.PSObject.Properties['state']) { $licenseAssignmentState.state } else { $null }
                     $assignmentError = if ($licenseAssignmentState.PSObject.Properties['Error']) { $licenseAssignmentState.Error } elseif ($licenseAssignmentState.PSObject.Properties['error']) { $licenseAssignmentState.error } else { $null }
+                    $assignmentLastUpdated = if ($licenseAssignmentState.PSObject.Properties['LastUpdatedDateTime']) { $licenseAssignmentState.LastUpdatedDateTime } elseif ($licenseAssignmentState.PSObject.Properties['lastUpdatedDateTime']) { $licenseAssignmentState.lastUpdatedDateTime } else { $null }
                     $skuDisplayName = Resolve-UserLicenseSkuDisplay -SkuId $stateSkuId
                     $assignmentSource = if ([string]::IsNullOrWhiteSpace([string]$assignedByGroup) -or [string]$assignedByGroup -eq '00000000-0000-0000-0000-000000000000') { 'Direct' } else { 'Group' }
 
@@ -8449,8 +8450,13 @@ function Get-AllUserDetails {
                         }
                     }
 
-                    if (-not [string]::IsNullOrWhiteSpace([string]$assignmentError) -and [string]$assignmentError -notmatch '^(?i)none|noerror|success$') {
-                        $licenseAssignmentErrorMessages.Add(("{0}: {1}" -f $skuDisplayName, $assignmentError)) | Out-Null
+                    $hasLicenseAssignmentError = (
+                        (-not [string]::IsNullOrWhiteSpace([string]$assignmentError) -and [string]$assignmentError -notmatch '^(?i)none|noerror|success$') -or
+                        (-not [string]::IsNullOrWhiteSpace([string]$assignmentState) -and [string]$assignmentState -match '(?i)error')
+                    )
+                    if ($hasLicenseAssignmentError) {
+                        $errorDisplay = if (-not [string]::IsNullOrWhiteSpace([string]$assignmentError) -and [string]$assignmentError -notmatch '^(?i)none|noerror|success$') { [string]$assignmentError } else { [string]$assignmentState }
+                        $licenseAssignmentErrorMessages.Add(("{0}: {1}" -f $skuDisplayName, $errorDisplay)) | Out-Null
                     }
 
                     $licenseAssignmentStateRows.Add([pscustomobject]@{
@@ -8460,6 +8466,7 @@ function Get-AllUserDetails {
                         AssignmentSource = $assignmentSource
                         State           = if ($null -ne $assignmentState) { [string]$assignmentState } else { $null }
                         Error           = if ($null -ne $assignmentError) { [string]$assignmentError } else { $null }
+                        LastUpdatedDateTime = if ($null -ne $assignmentLastUpdated) { [string]$assignmentLastUpdated } else { $null }
                     }) | Out-Null
                 }
                 $userProperties['LicenseAssignmentStates'] = @($licenseAssignmentStateRows.ToArray())

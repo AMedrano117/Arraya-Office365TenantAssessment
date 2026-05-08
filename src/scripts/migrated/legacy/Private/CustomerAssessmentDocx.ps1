@@ -4042,6 +4042,38 @@ function Optimize-CustomerRoadmapDocxMedia {
     }
 }
 
+function Invoke-CustomerAssessmentFileOperationWithRetry {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Operation,
+        [Parameter(Mandatory = $false)][string]$Activity = 'DOCX file operation',
+        [Parameter(Mandatory = $false)][int]$MaxAttempts = 8,
+        [Parameter(Mandatory = $false)][int]$DelayMilliseconds = 750
+    )
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            return (& $Operation)
+        }
+        catch [System.IO.IOException] {
+            if ($attempt -ge $MaxAttempts) {
+                throw
+            }
+
+            Write-Verbose ("{0} failed on attempt {1}/{2}: {3}" -f $Activity, $attempt, $MaxAttempts, $_.Exception.Message)
+            Start-Sleep -Milliseconds ([Math]::Min(5000, $DelayMilliseconds * $attempt))
+        }
+        catch [System.UnauthorizedAccessException] {
+            if ($attempt -ge $MaxAttempts) {
+                throw
+            }
+
+            Write-Verbose ("{0} failed on attempt {1}/{2}: {3}" -f $Activity, $attempt, $MaxAttempts, $_.Exception.Message)
+            Start-Sleep -Milliseconds ([Math]::Min(5000, $DelayMilliseconds * $attempt))
+        }
+    }
+}
+
 function Write-CustomerAssessmentDocxFromModel {
     [CmdletBinding()]
     param(
@@ -4055,12 +4087,17 @@ function Write-CustomerAssessmentDocxFromModel {
     )
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    Copy-Item -LiteralPath $TemplatePath -Destination $OutputPath -Force
+    Invoke-CustomerAssessmentFileOperationWithRetry -Activity "Copy DOCX template to $OutputPath" -Operation {
+        Copy-Item -LiteralPath $TemplatePath -Destination $OutputPath -Force
+        $true
+    } | Out-Null
 
     $preparedBlocks = Initialize-CustomerImageBlocks -Blocks $Blocks
     $imageBlocks = @($preparedBlocks | Where-Object { $null -ne $_ -and [string]$_.Type -eq 'Image' })
     $documentXml = New-CustomerAssessmentDocumentXml -Blocks $preparedBlocks -TemplatePath $OutputPath
-    $archive = [System.IO.Compression.ZipFile]::Open($OutputPath, [System.IO.Compression.ZipArchiveMode]::Update)
+    $archive = Invoke-CustomerAssessmentFileOperationWithRetry -Activity "Open DOCX package $OutputPath" -Operation {
+        [System.IO.Compression.ZipFile]::Open($OutputPath, [System.IO.Compression.ZipArchiveMode]::Update)
+    }
     try {
         Set-CustomerZipTextEntry -Archive $Archive -EntryName 'word/document.xml' -Content $documentXml
         Set-CustomerAssessmentCoreProperties -Archive $Archive -TenantName $TenantName -GeneratedAt $GeneratedAt -DocumentTitle $DocumentTitle
@@ -4075,7 +4112,10 @@ function Write-CustomerAssessmentDocxFromModel {
     }
 
     if ($OptimizeMedia) {
-        Optimize-CustomerRoadmapDocxMedia -Path $OutputPath
+        Invoke-CustomerAssessmentFileOperationWithRetry -Activity "Optimize DOCX media $OutputPath" -Operation {
+            Optimize-CustomerRoadmapDocxMedia -Path $OutputPath
+            $true
+        } | Out-Null
     }
 }
 
@@ -5387,6 +5427,203 @@ function New-CustomerAssessmentDocumentBlocks {
         @('Stale SharePoint / OneDrive locations', (Get-CustomerObservationState -Observation $lifecycleObservation -Signal 'Stale SharePoint / OneDrive locations')),
         @('Shared mailboxes without ownership signal', (Get-CustomerObservationState -Observation $lifecycleObservation -Signal 'Shared mailboxes without ownership signal'))
     )
+    $licenseSkuRows = @(Convert-ArrayaObjectToArray $Signals.LicenseSKUs)
+    $licenseSkuRecordCount = $licenseSkuRows.Count
+    $ownerlessLicensingGroupCount = @($groupLicensingSummaryRows | Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('RiskSignal')) -match 'without owner|ownerless' }).Count
+    $directGroupDuplicateCount = @($licenseOptimizationCandidateRows | Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('Issue')) -eq 'Same SKU assigned directly and by group' }).Count
+    $duplicateSuiteCount = @($licenseOptimizationCandidateRows | Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('Issue')) -eq 'Likely duplicate suite assignment' }).Count
+    $licenseAssignmentErrorCandidateRows = @($licenseOptimizationCandidateRows | Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('Issue')) -match 'License assignment error' })
+    $assignmentErrorCount = $licenseAssignmentErrorCandidateRows.Count
+    $userLicenseCandidateCount = @($licenseOptimizationCandidateRows | Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('ObjectType')) -match '^(?i)user$' }).Count
+    $groupLicenseCandidateCount = @($licenseOptimizationCandidateRows | Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('ObjectType')) -match '^(?i)group$' }).Count
+    $licenseAssignmentErrorDetailRows = @(
+        $licenseAssignmentErrorCandidateRows | Select-Object -First 12 | ForEach-Object {
+            $issueText = [string](Get-ArrayaObjectValue -Object $_ -Names @('Issue'))
+            $errorCode = [string](Get-ArrayaObjectValue -Object $_ -Names @('ErrorCode'))
+            if ([string]::IsNullOrWhiteSpace($errorCode) -and $issueText -match 'License assignment error:\s*(.+)$') {
+                $errorCode = $Matches[1]
+            }
+
+            , @(
+                (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName')) -Default 'Not surfaced in current source'),
+                (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserPrincipalName')) -Default 'Not surfaced in current source'),
+                (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('SkuNames', 'SkuName')) -Default 'Not surfaced in current source'),
+                (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('AssignmentSource')) -Default 'Not surfaced in current source'),
+                (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('AssignmentState')) -Default 'Not surfaced in current source'),
+                (Convert-ToCustomerAssessmentDisplayText -Value $errorCode -Default 'Not surfaced in current source')
+            )
+        }
+    )
+    $licenseSkuUtilizationRows = @(
+        $licenseSkuRows |
+            Sort-Object {
+                Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('SkuFriendlyName', 'FriendlyName', 'SkuDisplayName', 'ProductName', 'DisplayName', 'SkuPartNumber')) -Default ''
+            } |
+            ForEach-Object {
+                $skuName = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('SkuFriendlyName', 'FriendlyName', 'SkuDisplayName', 'ProductName', 'DisplayName', 'SkuPartNumber')) -Default 'Unknown SKU'
+                $skuPartNumber = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('SkuPartNumber', 'skuPartNumber', 'AccountSkuId')) -Default 'Not surfaced in current source'
+                $consumedUnits = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('ConsumedUnits', 'AssignedUnits', 'UsedUnits'))
+                $purchasedUnits = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('PurchasedUnits', 'ActiveUnits', 'Enabled', 'TotalLicenses'))
+                $remainingUnits = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('RemainingUnits', 'AvailableUnits'))
+                if ($null -eq $remainingUnits -and $null -ne $purchasedUnits -and $null -ne $consumedUnits) {
+                    $remainingUnits = [double]$purchasedUnits - [double]$consumedUnits
+                }
+
+                $utilizationText = 'Not surfaced in current source'
+                $reviewNote = 'Utilization could not be calculated from the reviewed SKU record.'
+                if ($null -ne $purchasedUnits -and [double]$purchasedUnits -gt 0 -and $null -ne $consumedUnits) {
+                    $utilizationPercent = [math]::Round(([double]$consumedUnits / [double]$purchasedUnits) * 100, 0)
+                    $utilizationText = ('{0:N0}%' -f $utilizationPercent)
+                    if ($utilizationPercent -ge 95) {
+                        $reviewNote = 'At or near capacity; review reclaim opportunities or procurement need.'
+                    }
+                    elseif ($utilizationPercent -ge 85) {
+                        $reviewNote = 'Monitor utilization and reclaim inactive assignments before purchase pressure builds.'
+                    }
+                    else {
+                        $reviewNote = 'No immediate capacity pressure surfaced from utilization alone.'
+                    }
+                }
+                elseif ($null -ne $consumedUnits -and $null -ne $purchasedUnits -and [double]$purchasedUnits -le 0) {
+                    $reviewNote = 'SKU has consumed assignments but no purchased-unit signal in the reviewed data.'
+                }
+
+                New-CustomerWordTableRow -Cells @(
+                    $skuName,
+                    $skuPartNumber,
+                    (Convert-ToCustomerAssessmentDisplayText -Value $consumedUnits -Default 'Not surfaced in current source'),
+                    (Convert-ToCustomerAssessmentDisplayText -Value $purchasedUnits -Default 'Not surfaced in current source'),
+                    (Convert-ToCustomerAssessmentDisplayText -Value $remainingUnits -Default 'Not surfaced in current source'),
+                    $utilizationText,
+                    $reviewNote
+                )
+            }
+    )
+    $groupBasedLicensingDetailRows = @(
+        $groupLicensingSummaryRows |
+            Select-Object -First 10 |
+            ForEach-Object {
+                $ownerCount = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('OwnerCount', 'Owners')) -Default 'Not surfaced in current source'
+                $membershipCountSource = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('MembershipCountSource')) -Default 'Group member count'
+                $memberCountSource = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('MemberCountSource')) -Default 'Group member count'
+                $memberCountNames = if ($memberCountSource -match 'Direct member enumeration') {
+                    @('MemberCount', 'Members', 'EffectiveMemberCount', 'LicensedUserCount')
+                }
+                else {
+                    @('EffectiveMemberCount', 'LicensedUserCount', 'MemberCount', 'Members')
+                }
+                $memberCount = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names $memberCountNames) -Default 'Not surfaced in current source'
+                $licensedUserCount = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('LicensedUserCount')) -Default ''
+                $assignedLicenses = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('AssignedLicenseFriendlyNames', 'AssignedLicenseSkuPartNumbers', 'SkuNames')) -Default 'Not surfaced in current source'
+                $processingState = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('LicenseProcessingState')) -Default 'Not surfaced in current source'
+                $reviewNote = if ($ownerCount -eq '0') {
+                    'Assign accountable owners before relying on this group for entitlement lifecycle.'
+                }
+                elseif ($memberCountSource -match 'Direct member enumeration') {
+                    if (-not [string]::IsNullOrWhiteSpace($licensedUserCount) -and $licensedUserCount -ne $memberCount) {
+                        "Member count uses direct Graph enumeration; licenseAssignmentStates showed $licensedUserCount user(s) explicitly assigned through this group."
+                    }
+                    else {
+                        'Member count uses direct Graph enumeration for this license-managing group; document membership control and recurring assignment-error review.'
+                    }
+                }
+                elseif ($membershipCountSource -match 'licenseAssignmentStates') {
+                    'Count reflects users with this group in licenseAssignmentStates; document membership control and recurring assignment-error review.'
+                }
+                else {
+                    'Document license intent, membership control, and recurring assignment-error review.'
+                }
+
+                New-CustomerWordTableRow -Cells @(
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('GroupName', 'DisplayName', 'Name')) -Default 'Not surfaced in current source'),
+                    $assignedLicenses,
+                    $memberCount,
+                    $ownerCount,
+                    $processingState,
+                    $reviewNote
+                )
+            }
+    )
+    $inactiveLicensedCandidateRows = @(
+        $licenseOptimizationCandidateRows |
+            Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('Issue')) -match 'Inactive licensed user|Disabled user with assigned licenses' }
+    )
+    $licenseOptimizationReviewCandidateRows = @(
+        $licenseOptimizationCandidateRows |
+            Where-Object {
+                ([string](Get-ArrayaObjectValue -Object $_ -Names @('ObjectType')) -match '^(?i)user$') -and
+                ([string](Get-ArrayaObjectValue -Object $_ -Names @('Issue')) -notmatch 'Inactive licensed user|Disabled user with assigned licenses')
+            }
+    )
+    $licenseOptimizationReviewRows = @(
+        $licenseOptimizationReviewCandidateRows |
+            Select-Object -First 10 |
+            ForEach-Object {
+                New-CustomerWordTableRow -Cells @(
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName')) -Default 'Not surfaced in current source'),
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserPrincipalName')) -Default 'Not surfaced in current source'),
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Issue')) -Default 'Not surfaced in current source'),
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('SkuNames', 'SkuName')) -Default 'Not surfaced in current source'),
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('AssignmentSource')) -Default 'Not surfaced in current source'),
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('RecommendedAction')) -Default 'Review the license assignment and retain only the license path required for the user role.')
+                )
+            }
+    )
+    $inactiveLicensedReviewRows = @(
+        $inactiveLicensedCandidateRows |
+            Select-Object -First 10 |
+            ForEach-Object {
+                $lastActivity = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('LastActivityDate')) -Default 'Not surfaced in current source'
+                if ($lastActivity -eq 'Not surfaced in current source') {
+                    $lastActivity = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastExchangeActivityDate', 'LastTeamsActivityDate', 'LastMicrosoft365ActivityDate')) -Default 'Not surfaced in current source'
+                }
+
+                New-CustomerWordTableRow -Cells @(
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName')) -Default 'Not surfaced in current source'),
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserPrincipalName')) -Default 'Not surfaced in current source'),
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Enabled', 'AccountEnabled')) -Default 'Not surfaced in current source'),
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('SkuNames', 'AssignedLicensesFriendly', 'AssignedLicenses')) -Default 'Not surfaced in current source'),
+                    $lastActivity,
+                    (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('InactivityBasis')) -Default 'Not surfaced in current source')
+                )
+            }
+    )
+    $licenseGovernanceRows = @(
+        @('License SKU records surfaced', $licenseSkuRecordCount),
+        @('Highest license utilization', (Get-CustomerObservationState -Observation $governanceObservation -Signal 'Highest license utilization')),
+        @('Inactive or disabled licensed users', (Get-CustomerObservationState -Observation $lifecycleObservation -Signal 'Inactive or disabled licensed users')),
+        @('Group-based licensing groups surfaced', $groupLicensingSummaryRows.Count),
+        @('License-managing groups without owners', $ownerlessLicensingGroupCount),
+        @('User license optimization candidates', $userLicenseCandidateCount),
+        @('Inactive licensed-user review candidates', $inactiveLicensedCandidateRows.Count),
+        @('Group license optimization candidates', $groupLicenseCandidateCount),
+        @('Direct plus group assignment candidates', $directGroupDuplicateCount),
+        @('Likely duplicate suite assignments', $duplicateSuiteCount),
+        @('License assignment errors', $assignmentErrorCount)
+    )
+    $licenseGovernanceFocusItems = New-Object System.Collections.Generic.List[string]
+    if ($groupLicensingSummaryRows.Count -gt 0) {
+        $licenseGovernanceFocusItems.Add(("{0} group-based licensing group(s) were surfaced from Graph assignment data; {1} need owner review." -f $groupLicensingSummaryRows.Count, $ownerlessLicensingGroupCount)) | Out-Null
+    }
+    else {
+        $licenseGovernanceFocusItems.Add('No group-based licensing groups surfaced from the reviewed group-assignment data.') | Out-Null
+    }
+    if ($licenseOptimizationReviewCandidateRows.Count -gt 0) {
+        $licenseGovernanceFocusItems.Add(("{0} user-level license optimization candidate(s) surfaced across duplicate direct/group assignment, stacked suite, or assignment-error checks." -f $licenseOptimizationReviewCandidateRows.Count)) | Out-Null
+    }
+    else {
+        $licenseGovernanceFocusItems.Add('No user-level duplicate assignment, stacked suite, or license assignment-error candidates surfaced from the reviewed data.') | Out-Null
+    }
+    if ($inactiveLicensedCandidateRows.Count -gt 0) {
+        $licenseGovernanceFocusItems.Add(("{0} disabled or inactive licensed user(s) should be reviewed for license reclaim or right-sizing." -f $inactiveLicensedCandidateRows.Count)) | Out-Null
+    }
+    if ($assignmentErrorCount -gt 0) {
+        $licenseGovernanceFocusItems.Add(("{0} Microsoft Graph license assignment error(s) require remediation before licensing should be treated as healthy." -f $assignmentErrorCount)) | Out-Null
+    }
+    if ($groupLicenseCandidateCount -gt 0) {
+        $licenseGovernanceFocusItems.Add(("{0} group-level licensing candidate(s) surfaced, primarily for ownership and change-control validation." -f $groupLicenseCandidateCount)) | Out-Null
+    }
+    $licenseGovernanceFocusItems.Add('This is a practical licensing-governance review, not a deep service-plan utilization model; detailed row evidence remains in LicenseSKUs, GroupLicensingSummary, LicenseOptimizationCandidates, and Users.') | Out-Null
     $externalSharingSnapshotRows = @(
         @('Tenant sharing capability', $tenantSharingCapabilityText),
         @('OneDrive sharing capability', (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $sharePointSharingSummaryRecord -Names @('OneDriveSharingCapability')) -Default 'Not validated from the reviewed data')),
@@ -5686,6 +5923,53 @@ function New-CustomerAssessmentDocumentBlocks {
     else {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'The current recommendation here is to validate the inventory first. Once the tenant surfaces a usable enterprise application list, the same identity-governance and least-privilege review rhythm can be applied to app ownership, consent, and permission scope.' -Style 'Normal')) | Out-Null
     }
+
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '5.5 Microsoft 365 Licensing Governance' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Licensing is included with the identity review because Microsoft 365 license state is driven by user assignment, group-based assignment, ownership, and lifecycle cleanup. This section focuses on practical governance signals rather than a deep service-plan consumption model.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Licensing Governance Snapshot' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordTableBlock -Headers @('License Signal', 'Current State') -Rows $licenseGovernanceRows)) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'License SKU Utilization' -Style 'Heading3')) | Out-Null
+    if ($licenseSkuUtilizationRows.Count -gt 0) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text ("Showing all {0} SKU record(s) surfaced from the tenant subscription and licensing data. Use this with the inactive-user and optimization candidate tables below to decide where to reclaim or right-size licenses." -f $licenseSkuUtilizationRows.Count) -Style 'Normal')) | Out-Null
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('SKU', 'SKU Part Number', 'Consumed', 'Purchased', 'Available', 'Utilization', 'Review Note') -Rows $licenseSkuUtilizationRows)) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'No license SKU utilization rows surfaced from the reviewed data.' -Style 'Normal')) | Out-Null
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Group-Based Licensing Groups' -Style 'Heading3')) | Out-Null
+    if ($groupBasedLicensingDetailRows.Count -gt 0) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text ("Showing {0} of {1} group-based licensing group(s) surfaced from Graph assignment data. The Members column uses the collected group member count, with direct member enumeration for license-managing groups when available." -f $groupBasedLicensingDetailRows.Count, $groupLicensingSummaryRows.Count) -Style 'Normal')) | Out-Null
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('Group', 'Assigned Licenses', 'Members', 'Owners', 'Processing State', 'Review Note') -Rows $groupBasedLicensingDetailRows)) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'No group-based licensing groups surfaced from the reviewed Graph assignment data.' -Style 'Normal')) | Out-Null
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'License Optimization Candidates to Review' -Style 'Heading3')) | Out-Null
+    if ($licenseOptimizationReviewRows.Count -gt 0) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text ("Showing {0} of {1} user-level license optimization candidate(s). These are practical cleanup rows such as duplicate suite assignments, direct-plus-group duplicates, or Microsoft Graph assignment errors." -f $licenseOptimizationReviewRows.Count, $licenseOptimizationReviewCandidateRows.Count) -Style 'Normal')) | Out-Null
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('User', 'User Principal Name', 'Issue', 'Licenses', 'Assignment Source', 'Recommended Action') -Rows $licenseOptimizationReviewRows)) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'No user-level duplicate suite, direct-plus-group duplicate, or assignment-error candidates surfaced from the reviewed data.' -Style 'Normal')) | Out-Null
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Inactive Licensed Users to Review' -Style 'Heading3')) | Out-Null
+    if ($inactiveLicensedReviewRows.Count -gt 0) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text ("Showing {0} of {1} inactive or disabled licensed user candidate(s). Enabled users are only listed when surfaced sign-in or workload activity signals are stale; missing workload telemetry alone is not treated as proof of inactivity." -f $inactiveLicensedReviewRows.Count, $inactiveLicensedCandidateRows.Count) -Style 'Normal')) | Out-Null
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('User', 'User Principal Name', 'Enabled', 'Assigned Licenses', 'Last Activity', 'Inactivity Basis') -Rows $inactiveLicensedReviewRows)) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'No disabled or inactive licensed-user candidates surfaced from the reviewed data.' -Style 'Normal')) | Out-Null
+    }
+    if ($licenseAssignmentErrorDetailRows.Count -gt 0) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'License Assignment Errors to Resolve' -Style 'Heading3')) | Out-Null
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Microsoft Graph surfaces license assignment errors through the user license-assignment state. These rows identify users whose direct or group-based assignment should be reviewed, corrected, and reprocessed where appropriate.' -Style 'Normal')) | Out-Null
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('Display Name', 'User Principal Name', 'License', 'Assignment Source', 'State', 'Error') -Rows $licenseAssignmentErrorDetailRows)) | Out-Null
+        if ($assignmentErrorCount -gt $licenseAssignmentErrorDetailRows.Count) {
+            $blocks.Add((New-CustomerWordParagraphBlock -Text ("Showing {0} of {1} license assignment error(s). Review the LicenseOptimizationCandidates worksheet for the full error list." -f $licenseAssignmentErrorDetailRows.Count, $assignmentErrorCount) -Style 'Normal')) | Out-Null
+        }
+    }
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'What To Review' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @($licenseGovernanceFocusItems.ToArray()))) | Out-Null
 
     $mfaEnrollmentRate = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummaryRecord -Names @('RegistrationPercent'))
     $mfaRegisteredUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummaryRecord -Names @('RegisteredUsers'))
@@ -6494,21 +6778,6 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'A prescriptive end-to-end offboarding workflow was not surfaced in the current source. The assessment evidence does, however, support the lifecycle actions already prioritized in the recommendation set, especially for stale privileged access, inactive guests, stale collaboration locations, and shared mailboxes without ownership signals.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Supporting Observations from Environment Review' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Lifecycle Signal', 'Current State') -Rows $offboardingSupportRows)) | Out-Null
-    if ($groupLicensingSummaryRows.Count -gt 0 -or $licenseOptimizationCandidateRows.Count -gt 0) {
-        $ownerlessLicensingGroupCount = @($groupLicensingSummaryRows | Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('RiskSignal')) -match 'without owner|ownerless' }).Count
-        $directGroupDuplicateCount = @($licenseOptimizationCandidateRows | Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('Issue')) -eq 'Same SKU assigned directly and by group' }).Count
-        $duplicateSuiteCount = @($licenseOptimizationCandidateRows | Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('Issue')) -eq 'Likely duplicate suite assignment' }).Count
-        $assignmentErrorCount = @($licenseOptimizationCandidateRows | Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('Issue')) -match 'License assignment error' }).Count
-        $blocks.Add((New-CustomerWordParagraphBlock -Text 'License Governance Signals' -Style 'Heading2')) | Out-Null
-        $blocks.Add((New-CustomerWordTableBlock -Headers @('License Signal', 'Current State') -Rows @(
-            @('Group-based licensing groups surfaced', $groupLicensingSummaryRows.Count),
-            @('License-managing groups without owners', $ownerlessLicensingGroupCount),
-            @('Direct plus group assignment candidates', $directGroupDuplicateCount),
-            @('Likely duplicate suite assignments', $duplicateSuiteCount),
-            @('License assignment errors', $assignmentErrorCount)
-        ))) | Out-Null
-        $blocks.Add((New-CustomerWordParagraphBlock -Text 'These signals are governance-oriented rather than a deep service-plan utilization analysis. They help identify license groups needing ownership, duplicate assignment paths, stacked suite assignments, and assignment errors that should be cleaned up before treating licensing as operationally stable.' -Style 'Normal')) | Out-Null
-    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text (Convert-ToCustomerAssessmentNarrativeText -Text $(if ($null -ne $lifecycleConsultativeSummary) { $lifecycleConsultativeSummary.Narrative } else { $lifecycleObservation.ObservedNarrative })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text (Convert-ToCustomerAssessmentNarrativeText -Text $lifecycleObservation.WhyItMatters) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $lifecycleConsultativeSummary) { $lifecycleConsultativeSummary.RecommendationSupport } else { 'This section supports the lifecycle and ownership-governance recommendations in 4.0.' })) -Style 'Normal')) | Out-Null

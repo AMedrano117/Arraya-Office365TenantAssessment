@@ -153,11 +153,18 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'GroupAssignedLicenses'
         $script:collectorSource | Should -Match 'LicenseAssignmentErrors'
         $script:collectorSource | Should -Match 'LicenseAssignmentStateSummary'
+        $script:collectorSource | Should -Match 'LastUpdatedDateTime'
 
         $script:entraGroupsSource | Should -Match 'CollectEntraGroupLicenseChecks'
         $script:entraGroupsSource | Should -Match 'AssignedLicenseSkuIds'
         $script:entraGroupsSource | Should -Match 'AssignedLicenseSkuPartNumbers'
         $script:entraGroupsSource | Should -Match 'AssignedLicenseFriendlyNames'
+        $script:entraGroupsSource | Should -Match 'assignedLicenses/any\(\)'
+        $script:entraGroupsSource | Should -Match 'LicenseProcessingState'
+        $script:entraGroupsSource | Should -Match 'Get-EntraLicenseGroupDirectMemberCount'
+        $script:entraGroupsSource | Should -Match 'Direct member enumeration for license-managing group'
+        $script:entraGroupsSource | Should -Match '\$assignedLicenseValue = Get-ArrayaObjectValue'
+        $script:entraGroupsSource | Should -Match '\$assignedLicenseSkuIds\.Count -gt 0'
     }
 
     It 'builds a dedicated action-only T2T migration readiness checklist dataset with split mail-flow and mailbox-prep rows' {
