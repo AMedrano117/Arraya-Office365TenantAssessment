@@ -194,7 +194,7 @@ function Get-ImprovementLicenseSkuLookup {
         if ($null -eq $license) { continue }
         $skuId = [string](Get-ArrayaObjectValue -Object $license -Names @('SkuId', 'skuId', 'Id'))
         $skuPartNumber = [string](Get-ArrayaObjectValue -Object $license -Names @('SkuPartNumber', 'skuPartNumber', 'AccountSkuId'))
-        $friendlyName = [string](Get-ArrayaObjectValue -Object $license -Names @('FriendlyName', 'Name', 'SkuPartNumber', 'skuPartNumber'))
+        $friendlyName = [string](Get-ArrayaObjectValue -Object $license -Names @('FriendlyName', 'SkuFriendlyName', 'SkuDisplayName', 'ProductName', 'DisplayName', 'Name', 'SkuPartNumber', 'skuPartNumber'))
         $skuRecord = [pscustomobject]@{
             SkuId         = $skuId
             SkuPartNumber = $skuPartNumber
@@ -266,10 +266,58 @@ function Get-ImprovementUserLicenseAssignmentRows {
             AssignmentSource = $assignmentSource
             State            = [string](Get-ArrayaObjectValue -Object $stateRow -Names @('State', 'state'))
             Error            = [string](Get-ArrayaObjectValue -Object $stateRow -Names @('Error', 'error'))
+            LastUpdatedDateTime = [string](Get-ArrayaObjectValue -Object $stateRow -Names @('LastUpdatedDateTime', 'lastUpdatedDateTime'))
         }) | Out-Null
     }
 
     return @($rows.ToArray())
+}
+
+function Get-ImprovementGroupLicenseAssignedUserCountLookup {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Users = @(),
+        [Parameter(Mandatory = $false)][object[]]$Licenses = @()
+    )
+
+    $skuLookup = Get-ImprovementLicenseSkuLookup -Licenses $Licenses
+    $userKeysByGroupId = @{}
+    $hasAssignmentStateData = $false
+    foreach ($user in @($Users)) {
+        if ($null -eq $user) { continue }
+
+        $assignmentRows = @(Get-ImprovementUserLicenseAssignmentRows -User $user -SkuLookup $skuLookup)
+        if ($assignmentRows.Count -gt 0) {
+            $hasAssignmentStateData = $true
+        }
+
+        $userKey = [string](Get-ArrayaObjectValue -Object $user -Names @('Id', 'ID', 'UserPrincipalName', 'Mail', 'DisplayName'))
+        if ([string]::IsNullOrWhiteSpace($userKey)) {
+            $userKey = [guid]::NewGuid().ToString()
+        }
+
+        foreach ($assignmentRow in @($assignmentRows)) {
+            $assignedByGroup = ([string]$assignmentRow.AssignedByGroup).Trim()
+            if ([string]::IsNullOrWhiteSpace($assignedByGroup) -or $assignedByGroup -eq '00000000-0000-0000-0000-000000000000') {
+                continue
+            }
+
+            if (-not $userKeysByGroupId.ContainsKey($assignedByGroup)) {
+                $userKeysByGroupId[$assignedByGroup] = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+            }
+            [void]$userKeysByGroupId[$assignedByGroup].Add($userKey)
+        }
+    }
+
+    $countLookup = @{}
+    foreach ($groupId in @($userKeysByGroupId.Keys)) {
+        $countLookup[$groupId] = [int]$userKeysByGroupId[$groupId].Count
+    }
+
+    return [pscustomobject]@{
+        Counts = $countLookup
+        HasAssignmentStateData = $hasAssignmentStateData
+    }
 }
 
 function Get-ImprovementLicenseSuiteFamily {
@@ -286,6 +334,200 @@ function Get-ImprovementLicenseSuiteFamily {
     }
 
     return $null
+}
+
+function Test-ImprovementGroupManagesLicenses {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Group
+    )
+
+    if ($null -eq $Group) {
+        return $false
+    }
+
+    $assignedLicenseCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $Group -Names @('AssignedLicenseCount'))
+    if ($null -ne $assignedLicenseCount) {
+        return ($assignedLicenseCount -gt 0)
+    }
+
+    $assignedLicenseSignals = @(
+        'AssignedLicenseSkuIds',
+        'AssignedLicenseSkuPartNumbers',
+        'AssignedLicenseFriendlyNames'
+    ) | ForEach-Object {
+        [string](Get-ArrayaObjectValue -Object $Group -Names @($_))
+    } | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_) -and $_ -notmatch '^(?i)notcollected|not surfaced'
+    }
+
+    if (@($assignedLicenseSignals).Count -gt 0) {
+        return $true
+    }
+
+    # Older snapshots only carried the boolean. Trust it only when newer explicit
+    # assignment counts are not present, so stale replay data does not mark every
+    # group as a licensing group.
+    return ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $Group -Names @('IsManagingLicenses'))) -eq $true)
+}
+
+function Get-ImprovementNormalizedPrincipalKey {
+    [CmdletBinding()]
+    param([AllowNull()][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return ''
+    }
+
+    return $Value.Trim().ToLowerInvariant()
+}
+
+function New-ImprovementActivityLookup {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Rows = @(),
+        [Parameter(Mandatory = $false)][string[]]$PrincipalNames = @('UserPrincipalName', 'UPN', 'Mail', 'PrimarySmtpAddress')
+    )
+
+    $lookup = @{}
+    foreach ($row in @($Rows)) {
+        if ($null -eq $row) {
+            continue
+        }
+
+        foreach ($principalName in @($PrincipalNames)) {
+            $principal = Get-ImprovementNormalizedPrincipalKey -Value ([string](Get-ArrayaObjectValue -Object $row -Names @($principalName)))
+            if ([string]::IsNullOrWhiteSpace($principal)) {
+                continue
+            }
+
+            if (-not $lookup.ContainsKey($principal)) {
+                $lookup[$principal] = New-Object System.Collections.Generic.List[object]
+            }
+
+            $lookup[$principal].Add($row) | Out-Null
+        }
+    }
+
+    return $lookup
+}
+
+function Get-ImprovementLatestDateFromRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Rows = @(),
+        [Parameter(Mandatory = $false)][string[]]$DateNames = @('LastActivityDate', 'LastActivityDateTime', 'LastSignInDateTime', 'LastSuccessfulSignInDateTime')
+    )
+
+    $dates = @(
+        foreach ($row in @($Rows)) {
+            $date = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $row -Names $DateNames)
+            if ($null -ne $date) {
+                $date
+            }
+        }
+    )
+
+    if ($dates.Count -eq 0) {
+        return $null
+    }
+
+    return ($dates | Sort-Object -Descending | Select-Object -First 1)
+}
+
+function Get-ImprovementDateText {
+    [CmdletBinding()]
+    param([AllowNull()]$Date)
+
+    if ($null -eq $Date) {
+        return 'Not surfaced in current source'
+    }
+
+    try {
+        return ([datetime]$Date).ToString('yyyy-MM-dd')
+    }
+    catch {
+        return [string]$Date
+    }
+}
+
+function Get-ImprovementUserLicenseActivityState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]$User,
+        [Parameter(Mandatory = $false)]$EmailActivityLookup = @{},
+        [Parameter(Mandatory = $false)]$TeamsActivityLookup = @{},
+        [Parameter(Mandatory = $false)]$Microsoft365ActivityLookup = @{}
+    )
+
+    if (-not ($EmailActivityLookup -is [System.Collections.IDictionary])) {
+        $EmailActivityLookup = @{}
+    }
+    if (-not ($TeamsActivityLookup -is [System.Collections.IDictionary])) {
+        $TeamsActivityLookup = @{}
+    }
+    if (-not ($Microsoft365ActivityLookup -is [System.Collections.IDictionary])) {
+        $Microsoft365ActivityLookup = @{}
+    }
+
+    $principalKeys = @(
+        Get-ImprovementNormalizedPrincipalKey -Value ([string](Get-ArrayaObjectValue -Object $User -Names @('UserPrincipalName')))
+        Get-ImprovementNormalizedPrincipalKey -Value ([string](Get-ArrayaObjectValue -Object $User -Names @('Mail', 'PrimarySmtpAddress')))
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+
+    $emailRows = New-Object System.Collections.Generic.List[object]
+    $teamsRows = New-Object System.Collections.Generic.List[object]
+    $m365Rows = New-Object System.Collections.Generic.List[object]
+    foreach ($principalKey in @($principalKeys)) {
+        if ($EmailActivityLookup.ContainsKey($principalKey)) {
+            foreach ($row in @($EmailActivityLookup[$principalKey])) { $emailRows.Add($row) | Out-Null }
+        }
+        if ($TeamsActivityLookup.ContainsKey($principalKey)) {
+            foreach ($row in @($TeamsActivityLookup[$principalKey])) { $teamsRows.Add($row) | Out-Null }
+        }
+        if ($Microsoft365ActivityLookup.ContainsKey($principalKey)) {
+            foreach ($row in @($Microsoft365ActivityLookup[$principalKey])) { $m365Rows.Add($row) | Out-Null }
+        }
+    }
+
+    $lastSignInDate = Get-ImprovementLatestDateFromRows -Rows @($User) -DateNames @(
+        'LastSuccessfulSignInDateTime',
+        'LastSignInDateTime',
+        'LastNonInteractiveSignInDateTime',
+        'SignInActivityLastSignInDateTime',
+        'SignInActivityLastSuccessfulSignInDateTime'
+    )
+    $lastExchangeActivityDate = Get-ImprovementLatestDateFromRows -Rows @(@($emailRows.ToArray()) + @($User)) -DateNames @('LastExchangeActivityDate', 'ExchangeLastActivityDate', 'LastActivityDate', 'LastActivityDateTime')
+    $lastTeamsActivityDate = Get-ImprovementLatestDateFromRows -Rows @(@($teamsRows.ToArray()) + @($User)) -DateNames @('LastTeamsActivityDate', 'TeamsLastActivityDate', 'LastActivityDate', 'LastActivityDateTime')
+    $lastMicrosoft365ActivityDate = Get-ImprovementLatestDateFromRows -Rows @(@($m365Rows.ToArray()) + @($User)) -DateNames @(
+        'LastMicrosoft365ActivityDate',
+        'Microsoft365LastActivityDate',
+        'LastActivityDate',
+        'LastActivityDateTime'
+    )
+    $availableDates = @(
+        $lastSignInDate
+        $lastExchangeActivityDate
+        $lastTeamsActivityDate
+        $lastMicrosoft365ActivityDate
+    ) | Where-Object { $null -ne $_ }
+    $lastActivityDate = if ($availableDates.Count -gt 0) {
+        $availableDates | Sort-Object -Descending | Select-Object -First 1
+    }
+    else {
+        $null
+    }
+
+    return [pscustomobject]@{
+        LastSignInDateTime          = $lastSignInDate
+        LastExchangeActivityDate    = $lastExchangeActivityDate
+        LastTeamsActivityDate       = $lastTeamsActivityDate
+        LastMicrosoft365ActivityDate = $lastMicrosoft365ActivityDate
+        LastActivityDate            = $lastActivityDate
+        AvailableSignalCount        = $availableDates.Count
+    }
 }
 
 function New-ImprovementConditionalAccessOptimizationRows {
@@ -503,7 +745,7 @@ function New-ImprovementTeamsGroupsCleanupCandidateRows {
         $name = [string](Get-ArrayaObjectValue -Object $group -Names @('DisplayName', 'Name'))
         $ownerCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $group -Names @('OwnerCount', 'Owners'))
         $memberCount = Resolve-MemberCountLocal -Record $group
-        $isManagingLicenses = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $group -Names @('IsManagingLicenses'))
+        $isManagingLicenses = Test-ImprovementGroupManagesLicenses -Group $group
         $riskSignals = @()
         if ($null -ne $ownerCount -and $ownerCount -le 0) { $riskSignals += 'Ownerless group' }
         if ($null -ne $memberCount -and $memberCount -le 0) { $riskSignals += 'No members' }
@@ -518,23 +760,47 @@ function New-ImprovementTeamsGroupsCleanupCandidateRows {
 
 function New-ImprovementGroupLicensingSummaryRows {
     [CmdletBinding()]
-    param([Parameter(Mandatory = $false)][object[]]$Groups = @())
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Groups = @(),
+        [Parameter(Mandatory = $false)][object[]]$Users = @(),
+        [Parameter(Mandatory = $false)][object[]]$Licenses = @()
+    )
 
+    $assignedUserCountLookup = Get-ImprovementGroupLicenseAssignedUserCountLookup -Users $Users -Licenses $Licenses
     $rows = New-Object System.Collections.Generic.List[object]
     foreach ($group in @($Groups)) {
-        $isManagingLicenses = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $group -Names @('IsManagingLicenses'))
+        $isManagingLicenses = Test-ImprovementGroupManagesLicenses -Group $group
         $assignedLicenseCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $group -Names @('AssignedLicenseCount'))
-        if ($isManagingLicenses -ne $true -and (($null -eq $assignedLicenseCount) -or $assignedLicenseCount -le 0)) { continue }
+        if ($isManagingLicenses -ne $true) { continue }
         $ownerCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $group -Names @('OwnerCount'))
+        $groupId = [string](Get-ArrayaObjectValue -Object $group -Names @('Id', 'ID'))
+        $memberCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $group -Names @('MemberCount'))
+        $memberCountSource = [string](Get-ArrayaObjectValue -Object $group -Names @('MemberCountSource'))
+        $licensedUserCount = $null
+        if ($assignedUserCountLookup.HasAssignmentStateData -eq $true) {
+            $licensedUserCount = if (-not [string]::IsNullOrWhiteSpace($groupId) -and $assignedUserCountLookup.Counts.ContainsKey($groupId)) {
+                [int]$assignedUserCountLookup.Counts[$groupId]
+            }
+            else {
+                0
+            }
+        }
+        $effectiveMemberCount = if ($null -ne $licensedUserCount) { $licensedUserCount } else { $memberCount }
+        $membershipCountSource = if ($null -ne $licensedUserCount) { 'User licenseAssignmentStates assignedByGroup' } else { 'Group member count' }
         $rows.Add([pscustomobject]@{
             GroupName                    = [string](Get-ArrayaObjectValue -Object $group -Names @('DisplayName', 'Name'))
-            GroupId                      = [string](Get-ArrayaObjectValue -Object $group -Names @('Id', 'ID'))
+            GroupId                      = $groupId
             OwnerCount                   = $ownerCount
-            MemberCount                  = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $group -Names @('MemberCount'))
+            MemberCount                  = $memberCount
+            MemberCountSource            = $memberCountSource
+            LicensedUserCount            = $licensedUserCount
+            EffectiveMemberCount         = $effectiveMemberCount
+            MembershipCountSource        = $membershipCountSource
             AssignedLicenseCount         = if ($null -ne $assignedLicenseCount) { [int]$assignedLicenseCount } else { $null }
             AssignedLicenseSkuIds        = [string](Get-ArrayaObjectValue -Object $group -Names @('AssignedLicenseSkuIds'))
             AssignedLicenseSkuPartNumbers = [string](Get-ArrayaObjectValue -Object $group -Names @('AssignedLicenseSkuPartNumbers'))
             AssignedLicenseFriendlyNames = [string](Get-ArrayaObjectValue -Object $group -Names @('AssignedLicenseFriendlyNames'))
+            LicenseProcessingState       = [string](Get-ArrayaObjectValue -Object $group -Names @('LicenseProcessingState', 'licenseProcessingState'))
             RiskSignal                   = if ($null -ne $ownerCount -and $ownerCount -le 0) { 'License-managing group without owner' } else { 'Group-based licensing in use' }
             Recommendation               = 'Document license group ownership, assignment intent, and error-review cadence before relying on the group as a lifecycle control.'
             SourceWorksheet              = 'EntraIDGroups'
@@ -544,22 +810,66 @@ function New-ImprovementGroupLicensingSummaryRows {
     return @($rows.ToArray())
 }
 
+function Add-ImprovementGroupLicensingEffectiveCounts {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][object[]]$Rows = @(),
+        [Parameter(Mandatory = $false)][object[]]$Users = @(),
+        [Parameter(Mandatory = $false)][object[]]$Licenses = @()
+    )
+
+    $assignedUserCountLookup = Get-ImprovementGroupLicenseAssignedUserCountLookup -Users $Users -Licenses $Licenses
+    foreach ($row in @($Rows)) {
+        if ($null -eq $row) { continue }
+
+        $groupId = [string](Get-ArrayaObjectValue -Object $row -Names @('GroupId', 'Id', 'ID'))
+        $memberCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $row -Names @('MemberCount'))
+        $memberCountSource = [string](Get-ArrayaObjectValue -Object $row -Names @('MemberCountSource'))
+        $licensedUserCount = $null
+        if ($assignedUserCountLookup.HasAssignmentStateData -eq $true) {
+            $licensedUserCount = if (-not [string]::IsNullOrWhiteSpace($groupId) -and $assignedUserCountLookup.Counts.ContainsKey($groupId)) {
+                [int]$assignedUserCountLookup.Counts[$groupId]
+            }
+            else {
+                0
+            }
+        }
+        $effectiveMemberCount = if ($null -ne $licensedUserCount) { $licensedUserCount } else { $memberCount }
+        $membershipCountSource = if ($null -ne $licensedUserCount) { 'User licenseAssignmentStates assignedByGroup' } else { 'Group member count' }
+
+        $row | Add-Member -MemberType NoteProperty -Name 'MemberCountSource' -Value $memberCountSource -Force
+        $row | Add-Member -MemberType NoteProperty -Name 'LicensedUserCount' -Value $licensedUserCount -Force
+        $row | Add-Member -MemberType NoteProperty -Name 'EffectiveMemberCount' -Value $effectiveMemberCount -Force
+        $row | Add-Member -MemberType NoteProperty -Name 'MembershipCountSource' -Value $membershipCountSource -Force
+    }
+
+    return @($Rows)
+}
+
 function New-ImprovementLicenseOptimizationCandidateRows {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)][object[]]$Users = @(),
         [Parameter(Mandatory = $false)][object[]]$Groups = @(),
-        [Parameter(Mandatory = $false)][object[]]$Licenses = @()
+        [Parameter(Mandatory = $false)][object[]]$Licenses = @(),
+        [Parameter(Mandatory = $false)][object[]]$EmailActivityRows = @(),
+        [Parameter(Mandatory = $false)][object[]]$TeamsActivityRows = @(),
+        [Parameter(Mandatory = $false)][object[]]$Microsoft365ActivityRows = @(),
+        [Parameter(Mandatory = $false)][int]$InactiveDaysThreshold = 90
     )
 
     $skuLookup = Get-ImprovementLicenseSkuLookup -Licenses $Licenses
+    $emailActivityLookup = New-ImprovementActivityLookup -Rows $EmailActivityRows -PrincipalNames @('UserPrincipalName', 'UPN', 'Mail', 'PrimarySmtpAddress')
+    $teamsActivityLookup = New-ImprovementActivityLookup -Rows $TeamsActivityRows -PrincipalNames @('UserPrincipalName', 'UPN', 'Mail', 'PrimarySmtpAddress')
+    $microsoft365ActivityLookup = New-ImprovementActivityLookup -Rows $Microsoft365ActivityRows -PrincipalNames @('UserPrincipalName', 'UPN', 'Mail', 'PrimarySmtpAddress')
+    $inactiveCutoff = (Get-Date).AddDays(-1 * [Math]::Abs($InactiveDaysThreshold))
     $rows = New-Object System.Collections.Generic.List[object]
     foreach ($group in @($Groups)) {
-        $isManagingLicenses = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $group -Names @('IsManagingLicenses'))
+        $isManagingLicenses = Test-ImprovementGroupManagesLicenses -Group $group
         if ($isManagingLicenses -eq $true) {
             $ownerCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $group -Names @('OwnerCount'))
             if ($null -eq $ownerCount -or $ownerCount -le 0) {
-                $rows.Add([pscustomobject]@{ ObjectType = 'Group'; DisplayName = [string](Get-ArrayaObjectValue -Object $group -Names @('DisplayName', 'Name')); UserPrincipalName = $null; SkuFamily = 'Group-based licensing'; SkuNames = [string](Get-ArrayaObjectValue -Object $group -Names @('AssignedLicenseFriendlyNames', 'AssignedLicenseSkuPartNumbers')); AssignmentSource = 'Group'; Issue = 'License-managing group without owner'; RecommendedAction = 'Assign accountable owners to licensing groups and document change-control expectations.'; SourceWorksheet = 'EntraIDGroups' }) | Out-Null
+                $rows.Add([pscustomobject]@{ ObjectType = 'Group'; DisplayName = [string](Get-ArrayaObjectValue -Object $group -Names @('DisplayName', 'Name')); UserPrincipalName = $null; SkuFamily = 'Group-based licensing'; SkuNames = [string](Get-ArrayaObjectValue -Object $group -Names @('AssignedLicenseFriendlyNames', 'AssignedLicenseSkuPartNumbers')); AssignmentSource = 'Group'; LicenseProcessingState = [string](Get-ArrayaObjectValue -Object $group -Names @('LicenseProcessingState', 'licenseProcessingState')); Issue = 'License-managing group without owner'; RecommendedAction = 'Assign accountable owners to licensing groups and document change-control expectations.'; SourceWorksheet = 'EntraIDGroups' }) | Out-Null
             }
         }
     }
@@ -585,7 +895,21 @@ function New-ImprovementLicenseOptimizationCandidateRows {
             )
             if ($hasAssignmentError) {
                 $errorDetail = if (-not [string]::IsNullOrWhiteSpace($assignmentError) -and $assignmentError -notmatch '^(?i)none|noerror|success$') { $assignmentError } else { $assignmentState }
-                $rows.Add([pscustomobject]@{ ObjectType = 'User'; DisplayName = $displayName; UserPrincipalName = $upn; SkuFamily = 'Assignment error'; SkuNames = $assignmentRow.SkuName; AssignmentSource = $assignmentRow.AssignmentSource; Issue = "License assignment error: $errorDetail"; RecommendedAction = 'Review Graph license assignment errors and resolve failed group-based or direct license assignments.'; SourceWorksheet = 'Users' }) | Out-Null
+                $rows.Add([pscustomobject]@{
+                    ObjectType          = 'User'
+                    DisplayName         = $displayName
+                    UserPrincipalName   = $upn
+                    SkuFamily           = 'Assignment error'
+                    SkuNames            = $assignmentRow.SkuName
+                    AssignmentSource    = $assignmentRow.AssignmentSource
+                    AssignmentState     = $assignmentState
+                    ErrorCode           = $errorDetail
+                    AssignedByGroup     = $assignmentRow.AssignedByGroup
+                    LastUpdatedDateTime = $assignmentRow.LastUpdatedDateTime
+                    Issue               = "License assignment error: $errorDetail"
+                    RecommendedAction   = 'Review Microsoft Graph license assignment errors, resolve the assignment conflict or capacity/usage-location issue, and reprocess group-based license assignment where appropriate.'
+                    SourceWorksheet     = 'Users'
+                }) | Out-Null
             }
         }
         $assignedLicenseNames = @($assignmentRows | ForEach-Object { [string]$_.SkuName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -595,6 +919,61 @@ function New-ImprovementLicenseOptimizationCandidateRows {
         $suiteGroups = @($assignedLicenseNames | ForEach-Object { [pscustomobject]@{ Name = $_; Family = Get-ImprovementLicenseSuiteFamily -SkuName $_ } } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Family) } | Group-Object Family | Where-Object { $_.Count -gt 1 })
         foreach ($suiteGroup in @($suiteGroups)) {
             $rows.Add([pscustomobject]@{ ObjectType = 'User'; DisplayName = $displayName; UserPrincipalName = $upn; SkuFamily = [string]$suiteGroup.Name; SkuNames = (@($suiteGroup.Group | ForEach-Object { $_.Name }) -join '; '); AssignmentSource = 'Mixed/Unknown'; Issue = 'Likely duplicate suite assignment'; RecommendedAction = 'Review stacked Microsoft 365 / Office 365 suite assignments and retain the license set that matches the user role and required services.'; SourceWorksheet = 'Users' }) | Out-Null
+        }
+
+        if ($assignedLicenseNames.Count -gt 0) {
+            $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $user -Names @('AccountEnabled', 'Enabled'))
+            try {
+                $activityState = Get-ImprovementUserLicenseActivityState `
+                    -User $user `
+                    -EmailActivityLookup $emailActivityLookup `
+                    -TeamsActivityLookup $teamsActivityLookup `
+                    -Microsoft365ActivityLookup $microsoft365ActivityLookup
+            }
+            catch {
+                $activityState = [pscustomobject]@{
+                    LastSignInDateTime           = $null
+                    LastExchangeActivityDate     = $null
+                    LastTeamsActivityDate        = $null
+                    LastMicrosoft365ActivityDate = $null
+                    LastActivityDate             = $null
+                    AvailableSignalCount         = 0
+                }
+            }
+            $isDisabledLicensedUser = ($enabled -eq $false)
+            $isInactiveLicensedUser = (
+                -not $isDisabledLicensedUser -and
+                $activityState.AvailableSignalCount -gt 0 -and
+                $activityState.LastActivityDate -and
+                $activityState.LastActivityDate -lt $inactiveCutoff
+            )
+
+            if ($isDisabledLicensedUser -or $isInactiveLicensedUser) {
+                $basis = if ($isDisabledLicensedUser) {
+                    'Account disabled'
+                }
+                else {
+                    "No recent activity in surfaced sign-in or workload signals for $InactiveDaysThreshold+ days"
+                }
+                $rows.Add([pscustomobject]@{
+                    ObjectType                   = 'User'
+                    DisplayName                  = $displayName
+                    UserPrincipalName            = $upn
+                    Enabled                      = $enabled
+                    SkuFamily                    = 'Inactive licensed user'
+                    SkuNames                     = (($assignedLicenseNames | Select-Object -Unique) -join '; ')
+                    AssignmentSource             = if (@($assignmentRows | Where-Object { [string]$_.AssignmentSource -eq 'Group' }).Count -gt 0) { 'Direct/Group review' } else { 'Direct/Unknown' }
+                    Issue                        = if ($isDisabledLicensedUser) { 'Disabled user with assigned licenses' } else { 'Inactive licensed user with assigned licenses' }
+                    LastSignInDateTime           = Get-ImprovementDateText -Date $activityState.LastSignInDateTime
+                    LastExchangeActivityDate     = Get-ImprovementDateText -Date $activityState.LastExchangeActivityDate
+                    LastTeamsActivityDate        = Get-ImprovementDateText -Date $activityState.LastTeamsActivityDate
+                    LastMicrosoft365ActivityDate = Get-ImprovementDateText -Date $activityState.LastMicrosoft365ActivityDate
+                    LastActivityDate             = Get-ImprovementDateText -Date $activityState.LastActivityDate
+                    InactivityBasis              = $basis
+                    RecommendedAction            = 'Validate whether the user still requires paid Microsoft 365 licensing; reclaim or right-size licenses after confirming mailbox, OneDrive, Teams, and compliance hold requirements.'
+                    SourceWorksheet              = 'Users'
+                }) | Out-Null
+            }
         }
     }
 
@@ -4206,6 +4585,8 @@ function Get-CustomerTechnicalObservations {
 
     $domainRows = Convert-ArrayaObjectToArray $Signals.Domains
     $licenseRows = Convert-ArrayaObjectToArray $Signals.LicenseSKUs
+    $licenseOptimizationCandidateRows = Convert-ArrayaObjectToArray $Signals.LicenseOptimizationCandidates
+    $inactiveLicensedUserCandidateRows = @($licenseOptimizationCandidateRows | Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('Issue')) -match 'Inactive licensed user|Disabled user with assigned licenses' })
     $tenantInfoSummaryRecord = if ($Signals.TenantInfoSummary) { Get-ArrayaObjectValue -Object $Signals.TenantInfoSummary -Names @('Summary') } else { $null }
     $secureScoreRows = Convert-ArrayaObjectToArray $Signals.SecuritySecureScore
     $smtpRelaySummary = $Signals.SMTPRelaySummary
@@ -4239,15 +4620,18 @@ function Get-CustomerTechnicalObservations {
     $observations.Add((New-CustomerTechnicalObservationSection -SectionTitle 'Data Protection & Governance' -WhatWasReviewed 'Domain inventory, license capacity, secure score, tenant synchronization state, SMTP authentication signals, and governance-related summary data were reviewed.' -WhatWasObserved ((Join-ArrayaReadableList -Items $governanceObserved) + '.') -WhyItMatters $whyGovernance)) | Out-Null
 
     $userRows = Convert-ArrayaObjectToArray $Signals.Users
-    $inactiveLicensedUsers = @(
-        $userRows |
-            Where-Object {
-                $assignedLicenses = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $_ -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
-                $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
-                $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime'))
-                $assignedLicenses.Count -gt 0 -and (($enabled -eq $false) -or ($lastSignIn -and $lastSignIn -lt (Get-Date).AddDays(-90)))
-            }
-    ).Count
+    $inactiveLicensedUsers = @($inactiveLicensedUserCandidateRows)
+    if ($inactiveLicensedUsers.Count -eq 0) {
+        $inactiveLicensedUsers = @(
+            $userRows |
+                Where-Object {
+                    $assignedLicenses = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $_ -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
+                    $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
+                    $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime'))
+                    $assignedLicenses.Count -gt 0 -and (($enabled -eq $false) -or ($lastSignIn -and $lastSignIn -lt (Get-Date).AddDays(-90)))
+                }
+        )
+    }
     $dormantTeams = @(
         $teamRows | Where-Object {
             $lastActivity = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastActivityDate'))
@@ -4260,7 +4644,7 @@ function Get-CustomerTechnicalObservations {
     if ($staleSharePointSites -gt 0 -or $staleOneDrives -gt 0) { $offboardingObserved += "$staleSharePointSites stale SharePoint site(s) and $staleOneDrives stale OneDrive site(s) remained in scope" }
     if ($null -ne $inactiveGuests90Days) { $offboardingObserved += "$inactiveGuests90Days guest account(s) were inactive for more than 90 days" }
     if ($null -ne $stalePrivileged90Days) { $offboardingObserved += "$stalePrivileged90Days privileged account(s) showed stale sign-in activity over 90 days" }
-    if ($inactiveLicensedUsers -gt 0) { $offboardingObserved += "$inactiveLicensedUsers inactive or disabled user(s) still held paid licenses" }
+    if ($inactiveLicensedUsers.Count -gt 0) { $offboardingObserved += "$($inactiveLicensedUsers.Count) inactive or disabled user(s) still held paid licenses" }
     if ($dormantTeams -gt 0) { $offboardingObserved += "$dormantTeams Team(s) showed older activity dates consistent with dormancy" }
     if ($null -ne $dormantGroups) { $offboardingObserved += "$dormantGroups dormant Microsoft 365 group(s) appeared in the activity summary" }
     if ($null -ne $sharedMailboxesWithoutOwnerSignalLifecycle) { $offboardingObserved += "$sharedMailboxesWithoutOwnerSignalLifecycle shared mailbox(es) lacked an ownership signal" }
@@ -4318,19 +4702,10 @@ function Get-CustomerTechnicalObservations {
         $guestCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $row -Names @('GuestCount'))
         '{0} ({1} guests)' -f $displayName, $(if ($null -eq $guestCount) { 0 } else { $guestCount })
     }
-    $inactiveLicensedUsers = @(
-        $userRows |
-            Where-Object {
-                $assignedLicenses = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $_ -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
-                $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
-                $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime'))
-                $assignedLicenses.Count -gt 0 -and (($enabled -eq $false) -or ($lastSignIn -and $lastSignIn -lt (Get-Date).AddDays(-90)))
-            }
-    )
     $inactiveLicensedExamples = Get-CustomerExampleText -Rows $inactiveLicensedUsers -Top 2 -Default 'No inactive licensed-user examples were surfaced in the current source.' -Project {
         param($row)
         $name = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $row -Names @('DisplayName', 'UserPrincipalName')) -Default 'Unnamed user'
-        $licenses = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $row -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
+        $licenses = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $row -Names @('SkuNames', 'AssignedLicensesFriendly', 'AssignedLicenses'))
         '{0} ({1})' -f $name, $(if ($licenses.Count -gt 0) { ($licenses -join ', ') } else { 'license names not surfaced' })
     }
 
@@ -4648,15 +5023,20 @@ function Get-CustomerConsultativeSummaries {
         -GuestAccessConfigurationRecord $guestAccessConfigurationRecord `
         -MfaEnforcementSummaryRecord $mfaEnforcementSummaryRecord
 
-    $inactiveLicensedUsers = @(
-        $userRows |
-            Where-Object {
-                $assignedLicenses = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $_ -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
-                $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
-                $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime'))
-                $assignedLicenses.Count -gt 0 -and (($enabled -eq $false) -or ($lastSignIn -and $lastSignIn -lt (Get-Date).AddDays(-90)))
-            }
-    ).Count
+    $licenseOptimizationCandidateRows = Convert-ArrayaObjectToArray $Signals.LicenseOptimizationCandidates
+    $inactiveLicensedUserCandidates = @($licenseOptimizationCandidateRows | Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('Issue')) -match 'Inactive licensed user|Disabled user with assigned licenses' })
+    $inactiveLicensedUsers = $inactiveLicensedUserCandidates.Count
+    if ($inactiveLicensedUsers -eq 0) {
+        $inactiveLicensedUsers = @(
+            $userRows |
+                Where-Object {
+                    $assignedLicenses = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $_ -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
+                    $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
+                    $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime'))
+                    $assignedLicenses.Count -gt 0 -and (($enabled -eq $false) -or ($lastSignIn -and $lastSignIn -lt (Get-Date).AddDays(-90)))
+                }
+        ).Count
+    }
     $dormantTeams = @(
         $teamRows | Where-Object {
             $lastActivity = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastActivityDate'))
@@ -5878,6 +6258,20 @@ $nonUserMailboxRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object
 $emailActivitySummary = Get-ArrayaObjectValue -Object $tenantData -Names @('EmailActivitySummary')
 $emailActivityTopSenders = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('EmailActivityTopSenders'))
 $emailActivityTopReceivers = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('EmailActivityTopReceivers'))
+$teamsActivityTopUsers = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('TeamsActivityTopUsers'))
+if ($emailActivityTopSenders.Count -eq 0 -or $emailActivityTopReceivers.Count -eq 0) {
+    $exchangeData = Get-ArrayaObjectValue -Object $tenantData -Names @('Exchange')
+    if ($emailActivityTopSenders.Count -eq 0) {
+        $emailActivityTopSenders = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $exchangeData -Names @('EmailActivityTopSenders'))
+    }
+    if ($emailActivityTopReceivers.Count -eq 0) {
+        $emailActivityTopReceivers = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $exchangeData -Names @('EmailActivityTopReceivers'))
+    }
+}
+if ($teamsActivityTopUsers.Count -eq 0) {
+    $collaborationData = Get-ArrayaObjectValue -Object $tenantData -Names @('Collaboration')
+    $teamsActivityTopUsers = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $collaborationData -Names @('TeamsActivityTopUsers'))
+}
 $connectorRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('MailFlowConnectors'))
 $remoteDomainRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('RemoteDomains'))
 $publicFolderRows = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('PublicFolderDetails'))
@@ -6286,9 +6680,15 @@ $groupLicensingSummary = @(
         -Value (Get-ArrayaObjectValue -Object $tenantData -Names @('GroupLicensingSummary')) `
         -MarkerNames @('GroupName', 'RiskSignal')
 )
+$groupLicensingSummary = @($groupLicensingSummary | Where-Object { Test-ImprovementGroupManagesLicenses -Group $_ })
 if ($groupLicensingSummary.Count -eq 0) {
     $groupLicensingSummary = @(
-        New-ImprovementGroupLicensingSummaryRows -Groups $unifiedGroupRows
+        New-ImprovementGroupLicensingSummaryRows -Groups $unifiedGroupRows -Users $userRows -Licenses $licenseRows
+    )
+}
+else {
+    $groupLicensingSummary = @(
+        Add-ImprovementGroupLicensingEffectiveCounts -Rows $groupLicensingSummary -Users $userRows -Licenses $licenseRows
     )
 }
 
@@ -6297,9 +6697,38 @@ $licenseOptimizationCandidates = @(
         -Value (Get-ArrayaObjectValue -Object $tenantData -Names @('LicenseOptimizationCandidates')) `
         -MarkerNames @('ObjectType', 'Issue')
 )
+$validLicensingGroupNames = @{}
+foreach ($licensingGroupRow in @($groupLicensingSummary)) {
+    $licensingGroupName = [string](Get-ArrayaObjectValue -Object $licensingGroupRow -Names @('GroupName', 'DisplayName', 'Name'))
+    if (-not [string]::IsNullOrWhiteSpace($licensingGroupName)) {
+        $validLicensingGroupNames[$licensingGroupName.ToLowerInvariant()] = $true
+    }
+}
+$licenseOptimizationCandidates = @(
+    $licenseOptimizationCandidates | Where-Object {
+        $objectType = [string](Get-ArrayaObjectValue -Object $_ -Names @('ObjectType'))
+        if ($objectType -notmatch '^(?i)group$') {
+            return $true
+        }
+
+        $skuNames = [string](Get-ArrayaObjectValue -Object $_ -Names @('SkuNames', 'AssignedLicenseFriendlyNames', 'AssignedLicenseSkuPartNumbers'))
+        if (-not [string]::IsNullOrWhiteSpace($skuNames)) {
+            return $true
+        }
+
+        $displayName = [string](Get-ArrayaObjectValue -Object $_ -Names @('DisplayName', 'GroupName', 'Name'))
+        return (-not [string]::IsNullOrWhiteSpace($displayName) -and $validLicensingGroupNames.ContainsKey($displayName.ToLowerInvariant()))
+    }
+)
 if ($licenseOptimizationCandidates.Count -eq 0) {
     $licenseOptimizationCandidates = @(
-        New-ImprovementLicenseOptimizationCandidateRows -Users $userRows -Groups $unifiedGroupRows -Licenses $licenseRows
+        New-ImprovementLicenseOptimizationCandidateRows `
+            -Users $userRows `
+            -Groups $unifiedGroupRows `
+            -Licenses $licenseRows `
+            -EmailActivityRows @(@($emailActivityTopSenders) + @($emailActivityTopReceivers)) `
+            -TeamsActivityRows $teamsActivityTopUsers `
+            -InactiveDaysThreshold 90
     )
 }
 
@@ -6706,17 +7135,9 @@ if ($ownerlessGroups.Count -gt 0) {
     Add-HeuristicFinding -Store $findingStore -RuleId 'TM-004' -Area 'Teams / M365 Groups Governance' -Category 'Teams / M365 Groups Governance' -Severity 'Medium' -Finding 'Microsoft 365 groups without owners were detected.' -Recommendation 'Review ownerless groups, assign accountable owners, and retire dormant groups that no longer serve a collaboration purpose.' -CurrentValue "$($ownerlessGroups.Count) ownerless group(s)" -TargetValue '0 ownerless groups' -Source 'Hybrid/Groups' -RelatedWorksheet 'UnifiedGroups' -RelatedSection 'Group Governance'
 }
 
-$inactiveLicensedUsers = @(
-    $userRows |
-        Where-Object {
-            $assignedLicenses = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $_ -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
-            $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
-            $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime'))
-            $assignedLicenses.Count -gt 0 -and (($enabled -eq $false) -or ($lastSignIn -and $lastSignIn -lt (Get-Date).AddDays(-90)))
-        }
-)
-if ($inactiveLicensedUsers.Count -gt 0) {
-    Add-HeuristicFinding -Store $findingStore -RuleId 'LIC-002' -Area 'Licensing Optimization' -Category 'Licensing Optimization' -Severity 'Medium' -Finding 'Disabled or inactive users still appear to hold paid licenses.' -Recommendation 'Review paid license assignments for disabled or inactive users and reclaim unused SKUs where appropriate.' -CurrentValue "$($inactiveLicensedUsers.Count) inactive/disabled licensed user(s)" -TargetValue 'Inactive paid-license assignments reviewed and reclaimed' -Source 'Hybrid/Licensing' -RelatedWorksheet 'Users' -RelatedSection 'Licensing'
+$inactiveLicensedUserCandidates = @($licenseOptimizationCandidates | Where-Object { [string]$_.Issue -match 'Inactive licensed user|Disabled user with assigned licenses' })
+if ($inactiveLicensedUserCandidates.Count -gt 0) {
+    Add-HeuristicFinding -Store $findingStore -RuleId 'LIC-002' -Area 'Licensing Optimization' -Category 'Licensing Optimization' -Severity 'Medium' -Finding 'Disabled or inactive users still appear to hold paid licenses.' -Recommendation 'Review paid license assignments for disabled or inactive users and reclaim unused SKUs where appropriate.' -CurrentValue "$($inactiveLicensedUserCandidates.Count) inactive/disabled licensed user(s)" -TargetValue 'Inactive paid-license assignments reviewed and reclaimed' -Source 'Summary/LicenseOptimization' -RelatedWorksheet 'LicenseOptimizationCandidates' -RelatedSection 'Licensing'
 }
 
 $nonCompliantDevices = @($deviceRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsCompliant', 'Compliant'))) -eq $false })
@@ -7166,6 +7587,7 @@ $customerAssessmentSignals = [pscustomobject]@{
     SharePoint                 = $sharePointRows
     OneDrive                   = $oneDriveRows
     AllTeams                   = $teamRows
+    TeamsActivityTopUsers      = $teamsActivityTopUsers
     TeamsGroupsCleanupCandidates = $teamsGroupsCleanupCandidates
     TeamsVoiceSummary          = $teamsVoiceSummary
     UnifiedGroups              = $unifiedGroupRows

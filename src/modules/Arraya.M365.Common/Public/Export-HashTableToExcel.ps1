@@ -174,6 +174,184 @@ function Export-HashTableToExcel {
         }
     }
 
+    function Convert-WorkbookExportTableRows {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $false)]
+            $TableValue
+        )
+
+        if ($null -eq $TableValue) {
+            return @()
+        }
+
+        if ($TableValue -is [hashtable] -or $TableValue -is [System.Collections.Specialized.OrderedDictionary]) {
+            return @($TableValue.Values)
+        }
+
+        if (($TableValue -is [System.Collections.IEnumerable]) -and -not ($TableValue -is [string])) {
+            return @($TableValue)
+        }
+
+        return @($TableValue)
+    }
+
+    function Get-WorkbookExportObjectValue {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $false)]
+            [AllowNull()]
+            $InputObject,
+            [Parameter(Mandatory = $true)]
+            [string[]]$Names
+        )
+
+        if ($null -eq $InputObject) {
+            return $null
+        }
+
+        if ($InputObject -is [System.Collections.IDictionary]) {
+            foreach ($name in $Names) {
+                foreach ($key in @($InputObject.Keys)) {
+                    if ([string]::Equals([string]$key, $name, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        return $InputObject[$key]
+                    }
+                }
+            }
+        }
+
+        foreach ($name in $Names) {
+            $property = $InputObject.PSObject.Properties[$name]
+            if ($null -ne $property) {
+                return $property.Value
+            }
+        }
+
+        return $null
+    }
+
+    function Convert-WorkbookExportNumber {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $false)]
+            [AllowNull()]
+            $Value
+        )
+
+        if ($null -eq $Value) {
+            return $null
+        }
+
+        if ($Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal]) {
+            return [double]$Value
+        }
+
+        $text = ([string]$Value).Trim()
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            return $null
+        }
+
+        $number = 0.0
+        if ([double]::TryParse($text, [System.Globalization.NumberStyles]::Any, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$number)) {
+            return $number
+        }
+
+        return $null
+    }
+
+    function Test-WorkbookExportMeaningfulLicenseText {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $false)]
+            [AllowNull()]
+            $Value
+        )
+
+        $text = ([string]$Value).Trim()
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            return $false
+        }
+
+        return ($text -notmatch '^(?i)notcollected|not surfaced|unknown|unavailable$')
+    }
+
+    function Test-WorkbookExportLicensingGroupRow {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $false)]
+            [AllowNull()]
+            $Record
+        )
+
+        if ($null -eq $Record) {
+            return $false
+        }
+
+        $assignedLicenseCount = Convert-WorkbookExportNumber -Value (Get-WorkbookExportObjectValue -InputObject $Record -Names @('AssignedLicenseCount'))
+        if ($null -ne $assignedLicenseCount) {
+            return ($assignedLicenseCount -gt 0)
+        }
+
+        foreach ($fieldName in @('AssignedLicenseSkuIds', 'AssignedLicenseSkuPartNumbers', 'AssignedLicenseFriendlyNames', 'SkuNames')) {
+            if (Test-WorkbookExportMeaningfulLicenseText -Value (Get-WorkbookExportObjectValue -InputObject $Record -Names @($fieldName))) {
+                return $true
+            }
+        }
+
+        $isManagingLicenses = Get-WorkbookExportObjectValue -InputObject $Record -Names @('IsManagingLicenses')
+        if ($isManagingLicenses -is [bool]) {
+            return [bool]$isManagingLicenses
+        }
+
+        return (([string]$isManagingLicenses).Trim() -match '^(?i)true$')
+    }
+
+    function Select-WorkbookExportRows {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$TableName,
+            [Parameter(Mandatory = $false)]
+            $TableValue,
+            [Parameter(Mandatory = $true)]
+            [hashtable]$ExportTables
+        )
+
+        if ($TableName -eq 'GroupLicensingSummary') {
+            return @(Convert-WorkbookExportTableRows -TableValue $TableValue | Where-Object { Test-WorkbookExportLicensingGroupRow -Record $_ })
+        }
+
+        if ($TableName -eq 'LicenseOptimizationCandidates') {
+            $validLicensingGroupNames = @{}
+            if ($ExportTables.ContainsKey('GroupLicensingSummary')) {
+                foreach ($groupRow in @(Convert-WorkbookExportTableRows -TableValue $ExportTables['GroupLicensingSummary'] | Where-Object { Test-WorkbookExportLicensingGroupRow -Record $_ })) {
+                    $groupName = [string](Get-WorkbookExportObjectValue -InputObject $groupRow -Names @('GroupName', 'DisplayName', 'Name'))
+                    if (-not [string]::IsNullOrWhiteSpace($groupName)) {
+                        $validLicensingGroupNames[$groupName.ToLowerInvariant()] = $true
+                    }
+                }
+            }
+
+            return @(
+                Convert-WorkbookExportTableRows -TableValue $TableValue | Where-Object {
+                    $objectType = [string](Get-WorkbookExportObjectValue -InputObject $_ -Names @('ObjectType'))
+                    if ($objectType -notmatch '^(?i)group$') {
+                        return $true
+                    }
+
+                    if (Test-WorkbookExportMeaningfulLicenseText -Value (Get-WorkbookExportObjectValue -InputObject $_ -Names @('SkuNames', 'AssignedLicenseFriendlyNames', 'AssignedLicenseSkuPartNumbers'))) {
+                        return $true
+                    }
+
+                    $displayName = [string](Get-WorkbookExportObjectValue -InputObject $_ -Names @('DisplayName', 'GroupName', 'Name'))
+                    return (-not [string]::IsNullOrWhiteSpace($displayName) -and $validLicensingGroupNames.ContainsKey($displayName.ToLowerInvariant()))
+                }
+            )
+        }
+
+        return $TableValue
+    }
+
     function New-ExplicitWorksheetPlaceholderRow {
         [CmdletBinding()]
         param(
@@ -421,6 +599,7 @@ function Export-HashTableToExcel {
     $totalCount = ($orderedTables | Measure-Object).Count
     $excelPackage = $null
     $autoSizeRowLimit = 1000
+    $singleRecordWorksheets = @('TenantInfo')
 
     try {
         Wait-ForExportFileAvailability -Path $ExportDetails
@@ -437,6 +616,7 @@ function Export-HashTableToExcel {
                 Write-ProgressHelper -Total $totalCount -Id 2 -Activity "Exporting Hash To Excel"
                 Write-Log -Type DEBUG -Message ("Exporting '{0}' Hash Table to '{1}' as worksheet '{2}'" -f $table, $ExportDetails, $worksheetName) -ExportFileLocation $ExportDetails
 
+                $sourceTableName = $table
                 $tableValue = if ($WorkbookExportPolicy -eq 'TenantToTenantCutover') {
                     $sourceTableName = Get-TenantToTenantWorksheetSourceName -LogicalName $table -ExportTables $hashtable
                     if ($hashtable.ContainsKey($sourceTableName)) { $hashtable[$sourceTableName] } else { $null }
@@ -444,7 +624,16 @@ function Export-HashTableToExcel {
                 else {
                     $hashtable[$table]
                 }
-                $sourceInfo = Get-WorksheetExportSourceInfo -TableValue $tableValue
+                $tableValue = Select-WorkbookExportRows -TableName $table -TableValue $tableValue -ExportTables $hashtable
+                $sourceInfo = if (($singleRecordWorksheets -contains $table) -and ($sourceTableName -eq $table) -and ($tableValue -is [System.Collections.IDictionary])) {
+                    [pscustomobject]@{
+                        Count  = 1
+                        Source = @($tableValue)
+                    }
+                }
+                else {
+                    Get-WorksheetExportSourceInfo -TableValue $tableValue
+                }
                 $sourceCount = [int]$sourceInfo.Count
                 $exportSource = $sourceInfo.Source
                 $explicitColumns = if ($WorkbookExportPolicy -eq 'TenantToTenantCutover') { @(Get-TenantToTenantWorksheetColumns -LogicalName $table) } else { @() }
