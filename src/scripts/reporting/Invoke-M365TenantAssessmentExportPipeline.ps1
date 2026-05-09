@@ -120,6 +120,16 @@ function Invoke-M365TenantAssessmentExportPipeline {
         }
     }
 
+    function Test-IsSolutionsEngineerOutputProfile {
+        param([string]$ProfileLabel)
+
+        if ([string]::IsNullOrWhiteSpace($ProfileLabel)) {
+            return $false
+        }
+
+        return ($ProfileLabel -match '(?i)SolutionsEngineer')
+    }
+
     function Try-OpenHtmlArtifact {
         [CmdletBinding()]
         param(
@@ -230,6 +240,29 @@ function Invoke-M365TenantAssessmentExportPipeline {
             Export-TenantStatsJson -TenantStatsHash $TenantStatsHash -Path $jsonExportPath
             $generatedArtifacts['Assessment Snapshot JSON'] = $jsonExportPath
             Write-PipelineLog -Type INFO -Message "Exported Tenant Statistics JSON to $jsonExportPath"
+
+            if (Test-IsSolutionsEngineerOutputProfile -ProfileLabel $OutputProfileLabel) {
+                try {
+                    $evidenceCoverageScriptPath = Join-Path -Path $PSScriptRoot -ChildPath 'Test-SolutionsEngineerAssessmentEvidence.ps1'
+                    if (-not (Test-Path -Path $evidenceCoverageScriptPath)) {
+                        throw "Solutions Engineer evidence coverage validator not found: $evidenceCoverageScriptPath"
+                    }
+
+                    $evidenceCoverageFileName = if ([string]::IsNullOrWhiteSpace($artifactPrefix)) {
+                        'SolutionsEngineerEvidenceCoverage.json'
+                    }
+                    else {
+                        '{0}-SolutionsEngineerEvidenceCoverage.json' -f $artifactPrefix
+                    }
+                    $evidenceCoveragePath = Join-Path -Path (Get-SupportDirectory) -ChildPath $evidenceCoverageFileName
+                    & $evidenceCoverageScriptPath -SnapshotPath $jsonExportPath -OutputPath $evidenceCoveragePath -PassThru | Out-Null
+                    $generatedArtifacts['Solutions Engineer Evidence Coverage'] = $evidenceCoveragePath
+                    Write-PipelineLog -Type INFO -Message "Exported Solutions Engineer evidence coverage to $evidenceCoveragePath"
+                }
+                catch {
+                    Write-PipelineLog -Type WARNING -Message "Unable to export Solutions Engineer evidence coverage: $($_.Exception.Message)"
+                }
+            }
         }
         catch {
             $jsonExportErrorMessage = "Unable to export Tenant Statistics JSON: $($_.Exception.Message)"

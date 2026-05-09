@@ -222,6 +222,9 @@
         "AuthenticationConfig",
         "AuthenticationConfigSummary"
       ],
+      "ExpectedEmptyDatasets": [
+        "AuthenticationSSOApplications"
+      ],
       "ChecksFor": [
         "High-privilege enterprise applications",
         "Third-party applications with application permissions",
@@ -268,7 +271,6 @@
         "RemoteDomains",
         "SpamFilteringConfig",
         "SMTPRelaySummary",
-        "SMTPRelayServiceAccounts",
         "ForwardingPolicySummary",
         "InboxRulesExternalForwarding",
         "SharedMailboxGovernanceSummary",
@@ -276,6 +278,9 @@
         "EmailActivitySummary",
         "EmailActivityTopSenders",
         "EmailActivityTopReceivers"
+      ],
+      "ExpectedEmptyDatasets": [
+        "InboxRulesExternalForwarding"
       ],
       "ChecksFor": [
         "Mailbox or inbox-rule forwarding that needs approval or removal",
@@ -323,6 +328,10 @@
         "OwnershipGovernanceSummary",
         "OneDriveOwnerMismatches",
         "CollaborationActivitySummary"
+      ],
+      "ExpectedEmptyDatasets": [
+        "ExternalSharingSiteOverrides",
+        "OneDriveOwnerMismatches"
       ],
       "ChecksFor": [
         "Tenant-level external sharing posture and anonymous link defaults",
