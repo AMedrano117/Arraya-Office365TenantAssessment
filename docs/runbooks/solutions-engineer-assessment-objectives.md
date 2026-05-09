@@ -63,6 +63,37 @@ The profile is designed to be a professional-services assessment, not a proof en
 - Endpoint depth: device summaries support posture triage, not full endpoint-management attestation.
 - Application attestation: the assessment identifies app-review candidates; it does not prove owner approval or business justification.
 
+## Validate A Collected Snapshot
+
+When a `SolutionsEngineer` run produces an assessment snapshot JSON, the export pipeline writes a support artifact beside the snapshot with the suffix `SolutionsEngineerEvidenceCoverage.json` such as `Contoso-SolutionsEngineerEvidenceCoverage.json`. Use it to confirm which objective families have supporting datasets before treating a run as assessment-ready.
+
+You can also run the evidence coverage validator manually against any snapshot:
+
+```powershell
+.\src\scripts\reporting\Test-SolutionsEngineerAssessmentEvidence.ps1 `
+  -SnapshotPath '.\Outputs\Contoso Tenant Discovery Report-SolutionsEngineer_20260508_120000-Snapshot.json'
+```
+
+To write a machine-readable coverage artifact:
+
+```powershell
+.\src\scripts\reporting\Test-SolutionsEngineerAssessmentEvidence.ps1 `
+  -SnapshotPath '.\Outputs\Contoso Tenant Discovery Report-SolutionsEngineer_20260508_120000-Snapshot.json' `
+  -OutputPath '.\Outputs\Support\SolutionsEngineerEvidenceCoverage.json'
+```
+
+Coverage statuses:
+
+- `Covered`: every expected dataset for the objective was found, and at least one dataset had records.
+- `Review`: every expected dataset was found, but one or more datasets were unexpectedly empty. This may be valid, but it needs interpretation.
+- `PresentEmpty`: every expected dataset was found, but all were empty.
+- `Partial`: at least one expected dataset was found and at least one was missing.
+- `Missing`: none of the expected datasets for the objective were found.
+
+Some detail datasets are expected to be empty in healthy tenants, such as external inbox-rule forwarding rows or OneDrive ownership mismatches. Those are explicitly marked in the matrix so an empty finding table does not get mistaken for weak collection.
+
+Use `-FailOnMissingEvidence` when this should behave like a validation gate for engineering or QA runs.
+
 ## Maintainer Notes
 
 When adding or changing a Solutions Engineer objective:

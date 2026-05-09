@@ -95,6 +95,15 @@ Describe 'Solutions Engineer assessment objective matrix' {
             @($objective.ChecksFor).Count | Should -BeGreaterThan 0
             @($objective.ReportUse).Count | Should -BeGreaterThan 0
 
+            $expectedEmptyDatasets = @()
+            if ($objective.PSObject.Properties['ExpectedEmptyDatasets']) {
+                $expectedEmptyDatasets = @($objective.ExpectedEmptyDatasets)
+            }
+
+            foreach ($expectedEmptyDataset in $expectedEmptyDatasets) {
+                @($objective.ExpectedDatasets) | Should -Contain $expectedEmptyDataset
+            }
+
             foreach ($reportUse in @($objective.ReportUse)) {
                 $script:allowedReportUses | Should -Contain $reportUse
             }

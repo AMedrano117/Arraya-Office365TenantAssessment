@@ -36,6 +36,7 @@ The standalone `Invoke-EntraAppReport.ps1` file in that folder is kept only as a
 ## Operator references
 - [../../RUN.md](../../RUN.md)
 - [improvement-plan-rule-taxonomy.md](improvement-plan-rule-taxonomy.md)
+- [solutions-engineer-assessment-objectives.md](solutions-engineer-assessment-objectives.md)
 
 ## Improve workflow notes
 - `M365` is now the standard full assessment path and includes `Improve` by default.
