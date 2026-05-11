@@ -221,6 +221,10 @@ Describe 'Solutions Engineer evidence coverage validator' {
 
         $manifest = Get-Content -Raw -Path $artifacts['Manifest'] | ConvertFrom-Json -Depth 100
         @($manifest.Artifacts.Type) | Should -Contain 'Solutions Engineer Evidence Coverage'
+        $manifest.OperatorSummary | Should -Not -BeNullOrEmpty
+        $manifest.OperatorSummary.EvidenceCoverage.Status | Should -Be 'Covered'
+        $manifest.OperatorSummary.EvidenceCoverage.ObjectiveCount | Should -Be @($script:matrix.Objectives).Count
+        $manifest.OperatorSummary.SupportArtifacts.Type | Should -Contain 'Solutions Engineer Evidence Coverage'
     }
 
     It 'does not add the Solutions Engineer evidence coverage artifact for other output profiles' {

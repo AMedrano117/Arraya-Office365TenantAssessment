@@ -35,6 +35,7 @@ Describe 'Arraya.M365.Common' {
             'Import-ArrayaTenantSnapshot'
             'Invoke-ArrayaCollectionStepSafe'
             'Invoke-QuietCommand'
+            'New-ArrayaAssessmentOperatorSummary'
             'New-ArrayaAssessmentContext'
             'New-ArrayaTenantSnapshot'
             'Resolve-ArrayaSnapshotOutputContext'
@@ -364,6 +365,12 @@ Describe 'Arraya.M365.Common' {
 
         Split-Path -Path $manifestPath -Leaf | Should -Be 'Contoso Ltd-Run.manifest.json'
         Test-Path -Path $manifestPath | Should -BeTrue
+
+        $manifest = Get-Content -Raw -Path $manifestPath | ConvertFrom-Json -Depth 10
+        $manifest.OperatorSummary | Should -Not -BeNullOrEmpty
+        $manifest.OperatorSummary.PrimaryDeliverables.Type | Should -Contain 'Workbook'
+        $manifest.OperatorSummary.RecommendedStart | Should -Contain 'Workbook'
+        $manifest.OperatorSummary.OperatorNote | Should -Match 'Start with PrimaryDeliverables'
     }
 
     It 'calculates shared snapshot metrics for improvement and comparison workflows' {

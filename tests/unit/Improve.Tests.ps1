@@ -1024,6 +1024,38 @@ Describe 'Improve workflow' {
 
         $snapshotPath = Join-Path $TestDrive 'assessment.json'
         Export-ArrayaTenantSnapshot -Snapshot $snapshot -Path $snapshotPath
+        $supportPath = Join-Path $TestDrive 'Support'
+        $null = New-Item -ItemType Directory -Path $supportPath -Force
+        [pscustomobject]@{
+            OutputProfile               = 'SolutionsEngineer'
+            ReportingMode               = 'Operator'
+            ObjectiveCount              = 1
+            CoveredObjectiveCount       = 1
+            ReviewObjectiveCount        = 0
+            PartialObjectiveCount       = 0
+            MissingObjectiveCount       = 0
+            MissingDatasetCount         = 0
+            EmptyDatasetCount           = 0
+            UnexpectedEmptyDatasetCount = 0
+            Objectives                  = @(
+                [pscustomobject]@{
+                    ObjectiveId          = 'SE-ID-001'
+                    Area                 = 'Identity and privileged access'
+                    Status               = 'Covered'
+                    Confidence           = 'Strong'
+                    ExpectedDatasetCount = 2
+                    PresentDatasetCount  = 2
+                    PopulatedDatasetCount = 2
+                }
+            )
+            CoverageGaps                = @(
+                [pscustomobject]@{
+                    GapId             = 'SE-GAP-001'
+                    Area              = 'Live integration proof'
+                    CurrentLimitation = 'Needs validation across more tenants.'
+                }
+            )
+        } | ConvertTo-Json -Depth 20 | Set-Content -Path (Join-Path $supportPath 'assessment-SolutionsEngineerEvidenceCoverage.json') -Encoding UTF8
 
         $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
 
@@ -1580,6 +1612,10 @@ Describe 'Improve workflow' {
 
         $engineerPack = Get-Content -Raw $result.EngineerActionPackPath
         $engineerPack | Should -Match '## Engineering Summary'
+        $engineerPack | Should -Match '## Assessment Evidence Coverage'
+        $engineerPack | Should -Match 'Objectives covered: 1/1'
+        $engineerPack | Should -Match 'SE-ID-001'
+        $engineerPack | Should -Match 'Known Confidence Limits'
         $engineerPack | Should -Match '## Findings To Work'
         $engineerPack | Should -Match '## Supporting Files'
         $engineerPack | Should -Match 'Why It Matters'

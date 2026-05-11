@@ -520,6 +520,32 @@ function Update-AssessmentArtifactManifestWithImproveOutputs {
         $manifestData[[string]$property.Name] = $property.Value
     }
     $manifestData['Artifacts'] = @($artifactRows)
+    try {
+        if (-not (Get-Command -Name 'New-ArrayaAssessmentOperatorSummary' -ErrorAction SilentlyContinue)) {
+            $commonManifestPath = Join-Path $script:RepoRoot 'src\modules\Arraya.M365.Common\Arraya.M365.Common.psd1'
+            if (Test-Path -Path $commonManifestPath -PathType Leaf) {
+                Import-Module -Name $commonManifestPath -Force -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
+            }
+        }
+
+        if (Get-Command -Name 'New-ArrayaAssessmentOperatorSummary' -ErrorAction SilentlyContinue) {
+            $outputProfileLabel = if ($manifest.PSObject.Properties['OutputProfile']) { [string]$manifest.OutputProfile } else { '' }
+            $reportingMode = if ($manifest.PSObject.Properties['ReportingMode']) { [string]$manifest.ReportingMode } else { '' }
+            $collectionOnly = if ($manifest.PSObject.Properties['CollectionOnly']) { [bool]$manifest.CollectionOnly } else { $false }
+            $exportOnly = if ($manifest.PSObject.Properties['ExportOnly']) { [bool]$manifest.ExportOnly } else { $false }
+
+            $manifestData['OperatorSummary'] = New-ArrayaAssessmentOperatorSummary `
+                -Artifacts $artifactRows `
+                -OutputProfileLabel $outputProfileLabel `
+                -ReportingMode $reportingMode `
+                -CollectionOnly $collectionOnly `
+                -ExportOnly $exportOnly
+        }
+    }
+    catch {
+        # Preserve manifest update behavior even if the operator summary cannot be refreshed.
+    }
+
     $json = ([pscustomobject]$manifestData) | ConvertTo-Json -Depth 10
     [System.IO.File]::WriteAllText($ManifestPath, $json, [System.Text.UTF8Encoding]::new($false))
 }
