@@ -783,7 +783,9 @@ function Invoke-M365TenantWorkflow {
         [Parameter(Mandatory = $false)]
         [pscredential]$ClientSecretCredential,
         [Parameter(Mandatory = $false)]
-        [securestring]$ClientSecretSecure
+        [securestring]$ClientSecretSecure,
+        [Parameter(Mandatory = $false)]
+        [switch]$PassThruInvocation
     )
 
     $plan = Resolve-M365OutputProfileExecutionPlan -OutputProfile $OutputProfile
@@ -902,6 +904,15 @@ function Invoke-M365TenantWorkflow {
             if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
             if ($PSBoundParameters.ContainsKey('ClientSecretCredential')) { $invokeParams.ClientSecretCredential = $ClientSecretCredential }
             if ($PSBoundParameters.ContainsKey('ClientSecretSecure')) { $invokeParams.ClientSecretSecure = $ClientSecretSecure }
+        }
+    }
+
+    if ($PassThruInvocation) {
+        return [pscustomobject]@{
+            Mode       = $Mode
+            ScriptPath = $scriptPath
+            Parameters = $invokeParams
+            Plan       = $plan
         }
     }
 
