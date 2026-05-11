@@ -52,6 +52,13 @@ function Write-Log {
             return $BaseDirectory
         }
 
+        if ([string]::Equals((Split-Path -Path $BaseDirectory -Leaf), 'Deliverables', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $runRootDirectory = Split-Path -Path $BaseDirectory -Parent
+            if (-not [string]::IsNullOrWhiteSpace($runRootDirectory)) {
+                return (Join-Path -Path (Join-Path -Path $runRootDirectory -ChildPath 'Support') -ChildPath 'Debugging')
+            }
+        }
+
         return (Join-Path -Path $BaseDirectory -ChildPath 'Debugging')
     }
 

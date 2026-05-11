@@ -333,7 +333,13 @@ $requiredCommonCommands = @(
     'Convert-ArrayaSnapshotToLegacyTenantStatsHash',
     'Import-ArrayaTenantSnapshot',
     'Export-ArrayaTenantSnapshot',
-    'Write-ArrayaAssessmentArtifactManifest'
+    'Write-ArrayaAssessmentArtifactManifest',
+    'New-ArrayaCollectorStep',
+    'Invoke-ArrayaCollectorPlan',
+    'Get-ArrayaCollectorCacheValue',
+    'Set-ArrayaCollectorCacheValue',
+    'Invoke-ArrayaGraphCollectionRequest',
+    'Invoke-ArrayaGraphCollectionBatch'
 )
 $missingCommonCommands = @(
     $requiredCommonCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
@@ -2603,14 +2609,23 @@ function Get-ArrayaGraphResource {
         [switch]$SuppressAccessDeniedWarning
     )
 
-    return Office365Custom\Get-GraphData `
+    $graphMode = if ($script:CurrentGraphMode) { [string]$script:CurrentGraphMode } elseif ($PreferRest) { 'REST' } else { 'SDK' }
+    return Invoke-ArrayaGraphCollectionRequest `
         -Uri $Uri `
-        -PageSize $PageSize `
         -Activity $Activity `
-        -UseRestMethod:$PreferRest `
-        -MaxRetries $MaxRetries `
-        -SuppressProgress:$SuppressProgress `
-        -SuppressAccessDeniedWarning:$SuppressAccessDeniedWarning
+        -Headers $Headers `
+        -GraphMode $graphMode `
+        -Context $script:AssessmentContext `
+        -ScriptBlock {
+            Office365Custom\Get-GraphData `
+                -Uri $Uri `
+                -PageSize $PageSize `
+                -Activity $Activity `
+                -UseRestMethod:$PreferRest `
+                -MaxRetries $MaxRetries `
+                -SuppressProgress:$SuppressProgress `
+                -SuppressAccessDeniedWarning:$SuppressAccessDeniedWarning
+        }
 }
 
 function Export-ArrayaGraphReportCsv {
@@ -2750,7 +2765,9 @@ function Write-ConsoleArtifactSummary {
     Write-Host "Assessment complete in $DurationText" -ForegroundColor Green
 
     $primaryArtifactLabels = @(
+        'Workbook',
         'Customer Assessment Report',
+        'Roadmap Remediation Plan',
         'Engineer Action Pack'
     )
     $primaryArtifacts = @()
@@ -2992,6 +3009,38 @@ function Resolve-AssessmentExportTargetPath {
     }
 
     return (Resolve-Path -Path $resolvedAssessmentFolder).Path
+}
+
+function Resolve-AssessmentHumanDeliverableTargetPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ResolvedExportTargetPath
+    )
+
+    $leafName = [System.IO.Path]::GetFileName($ResolvedExportTargetPath)
+    $leafExtension = [System.IO.Path]::GetExtension($leafName)
+    if (-not [string]::IsNullOrWhiteSpace($leafExtension)) {
+        return $ResolvedExportTargetPath
+    }
+
+    $resolvedRoot = if (Test-Path -Path $ResolvedExportTargetPath) {
+        (Resolve-Path -Path $ResolvedExportTargetPath).Path
+    }
+    else {
+        [System.IO.Path]::GetFullPath($ResolvedExportTargetPath)
+    }
+
+    if ([string]::Equals((Split-Path -Path $resolvedRoot -Leaf), 'Deliverables', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $resolvedRoot
+    }
+
+    $deliverablesFolder = Join-Path -Path $resolvedRoot -ChildPath 'Deliverables'
+    if (-not (Test-Path -Path $deliverablesFolder)) {
+        New-Item -Path $deliverablesFolder -ItemType Directory -Force | Out-Null
+    }
+
+    return (Resolve-Path -Path $deliverablesFolder).Path
 }
 
 $script:ImportExcelReady = $false
@@ -5332,6 +5381,103 @@ function Invoke-ProfileAwareAssessmentStep {
     }
 }
 
+function New-AssessmentCollectorSections {
+    [CmdletBinding()]
+    param()
+
+    return @(
+        [pscustomobject]@{ Step = '1/6'; Name = 'Tenant Overview' },
+        [pscustomobject]@{ Step = '2/6'; Name = 'Identity' },
+        [pscustomobject]@{ Step = '3/6'; Name = 'Exchange' },
+        [pscustomobject]@{ Step = '4/6'; Name = 'Collaboration' },
+        [pscustomobject]@{ Step = '5/6'; Name = 'Endpoint' },
+        [pscustomobject]@{ Step = '6/6'; Name = 'Governance' }
+    )
+}
+
+function New-AssessmentLiveCollectorPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$GraphMode,
+        [Parameter(Mandatory = $true)]
+        [string]$SharePointDiscoveryService,
+        [Parameter(Mandatory = $true)]
+        [string]$TeamsDiscoveryService
+    )
+
+    $steps = New-Object System.Collections.Generic.List[object]
+    $steps.Add((New-ArrayaCollectorStep -Name 'Tenant overview' -Section 'Tenant Overview' -Workload 'Tenant' -Produces @('TenantInfo') -ScriptBlock { Get-TenantOverviewInfo })) | Out-Null
+    if ($GraphMode -eq 'REST') {
+        $steps.Add((New-ArrayaCollectorStep -Name 'License SKUs' -Section 'Tenant Overview' -Workload 'Identity' -Enabled $false -SkipReason 'Requires Microsoft Graph SDK collection mode' -Produces @('LicenseSKUs') -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' })) | Out-Null
+    }
+    else {
+        $steps.Add((New-ArrayaCollectorStep -Name 'License SKUs' -Section 'Tenant Overview' -Workload 'Identity' -Produces @('LicenseSKUs') -ScriptBlock { Get-AllLicenseSKUs })) | Out-Null
+    }
+    $steps.Add((New-ArrayaCollectorStep -Name 'AD Connect sync details' -Section 'Tenant Overview' -Workload 'Tenant' -Produces @('AdConnectConfiguration') -ScriptBlock { Get-AdConnectSyncDetails })) | Out-Null
+
+    if ($GraphMode -eq 'REST') {
+        $steps.Add((New-ArrayaCollectorStep -Name 'Users' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectUsers) -SkipReason 'User inventory is disabled for this profile.' -Produces @('Users') -ScriptBlock { Get-GraphUserStats -Context $script:AssessmentContext })) | Out-Null
+        $steps.Add((New-ArrayaCollectorStep -Name 'Admins' -Section 'Identity' -Workload 'Identity' -Enabled $false -SkipReason 'Requires Microsoft Graph SDK collection mode' -Produces @('Admins') -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' })) | Out-Null
+        $steps.Add((New-ArrayaCollectorStep -Name 'Entra groups' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectEntraGroups) -SkipReason 'Entra group inventory is disabled for this profile.' -Produces @('EntraIDGroups') -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType REST -Context $script:AssessmentContext })) | Out-Null
+        $steps.Add((New-ArrayaCollectorStep -Name 'Domains' -Section 'Identity' -Workload 'Identity' -Enabled $false -SkipReason 'Requires Microsoft Graph SDK collection mode' -Produces @('Domains') -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' })) | Out-Null
+        $steps.Add((New-ArrayaCollectorStep -Name 'Authentication/SSO configuration' -Section 'Identity' -Workload 'Identity' -Enabled $false -SkipReason 'Requires Microsoft Graph SDK collection mode' -Produces @('AuthenticationConfig', 'AuthenticationSSOApplications') -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' })) | Out-Null
+        $steps.Add((New-ArrayaCollectorStep -Name 'Federation/cross-tenant configuration' -Section 'Identity' -Workload 'Identity' -Enabled $false -SkipReason 'Requires Microsoft Graph SDK collection mode' -Produces @('FederationAndCrossTenantConfiguration') -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' })) | Out-Null
+        $steps.Add((New-ArrayaCollectorStep -Name 'Conditional Access policies' -Section 'Identity' -Workload 'Identity' -Enabled $false -SkipReason 'Requires Microsoft Graph SDK collection mode' -Produces @('ConditionalAccessPolicies') -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' })) | Out-Null
+        $steps.Add((New-ArrayaCollectorStep -Name 'MFA registration details' -Section 'Identity' -Workload 'Identity' -Enabled $false -SkipReason 'Requires Microsoft Graph SDK collection mode' -Produces @('MfaRegistrationDetails') -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' })) | Out-Null
+    }
+    else {
+        $steps.Add((New-ArrayaCollectorStep -Name 'Users' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectUsers) -SkipReason 'User inventory is disabled for this profile.' -Produces @('Users') -ScriptBlock { Get-AllUserDetails -detailLevel $reportingMode })) | Out-Null
+        $steps.Add((New-ArrayaCollectorStep -Name 'Admins' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectAdmins) -SkipReason 'Admin inventory is disabled for this profile.' -Produces @('Admins') -ScriptBlock { Get-AllOffice365Admins })) | Out-Null
+        $steps.Add((New-ArrayaCollectorStep -Name 'Entra groups' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectEntraGroups) -SkipReason 'Entra group inventory is disabled for this profile.' -Produces @('EntraIDGroups') -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType SDK -Context $script:AssessmentContext })) | Out-Null
+        $steps.Add((New-ArrayaCollectorStep -Name 'Domains' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectDomains) -SkipReason 'Domain inventory is disabled for this profile.' -Produces @('Domains') -ScriptBlock { Get-AllOffice365Domains })) | Out-Null
+        $steps.Add((New-ArrayaCollectorStep -Name 'Authentication/SSO configuration' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectAuthenticationConfiguration) -SkipReason 'Authentication and SSO collection is disabled for this profile.' -Produces @('AuthenticationConfig', 'AuthenticationSSOApplications') -ScriptBlock { Get-AuthenticationConfiguration -detailLevel $reportingMode })) | Out-Null
+        $steps.Add((New-ArrayaCollectorStep -Name 'Federation/cross-tenant configuration' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectFederationConfiguration) -SkipReason 'Federation and cross-tenant collection is disabled for this profile.' -Produces @('FederationAndCrossTenantConfiguration') -ScriptBlock { Get-FederationAndCrossTenantConfiguration })) | Out-Null
+        $steps.Add((New-ArrayaCollectorStep -Name 'Conditional Access policies' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectConditionalAccessPolicies) -SkipReason 'Conditional Access collection is disabled for this profile.' -Produces @('ConditionalAccessPolicies') -ScriptBlock { Get-ConditionalAccessPoliciesReport -detailLevel $reportingMode })) | Out-Null
+        $steps.Add((New-ArrayaCollectorStep -Name 'MFA registration details' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectMfaRegistrationDetails) -SkipReason 'MFA registration collection is disabled for this profile.' -Produces @('MfaRegistrationDetails') -ScriptBlock { Get-MfaRegistrationDetails })) | Out-Null
+    }
+
+    $steps.Add((New-ArrayaCollectorStep -Name 'Exchange recipients' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectExchangeRecipients) -SkipReason 'Not required for this profile output.' -Produces @('AllRecipients') -ScriptBlock { Get-AllRecipientDetails -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Exchange mailboxes' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectExchangeMailboxes) -SkipReason 'Exchange mailbox inventory is disabled for this profile.' -Produces @('AllMailboxes', 'PrimaryMailboxStats', 'InactiveMailboxDetails') -ScriptBlock { Get-AllExchangeMailboxDetails -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Exchange groups' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectExchangeGroups) -SkipReason 'Not required for this profile output.' -Produces @('ExchangeGroups') -ScriptBlock { Get-ExchangeGroupDetails -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Public folders' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectPublicFolders) -SkipReason 'Not required for this profile output.' -Produces @('PublicFolderDetails') -ScriptBlock { Get-AllPublicFolderDetails -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Exchange hybrid configuration' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectHybridConfiguration) -SkipReason 'Exchange hybrid collection is disabled for this profile.' -Produces @('HybridConfiguration') -ScriptBlock { Get-ExchangeHybridConfiguration -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Mail flow rules/connectors' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectMailFlowRulesConnectors) -SkipReason 'Skipped in best-practices-only profile to reduce runtime.' -Produces @('MailFlowRules', 'MailFlowConnectors', 'RemoteDomains') -ScriptBlock { Get-MailFlowRulesandConnectors -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Email activity insights' -Section 'Exchange' -Workload 'Reports' -Enabled ([bool]$script:ProfileCollectionPlan.CollectEmailActivityDetails) -SkipReason 'Not required for this profile output.' -Produces @('EmailActivityTopSenders', 'EmailActivityTopReceivers') -ScriptBlock { Get-EmailActivityInsights -detailLevel $reportingMode })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Third-party spam filtering configuration' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectThirdPartySpamFiltering) -SkipReason 'Requires mail flow connector/rule collection, which is disabled for this profile.' -Produces @('ThirdPartySpamFiltering') -ScriptBlock { Get-ThirdPartySpamFilteringConfig -Context $script:AssessmentContext })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'SMTP relay configuration' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectSmtpRelayConfiguration) -SkipReason 'Requires mail flow connector collection, which is disabled for this profile.' -Produces @('SMTPRelayConfiguration', 'SMTPRelayServiceAccounts') -ScriptBlock { Get-SMTPRelayConfiguration -Context $script:AssessmentContext })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Exchange governance summaries' -Section 'Exchange' -Workload 'ExchangeOnline' -Produces @('ExchangeGovernanceSummary') -ScriptBlock { Update-ExchangeGovernanceTables -TenantStatsHash $script:tenantStatsHash -DetailLevel $reportingMode })) | Out-Null
+
+    $steps.Add((New-ArrayaCollectorStep -Name 'Unified groups' -Section 'Collaboration' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectUnifiedGroups) -SkipReason 'Not required for this profile output.' -Produces @('UnifiedGroups') -ScriptBlock { Get-AllUnifiedGroups -detailLevel $reportingMode })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name "SharePoint/OneDrive sites ($SharePointDiscoveryService)" -Section 'Collaboration' -Workload 'SharePointOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectSharePointAndOneDriveSites) -SkipReason 'SharePoint and OneDrive collection is disabled for this profile.' -Produces @('SharePoint', 'OneDrive') -ScriptBlock { Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName $SharePointDiscoveryService })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Teams voice details' -Section 'Collaboration' -Workload 'Teams' -Enabled ([bool]$script:ProfileCollectionPlan.CollectTeamsVoiceDetails) -SkipReason 'Not required for this profile output.' -Produces @('TeamsVoice') -ScriptBlock { Get-TeamsVoiceDetails })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name "Teams inventory ($TeamsDiscoveryService)" -Section 'Collaboration' -Workload 'Teams' -Enabled ([bool]$script:ProfileCollectionPlan.CollectTeamsDetails) -SkipReason 'Not required for this profile output.' -Produces @('AllTeams') -ScriptBlock { Get-TeamsDetails -detailLevel $reportingMode -ServiceName $TeamsDiscoveryService })) | Out-Null
+
+    if ($GraphMode -eq 'REST') {
+        $steps.Add((New-ArrayaCollectorStep -Name 'Devices' -Section 'Endpoint' -Workload 'Graph' -Enabled ([bool]$script:ProfileCollectionPlan.CollectDevices) -SkipReason 'Device inventory is disabled for this profile.' -Produces @('Devices') -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' })) | Out-Null
+    }
+    else {
+        $steps.Add((New-ArrayaCollectorStep -Name 'Devices' -Section 'Endpoint' -Workload 'Graph' -Enabled ([bool]$script:ProfileCollectionPlan.CollectDevices) -SkipReason 'Device inventory is disabled for this profile.' -Produces @('Devices') -ScriptBlock { Get-AllDevicesReport -detailLevel $reportingMode })) | Out-Null
+    }
+    $steps.Add((New-ArrayaCollectorStep -Name 'Endpoint operational summaries' -Section 'Endpoint' -Workload 'Graph' -Enabled ([bool]$script:ProfileCollectionPlan.CollectDevices) -SkipReason 'Device operational summaries are disabled because device inventory is not collected for this profile.' -Produces @('DeviceManagementSummary') -ScriptBlock { Update-DeviceManagementSummary -TenantStatsHash $script:tenantStatsHash })) | Out-Null
+
+    if ($GraphMode -eq 'REST') {
+        $steps.Add((New-ArrayaCollectorStep -Name 'Secure Score report' -Section 'Governance' -Workload 'Graph' -Enabled ([bool]$script:ProfileCollectionPlan.CollectSecuritySecureScore) -SkipReason 'Secure Score collection is disabled for this profile.' -Produces @('SecuritySecureScore') -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' })) | Out-Null
+    }
+    else {
+        $steps.Add((New-ArrayaCollectorStep -Name 'Secure Score report' -Section 'Governance' -Workload 'Graph' -Enabled ([bool]$script:ProfileCollectionPlan.CollectSecuritySecureScore) -SkipReason 'Secure Score collection is disabled for this profile.' -Produces @('SecuritySecureScore') -ScriptBlock { Get-SecuritySecureScoreReport -detailLevel $reportingMode -MostRecent })) | Out-Null
+    }
+    $steps.Add((New-ArrayaCollectorStep -Name 'Purview retention/DLP policies' -Section 'Governance' -Workload 'PurviewCompliance' -Enabled ([bool]$script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies) -SkipReason 'Governance compliance collection is disabled for this profile.' -Produces @('PurviewCompliancePolicies') -ScriptBlock { Get-PurviewCompliancePolicies })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Operational governance summaries' -Section 'Governance' -Workload 'Tenant' -Enabled ([bool]$script:ProfileCollectionPlan.BuildOperationalGovernanceSummaries) -SkipReason 'Operational governance summary generation is disabled for this profile.' -Produces @('OperationalGovernanceSummary') -ScriptBlock { Update-TierBOperationalSummaries -TenantStatsHash $script:tenantStatsHash })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'External sharing and guest access summaries' -Section 'Governance' -Workload 'Tenant' -Enabled ([bool]$script:ProfileCollectionPlan.BuildExternalExposureSummaries) -SkipReason 'External sharing summary generation is disabled for this profile.' -Produces @('ExternalExposureFindings') -ScriptBlock { Update-ExternalExposureSummaries -TenantStatsHash $script:tenantStatsHash })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Ownership governance tables' -Section 'Governance' -Workload 'Tenant' -Enabled ([bool]$script:ProfileCollectionPlan.BuildOwnershipGovernanceTables) -SkipReason 'Ownership governance table build is disabled for this profile.' -Produces @('OwnershipGovernance') -ScriptBlock { Update-OwnershipGovernanceTables -TenantStatsHash $script:tenantStatsHash })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'License classification metadata' -Section 'Governance' -Workload 'Tenant' -Enabled ([bool]$script:ProfileCollectionPlan.BuildLicenseClassificationMetadata) -SkipReason 'License classification metadata is disabled for this profile.' -Produces @('LicenseClassificationMetadata') -ScriptBlock { Update-LicenseClassificationMetadata -TenantStatsHash $script:tenantStatsHash })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Best-practice and migration-readiness assessment tables' -Section 'Governance' -Workload 'Tenant' -Enabled ([bool]($script:ProfileCollectionPlan.BuildAssessmentReportTables -or $script:ProfileCollectionPlan.BuildMigrationReadinessTables)) -SkipReason 'Assessment table generation is disabled for this profile.' -Produces @('AssessmentReportTables', 'MigrationReadiness') -ScriptBlock { Update-AssessmentReportTables -TenantStatsHash $script:tenantStatsHash -IncludeBestPracticeTables ([bool]$script:ProfileCollectionPlan.BuildAssessmentReportTables) -IncludeMigrationReadiness ([bool]$script:ProfileCollectionPlan.BuildMigrationReadinessTables) })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Configuration summary tables' -Section 'Governance' -Workload 'Tenant' -Enabled ([bool]$script:ProfileCollectionPlan.BuildConfigurationSummaryTables) -SkipReason 'Configuration summary tables are disabled for this profile.' -Produces @('ConfigurationSummaryTables') -ScriptBlock { Update-ConfigurationSummaryTables -TenantStatsHash $script:tenantStatsHash })) | Out-Null
+
+    return $steps.ToArray()
+}
+
 function Complete-AssessmentProgress {
     [CmdletBinding()]
     param()
@@ -5398,6 +5544,23 @@ function Write-AssessmentStepMetricsSummary {
             Write-Host ("  {0}: Private Δ {1} MB (Duration {2}s, Heap Δ {3} MB)" -f $item.StepName, $item.PrivateDeltaMB, $item.DurationSeconds, $item.ManagedHeapDeltaMB) -ForegroundColor DarkGray
         }
         Write-Log -Type INFO -Message ("[CollectorMetrics][Memory] Step='{0}' PrivateDeltaMB={1} DurationSeconds={2} ManagedHeapDeltaMB={3}" -f $item.StepName, $item.PrivateDeltaMB, $item.DurationSeconds, $item.ManagedHeapDeltaMB) -ExportFileLocation $ExportFileLocation
+    }
+
+    $context = $script:AssessmentContext
+    if ($context -and $context.PSObject.Properties['Runtime'] -and ($context.Runtime -is [System.Collections.IDictionary])) {
+        if ($context.Runtime.Contains('GraphRequestStats')) {
+            $graphStats = [pscustomobject]$context.Runtime['GraphRequestStats']
+            Write-Log -Type INFO -Message ("[CollectorMetrics][Graph] Requests={0} CacheHits={1} CacheWrites={2} BatchRequests={3} OptionalFailures={4}" -f $graphStats.Requests, $graphStats.CacheHits, $graphStats.CacheWrites, $graphStats.BatchRequests, $graphStats.OptionalFailures) -ExportFileLocation $ExportFileLocation
+            $script:tenantStatsHash['CollectorGraphApiStats'] = $graphStats
+        }
+        if ($context.Runtime.Contains('CollectorCacheStats')) {
+            $cacheStats = [pscustomobject]$context.Runtime['CollectorCacheStats']
+            Write-Log -Type INFO -Message ("[CollectorMetrics][Cache] Hits={0} Misses={1} Writes={2}" -f $cacheStats.Hits, $cacheStats.Misses, $cacheStats.Writes) -ExportFileLocation $ExportFileLocation
+            $script:tenantStatsHash['CollectorCacheStats'] = $cacheStats
+        }
+        if ($context.Runtime.Contains('CollectorPlanResults')) {
+            $script:tenantStatsHash['CollectorPlanResults'] = @($context.Runtime['CollectorPlanResults'])
+        }
     }
 }
 
@@ -15444,7 +15607,8 @@ $resolvedExportTargetPath = Resolve-AssessmentExportTargetPath `
     -DefaultOutputRoot $defaultOutputRoot `
     -TenantDisplayName $defaultTenantDisplayName `
     -OutputProfileFolderLabel $outputFolderProfileLabel
-$ExportDetails = Get-ExportPath -FileName $defaultReportFileName -UserInputPath $resolvedExportTargetPath
+$humanDeliverableTargetPath = Resolve-AssessmentHumanDeliverableTargetPath -ResolvedExportTargetPath $resolvedExportTargetPath
+$ExportDetails = Get-ExportPath -FileName $defaultReportFileName -UserInputPath $humanDeliverableTargetPath
 
 # Initialize list to store all discovery errors
 $global:AllDiscoveryErrors = New-Object System.Collections.Generic.List[pscustomobject]
@@ -17141,56 +17305,6 @@ else {
     $overallCollectionSteps = $tenantOverviewSteps + $identitySteps + $exchangeSteps + $collaborationSteps + $endpointSteps + $governanceSteps
     Initialize-AssessmentProgress -TotalSteps $overallCollectionSteps
 
-    Write-ConsoleSection -Step '1/6' -Title 'Tenant Overview'
-    Invoke-AssessmentProgressStep -Name 'Tenant overview' -ScriptBlock { Get-TenantOverviewInfo }
-    if ($GraphTest -eq 'REST') {
-        Invoke-AssessmentProgressStep -Name 'License SKUs' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-    }
-    else {
-        Invoke-AssessmentProgressStep -Name 'License SKUs' -ScriptBlock { Get-AllLicenseSKUs }
-    }
-    Invoke-AssessmentProgressStep -Name 'AD Connect sync details' -ScriptBlock { Get-AdConnectSyncDetails }
-
-    Write-ConsoleSection -Step '2/6' -Title 'Identity'
-    switch ($GraphTest) {
-        'REST' {
-            Write-Verbose 'Attempting to use Microsoft Graph REST API for tenant identity details'
-            Invoke-ProfileAwareAssessmentStep -Name 'Users' -Enabled $script:ProfileCollectionPlan.CollectUsers -SkipReason 'User inventory is disabled for this profile.' -ScriptBlock { Get-GraphUserStats -Context $script:AssessmentContext }
-            Invoke-ProfileAwareAssessmentStep -Name 'Admins' -Enabled $script:ProfileCollectionPlan.CollectAdmins -SkipReason 'Admin inventory is disabled for this profile.' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-            Invoke-ProfileAwareAssessmentStep -Name 'Entra groups' -Enabled $script:ProfileCollectionPlan.CollectEntraGroups -SkipReason 'Entra group inventory is disabled for this profile.' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType REST -Context $script:AssessmentContext }
-            Invoke-ProfileAwareAssessmentStep -Name 'Domains' -Enabled $script:ProfileCollectionPlan.CollectDomains -SkipReason 'Domain inventory is disabled for this profile.' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-            Invoke-ProfileAwareAssessmentStep -Name 'Authentication/SSO configuration' -Enabled $script:ProfileCollectionPlan.CollectAuthenticationConfiguration -SkipReason 'Authentication and SSO collection is disabled for this profile.' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-            Invoke-ProfileAwareAssessmentStep -Name 'Federation/cross-tenant configuration' -Enabled $script:ProfileCollectionPlan.CollectFederationConfiguration -SkipReason 'Federation and cross-tenant collection is disabled for this profile.' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-            Invoke-ProfileAwareAssessmentStep -Name 'Conditional Access policies' -Enabled $script:ProfileCollectionPlan.CollectConditionalAccessPolicies -SkipReason 'Conditional Access collection is disabled for this profile.' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-            Invoke-ProfileAwareAssessmentStep -Name 'MFA registration details' -Enabled $script:ProfileCollectionPlan.CollectMfaRegistrationDetails -SkipReason 'MFA registration collection is disabled for this profile.' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-        }
-        default {
-            Write-Verbose 'Attempting to use Microsoft Graph SDK for tenant identity details'
-            Invoke-ProfileAwareAssessmentStep -Name 'Users' -Enabled $script:ProfileCollectionPlan.CollectUsers -SkipReason 'User inventory is disabled for this profile.' -ScriptBlock { Get-AllUserDetails -detailLevel $reportingMode }
-            Invoke-ProfileAwareAssessmentStep -Name 'Admins' -Enabled $script:ProfileCollectionPlan.CollectAdmins -SkipReason 'Admin inventory is disabled for this profile.' -ScriptBlock { Get-AllOffice365Admins }
-            Invoke-ProfileAwareAssessmentStep -Name 'Entra groups' -Enabled $script:ProfileCollectionPlan.CollectEntraGroups -SkipReason 'Entra group inventory is disabled for this profile.' -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType SDK -Context $script:AssessmentContext }
-            Invoke-ProfileAwareAssessmentStep -Name 'Domains' -Enabled $script:ProfileCollectionPlan.CollectDomains -SkipReason 'Domain inventory is disabled for this profile.' -ScriptBlock { Get-AllOffice365Domains }
-            Invoke-ProfileAwareAssessmentStep -Name 'Authentication/SSO configuration' -Enabled $script:ProfileCollectionPlan.CollectAuthenticationConfiguration -SkipReason 'Authentication and SSO collection is disabled for this profile.' -ScriptBlock { Get-AuthenticationConfiguration -detailLevel $reportingMode }
-            Invoke-ProfileAwareAssessmentStep -Name 'Federation/cross-tenant configuration' -Enabled $script:ProfileCollectionPlan.CollectFederationConfiguration -SkipReason 'Federation and cross-tenant collection is disabled for this profile.' -ScriptBlock { Get-FederationAndCrossTenantConfiguration }
-            Invoke-ProfileAwareAssessmentStep -Name 'Conditional Access policies' -Enabled $script:ProfileCollectionPlan.CollectConditionalAccessPolicies -SkipReason 'Conditional Access collection is disabled for this profile.' -ScriptBlock { Get-ConditionalAccessPoliciesReport -detailLevel $reportingMode }
-            Invoke-ProfileAwareAssessmentStep -Name 'MFA registration details' -Enabled $script:ProfileCollectionPlan.CollectMfaRegistrationDetails -SkipReason 'MFA registration collection is disabled for this profile.' -ScriptBlock { Get-MfaRegistrationDetails }
-        }
-    }
-
-    Write-ConsoleSection -Step '3/6' -Title 'Exchange'
-    Invoke-ProfileAwareAssessmentStep -Name 'Exchange recipients' -Enabled $script:ProfileCollectionPlan.CollectExchangeRecipients -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllRecipientDetails -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'Exchange mailboxes' -Enabled $script:ProfileCollectionPlan.CollectExchangeMailboxes -SkipReason 'Exchange mailbox inventory is disabled for this profile.' -ScriptBlock { Get-AllExchangeMailboxDetails -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'Exchange groups' -Enabled $script:ProfileCollectionPlan.CollectExchangeGroups -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-ExchangeGroupDetails -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'Public folders' -Enabled $script:ProfileCollectionPlan.CollectPublicFolders -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllPublicFolderDetails -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'Exchange hybrid configuration' -Enabled $script:ProfileCollectionPlan.CollectHybridConfiguration -SkipReason 'Exchange hybrid collection is disabled for this profile.' -ScriptBlock { Get-ExchangeHybridConfiguration -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'Mail flow rules/connectors' -Enabled $script:ProfileCollectionPlan.CollectMailFlowRulesConnectors -SkipReason 'Skipped in best-practices-only profile to reduce runtime.' -ScriptBlock { Get-MailFlowRulesandConnectors -detailLevel $reportingMode -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'Email activity insights' -Enabled $script:ProfileCollectionPlan.CollectEmailActivityDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-EmailActivityInsights -detailLevel $reportingMode }
-    Invoke-ProfileAwareAssessmentStep -Name 'Third-party spam filtering configuration' -Enabled $script:ProfileCollectionPlan.CollectThirdPartySpamFiltering -SkipReason 'Requires mail flow connector/rule collection, which is disabled for this profile.' -ScriptBlock { Get-ThirdPartySpamFilteringConfig -Context $script:AssessmentContext }
-    Invoke-ProfileAwareAssessmentStep -Name 'SMTP relay configuration' -Enabled $script:ProfileCollectionPlan.CollectSmtpRelayConfiguration -SkipReason 'Requires mail flow connector collection, which is disabled for this profile.' -ScriptBlock { Get-SMTPRelayConfiguration -Context $script:AssessmentContext }
-    Invoke-AssessmentProgressStep -Name 'Exchange governance summaries' -ScriptBlock { Update-ExchangeGovernanceTables -TenantStatsHash $script:tenantStatsHash -DetailLevel $reportingMode }
-
-    Write-ConsoleSection -Step '4/6' -Title 'Collaboration'
-    Invoke-ProfileAwareAssessmentStep -Name 'Unified groups' -Enabled $script:ProfileCollectionPlan.CollectUnifiedGroups -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-AllUnifiedGroups -detailLevel $reportingMode }
     $sharePointDiscoveryService = if ($GraphTest -in @('REST', 'SDK')) {
         'API'
     }
@@ -17200,34 +17314,31 @@ else {
     else {
         'API'
     }
-    Invoke-ProfileAwareAssessmentStep -Name "SharePoint/OneDrive sites ($sharePointDiscoveryService)" -Enabled $script:ProfileCollectionPlan.CollectSharePointAndOneDriveSites -SkipReason 'SharePoint and OneDrive collection is disabled for this profile.' -ScriptBlock { Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName $sharePointDiscoveryService }
     $teamsDiscoveryService = if ($GraphTest -in @('SDK', 'REST')) { 'MGGraph' } else { 'Teams' }
-    Invoke-ProfileAwareAssessmentStep -Name 'Teams voice details' -Enabled $script:ProfileCollectionPlan.CollectTeamsVoiceDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-TeamsVoiceDetails }
-    Invoke-ProfileAwareAssessmentStep -Name "Teams inventory ($teamsDiscoveryService)" -Enabled $script:ProfileCollectionPlan.CollectTeamsDetails -SkipReason 'Not required for this profile output.' -ScriptBlock { Get-TeamsDetails -detailLevel $reportingMode -ServiceName $teamsDiscoveryService }
-
-    Write-ConsoleSection -Step '5/6' -Title 'Endpoint'
     if ($GraphTest -eq 'REST') {
-        Invoke-ProfileAwareAssessmentStep -Name 'Devices' -Enabled $script:ProfileCollectionPlan.CollectDevices -SkipReason 'Device inventory is disabled for this profile.' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
+        Write-Verbose 'Attempting to use Microsoft Graph REST API for tenant identity details'
     }
     else {
-        Invoke-ProfileAwareAssessmentStep -Name 'Devices' -Enabled $script:ProfileCollectionPlan.CollectDevices -SkipReason 'Device inventory is disabled for this profile.' -ScriptBlock { Get-AllDevicesReport -detailLevel $reportingMode }
+        Write-Verbose 'Attempting to use Microsoft Graph SDK for tenant identity details'
     }
-    Invoke-ProfileAwareAssessmentStep -Name 'Endpoint operational summaries' -Enabled $script:ProfileCollectionPlan.CollectDevices -SkipReason 'Device operational summaries are disabled because device inventory is not collected for this profile.' -ScriptBlock { Update-DeviceManagementSummary -TenantStatsHash $script:tenantStatsHash }
 
-    Write-ConsoleSection -Step '6/6' -Title 'Governance'
-    if ($GraphTest -eq 'REST') {
-        Invoke-ProfileAwareAssessmentStep -Name 'Secure Score report' -Enabled $script:ProfileCollectionPlan.CollectSecuritySecureScore -SkipReason 'Secure Score collection is disabled for this profile.' -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' }
-    }
-    else {
-        Invoke-ProfileAwareAssessmentStep -Name 'Secure Score report' -Enabled $script:ProfileCollectionPlan.CollectSecuritySecureScore -SkipReason 'Secure Score collection is disabled for this profile.' -ScriptBlock { Get-SecuritySecureScoreReport -detailLevel $reportingMode -MostRecent }
-    }
-    Invoke-ProfileAwareAssessmentStep -Name 'Purview retention/DLP policies' -Enabled $script:ProfileCollectionPlan.CollectGovernanceCompliancePolicies -SkipReason 'Governance compliance collection is disabled for this profile.' -ScriptBlock { Get-PurviewCompliancePolicies }
-    Invoke-ProfileAwareAssessmentStep -Name 'Operational governance summaries' -Enabled $script:ProfileCollectionPlan.BuildOperationalGovernanceSummaries -SkipReason 'Operational governance summary generation is disabled for this profile.' -ScriptBlock { Update-TierBOperationalSummaries -TenantStatsHash $script:tenantStatsHash }
-    Invoke-ProfileAwareAssessmentStep -Name 'External sharing and guest access summaries' -Enabled $script:ProfileCollectionPlan.BuildExternalExposureSummaries -SkipReason 'External sharing summary generation is disabled for this profile.' -ScriptBlock { Update-ExternalExposureSummaries -TenantStatsHash $script:tenantStatsHash }
-    Invoke-ProfileAwareAssessmentStep -Name 'Ownership governance tables' -Enabled $script:ProfileCollectionPlan.BuildOwnershipGovernanceTables -SkipReason 'Ownership governance table build is disabled for this profile.' -ScriptBlock { Update-OwnershipGovernanceTables -TenantStatsHash $script:tenantStatsHash }
-    Invoke-ProfileAwareAssessmentStep -Name 'License classification metadata' -Enabled $script:ProfileCollectionPlan.BuildLicenseClassificationMetadata -SkipReason 'License classification metadata is disabled for this profile.' -ScriptBlock { Update-LicenseClassificationMetadata -TenantStatsHash $script:tenantStatsHash }
-    Invoke-ProfileAwareAssessmentStep -Name 'Best-practice and migration-readiness assessment tables' -Enabled ($script:ProfileCollectionPlan.BuildAssessmentReportTables -or $script:ProfileCollectionPlan.BuildMigrationReadinessTables) -SkipReason 'Assessment table generation is disabled for this profile.' -ScriptBlock { Update-AssessmentReportTables -TenantStatsHash $script:tenantStatsHash -IncludeBestPracticeTables ([bool]$script:ProfileCollectionPlan.BuildAssessmentReportTables) -IncludeMigrationReadiness ([bool]$script:ProfileCollectionPlan.BuildMigrationReadinessTables) }
-    Invoke-ProfileAwareAssessmentStep -Name 'Configuration summary tables' -Enabled $script:ProfileCollectionPlan.BuildConfigurationSummaryTables -SkipReason 'Configuration summary tables are disabled for this profile.' -ScriptBlock { Update-ConfigurationSummaryTables -TenantStatsHash $script:tenantStatsHash }
+    $collectorSections = New-AssessmentCollectorSections
+    $collectorPlan = New-AssessmentLiveCollectorPlan -GraphMode $GraphTest -SharePointDiscoveryService $sharePointDiscoveryService -TeamsDiscoveryService $teamsDiscoveryService
+    $script:AssessmentCollectorPlan = $collectorPlan
+    Sync-CollectorModuleRuntimeContext
+    Invoke-ArrayaCollectorPlan `
+        -Sections $collectorSections `
+        -Steps $collectorPlan `
+        -Context $script:AssessmentContext `
+        -OnSection {
+            param($Section)
+            Write-ConsoleSection -Step ([string]$Section.Step) -Title ([string]$Section.Name)
+        } `
+        -OnStep {
+            param($Step, $Enabled, $SkipReason)
+            Invoke-ProfileAwareAssessmentStep -Name ([string]$Step.Name) -Enabled ([bool]$Enabled) -SkipReason ([string]$SkipReason) -ScriptBlock $Step.ScriptBlock
+        } | Out-Null
+
     Complete-AssessmentProgress
     Write-CollectorInventoryMatrix -TenantStatsHash $script:tenantStatsHash -ExportFileLocation $ExportDetails
     Write-AssessmentStepMetricsSummary -ExportFileLocation $ExportDetails
@@ -17322,11 +17433,22 @@ catch {
     }
 }
 
-$runLogDirectory = [System.IO.Path]::GetDirectoryName($ExportDetails)
-if ([string]::IsNullOrWhiteSpace($runLogDirectory)) {
-    $runLogDirectory = (Get-Location).Path
+$runLogBaseDirectory = [System.IO.Path]::GetDirectoryName($ExportDetails)
+if ([string]::IsNullOrWhiteSpace($runLogBaseDirectory)) {
+    $runLogBaseDirectory = (Get-Location).Path
 }
-$runLogDirectory = Join-Path -Path $runLogDirectory -ChildPath 'Debugging'
+if ([string]::Equals((Split-Path -Path $runLogBaseDirectory -Leaf), 'Deliverables', [System.StringComparison]::OrdinalIgnoreCase)) {
+    $runRootDirectory = Split-Path -Path $runLogBaseDirectory -Parent
+    if (-not [string]::IsNullOrWhiteSpace($runRootDirectory)) {
+        $runLogBaseDirectory = Join-Path -Path $runRootDirectory -ChildPath 'Support'
+    }
+}
+if ([string]::Equals((Split-Path -Path $runLogBaseDirectory -Leaf), 'Debugging', [System.StringComparison]::OrdinalIgnoreCase)) {
+    $runLogDirectory = $runLogBaseDirectory
+}
+else {
+    $runLogDirectory = Join-Path -Path $runLogBaseDirectory -ChildPath 'Debugging'
+}
 $runLogBaseName = [System.IO.Path]::GetFileNameWithoutExtension($ExportDetails)
 if (-not [string]::IsNullOrWhiteSpace($runLogBaseName)) {
     $runLogPath = Join-Path -Path $runLogDirectory -ChildPath ($runLogBaseName + '-FullReportLog.txt')

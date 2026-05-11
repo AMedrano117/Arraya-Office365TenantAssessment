@@ -46,13 +46,24 @@ function Invoke-M365TenantAssessmentExportPipeline {
         return $PSScriptRoot
     }
 
-    function Get-SupportDirectory {
+    function Get-AssessmentRunRootDirectory {
         $baseDirectory = [System.IO.Path]::GetDirectoryName($ExportDetails)
         if ([string]::IsNullOrWhiteSpace($baseDirectory)) {
             $baseDirectory = (Get-Location).Path
         }
 
-        $supportDirectory = Join-Path -Path $baseDirectory -ChildPath 'Support'
+        if ([string]::Equals((Split-Path -Path $baseDirectory -Leaf), 'Deliverables', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $parentDirectory = Split-Path -Path $baseDirectory -Parent
+            if (-not [string]::IsNullOrWhiteSpace($parentDirectory)) {
+                return $parentDirectory
+            }
+        }
+
+        return $baseDirectory
+    }
+
+    function Get-SupportDirectory {
+        $supportDirectory = Join-Path -Path (Get-AssessmentRunRootDirectory) -ChildPath 'Support'
         if (-not (Test-Path -Path $supportDirectory)) {
             $null = New-Item -ItemType Directory -Path $supportDirectory -Force
         }

@@ -191,7 +191,9 @@ Describe 'Solutions Engineer evidence coverage validator' {
         . $script:manifestWriterPath
         . $script:exportPipelinePath
 
-        $exportPath = Join-Path $TestDrive 'Contoso - Tenant Details.xlsx'
+        $deliverablesPath = Join-Path $TestDrive 'Deliverables'
+        $null = New-Item -ItemType Directory -Path $deliverablesPath -Force
+        $exportPath = Join-Path $deliverablesPath 'Contoso - Tenant Details.xlsx'
         $tenantStatsHash = New-TestEvidenceSnapshotObject
 
         $artifacts = Invoke-M365TenantAssessmentExportPipeline `
@@ -213,6 +215,8 @@ Describe 'Solutions Engineer evidence coverage validator' {
         $artifacts.Contains('Solutions Engineer Evidence Coverage') | Should -BeTrue
         Test-Path -Path $artifacts['Assessment Snapshot JSON'] | Should -BeTrue
         Test-Path -Path $artifacts['Solutions Engineer Evidence Coverage'] | Should -BeTrue
+        Split-Path -Path $artifacts['Assessment Snapshot JSON'] -Parent | Should -Be (Join-Path $TestDrive 'Support')
+        Split-Path -Path $artifacts['Solutions Engineer Evidence Coverage'] -Parent | Should -Be (Join-Path $TestDrive 'Support')
 
         $coverage = Get-Content -Raw -Path $artifacts['Solutions Engineer Evidence Coverage'] | ConvertFrom-Json -Depth 100
         $coverage.OutputProfile | Should -Be 'SolutionsEngineer'
@@ -220,6 +224,7 @@ Describe 'Solutions Engineer evidence coverage validator' {
         $coverage.MissingOrPartialObjectiveCount | Should -Be 0
 
         $manifest = Get-Content -Raw -Path $artifacts['Manifest'] | ConvertFrom-Json -Depth 100
+        Split-Path -Path $artifacts['Manifest'] -Parent | Should -Be (Join-Path $TestDrive 'Support')
         @($manifest.Artifacts.Type) | Should -Contain 'Solutions Engineer Evidence Coverage'
         $manifest.OperatorSummary | Should -Not -BeNullOrEmpty
         $manifest.OperatorSummary.EvidenceCoverage.Status | Should -Be 'Covered'

@@ -28,17 +28,23 @@ Describe 'Arraya.M365.Common' {
             'Filter-TenantStatsHash'
             'Get-ArrayaAssessmentOutputProfilePolicy'
             'Get-ArrayaAssessmentOutputRoot'
+            'Get-ArrayaCollectorCacheValue'
             'Get-ArrayaObjectValue'
             'Get-ArrayaTenantSnapshotMetricSet'
             'Import-ArrayaOffice365CustomLocal'
             'Import-ArrayaTenantSnapshotContext'
             'Import-ArrayaTenantSnapshot'
             'Invoke-ArrayaCollectionStepSafe'
+            'Invoke-ArrayaCollectorPlan'
+            'Invoke-ArrayaGraphCollectionBatch'
+            'Invoke-ArrayaGraphCollectionRequest'
             'Invoke-QuietCommand'
             'New-ArrayaAssessmentOperatorSummary'
             'New-ArrayaAssessmentContext'
+            'New-ArrayaCollectorStep'
             'New-ArrayaTenantSnapshot'
             'Resolve-ArrayaSnapshotOutputContext'
+            'Set-ArrayaCollectorCacheValue'
             'Test-ArrayaTenantSnapshot'
             'Update-ArrayaTenantSnapshot'
             'Write-ArrayaAssessmentArtifactManifest'
@@ -100,6 +106,76 @@ Describe 'Arraya.M365.Common' {
         foreach ($relativePath in $script:retiredPublicFiles) {
             Test-Path (Join-Path $script:repoRoot $relativePath) | Should -BeFalse
         }
+    }
+
+    It 'provides run-scoped collector cache helpers' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+        $context = New-ArrayaAssessmentContext
+
+        Get-ArrayaCollectorCacheValue -Context $context -Key 'example' | Should -BeNullOrEmpty
+        Set-ArrayaCollectorCacheValue -Context $context -Key 'example' -Value 'cached-value' | Should -Be 'cached-value'
+        Get-ArrayaCollectorCacheValue -Context $context -Key 'example' | Should -Be 'cached-value'
+
+        $context.Runtime['CollectorCacheStats']['Misses'] | Should -Be 1
+        $context.Runtime['CollectorCacheStats']['Writes'] | Should -Be 1
+        $context.Runtime['CollectorCacheStats']['Hits'] | Should -Be 1
+    }
+
+    It 'invokes collector plans by section and records produced dataset keys' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+        $context = New-ArrayaAssessmentContext
+        $visitedSections = New-Object System.Collections.Generic.List[string]
+        $ranSteps = New-Object System.Collections.Generic.List[string]
+        $sections = @([pscustomobject]@{ Step = '1/1'; Name = 'Identity' })
+        $steps = @(
+            New-ArrayaCollectorStep -Name 'Users' -Section 'Identity' -Workload 'Graph' -Produces @('Users') -ScriptBlock { $ranSteps.Add('Users') | Out-Null }
+            New-ArrayaCollectorStep -Name 'Groups' -Section 'Identity' -Workload 'Graph' -Enabled $false -SkipReason 'Not needed' -Produces @('EntraIDGroups') -ScriptBlock { $ranSteps.Add('Groups') | Out-Null }
+        )
+
+        $results = Invoke-ArrayaCollectorPlan `
+            -Sections $sections `
+            -Steps $steps `
+            -Context $context `
+            -OnSection { param($Section) $visitedSections.Add([string]$Section.Name) | Out-Null } `
+            -OnStep {
+                param($Step, $Enabled, $SkipReason)
+                if ($Enabled) { & $Step.ScriptBlock }
+            }
+
+        $visitedSections.ToArray() | Should -Be @('Identity')
+        $ranSteps.ToArray() | Should -Be @('Users')
+        @($results).Count | Should -Be 2
+        @($results | Where-Object { $_.Name -eq 'Groups' -and $_.Status -eq 'Skipped' }).Count | Should -Be 1
+        @($context.Runtime['CollectorPlanResults'] | Where-Object { $_.Name -eq 'Users' }).ProducedKeys | Should -Contain 'Users'
+    }
+
+    It 'caches Graph collection requests by method and URI' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+        $context = New-ArrayaAssessmentContext
+        $script:graphRequestInvocationCount = 0
+
+        $first = Invoke-ArrayaGraphCollectionRequest -Context $context -Uri 'https://graph.microsoft.com/v1.0/users?$top=1' -GraphMode 'SDK' -ScriptBlock {
+            $script:graphRequestInvocationCount++
+            [pscustomobject]@{ Value = 'first' }
+        }
+        $second = Invoke-ArrayaGraphCollectionRequest -Context $context -Uri 'https://graph.microsoft.com/v1.0/users?$top=1' -GraphMode 'SDK' -ScriptBlock {
+            $script:graphRequestInvocationCount++
+            [pscustomobject]@{ Value = 'second' }
+        }
+
+        $first.Value | Should -Be 'first'
+        $second.Value | Should -Be 'first'
+        $script:graphRequestInvocationCount | Should -Be 1
+        $context.Runtime['GraphRequestStats']['CacheHits'] | Should -Be 1
+        $context.Runtime['GraphRequestStats']['CacheWrites'] | Should -Be 1
+    }
+
+    It 'chunks shared Graph batch requests at the Microsoft Graph batch limit' {
+        $batchHelperPath = Join-Path $script:repoRoot 'src\modules\Arraya.M365.Common\Public\Invoke-ArrayaGraphCollectionBatch.ps1'
+        $batchHelperSource = Get-Content -Raw -Path $batchHelperPath
+        $batchHelperSource | Should -Match '\$chunkSize = 20'
+        $batchHelperSource | Should -Match 'Select-Object -Skip \$offset -First \$chunkSize'
+        $batchHelperSource | Should -Match "GraphRequestStats'\]\['BatchRequests'\]"
     }
 
     It 'embeds a bundled Chart.js asset for HTML reports instead of a public CDN' {
@@ -349,6 +425,27 @@ Describe 'Arraya.M365.Common' {
         Test-Path (Join-Path $expectedDirectory 'Tenant Discovery Report-SolutionsEngineer Error Reporting') | Should -BeFalse
     }
 
+    It 'writes error exports under sibling Support when the base artifact is in Deliverables' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        $deliverablesPath = Join-Path $TestDrive 'Deliverables'
+        $null = New-Item -ItemType Directory -Path $deliverablesPath -Force
+        $exportFileLocation = Join-Path $deliverablesPath 'Tenant Discovery Report-SolutionsEngineer.xlsx'
+        $errorSummary = Export-ArrayaErrorReports -ExportFileLocation $exportFileLocation -ErrorData @(
+            [pscustomobject]@{
+                Message = 'Example failure'
+                Step    = 'UnitTest'
+            }
+        )
+
+        $expectedDirectory = Join-Path (Join-Path $TestDrive 'Support') 'Debugging'
+        $errorSummary.FolderPath | Should -Be $expectedDirectory
+        Split-Path -Path $errorSummary.JsonPath -Parent | Should -Be $expectedDirectory
+        Split-Path -Path $errorSummary.LogPath -Parent | Should -Be $expectedDirectory
+        Split-Path -Path $errorSummary.CsvPath -Parent | Should -Be $expectedDirectory
+        Test-Path (Join-Path $deliverablesPath 'Debugging') | Should -BeFalse
+    }
+
     It 'writes a tenant-prefixed run manifest when the workbook uses the Tenant Details suffix' {
         Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
 
@@ -371,6 +468,33 @@ Describe 'Arraya.M365.Common' {
         $manifest.OperatorSummary.PrimaryDeliverables.Type | Should -Contain 'Workbook'
         $manifest.OperatorSummary.RecommendedStart | Should -Contain 'Workbook'
         $manifest.OperatorSummary.OperatorNote | Should -Match 'Start with PrimaryDeliverables'
+    }
+
+    It 'writes the run manifest to sibling Support when the workbook is in Deliverables' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        $deliverablesPath = Join-Path $TestDrive 'Deliverables'
+        $null = New-Item -ItemType Directory -Path $deliverablesPath -Force
+        $baseExportPath = Join-Path $deliverablesPath 'Contoso Ltd - Tenant Details.xlsx'
+        Set-Content -Path $baseExportPath -Value 'placeholder' -Encoding UTF8
+
+        $manifestPath = Write-ArrayaAssessmentArtifactManifest `
+            -BaseExportPath $baseExportPath `
+            -Artifacts @{ Workbook = $baseExportPath } `
+            -OutputProfileLabel 'SolutionsEngineer' `
+            -ReportingMode 'Operator' `
+            -CollectionOnly $false `
+            -ExportOnly $false
+
+        Split-Path -Path $manifestPath -Parent | Should -Be (Join-Path $TestDrive 'Support')
+        Split-Path -Path $manifestPath -Leaf | Should -Be 'Contoso Ltd-Run.manifest.json'
+        Test-Path -Path $manifestPath | Should -BeTrue
+        Test-Path -Path (Join-Path $deliverablesPath 'Support') | Should -BeFalse
+
+        $manifest = Get-Content -Raw -Path $manifestPath | ConvertFrom-Json -Depth 10
+        $manifest.BaseExportPath | Should -Be ([System.IO.Path]::GetFullPath($baseExportPath))
+        $manifest.OperatorSummary.PrimaryDeliverables.Type | Should -Contain 'Workbook'
+        $manifest.OperatorSummary.SupportArtifacts.Type | Should -Not -Contain 'Workbook'
     }
 
     It 'calculates shared snapshot metrics for improvement and comparison workflows' {

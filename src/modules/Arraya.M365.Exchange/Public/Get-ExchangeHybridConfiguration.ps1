@@ -12,6 +12,13 @@ function Get-ExchangeHybridConfiguration {
     $tenantStatsHash = $Context.TenantStats
     $exportDetails = $Context.ExportFileLocation
     $start = Get-Date
+    $cacheKey = "Exchange:HybridConfiguration:$detailLevel"
+    $cachedHybridConfiguration = Get-ArrayaCollectorCacheValue -Context $Context -Key $cacheKey
+    if ($null -ne $cachedHybridConfiguration) {
+        $tenantStatsHash['HybridConfiguration'] = $cachedHybridConfiguration
+        Write-Log -Type INFO -Message "[Get-ExchangeHybridConfiguration] Reused cached Exchange hybrid configuration for $detailLevel details." -ExportFileLocation $exportDetails
+        return $tenantStatsHash['HybridConfiguration']
+    }
     $tenantStatsHash['HybridConfiguration'] = @{}
 
     function Get-ConnectorIdentityValue {
@@ -163,6 +170,7 @@ function Get-ExchangeHybridConfiguration {
         }
 
         $tenantStatsHash['HybridConfiguration']['ExchangeHybrid'] = $details
+        Set-ArrayaCollectorCacheValue -Context $Context -Key $cacheKey -Value $tenantStatsHash['HybridConfiguration'] | Out-Null
         Write-Log -Type INFO -Message "[Get-ExchangeHybridConfiguration] Hybrid=$($details.IsHybridConfigured) Type=$($details.HybridType) Evidence=$($details.EvidenceCount)" -ExportFileLocation $exportDetails
     }
     catch {

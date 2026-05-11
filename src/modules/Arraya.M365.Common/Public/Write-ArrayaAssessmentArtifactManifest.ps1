@@ -116,7 +116,6 @@ function New-ArrayaAssessmentOperatorSummary {
     $supportTypes = @(
         'Assessment Snapshot JSON',
         'Solutions Engineer Evidence Coverage',
-        'Customer Assessment Report Markdown',
         'Improvement Plan JSON',
         'Remediation Snippets',
         'Best Practices HTML',
@@ -171,7 +170,14 @@ function Write-ArrayaAssessmentArtifactManifest {
     if ([string]::IsNullOrWhiteSpace($baseDirectory)) {
         $baseDirectory = (Get-Location).Path
     }
-    $supportDirectory = Join-Path -Path $baseDirectory -ChildPath 'Support'
+    $runDirectory = $baseDirectory
+    if ([string]::Equals((Split-Path -Path $baseDirectory -Leaf), 'Deliverables', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $parentDirectory = Split-Path -Path $baseDirectory -Parent
+        if (-not [string]::IsNullOrWhiteSpace($parentDirectory)) {
+            $runDirectory = $parentDirectory
+        }
+    }
+    $supportDirectory = Join-Path -Path $runDirectory -ChildPath 'Support'
     if (-not (Test-Path -Path $supportDirectory)) {
         $null = New-Item -ItemType Directory -Path $supportDirectory -Force
     }

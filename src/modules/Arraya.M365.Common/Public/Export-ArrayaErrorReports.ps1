@@ -82,6 +82,13 @@ function Export-ArrayaErrorReports {
         if ([string]::Equals((Split-Path -Path $resolvedDirectory -Leaf), 'Debugging', [System.StringComparison]::OrdinalIgnoreCase)) {
             $resolvedFolderPath = $resolvedDirectory
         }
+        elseif ([string]::Equals((Split-Path -Path $resolvedDirectory -Leaf), 'Deliverables', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $runRootDirectory = Split-Path -Path $resolvedDirectory -Parent
+            if ([string]::IsNullOrWhiteSpace($runRootDirectory)) {
+                $runRootDirectory = $resolvedDirectory
+            }
+            $resolvedFolderPath = Join-Path -Path (Join-Path -Path $runRootDirectory -ChildPath 'Support') -ChildPath 'Debugging'
+        }
         else {
             $resolvedFolderPath = Join-Path -Path $resolvedDirectory -ChildPath 'Debugging'
         }

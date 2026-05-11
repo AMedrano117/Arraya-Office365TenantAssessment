@@ -380,13 +380,15 @@ For a fully non-interactive improvement-plan run, call the reporting wrapper dir
 
 Use `-LiveRefresh` when you want a "snapshot plus live refresh" run. It is a friendlier alias for the existing `-UseGraphFallback` switch and tells `Improve` to use the saved snapshot first, then fill supported gaps from Microsoft Graph when needed.
 
-Add `-IncludeLegacyArtifacts` only if you still want the older `*-ImprovementPlan.csv` and `*-ImprovementPlan.md` planning artifacts in addition to the default set.
+Add `-IncludeLegacyArtifacts` only if you still want the older planning CSV and Markdown artifacts in addition to the default set.
 Add `-IncludeLegacyAssessmentArtifacts` when you also want the older assessment HTML / best-practices HTML / questionnaire / PDF family.
 
-The `Improve` workflow now produces this simplified default output set:
+The default assessment output is split into two sibling folders:
 
-- top level: `*-CustomerAssessmentReport.docx`, `*-EngineerActionPack.md`
-- support folder: `*-Microsoft 365 Remediation Roadmap-<date>.docx`, `*-AssessmentSnapshot.json`, `*-ImprovementPlan.json`, `*.manifest.json`, `*-RemediationSnippets.ps1`
+- `Deliverables`: workbook when the selected profile enables it, `*-Microsoft 365 Tenant Best Practices Assessment-<date>.docx`, `*-Microsoft 365 Remediation Roadmap-<date>.docx`, and `*-EngPack.md`.
+- `Support`: `*-AssessmentSnapshot.json`, `*-SolutionsEngineerEvidenceCoverage.json`, `*-Plan.json`, `*.manifest.json`, `*-Snips.ps1`, legacy CSV/Markdown planning files when requested, and `Debugging` logs/error exports.
+
+Solutions Engineer evidence coverage stays out of the customer-facing DOCX files. Operators can review the evidence coverage summary in the engineer pack and the detailed machine-readable source in `Support\*-SolutionsEngineerEvidenceCoverage.json`.
 
 If you still need the older technical CSV and Markdown artifacts, generate them explicitly with `-IncludeLegacyArtifacts` when calling the reporting wrapper directly.
 
@@ -418,18 +420,21 @@ You can pass more than one profile in a comma-separated list:
 
 ## What Gets Generated
 
-Default `M365` now creates these top-level operator deliverables:
+Default `M365` now creates these human-facing files under `Deliverables\...`:
 
-- `*-CustomerAssessmentReport.docx`
-- `*-EngineerActionPack.md`
+- `*-Microsoft 365 Tenant Best Practices Assessment-<date>.docx`
+- `*-Microsoft 365 Remediation Roadmap-<date>.docx`
+- `*-EngPack.md`
 - `*.xlsx` for profiles whose policy enables workbook output, including `SolutionsEngineer` and `TenantToTenantMigration`
 
-It also creates these support artifacts under `Support\...`:
+It also creates machine/replay artifacts under `Support\...`:
 
-- `Support\*-Microsoft 365 Remediation Roadmap-<date>.docx`
-- `Support\*-ImprovementPlan.json`
+- `Support\*-AssessmentSnapshot.json`
+- `Support\*-SolutionsEngineerEvidenceCoverage.json`
+- `Support\*-Plan.json`
 - `Support\*.manifest.json`
-- `Support\*-RemediationSnippets.ps1`
+- `Support\*-Snips.ps1`
+- `Support\Debugging\*`
 
 The run still preserves the reusable assessment snapshot JSON internally because `Improve`, `M365Export`, and comparison/replay depend on it.
 
@@ -440,29 +445,31 @@ If you opt into `-IncludeLegacyAssessmentArtifacts`, the assessment can also cre
 - `*-TenantToTenantQuestionnaire.md`
 - `*.pdf`
 
-Operational logs and exported error details are written to a `Debugging` subfolder alongside the main outputs.
+Operational logs and exported error details are written to `Support\Debugging` for split-folder runs.
 
 ## How To Read The Results
 
 Start with the artifact that best matches your audience:
 
-- `CustomerAssessmentReport.docx`: primary customer-facing deliverable.
-- `EngineerActionPack.md`: primary operator-facing deliverable.
-- `Support\ImprovementPlan.json`: best for export reuse, filtering, comparisons, and automation.
-- `Support\RemediationSnippets.ps1`: support helper commands.
+- `Deliverables\*-Microsoft 365 Tenant Best Practices Assessment-<date>.docx`: primary customer-facing deliverable.
+- `Deliverables\*-Microsoft 365 Remediation Roadmap-<date>.docx`: prioritized remediation roadmap.
+- `Deliverables\*-EngPack.md`: primary operator-facing deliverable.
+- `Support\*-Plan.json`: best for export reuse, filtering, comparisons, and automation.
+- `Support\*-Snips.ps1`: support helper commands.
+- `Support\*-SolutionsEngineerEvidenceCoverage.json`: machine-readable evidence coverage contract for operator validation.
 
 Recommended review flow:
 
-1. Open `CustomerAssessmentReport.docx` first.
-2. Review `EngineerActionPack.md` for implementation planning.
-3. Keep `Support\ImprovementPlan.json` as your baseline for later comparison or downstream processing.
+1. Open the customer assessment DOCX in `Deliverables` first.
+2. Review the roadmap DOCX and engineer pack in `Deliverables` for implementation planning.
+3. Keep `Support\*-Plan.json` as your baseline for later comparison or downstream processing.
 4. Use legacy workbook / assessment HTML outputs only when you explicitly generated them for a deeper technical review.
 
 When reviewing `Improve` outputs:
 
-1. Start with `*-CustomerAssessmentReport.docx` for stakeholder-facing messaging.
-2. Use `*-EngineerActionPack.md` for operator execution planning.
-3. Use `Support\ImprovementPlan.json` for filtering, automation, or downstream transformations.
+1. Start with the customer assessment DOCX in `Deliverables` for stakeholder-facing messaging.
+2. Use the engineer pack in `Deliverables` for operator execution planning.
+3. Use `Support\*-Plan.json` for filtering, automation, or downstream transformations.
 4. Use `RelatedWorksheet` and `Source` to trace each finding back to its evidence and rule origin.
 
 ## Running On Another Machine
