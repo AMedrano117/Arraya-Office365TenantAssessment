@@ -1277,7 +1277,17 @@ function Get-AllExchangeMailboxDetails {
                 try { $graphIdentifiableNamesInReports = -not [bool]$displayConcealedNames } catch { $graphIdentifiableNamesInReports = $null }
             }
 
-            $graphReportData = @(Office365Custom\Get-GraphAPIActivityReport -ServiceName 'MailboxUsage' -PeriodDuration 'D180')
+            $graphReportCacheKey = 'GraphActivityReport:MailboxUsage:D180'
+            if (
+                $Context.Runtime.Contains('CollectorCache') -and
+                $Context.Runtime['CollectorCache'].Contains($graphReportCacheKey)
+            ) {
+                $graphReportData = @(Get-ArrayaCollectorCacheValue -Context $Context -Key $graphReportCacheKey)
+            }
+            else {
+                $graphReportData = @(Office365Custom\Get-GraphAPIActivityReport -ServiceName 'MailboxUsage' -PeriodDuration 'D180')
+                Set-ArrayaCollectorCacheValue -Context $Context -Key $graphReportCacheKey -Value $graphReportData | Out-Null
+            }
             $graphReportRowCount = @($graphReportData).Count
             if ($graphReportData -and $graphReportData.Count -gt 0) {
                 foreach ($item in $graphReportData) {

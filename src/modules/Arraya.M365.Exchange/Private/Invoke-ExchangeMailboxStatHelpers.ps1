@@ -195,7 +195,17 @@ function Get-Office365GroupsActivityMailboxLookup {
     }
 
     try {
-        $rows = @(Office365Custom\Get-GraphAPIActivityReport -ServiceName 'Office365GroupsActivity' -PeriodDuration 'D180')
+        $reportCacheKey = 'GraphActivityReport:Office365GroupsActivity:D180'
+        if (
+            $runtime.Contains('CollectorCache') -and
+            $runtime['CollectorCache'].Contains($reportCacheKey)
+        ) {
+            $rows = @(Get-ArrayaCollectorCacheValue -Context $Context -Key $reportCacheKey)
+        }
+        else {
+            $rows = @(Office365Custom\Get-GraphAPIActivityReport -ServiceName 'Office365GroupsActivity' -PeriodDuration 'D180')
+            Set-ArrayaCollectorCacheValue -Context $Context -Key $reportCacheKey -Value $rows | Out-Null
+        }
         $lookup.Rows = @($rows).Count
 
         foreach ($row in $rows) {
