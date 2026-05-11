@@ -28,6 +28,7 @@ Export-ModuleMember -Function @(
     'Import-ArrayaTenantSnapshot',
     'Invoke-ArrayaCollectionStepSafe',
     'Invoke-QuietCommand',
+    'New-ArrayaAssessmentOperatorSummary',
     'New-ArrayaAssessmentContext',
     'New-ArrayaTenantSnapshot',
     'Resolve-ArrayaSnapshotOutputContext',

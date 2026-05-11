@@ -5921,6 +5921,140 @@ function New-CustomerRemediationReportHtml {
     return (New-CustomerRemediationReportHtmlFromModel -Model $model)
 }
 
+function Resolve-SolutionsEngineerEvidenceCoveragePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][string]$AssessmentJsonPath,
+        [Parameter(Mandatory = $false)][string]$SupportFolderPath
+    )
+
+    $candidatePaths = New-Object System.Collections.Generic.List[string]
+
+    if (-not [string]::IsNullOrWhiteSpace($AssessmentJsonPath) -and (Test-Path -Path $AssessmentJsonPath -PathType Leaf)) {
+        $resolvedInputPath = (Resolve-Path -Path $AssessmentJsonPath).Path
+        if ($resolvedInputPath -match '\.manifest\.json$') {
+            try {
+                $manifest = Get-Content -Path $resolvedInputPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+                foreach ($artifact in @($manifest.Artifacts)) {
+                    if ($null -eq $artifact) { continue }
+                    if (-not [string]::Equals([string]$artifact.Type, 'Solutions Engineer Evidence Coverage', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+                    $artifactPath = [string]$artifact.Path
+                    if ([string]::IsNullOrWhiteSpace($artifactPath)) { continue }
+                    $candidatePaths.Add($artifactPath) | Out-Null
+                }
+            }
+            catch {}
+        }
+        else {
+            $snapshotDirectory = Split-Path -Path $resolvedInputPath -Parent
+            $snapshotLeaf = [System.IO.Path]::GetFileNameWithoutExtension($resolvedInputPath)
+            if ($snapshotLeaf.EndsWith('-Snap', [System.StringComparison]::OrdinalIgnoreCase)) {
+                $artifactPrefix = $snapshotLeaf.Substring(0, $snapshotLeaf.Length - 5)
+                if (-not [string]::IsNullOrWhiteSpace($artifactPrefix)) {
+                    $candidatePaths.Add((Join-Path -Path $snapshotDirectory -ChildPath ("{0}-SolutionsEngineerEvidenceCoverage.json" -f $artifactPrefix))) | Out-Null
+                }
+            }
+
+            $candidatePaths.Add((Join-Path -Path $snapshotDirectory -ChildPath 'SolutionsEngineerEvidenceCoverage.json')) | Out-Null
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($SupportFolderPath) -and (Test-Path -Path $SupportFolderPath -PathType Container)) {
+        $candidatePaths.Add((Join-Path -Path $SupportFolderPath -ChildPath 'SolutionsEngineerEvidenceCoverage.json')) | Out-Null
+        foreach ($coverageFile in @(Get-ChildItem -Path $SupportFolderPath -Filter '*-SolutionsEngineerEvidenceCoverage.json' -File -ErrorAction SilentlyContinue | Sort-Object -Property LastWriteTimeUtc -Descending)) {
+            $candidatePaths.Add($coverageFile.FullName) | Out-Null
+        }
+    }
+
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($candidatePath in $candidatePaths) {
+        if ([string]::IsNullOrWhiteSpace([string]$candidatePath)) { continue }
+        $resolvedCandidate = if ([System.IO.Path]::IsPathRooted([string]$candidatePath)) {
+            [string]$candidatePath
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($SupportFolderPath)) {
+            Join-Path -Path $SupportFolderPath -ChildPath ([string]$candidatePath)
+        }
+        else {
+            [string]$candidatePath
+        }
+
+        if (-not $seen.Add($resolvedCandidate)) { continue }
+        if (Test-Path -Path $resolvedCandidate -PathType Leaf) {
+            return (Resolve-Path -Path $resolvedCandidate).Path
+        }
+    }
+
+    return $null
+}
+
+function Import-SolutionsEngineerEvidenceCoverageSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][string]$AssessmentJsonPath,
+        [Parameter(Mandatory = $false)][string]$SupportFolderPath
+    )
+
+    $coveragePath = Resolve-SolutionsEngineerEvidenceCoveragePath -AssessmentJsonPath $AssessmentJsonPath -SupportFolderPath $SupportFolderPath
+    if ([string]::IsNullOrWhiteSpace($coveragePath)) {
+        return $null
+    }
+
+    try {
+        $coverage = Get-Content -Path $coveragePath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 100
+    }
+    catch {
+        return $null
+    }
+
+    if (-not [string]::Equals([string]$coverage.OutputProfile, 'SolutionsEngineer', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+
+    $status = if ([int]$coverage.MissingObjectiveCount -gt 0 -or [int]$coverage.MissingDatasetCount -gt 0) {
+        'Missing evidence'
+    }
+    elseif ([int]$coverage.PartialObjectiveCount -gt 0) {
+        'Partial evidence'
+    }
+    elseif ([int]$coverage.ReviewObjectiveCount -gt 0 -or [int]$coverage.UnexpectedEmptyDatasetCount -gt 0) {
+        'Review needed'
+    }
+    else {
+        'Covered'
+    }
+
+    $objectives = @(
+        foreach ($objective in @($coverage.Objectives)) {
+            if ($null -eq $objective) { continue }
+            [pscustomobject][ordered]@{
+                ObjectiveId          = [string]$objective.ObjectiveId
+                Area                 = [string]$objective.Area
+                Status               = [string]$objective.Status
+                Confidence           = [string]$objective.Confidence
+                ExpectedDatasetCount = [int]$objective.ExpectedDatasetCount
+                PresentDatasetCount  = [int]$objective.PresentDatasetCount
+                PopulatedDatasetCount = [int]$objective.PopulatedDatasetCount
+            }
+        }
+    )
+
+    return [pscustomobject][ordered]@{
+        Path                        = $coveragePath
+        Status                      = $status
+        ObjectiveCount              = [int]$coverage.ObjectiveCount
+        CoveredObjectiveCount       = [int]$coverage.CoveredObjectiveCount
+        ReviewObjectiveCount        = [int]$coverage.ReviewObjectiveCount
+        PartialObjectiveCount       = [int]$coverage.PartialObjectiveCount
+        MissingObjectiveCount       = [int]$coverage.MissingObjectiveCount
+        MissingDatasetCount         = [int]$coverage.MissingDatasetCount
+        EmptyDatasetCount           = [int]$coverage.EmptyDatasetCount
+        UnexpectedEmptyDatasetCount = [int]$coverage.UnexpectedEmptyDatasetCount
+        Objectives                  = $objectives
+        CoverageGaps                = @($coverage.CoverageGaps)
+    }
+}
+
 function New-EngineerActionPack {
     [CmdletBinding()]
     param(
@@ -5932,7 +6066,8 @@ function New-EngineerActionPack {
         [Parameter(Mandatory = $true)][string]$JsonOutPath,
         [Parameter(Mandatory = $false)][string]$CsvOutPath,
         [Parameter(Mandatory = $true)][string]$SnippetOutPath,
-        [Parameter(Mandatory = $true)][string]$SupportFolderPath
+        [Parameter(Mandatory = $true)][string]$SupportFolderPath,
+        [Parameter(Mandatory = $false)][object]$EvidenceCoverageSummary
     )
 
     $lines = New-Object System.Collections.Generic.List[string]
@@ -5960,6 +6095,40 @@ function New-EngineerActionPack {
             $lines.Add("| $($summary.Severity) | $($summary.Workstream) | $($summary.Area) | $($summary.OpenFindings) | $(Convert-ToArrayaMarkdownText $summary.TopSignals) |") | Out-Null
         }
         $lines.Add('') | Out-Null
+    }
+    if ($EvidenceCoverageSummary) {
+        $lines.Add('## Assessment Evidence Coverage') | Out-Null
+        $lines.Add('') | Out-Null
+        $lines.Add('Use this section to confirm the Solutions Engineer assessment had evidence for the objectives it claims to assess before relying on the findings for customer discussion.') | Out-Null
+        $lines.Add('') | Out-Null
+        $lines.Add(('- Coverage status: {0}' -f $EvidenceCoverageSummary.Status)) | Out-Null
+        $lines.Add(('- Objectives covered: {0}/{1}' -f $EvidenceCoverageSummary.CoveredObjectiveCount, $EvidenceCoverageSummary.ObjectiveCount)) | Out-Null
+        $lines.Add(('- Review objectives: {0}' -f $EvidenceCoverageSummary.ReviewObjectiveCount)) | Out-Null
+        $lines.Add(('- Partial or missing objectives: {0}' -f ([int]$EvidenceCoverageSummary.PartialObjectiveCount + [int]$EvidenceCoverageSummary.MissingObjectiveCount))) | Out-Null
+        $lines.Add(('- Missing datasets: {0}' -f $EvidenceCoverageSummary.MissingDatasetCount)) | Out-Null
+        $lines.Add(('- Unexpected empty datasets: {0}' -f $EvidenceCoverageSummary.UnexpectedEmptyDatasetCount)) | Out-Null
+        $lines.Add(('- Evidence coverage artifact: `{0}`' -f $EvidenceCoverageSummary.Path)) | Out-Null
+        $lines.Add('') | Out-Null
+        $lines.Add('| Objective | Area | Status | Confidence | Evidence |') | Out-Null
+        $lines.Add('|---|---|---|---|---|') | Out-Null
+        foreach ($objective in @($EvidenceCoverageSummary.Objectives)) {
+            $evidenceText = ('{0}/{1} datasets present; {2} populated' -f $objective.PresentDatasetCount, $objective.ExpectedDatasetCount, $objective.PopulatedDatasetCount)
+            $lines.Add("| $($objective.ObjectiveId) | $(Convert-ToArrayaMarkdownText $objective.Area) | $($objective.Status) | $($objective.Confidence) | $evidenceText |") | Out-Null
+        }
+        $lines.Add('') | Out-Null
+
+        $coverageGaps = @($EvidenceCoverageSummary.CoverageGaps | Select-Object -First 5)
+        if ($coverageGaps.Count -gt 0) {
+            $lines.Add('### Known Confidence Limits') | Out-Null
+            $lines.Add('') | Out-Null
+            foreach ($gap in $coverageGaps) {
+                $gapId = [string]$gap.GapId
+                $gapArea = [string]$gap.Area
+                $gapText = Convert-ToArrayaMarkdownText $gap.CurrentLimitation
+                $lines.Add(('- {0} - {1}: {2}' -f $gapId, $gapArea, $gapText)) | Out-Null
+            }
+            $lines.Add('') | Out-Null
+        }
     }
     $lines.Add('## Before You Start') | Out-Null
     $lines.Add('') | Out-Null
@@ -7727,7 +7896,8 @@ $roadmapRemediationTemplatePath = Get-RoadmapRemediationTemplatePath
 $roadmapRemediationBlocks = New-RoadmapRemediationDocumentBlocks -SourceModel $customerSourceModel -Signals $customerAssessmentSignals -GeneratedAt $generatedAt
 Write-CustomerAssessmentDocxFromModel -TemplatePath $roadmapRemediationTemplatePath -OutputPath $roadmapRemediationPlanOutPath -TenantName $tenantName -GeneratedAt $generatedAt -Blocks $roadmapRemediationBlocks -DocumentTitle "$tenantName Microsoft 365 Remediation Roadmap" -OptimizeMedia
 
-$engineerActionPackMarkdown = New-EngineerActionPack -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt -JsonOutPath $jsonOutPath -CsvOutPath $csvOutPath -SnippetOutPath $snippetOutPath -SupportFolderPath $supportFolder
+$solutionsEngineerEvidenceCoverageSummary = Import-SolutionsEngineerEvidenceCoverageSummary -AssessmentJsonPath $AssessmentJsonPath -SupportFolderPath $supportFolder
+$engineerActionPackMarkdown = New-EngineerActionPack -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt -JsonOutPath $jsonOutPath -CsvOutPath $csvOutPath -SnippetOutPath $snippetOutPath -SupportFolderPath $supportFolder -EvidenceCoverageSummary $solutionsEngineerEvidenceCoverageSummary
 Set-Content -Path $engineerMdOutPath -Value $engineerActionPackMarkdown -Encoding UTF8
 
 $snippetLibrary = @{

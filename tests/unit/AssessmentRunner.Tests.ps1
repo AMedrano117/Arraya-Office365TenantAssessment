@@ -194,6 +194,12 @@ Describe 'Arraya.M365.AssessmentRunner' {
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Engineer Action Pack' }).Count | Should -Be 1
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Improvement Plan JSON' }).Count | Should -Be 1
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Remediation Snippets' }).Count | Should -Be 1
+        $updatedManifest.OperatorSummary | Should -Not -BeNullOrEmpty
+        @($updatedManifest.OperatorSummary.PrimaryDeliverables.Type) | Should -Contain 'Customer Assessment Report'
+        @($updatedManifest.OperatorSummary.PrimaryDeliverables.Type) | Should -Contain 'Roadmap Remediation Plan'
+        @($updatedManifest.OperatorSummary.PrimaryDeliverables.Type) | Should -Contain 'Engineer Action Pack'
+        @($updatedManifest.OperatorSummary.SupportArtifacts.Type) | Should -Contain 'Assessment Snapshot JSON'
+        @($updatedManifest.OperatorSummary.SupportArtifacts.Type) | Should -Contain 'Improvement Plan JSON'
     }
 
     It 'resolves the run manifest from a Tenant Details workbook path' {
