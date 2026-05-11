@@ -1398,6 +1398,9 @@ function Connect-AssessmentGraph {
     if ($existing) {
         $graphDetails = Assert-AssessmentGraphContextMatchesTenant -TenantId $TenantId -ServiceName 'Microsoft Graph session reuse'
         Write-Host "Graph already connected for this session." -ForegroundColor Green
+        if ($AuthenticationType -eq 'Interactive') {
+            Write-Host "Interactive Graph auth is reusing the current Microsoft Graph session. If permission preflight fails even after admin consent, run Disconnect-MgGraph and re-run the assessment to request a fresh token with the assessment scopes." -ForegroundColor Yellow
+        }
 
         return [pscustomobject][ordered]@{
             Graph         = $true
@@ -1417,8 +1420,9 @@ function Connect-AssessmentGraph {
             Connect-MgGraph -TenantId $TenantId -ClientSecretCredential $clientSecretAuthContext.ClientSecretCredential -NoWelcome -ErrorAction Stop | Out-Null
         }
         default {
+            $requestedGraphScopes = @(Get-AssessmentGraphDelegatedScopes -WorkloadPlan $WorkloadPlan)
             $graphConnectParams = @{
-                Scopes      = (Get-AssessmentGraphDelegatedScopes -WorkloadPlan $WorkloadPlan)
+                Scopes      = $requestedGraphScopes
                 NoWelcome   = $true
                 ErrorAction = 'Stop'
             }
@@ -1429,6 +1433,7 @@ function Connect-AssessmentGraph {
             }
 
             Write-AssessmentInteractiveAuthNotice -ServiceName 'Microsoft Graph' -SupportsDeviceCode:$supportsGraphDeviceCode -PromptDescription 'browser sign-in prompt should appear'
+            Write-Host ("Requested Microsoft Graph delegated scopes: {0}" -f ($requestedGraphScopes -join ', ')) -ForegroundColor DarkGray
             try {
                 Connect-MgGraph @graphConnectParams | Out-Null
             }
@@ -4591,6 +4596,64 @@ function Get-AssessmentGrantedGraphPermissions {
     }
 }
 
+function Get-AssessmentGraphPreflightOperatorGuidance {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [object[]]$Failures,
+        [Parameter(Mandatory = $false)]
+        [object]$GrantedPermissionInfo
+    )
+
+    $guidance = New-Object System.Collections.Generic.List[string]
+    $effectiveAuthenticationType = if (
+        $script:AssessmentAuthWorkloadPlan -and
+        $script:AssessmentAuthWorkloadPlan.PSObject.Properties['AuthenticationType'] -and
+        -not [string]::IsNullOrWhiteSpace([string]$script:AssessmentAuthWorkloadPlan.AuthenticationType)
+    ) {
+        [string]$script:AssessmentAuthWorkloadPlan.AuthenticationType
+    }
+    else {
+        'Unknown'
+    }
+
+    $graphFailures = @($Failures | Where-Object { [string]$_.Area -eq 'Graph' })
+    if ($graphFailures.Count -eq 0) {
+        return @()
+    }
+
+    if ([string]::Equals($effectiveAuthenticationType, 'Interactive', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $guidance.Add('Interactive Graph auth note: confirm the signed-in account has the admin role needed to consent to the requested Microsoft Graph delegated permissions for this tenant.') | Out-Null
+        $guidance.Add('If that account is correct, the current PowerShell session may be reusing a cached Graph token from an earlier sign-in. Run Disconnect-MgGraph, then rerun the assessment so Connect-MgGraph can request the assessment scopes again.') | Out-Null
+        $guidance.Add('When prompted, sign in as a Global Administrator or another account allowed to grant tenant-wide admin consent, and approve the requested scopes.') | Out-Null
+
+        $requestedScopes = @()
+        if ($script:AssessmentAuthWorkloadPlan) {
+            $requestedScopes = @(Get-AssessmentGraphDelegatedScopes -WorkloadPlan $script:AssessmentAuthWorkloadPlan)
+        }
+        if ($requestedScopes.Count -gt 0) {
+            $guidance.Add(("The assessment requested these delegated Graph scopes during Connect-MgGraph: {0}" -f ($requestedScopes -join ', '))) | Out-Null
+        }
+
+        $currentPermissions = @()
+        if ($GrantedPermissionInfo -and $GrantedPermissionInfo.PSObject.Properties['Permissions']) {
+            $currentPermissions = @($GrantedPermissionInfo.Permissions | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+        }
+        if ($currentPermissions.Count -gt 0) {
+            $guidance.Add(("Current Graph token permissions detected by preflight: {0}" -f ($currentPermissions -join ', '))) | Out-Null
+        }
+    }
+    elseif ($effectiveAuthenticationType -in @('Certificate', 'ClientSecret')) {
+        $guidance.Add(("App-only Graph auth note: confirm the app registration has admin consent for the listed Microsoft Graph application permissions in tenant {0}." -f $(if ([string]::IsNullOrWhiteSpace($TenantId)) { '(current)' } else { $TenantId }))) | Out-Null
+    }
+
+    if (@($graphFailures | Where-Object { [string]$_.Requirement -match 'Sites\.Read\.All' }).Count -gt 0) {
+        $guidance.Add('For Sites.Read.All specifically, the assessment probes /sites/getAllSites. A 403 here means the effective token still cannot read SharePoint/OneDrive site inventory even if the user is Global Administrator.') | Out-Null
+    }
+
+    return @($guidance)
+}
+
 function Test-AssessmentPermissionPreflight {
     [CmdletBinding()]
     param(
@@ -5148,6 +5211,16 @@ function Test-AssessmentPermissionPreflight {
             Write-Host (" - [{0}] {1}" -f $failure.Area, $failure.Requirement) -ForegroundColor Yellow
             Write-Host ("   Needed for: {0}" -f $failure.NeededFor) -ForegroundColor DarkYellow
             Write-Host ("   Current issue: {0}" -f $failure.Details) -ForegroundColor DarkYellow
+        }
+
+        $operatorGuidance = @(Get-AssessmentGraphPreflightOperatorGuidance -Failures @($permissionFailures) -GrantedPermissionInfo $grantedPermissionInfo)
+        if ($operatorGuidance.Count -gt 0) {
+            $messageLines.Add('Operator guidance:') | Out-Null
+            Write-Host 'Operator guidance:' -ForegroundColor Yellow
+            foreach ($guidanceLine in $operatorGuidance) {
+                $messageLines.Add((" - {0}" -f $guidanceLine)) | Out-Null
+                Write-Host (" - {0}" -f $guidanceLine) -ForegroundColor DarkYellow
+            }
         }
 
         $failureMessage = ($messageLines -join [System.Environment]::NewLine)

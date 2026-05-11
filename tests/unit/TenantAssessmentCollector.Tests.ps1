@@ -210,6 +210,17 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Not -Match 'beta/tenantRelationships/findTenantInformationByTenantId'
     }
 
+    It 'requests SharePoint Graph scopes for interactive auth and gives cached-token guidance when Graph preflight fails' {
+        $script:collectorSource | Should -Match "Get-AssessmentGraphDelegatedScopes"
+        $script:collectorSource | Should -Match '\$scopes\.Add\(''Sites\.Read\.All''\)'
+        $script:collectorSource | Should -Match '\$scopes\.Add\(''SharePointTenantSettings\.Read\.All''\)'
+        $script:collectorSource | Should -Match 'Requested Microsoft Graph delegated scopes:'
+        $script:collectorSource | Should -Match 'function Get-AssessmentGraphPreflightOperatorGuidance'
+        $script:collectorSource | Should -Match 'Run Disconnect-MgGraph, then rerun the assessment'
+        $script:collectorSource | Should -Match 'sign in as a Global Administrator'
+        $script:collectorSource | Should -Match 'A 403 here means the effective token still cannot read SharePoint/OneDrive site inventory'
+    }
+
     It 'restores Graph globals after the run and labels remaining beta fallbacks explicitly' {
         $script:collectorSource | Should -Match '\$script:AssessmentGraphRuntimeState = \[ordered\]@'
         $script:collectorSource | Should -Match 'function Restore-AssessmentGraphRuntimeState'
