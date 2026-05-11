@@ -1018,9 +1018,9 @@ function Write-AssessmentInteractiveAuthNotice {
         $fallbackParts.Add('device code') | Out-Null
     }
 
-    $message = "{0} auth: {1}" -f $ServiceName, $PromptDescription
+    $message = "{0} sign-in: complete the prompt if one appears." -f $ServiceName
     if ($fallbackParts.Count -gt 0) {
-        $message = "{0}; if the local broker path fails, the script will retry with {1}" -f $message, ($fallbackParts -join ' and ')
+        Write-Log -Type INFO -Message ("[{0} auth] Available fallback path(s): {1}" -f $ServiceName, ($fallbackParts -join ', ')) -ExportFileLocation $ExportDetails
     }
 
     Write-AssessmentConsoleSubstep -Message $message
@@ -1410,7 +1410,7 @@ function Connect-AssessmentGraph {
         }
     }
 
-    Write-Host 'Connecting assessment Graph session...' -ForegroundColor Cyan
+    Write-Host 'Connecting Microsoft Graph...' -ForegroundColor Cyan
     switch ($AuthenticationType) {
         'Certificate' {
             Connect-MgGraph -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -NoWelcome -ErrorAction Stop | Out-Null
@@ -1433,7 +1433,8 @@ function Connect-AssessmentGraph {
             }
 
             Write-AssessmentInteractiveAuthNotice -ServiceName 'Microsoft Graph' -SupportsDeviceCode:$supportsGraphDeviceCode -PromptDescription 'browser sign-in prompt should appear'
-            Write-Host ("Requested Microsoft Graph delegated scopes: {0}" -f ($requestedGraphScopes -join ', ')) -ForegroundColor DarkGray
+            Write-Host ("Graph scopes requested: {0} scope(s), including Sites.Read.All and SharePointTenantSettings.Read.All." -f $requestedGraphScopes.Count) -ForegroundColor DarkGray
+            Write-Log -Type INFO -Message ("Requested Microsoft Graph delegated scopes: {0}" -f ($requestedGraphScopes -join ', ')) -ExportFileLocation $ExportDetails
             try {
                 Connect-MgGraph @graphConnectParams | Out-Null
             }
@@ -1526,7 +1527,7 @@ function Connect-AssessmentExchange {
         }
     }
 
-    Write-Host 'Connecting assessment Exchange Online session...' -ForegroundColor Cyan
+    Write-Host 'Connecting Exchange Online...' -ForegroundColor Cyan
     $exchangeConnectParams = @{
         ShowBanner  = $false
         ErrorAction = 'Stop'
@@ -1729,7 +1730,7 @@ function Connect-AssessmentSharePoint {
     }
 
     try {
-        Write-Host 'Connecting assessment SharePoint admin session...' -ForegroundColor Cyan
+        Write-Host 'Connecting SharePoint admin...' -ForegroundColor Cyan
         Write-AssessmentInteractiveAuthNotice -ServiceName 'SharePoint admin' -PromptDescription 'browser sign-in prompt should appear'
         Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
         Write-Host 'SharePoint admin session connected.' -ForegroundColor Green
@@ -1788,7 +1789,7 @@ function Connect-AssessmentTeams {
     }
 
     try {
-        Write-Host 'Connecting assessment Teams PowerShell session...' -ForegroundColor Cyan
+        Write-Host 'Connecting Teams PowerShell...' -ForegroundColor Cyan
         Write-AssessmentInteractiveAuthNotice -ServiceName 'Teams PowerShell' -PromptDescription 'browser sign-in prompt should appear'
         Connect-MicrosoftTeams -ErrorAction Stop | Out-Null
         Write-Host 'Teams PowerShell connected.' -ForegroundColor Green
@@ -1814,7 +1815,7 @@ function Connect-AssessmentPurview {
     [CmdletBinding()]
     param()
 
-    Write-Host 'Connecting assessment Purview compliance session...' -ForegroundColor Cyan
+    Write-Host 'Connecting Purview compliance...' -ForegroundColor Cyan
     if (-not (Ensure-PurviewComplianceSession)) {
         $purviewMessage = Get-PurviewComplianceDiagnosticMessage
         if ([string]::IsNullOrWhiteSpace($purviewMessage)) {
@@ -1986,7 +1987,7 @@ function Initialize-AssessmentAuthentication {
         $connectExchangeFirst = ([string]$WorkloadPlan.AuthenticationType -eq 'Interactive')
 
         if ($connectExchangeFirst) {
-            Write-Host 'Interactive auth optimization: connecting Exchange Online and Purview before Microsoft Graph.' -ForegroundColor DarkGray
+            Write-Host 'Interactive sign-in sequence: Exchange Online, Purview, then Microsoft Graph.' -ForegroundColor DarkGray
 
             $exchangeResult = Connect-AssessmentExchange -AuthenticationType $WorkloadPlan.AuthenticationType -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -InitialDomain $authResult.InitialDomain
             $authResult.ExchangeOnline = [bool]$exchangeResult.ExchangeOnline
@@ -2356,7 +2357,7 @@ function Invoke-AssessmentPermissionPreflightWithStatus {
         default { $Workload }
     }
 
-    Write-Host ("Running {0} permission preflight..." -f $workloadLabel) -ForegroundColor DarkCyan
+    Write-Host ("Checking {0} access..." -f $workloadLabel) -ForegroundColor DarkCyan
     Test-AssessmentPermissionPreflight -ConnectionResult $ConnectionResult -Workload $Workload
 }
 
@@ -14220,7 +14221,7 @@ function Ensure-PurviewComplianceSession {
 
         Write-AssessmentInteractiveAuthNotice -ServiceName 'Purview compliance PowerShell' -SupportsDisableWam:$ConnectCommandMetadata.Parameters.ContainsKey('DisableWAM') -SupportsDeviceCode:$ConnectCommandMetadata.Parameters.ContainsKey('Device')
         if (-not $ConnectCommandMetadata.Parameters.ContainsKey('Device')) {
-            Write-AssessmentConsoleSubstep -Message 'Purview auth: this ExchangeOnlineManagement version does not expose device code for Connect-IPPSSession; only interactive and -DisableWAM are available' -ForegroundColor 'Yellow'
+            Write-Log -Type INFO -Message '[Ensure-PurviewComplianceSession] Connect-IPPSSession does not expose device code in this ExchangeOnlineManagement version; interactive and -DisableWAM are available.' -ExportFileLocation $ExportDetails
         }
 
         $lastFailure = $null
@@ -14236,7 +14237,6 @@ function Ensure-PurviewComplianceSession {
             try {
                 if ($attempt.Label -eq 'interactive authentication') {
                     Write-Log -Type INFO -Message "[Ensure-PurviewComplianceSession] Attempting Purview compliance PowerShell connection with $($attempt.Label)." -ExportFileLocation $ExportDetails
-                    Write-AssessmentConsoleSubstep -Message 'Purview auth: attempting interactive sign-in'
                 }
                 else {
                     Write-Log -Type WARNING -Message "[Ensure-PurviewComplianceSession] Purview compliance PowerShell connection failed. Retrying with $($attempt.Label)." -ExportFileLocation $ExportDetails
