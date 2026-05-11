@@ -4,14 +4,15 @@ This runbook explains what the `SolutionsEngineer` output profile is intended to
 
 `src/config/baseline/solutions-engineer-assessment-objectives.json`
 
-The profile is assessment based. It is meant to support professional-services conversations about security gaps, operational risk, governance maturity, and areas for improvement. This milestone does not change generated report output. It documents the current evidence-backed behavior and adds tests so the repo can answer: what does this assessment check, why does it matter, where is the evidence, and how do we know the evidence path exists?
+The profile is assessment based. It is meant to support professional-services conversations about security gaps, operational risk, governance maturity, and areas for improvement. The report content is evidence-backed so the repo can answer: what does this assessment check, why does it matter, where is the evidence, and how do we know the evidence path exists?
 
 ## Profile Contract
 
 - Output profile: `SolutionsEngineer`
 - Reporting mode: `Operator`
-- Current output behavior: unchanged
-- Primary evidence outputs: workbook, JSON snapshot, improvement plan, customer report, roadmap, engineer pack
+- Output layout: human-facing files in `Deliverables`; machine/replay files in `Support`
+- Primary evidence outputs: workbook, customer report, roadmap, and engineer pack in `Deliverables`; JSON snapshot, evidence coverage, improvement plan JSON, manifest, and snippets in `Support`
+- Operator visibility: the engineer pack summarizes Solutions Engineer evidence confidence, and `Support\*-SolutionsEngineerEvidenceCoverage.json` remains the full machine-readable source
 - Primary interpretation rule: if evidence is missing or partial, call it a coverage or confidence gap instead of forcing the data to fit the expected story
 
 ## Objective Summary

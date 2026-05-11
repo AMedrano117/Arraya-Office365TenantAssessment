@@ -12,6 +12,13 @@ function Get-AllRecipientDetails {
     $exportDetails = $Context.ExportFileLocation
     $initialStart = Get-ArrayaExchangeCollectorStartTime -Context $Context
     $recipientProgressId = 33
+    $cacheKey = "Exchange:AllRecipients:$detailLevel"
+    $cachedRecipients = Get-ArrayaCollectorCacheValue -Context $Context -Key $cacheKey
+    if ($null -ne $cachedRecipients) {
+        $tenantStatsHash['AllRecipients'] = $cachedRecipients
+        Write-Log -Type INFO -Message "[Get-AllRecipientDetails] Reused cached Exchange recipient inventory for $detailLevel details." -ExportFileLocation $exportDetails
+        return $tenantStatsHash['AllRecipients']
+    }
     try {
         $start = Get-Date
         $tenantStatsHash["AllRecipients"] = @{}
@@ -51,6 +58,7 @@ function Get-AllRecipientDetails {
         foreach ($recipient in $allRecipients) {
             $tenantStatsHash["AllRecipients"][$recipient.PrimarySmtpAddress] = $recipient
         }
+        Set-ArrayaCollectorCacheValue -Context $Context -Key $cacheKey -Value $tenantStatsHash['AllRecipients'] | Out-Null
     }
     catch {
         Write-Log -Type ERROR -Message "[Get-AllRecipientDetails] An error occurred in running Get-AllRecipientDetails function. $($_.Exception.Message)" -ExportFileLocation $exportDetails -CaptureError -ErrorRecordVar $_

@@ -124,7 +124,7 @@ function Get-EntraIDGroups {
 
         Write-Host '    > Entra groups: member and owner count prefetch' -ForegroundColor DarkCyan
         Write-Log -Type INFO -Message "[Get-EntraIDGroups] Prefetching group member/owner counts via Graph batch for $($Groups.Count) groups ($($requests.Count) count request(s))." -ExportFileLocation $exportDetails
-        $responses = Invoke-ArrayaGraphBatchRequest -Requests $requests.ToArray() -GraphAuthType $GraphAuthType -Activity 'Group member/owner count prefetch' -ExportFileLocation $exportDetails
+        $responses = Invoke-ArrayaGraphCollectionBatch -Requests $requests.ToArray() -GraphAuthType $GraphAuthType -Activity 'Group member/owner count prefetch' -ExportFileLocation $exportDetails -Context $Context
         foreach ($response in @($responses.Values)) {
             if (-not $response -or -not $response.id) {
                 continue
@@ -213,7 +213,9 @@ function Get-EntraIDGroups {
             $licensedGroupsEndpoint = "https://graph.microsoft.com/v1.0/groups?`$filter=assignedLicenses/any()&`$select=id,displayName,assignedLicenses,licenseProcessingState"
             Write-Host '    > Entra groups: license assignment prefetch' -ForegroundColor DarkCyan
             Write-Log -Type INFO -Message '[Get-EntraIDGroups] Prefetching authoritative group-based licensing assignments via Graph assignedLicenses/any().' -ExportFileLocation $exportDetails
-            $licensedGroups = @(Office365Custom\Get-GraphData -PageSize 999 -Uri $licensedGroupsEndpoint -Id $groupDetailProgressId -Activity 'Gathering Group License Assignments' -SuppressProgress)
+            $licensedGroups = @(Invoke-ArrayaGraphCollectionRequest -Uri $licensedGroupsEndpoint -Activity 'Gathering Group License Assignments' -GraphMode ($GraphAuthType -join '+') -Context $Context -ScriptBlock {
+                Office365Custom\Get-GraphData -PageSize 999 -Uri $licensedGroupsEndpoint -Id $groupDetailProgressId -Activity 'Gathering Group License Assignments' -SuppressProgress
+            })
             foreach ($licensedGroup in @($licensedGroups)) {
                 if ($null -eq $licensedGroup) {
                     continue
@@ -248,13 +250,16 @@ function Get-EntraIDGroups {
         }
 
         try {
+            $memberUri = "https://graph.microsoft.com/v1.0/groups/$GroupId/members?`$select=id&`$top=999"
             $memberRows = @(
-                Office365Custom\Get-GraphData `
-                    -PageSize 999 `
-                    -Uri "https://graph.microsoft.com/v1.0/groups/$GroupId/members?`$select=id&`$top=999" `
-                    -Id $groupDetailProgressId `
-                    -Activity 'Counting License Group Members' `
-                    -SuppressProgress
+                Invoke-ArrayaGraphCollectionRequest -Uri $memberUri -Activity 'Counting License Group Members' -GraphMode ($GraphAuthType -join '+') -Context $Context -ScriptBlock {
+                    Office365Custom\Get-GraphData `
+                        -PageSize 999 `
+                        -Uri $memberUri `
+                        -Id $groupDetailProgressId `
+                        -Activity 'Counting License Group Members' `
+                        -SuppressProgress
+                }
             )
 
             return [int]$memberRows.Count
@@ -278,7 +283,10 @@ function Get-EntraIDGroups {
 
         $groupDetails = $Group
         if ($collectDeepGroupDetails) {
-            $groupDetails = Office365Custom\Get-GraphData -PageSize 999 -Uri "https://graph.microsoft.com/v1.0/groups/$groupId" -Id $groupDetailProgressId -Activity 'Gathering Group Details'
+            $groupDetailsUri = "https://graph.microsoft.com/v1.0/groups/$groupId"
+            $groupDetails = Invoke-ArrayaGraphCollectionRequest -Uri $groupDetailsUri -Activity 'Gathering Group Details' -GraphMode ($GraphAuthType -join '+') -Context $Context -ScriptBlock {
+                Office365Custom\Get-GraphData -PageSize 999 -Uri $groupDetailsUri -Id $groupDetailProgressId -Activity 'Gathering Group Details'
+            }
             if ($groupDetails -is [array]) {
                 $groupDetails = @($groupDetails | Select-Object -First 1)
             }
@@ -353,7 +361,10 @@ function Get-EntraIDGroups {
             [int]$groupMemberCountLookup[$groupId]
         }
         else {
-            $memberResult = Office365Custom\Get-GraphData -Uri "https://graph.microsoft.com/v1.0/groups/$groupId/members/`$count" -Id $groupDetailProgressId -Activity 'Counting Members'
+            $memberCountUri = "https://graph.microsoft.com/v1.0/groups/$groupId/members/`$count"
+            $memberResult = Invoke-ArrayaGraphCollectionRequest -Uri $memberCountUri -Activity 'Counting Members' -GraphMode ($GraphAuthType -join '+') -Context $Context -ScriptBlock {
+                Office365Custom\Get-GraphData -Uri $memberCountUri -Id $groupDetailProgressId -Activity 'Counting Members'
+            }
             if ($memberResult -is [array]) { [int]($memberResult | Select-Object -First 1) } else { [int]$memberResult }
         }
         $memberCountSource = 'Generic group member count'
@@ -372,7 +383,10 @@ function Get-EntraIDGroups {
             [int]$groupOwnerCountLookup[$groupId]
         }
         else {
-            $ownerResult = Office365Custom\Get-GraphData -Uri "https://graph.microsoft.com/v1.0/groups/$groupId/owners/`$count" -Id $groupDetailProgressId -Activity 'Counting Owners'
+            $ownerCountUri = "https://graph.microsoft.com/v1.0/groups/$groupId/owners/`$count"
+            $ownerResult = Invoke-ArrayaGraphCollectionRequest -Uri $ownerCountUri -Activity 'Counting Owners' -GraphMode ($GraphAuthType -join '+') -Context $Context -ScriptBlock {
+                Office365Custom\Get-GraphData -Uri $ownerCountUri -Id $groupDetailProgressId -Activity 'Counting Owners'
+            }
             if ($ownerResult -is [array]) { [int]($ownerResult | Select-Object -First 1) } else { [int]$ownerResult }
         }
 
@@ -409,7 +423,9 @@ function Get-EntraIDGroups {
         $groupsEndpoint = "https://graph.microsoft.com/v1.0/groups?`$select=$($groupSelectProperties -join ',')"
         Write-Host '    > Entra groups: inventory retrieval' -ForegroundColor DarkCyan
         Write-Log -Type INFO -Message 'Fetching initial Entra Groups' -ExportFileLocation $exportDetails
-        $groups = @(Office365Custom\Get-GraphData -PageSize 999 -Uri $groupsEndpoint -Id $groupFetchProgressId -Activity 'Gathering Group Details')
+        $groups = @(Invoke-ArrayaGraphCollectionRequest -Uri $groupsEndpoint -Activity 'Gathering Group Details' -GraphMode ($GraphAuthType -join '+') -Context $Context -ScriptBlock {
+            Office365Custom\Get-GraphData -PageSize 999 -Uri $groupsEndpoint -Id $groupFetchProgressId -Activity 'Gathering Group Details'
+        })
         if ($collectGroupLicenseChecks) {
             $licensedGroupLookupById = Get-EntraLicensedGroupLookup
         }

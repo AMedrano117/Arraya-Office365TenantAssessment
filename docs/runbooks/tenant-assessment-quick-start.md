@@ -43,8 +43,9 @@ The standalone `Invoke-EntraAppReport.ps1` file in that folder is kept only as a
 - Use `-SkipImprove` only when you explicitly want the older assessment-only behavior.
 - `Improve` is still available as a separate post-processing workflow that consumes an assessment JSON snapshot.
 - The launcher still supports `-RunImprove` on `M365Collect` when you want to chain post-processing from a snapshot-only run.
-- The default `M365` flow now centers on operator-facing top-level deliverables like `CustomerAssessmentReport.docx`, `EngineerActionPack.md`, and the workbook when the selected profile enables it.
-- `AssessmentSnapshot.json`, `ImprovementPlan.json`, `*.manifest.json`, and `RemediationSnippets.ps1` are written under `Support`.
+- The default `M365` flow now writes human-facing outputs under `Deliverables`, including the customer assessment DOCX, remediation roadmap DOCX, engineer action pack, and the workbook when the selected profile enables it.
+- Machine and replay artifacts are written under `Support`, including `*-AssessmentSnapshot.json`, `*-SolutionsEngineerEvidenceCoverage.json`, `*-Plan.json`, `*.manifest.json`, `*-Snips.ps1`, and `Debugging` logs/error exports.
+- Solutions Engineer evidence coverage is kept out of customer-facing DOCX files. Review the summary in the engineer pack and the full machine-readable coverage in `Support`.
 - `SolutionsEngineer` and `TenantToTenantMigration` include workbook output by default.
 - Use `-IncludeLegacyAssessmentArtifacts` only when you explicitly want the older assessment HTML / questionnaire / PDF family.
 - Use `-IncludeLegacyArtifacts` only when you explicitly want the older `Improve` CSV/Markdown planning artifacts.

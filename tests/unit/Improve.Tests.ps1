@@ -36,6 +36,15 @@ Describe 'Improve workflow' {
             [xml](Get-TestDocxDocumentXmlText -Path $Path)
         }
 
+        function Get-TestDocxPlainText {
+            param([Parameter(Mandatory = $true)][string]$Path)
+
+            $xml = Get-TestDocxDocumentXml -Path $Path
+            $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+            $ns.AddNamespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main')
+            return (($xml.SelectNodes('//w:t', $ns) | ForEach-Object { $_.'#text' }) -join ' ')
+        }
+
         function Get-TestDocxEntryNames {
             param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -1022,10 +1031,11 @@ Describe 'Improve workflow' {
                 ErrorCount   = 0
             }
 
-        $snapshotPath = Join-Path $TestDrive 'assessment.json'
+        $sourceSupportPath = Join-Path $TestDrive 'SourceSupport'
+        $null = New-Item -ItemType Directory -Path $sourceSupportPath -Force
+        $snapshotPath = Join-Path $sourceSupportPath 'assessment-Snap.json'
         Export-ArrayaTenantSnapshot -Snapshot $snapshot -Path $snapshotPath
         $supportPath = Join-Path $TestDrive 'Support'
-        $null = New-Item -ItemType Directory -Path $supportPath -Force
         [pscustomobject]@{
             OutputProfile               = 'SolutionsEngineer'
             ReportingMode               = 'Operator'
@@ -1055,20 +1065,24 @@ Describe 'Improve workflow' {
                     CurrentLimitation = 'Needs validation across more tenants.'
                 }
             )
-        } | ConvertTo-Json -Depth 20 | Set-Content -Path (Join-Path $supportPath 'assessment-SolutionsEngineerEvidenceCoverage.json') -Encoding UTF8
+        } | ConvertTo-Json -Depth 20 | Set-Content -Path (Join-Path $sourceSupportPath 'assessment-SolutionsEngineerEvidenceCoverage.json') -Encoding UTF8
 
         $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
+        $expectedDeliverablesFolder = Join-Path $TestDrive 'Deliverables'
+        $expectedSupportFolder = Join-Path $TestDrive 'Support'
 
         Test-Path $result.JsonPath | Should -BeTrue
-        Split-Path -Path $result.JsonPath -Parent | Should -Be (Join-Path $TestDrive 'Support')
+        Split-Path -Path $result.JsonPath -Parent | Should -Be $expectedSupportFolder
         [System.IO.Path]::GetFileName($result.JsonPath) | Should -Match '.+-Plan\.json$'
         $result.CsvPath | Should -BeNullOrEmpty
         $result.MarkdownPath | Should -BeNullOrEmpty
         Test-Path $result.CustomerAssessmentReportPath | Should -BeTrue
+        Split-Path -Path $result.CustomerAssessmentReportPath -Parent | Should -Be $expectedDeliverablesFolder
         [System.IO.Path]::GetFileName($result.CustomerAssessmentReportPath) | Should -Match '.+-Microsoft 365 Tenant Best Practices Assessment-\d{4}-\d{2}-\d{2}\.docx$'
-        Test-Path $result.CustomerAssessmentReportMarkdownPath | Should -BeTrue
-        [System.IO.Path]::GetFileName($result.CustomerAssessmentReportMarkdownPath) | Should -Match '.+-CustRpt\.md$'
+        $result.CustomerAssessmentReportMarkdownPath | Should -BeNullOrEmpty
+        @(Get-ChildItem -Path $expectedDeliverablesFolder -Filter '*-CustRpt.md' -File -ErrorAction SilentlyContinue).Count | Should -Be 0
         Test-Path $result.RoadmapRemediationPlanPath | Should -BeTrue
+        Split-Path -Path $result.RoadmapRemediationPlanPath -Parent | Should -Be $expectedDeliverablesFolder
         [System.IO.Path]::GetFileName($result.RoadmapRemediationPlanPath) | Should -Match '.+-Microsoft 365 Remediation Roadmap-\d{4}-\d{2}-\d{2}\.docx$'
         if ($result.PSObject.Properties.Name -contains 'CustomerRemediationReportPath') {
             $result.CustomerRemediationReportPath | Should -BeNullOrEmpty
@@ -1077,14 +1091,20 @@ Describe 'Improve workflow' {
             $result.CustomerRemediationReportMarkdownPath | Should -BeNullOrEmpty
         }
         Test-Path $result.EngineerActionPackPath | Should -BeTrue
+        Split-Path -Path $result.EngineerActionPackPath -Parent | Should -Be $expectedDeliverablesFolder
         [System.IO.Path]::GetFileName($result.EngineerActionPackPath) | Should -Match '.+-EngPack\.md$'
         Test-Path $result.RemediationPs1Path | Should -BeTrue
         [System.IO.Path]::GetFileName($result.RemediationPs1Path) | Should -Match '.+-Snips\.ps1$'
-        Split-Path -Path $result.RemediationPs1Path -Parent | Should -Be (Join-Path $TestDrive 'Support')
-        $result.SupportFolderPath | Should -Be (Join-Path $TestDrive 'Support')
+        Split-Path -Path $result.RemediationPs1Path -Parent | Should -Be $expectedSupportFolder
+        $result.SupportFolderPath | Should -Be $expectedSupportFolder
+        $result.HumanDeliverablesFolderPath | Should -Be $expectedDeliverablesFolder
+        @(Get-ChildItem -Path $expectedSupportFolder -Filter '*-SolutionsEngineerEvidenceCoverage.json' -File -ErrorAction SilentlyContinue).Count | Should -Be 1
 
         $payload = Get-Content -Raw $result.JsonPath | ConvertFrom-Json -Depth 20
         $payload.Deliverables.RoadmapRemediationPlan | Should -Be $result.RoadmapRemediationPlanPath
+        $payload.Deliverables.PSObject.Properties.Name | Should -Not -Contain 'CustomerAssessmentReportMarkdown'
+        $payload.Deliverables.HumanDeliverablesFolder | Should -Be $expectedDeliverablesFolder
+        $payload.Deliverables.SupportFolder | Should -Be $expectedSupportFolder
         $roadmapActionTitles = @($payload.RoadmapActions | ForEach-Object { [string]$_.ActionTitle } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $payload.Findings.Count | Should -BeGreaterThan 0
         $roadmapActionTitles.Count | Should -Be (@($roadmapActionTitles | Select-Object -Unique).Count)
@@ -1241,15 +1261,21 @@ Describe 'Improve workflow' {
 
         $customerReportDocument = Get-TestDocxDocumentXmlText -Path $result.CustomerAssessmentReportPath
         $customerReportXml = Get-TestDocxDocumentXml -Path $result.CustomerAssessmentReportPath
+        $customerReportPlainText = Get-TestDocxPlainText -Path $result.CustomerAssessmentReportPath
         $customerReportEntryNames = Get-TestDocxEntryNames -Path $result.CustomerAssessmentReportPath
         $roadmapDocument = Get-TestDocxDocumentXmlText -Path $result.RoadmapRemediationPlanPath
         $roadmapEntryInfo = Get-TestDocxEntryInfo -Path $result.RoadmapRemediationPlanPath
-        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
         $ns = New-Object System.Xml.XmlNamespaceManager($customerReportXml.NameTable)
         $ns.AddNamespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main')
         $customerTables = $customerReportXml.SelectNodes('//w:tbl', $ns)
         $customerReportDocument | Should -Match '1\.0 Introduction'
-        $customerReportDocument | Should -Match 'Assessment Snapshot At A Glance'
+        $customerReportDocument | Should -Match 'Tenant Snapshot At A Glance'
+        $customerReportDocument | Should -Not -Match 'Assessment Evidence Confidence'
+        $customerReportDocument | Should -Not -Match 'Evidence coverage status'
+        $customerReportDocument | Should -Not -Match 'Objective families covered'
+        $customerReportDocument | Should -Not -Match 'Known Confidence Limits'
+        $customerReportDocument | Should -Not -Match 'Live integration proof'
+        $customerReportDocument | Should -Not -Match 'Needs validation across more tenants'
         $customerReportDocument | Should -Match '2\.0 Project Scope'
         $customerReportDocument | Should -Match '3\.0 Executive Summary'
         $customerReportDocument | Should -Match 'Overall Findings Summary'
@@ -1327,8 +1353,11 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'Recent vs Stale Admins'
         $customerReportDocument | Should -Match 'Admins Covered vs Not Covered by Active MFA Enforcement'
         $customerReportDocument | Should -Match 'Service Accounts'
+        $customerReportDocument | Should -Match 'Global Administrator Detail'
         $customerReportDocument | Should -Match '9\.0 Exchange Online: Mailboxes and Storage Overview'
-        $customerReportDocument | Should -Match 'Data Footprint by Workload'
+        $customerReportDocument | Should -Match 'Storage Footprint Summary'
+        $customerReportDocument | Should -Match 'Approx\. Storage \(GB\)'
+        $customerReportDocument | Should -Match 'not a count of users, sites, mailboxes, or findings'
         $customerReportDocument | Should -Match '9\.1 Recipient and Mailbox Footprint'
         $customerReportDocument | Should -Match 'Recipient Mix by Type'
         $customerReportDocument | Should -Match 'Top Recipient Domains'
@@ -1341,7 +1370,7 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'Inactive Mailboxes'
         $customerReportDocument | Should -Match 'Group Mailbox Utilization'
         $customerReportDocument | Should -Match 'Archive Mailbox Usage and Licensing'
-        $customerReportDocument | Should -Match '9\.2 SMTP Relay Usage'
+        $customerReportDocument | Should -Not -Match 'Benefits of Transitioning'
         $customerReportDocument | Should -Match '10\. Microsoft Teams Governance and Cleanup'
         $customerReportDocument | Should -Match 'Key Findings'
         $customerReportDocument | Should -Match 'Opportunities for Cleanup'
@@ -1357,7 +1386,17 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Match 'Password Writeback with AD Sync'
         $customerReportDocument | Should -Match 'Version History'
         $customerReportDocument | Should -Match 'Arraya Solutions'
-        $customerReportDocument | Should -Match 'Not validated from the reviewed data'
+        $customerReportDocument | Should -Match 'Not confirmed'
+        $customerReportDocument | Should -Not -Match 'Not validated from the reviewed data'
+        $customerReportDocument | Should -Not -Match 'Not available in current app-only source'
+        $customerReportDocument | Should -Not -Match 'Not available in current auth mode'
+        $customerReportDocument | Should -Not -Match 'current source|app-only signals|app-only source'
+        $customerReportDocument | Should -Not -Match 'Tenant settings collection source|Tenant settings API version'
+        $customerReportPlainText | Should -Not -Match '(Not confirmed\s+){3,}'
+        $customerReportDocument | Should -Not -Match '\.\.\.'
+        $customerReportDocument | Should -Not -Match 'The assessment identified|the assessment identified|The assessment found|the assessment found'
+        $customerReportDocument | Should -Not -Match 'assessment also reviewed|assessment evidence|objective families|Support artifacts|support JSON'
+        $customerReportDocument | Should -Not -Match 'Engineer Pack|support JSON|Support artifacts'
         $customerReportDocument | Should -Match 'Configuration Signal'
         $customerReportDocument | Should -Match 'Current State'
         $customerReportDocument | Should -Match 'Leadership Decision Brief'
@@ -1419,169 +1458,25 @@ Describe 'Improve workflow' {
         $customerReportDocument | Should -Not -Match 'What It Means In This Report'
         $customerReportDocument | Should -Not -Match '15\.10 Full Findings Inventory'
         $customerReportDocument | Should -Match 'w:tblBorders'
+        $customerReportDocument | Should -Match 'w:tblLayout w:type="fixed"'
+        $customerReportDocument | Should -Match 'w:cantSplit'
         $customerTables.Count | Should -BeGreaterThan 12
         $customerTables[0].SelectNodes('./w:tr[1]/w:tc', $ns).Count | Should -Be 5
         $customerTables[0].SelectNodes('./w:tr[2]/w:tc', $ns).Count | Should -Be 5
         @($customerTables | Where-Object { $_.SelectNodes('./w:tr[1]/w:tc', $ns).Count -eq 4 }).Count | Should -BeGreaterThan 0
-        $customerReportMarkdown | Should -Match '# .+ Microsoft 365 Tenant Best Practices Assessment'
-        $customerReportMarkdown | Should -Match '## 1\.0 Introduction'
-        $customerReportMarkdown | Should -Match '### Assessment Snapshot At A Glance'
-        $customerReportMarkdown | Should -Match 'Purview / Compliance validation'
-        $customerReportMarkdown | Should -Match 'Purview retention and DLP policy data was surfaced'
-        $customerReportMarkdown | Should -Match '## 3\.0 Executive Summary'
-        $customerReportMarkdown | Should -Match '### Overall Findings Summary'
-        $customerReportMarkdown | Should -Match '### Leadership Decision Brief'
-        $customerReportMarkdown | Should -Match '## 4\.0 Modern Workplace Recommendations'
-        $customerReportMarkdown | Should -Match '\| Recommendation \| Criticality \| Level of Effort \| Rough PS Hours \|'
-        $customerReportMarkdown | Should -Match '\| .+ \| (Critical|High|Medium|Low) \| (Quick|Standard|Complex|Programmatic|High|Medium|Low) \| .+hours \|'
-        $customerReportMarkdown | Should -Match 'Level of Effort is an initial delivery-planning estimate'
-        $customerReportMarkdown | Should -Match 'Rough PS Hours is a combined engineering and project-management estimate'
-        $customerReportMarkdown | Should -Match '\| Workstream \| Severity / Impact \| Open Findings \| What Stands Out \|'
-        $customerReportMarkdown | Should -Match '### Risk Clusters'
-        $customerReportMarkdown | Should -Not -Match '### Findings Legend'
-        $customerReportMarkdown | Should -Not -Match '- Open Findings:'
-        $customerReportMarkdown | Should -Not -Match '- Severity / Impact:'
-        $customerReportMarkdown | Should -Match '### 5\.3 Entra Guest Access Configuration'
-        $customerReportMarkdown | Should -Match '#### External Access Snapshot'
-        $customerReportMarkdown | Should -Match '\| Guest invitation control \|'
-        $customerReportMarkdown | Should -Match '\| Cross-tenant partner count \|'
-        $customerReportMarkdown | Should -Match '#### Observed Guest and B2B Posture'
-        $customerReportMarkdown | Should -Match '#### Recommended Next Step'
-        $customerReportMarkdown | Should -Match 'Admins and approved guest inviters can invite guests'
-        $customerReportMarkdown | Should -Match 'Guest MFA enforcement matters because guest identities are external accounts with access into this tenant''s resources'
-        $customerReportMarkdown | Should -Match 'home tenant instead of registering separately in this tenant'
-        $customerReportMarkdown | Should -Not -Match 'What should happen next:'
-        $customerReportMarkdown | Should -Match 'Detailed admin gap rows are available in the workbook tabs AdminMfaRegistrationGaps and AdminMfaEnforcementGaps'
-        $customerReportMarkdown | Should -Match '### 5\.4 Entra Applications and Access Review'
-        $customerReportMarkdown | Should -Match '### Application Spotlight'
-        $customerReportMarkdown | Should -Match '- Applications: High Priv App'
-        $customerReportMarkdown | Should -Match 'Primary risk signal:'
-        $customerReportMarkdown | Should -Match 'Latest activity:'
-        $customerReportMarkdown | Should -Not -Match '\| Application \| SSO Mode \| Primary Risk Signal \| Latest Activity \|'
-        $customerReportMarkdown | Should -Match '### SSO-Enabled Applications'
-        $customerReportMarkdown | Should -Match '### Inactive or High-Privilege Applications'
-        $customerReportMarkdown | Should -Match '### Credential Cleanup Opportunities'
-        $customerReportMarkdown | Should -Match '- High Priv App - SAML;'
-        $customerReportMarkdown | Should -Match '1 expired client secret'
-        $customerReportMarkdown | Should -Match 'Latest activity 2026-04-12'
-        $customerReportMarkdown | Should -Match '### 5\.5 Microsoft 365 Licensing Governance'
-        $customerReportMarkdown | Should -Match '#### Licensing Governance Snapshot'
-        $customerReportMarkdown | Should -Match '#### License SKU Utilization'
-        $customerReportMarkdown | Should -Match 'SKU Part Number'
-        $customerReportMarkdown | Should -Match '99%'
-        $customerReportMarkdown | Should -Match '#### Group-Based Licensing Groups'
-        $customerReportMarkdown | Should -Match 'E5 Users \(Automated\)'
-        $customerReportMarkdown | Should -Match 'Microsoft 365 E5'
-        $customerReportMarkdown | Should -Match 'ProcessingComplete'
-        $customerReportMarkdown | Should -Match '#### License Optimization Candidates to Review'
-        $customerReportMarkdown | Should -Match 'Corey Bell'
-        $customerReportMarkdown | Should -Match '#### Inactive Licensed Users to Review'
-        $customerReportMarkdown | Should -Match 'Disabled Licensed User'
-        $customerReportMarkdown | Should -Match 'Stale Licensed User'
-        $customerReportMarkdown | Should -Match '\| User license optimization candidates \|'
-        $customerReportMarkdown | Should -Match '#### License Assignment Errors to Resolve'
-        $customerReportMarkdown | Should -Match 'MutuallyExclusiveViolation'
-        $customerReportMarkdown | Should -Match '## 6\.0 Authentication Methods, MFA Enrollment, and MFA Enforcement'
-        $customerReportMarkdown | Should -Match '### MFA Enrollment'
-        $customerReportMarkdown | Should -Match '#### MFA Enrollment Status'
-        $customerReportMarkdown | Should -Match '#### Registered MFA Method Mix'
-        $customerReportMarkdown | Should -Match '### MFA Enforcement'
-        $customerReportMarkdown | Should -Match '#### Covered vs Not Covered by Active MFA Enforcement'
-        $customerReportMarkdown | Should -Match '#### MFA Enforcement Driver Breakdown'
-        $customerReportMarkdown | Should -Match 'Software one-time passcode'
-        $customerReportMarkdown | Should -Match '\| Conditional Access policies reviewed \| 8 \|'
-        $customerReportMarkdown | Should -Match '\| Policies with exclusions \| 7 \|'
-        $customerReportMarkdown | Should -Match '\| Users covered by enabled MFA enforcement policies \| 60 \|'
-        $customerReportMarkdown | Should -Match '\| Users not covered by enabled MFA enforcement policies \| 20 \|'
-        $customerReportMarkdown | Should -Match '\| Estimated enabled-user CA MFA coverage \| 75% \|'
-        $customerReportMarkdown | Should -Match '\| Estimated member-user CA MFA coverage \| 80% \|'
-        $customerReportMarkdown | Should -Match '\| Estimated guest-user CA MFA coverage \| 40% \|'
-        $customerReportMarkdown | Should -Match 'Guest-user MFA enforcement summary'
-        $customerReportMarkdown | Should -Match '\| Admin users not registered for MFA \| 2 \|'
-        $customerReportMarkdown | Should -Match '\| Admin users not covered by enabled MFA enforcement policies \| 1 \|'
-        $customerReportMarkdown | Should -Match '#### MFA Enforcement Gap Summary'
-        $customerReportMarkdown | Should -Match '\| Coverage Gap Signal \| Current State \|'
-        $customerReportMarkdown | Should -Match '\| Users outside enabled MFA CA include scope \| 2 \|'
-        $customerReportMarkdown | Should -Match '\| Users explicitly excluded from enabled MFA CA policies \| 1 \|'
-        $customerReportMarkdown | Should -Match '#### Common Coverage Drivers'
-        $customerReportMarkdown | Should -Match '- Outside include scope: 1 uncovered internal member user\(s\)\.'
-        $customerReportMarkdown | Should -Match '- Policy: Baseline MFA: 1 uncovered internal member user\(s\)\.'
-        $customerReportMarkdown | Should -Match '#### Internal Member Users Outside Active MFA Include Scope'
-        $customerReportMarkdown | Should -Match '#### Internal Member Users Explicitly Excluded from Active MFA Policies'
-        $customerReportMarkdown | Should -Match '\| Display Name \| User Principal Name \|'
-        $customerReportMarkdown | Should -Match 'Uncovered Member'
-        $customerReportMarkdown | Should -Match 'Excluded Member'
-        $customerReportMarkdown | Should -Not -Match 'Uncovered Guest'
-        $customerReportMarkdown | Should -Match 'Outside include scope'
-        $customerReportMarkdown | Should -Match 'Enrollment and enforcement are intentionally reported as separate views in this report'
-        $customerReportMarkdown | Should -Not -Match 'Related Policy / Scope'
-        $customerReportMarkdown | Should -Match 'The desired baseline is to require strong guest authentication through a guest-specific Conditional Access policy and to trust the guest home-tenant MFA where supported and approved'
-        $customerReportMarkdown | Should -Match '#### Guest MFA Coverage Drivers'
-        $customerReportMarkdown | Should -Match '#### Representative MFA Scope Examples'
-        $customerReportMarkdown | Should -Match 'Some Conditional Access policies naturally target employee, admin, or workload-specific populations'
-        $customerReportMarkdown | Should -Match 'partner tenants with the most collaboration and a validated trust relationship'
-        $customerReportMarkdown | Should -Match '\| Policy \| Scope Type \| Scope Signal \| Why It Matters \|'
-        $customerReportMarkdown | Should -Match 'Break Glass Exclusions'
         $customerReportDocument | Should -Match 'Global Reader'
         $customerReportDocument | Should -Match 'eligible role that requires approval before activation'
-        $customerReportMarkdown | Should -Match '\| Reduce privileged access and strengthen identity controls \| High \|'
-        $customerReportMarkdown | Should -Match '\| Users with weak MFA methods only \|'
-        $customerReportMarkdown | Should -Match '\| Enabled MFA enforcement policies \|'
-        $customerReportMarkdown | Should -Match 'MfaEnforcementGapUsers'
-        $customerReportMarkdown | Should -Match 'MfaEnforcementScopeReview'
-        $customerReportMarkdown | Should -Match '## 11\.0 SharePoint Online Storage and External Sharing'
-        $customerReportMarkdown | Should -Match '### Tenant External Sharing Snapshot'
-        $customerReportMarkdown | Should -Match '### SharePoint Tenant Controls Snapshot'
-        $customerReportMarkdown | Should -Match '### External Exposure by Category'
-        $customerReportMarkdown | Should -Match '\| Prevent external users from resharing \| Prevented \|'
-        $customerReportMarkdown | Should -Match '\| Legacy auth protocols enabled \| Enabled \|'
-        $customerReportMarkdown | Should -Match '\| Deleted user personal site retention \(days\) \| 30 \|'
-        $customerReportMarkdown | Should -Match '### External Exposure Review'
-        $customerReportMarkdown | Should -Match '\| Workload \| Asset Type \| Title \| Exposure Category \| Gap Reason \| Review Priority \|'
-        $customerReportMarkdown | Should -Match '## 9\.0 Exchange Online: Mailboxes and Storage Overview'
-        $customerReportMarkdown | Should -Match '### Data Footprint by Workload'
-        $customerReportMarkdown | Should -Match '### 9\.1 Recipient and Mailbox Footprint'
-        $customerReportMarkdown | Should -Match '### Recipient Mix by Type'
-        $customerReportMarkdown | Should -Match '### Top Recipient Domains'
-        $customerReportMarkdown | Should -Match '\| Domain \| Total \| Primary \| Alias-only \|'
-        $customerReportMarkdown | Should -Match 'Teams storage is represented here through team-connected SharePoint site storage'
-        $customerReportMarkdown | Should -Match '#### Top Senders'
-        $customerReportMarkdown | Should -Match '#### Top Receivers'
-        $customerReportMarkdown | Should -Match '\| Display Name \| User Principal Name \| Send Count \| Last Activity \|'
-        $customerReportMarkdown | Should -Match '\| Display Name \| User Principal Name \| Receive Count \| Last Activity \|'
-        $customerReportMarkdown | Should -Match '### Largest Collaboration Sites to Review'
-        $customerReportMarkdown | Should -Match '- '
-        $customerReportMarkdown | Should -Match '## 12\.0 Retention Policies and Data Loss Prevention'
-        $customerReportMarkdown | Should -Match '## 14\.0 Offboarding Recommendation'
-        $customerReportMarkdown | Should -Match '#### Mailbox Lifecycle Summary'
-        $customerReportMarkdown | Should -Match '#### Transport Exposure Summary'
-        $customerReportMarkdown | Should -Match 'Only explicitly allowed domains may be shared externally'
-        $customerReportMarkdown | Should -Match 'Guest invitation control'
-        $customerReportMarkdown | Should -Not -Match 'Priority: Near Term'
-        $customerReportMarkdown | Should -Not -Match 'The clearest concentration in this tenant appears in'
-        $customerReportMarkdown | Should -Not -Match 'CustomerRemediationReport'
-        $customerReportMarkdown | Should -Not -Match '10dae51f-b6af-4016-8d66-8c2a99b929b3'
-        $customerReportMarkdown | Should -Not -Match '#### Enabled MFA Policy Scope Review'
-        $customerReportMarkdown | Should -Not -Match '#### Top Internal Member Users Not Covered by Enabled MFA Enforcement'
-        $customerReportMarkdown | Should -Not -Match '\| Display Name \| User Principal Name \| Gap Category \| Coverage Driver \|'
-        $customerReportMarkdown | Should -Not -Match 'Tier B'
-        $customerReportMarkdown | Should -Not -Match 's of tw ar eO ne Ti me Pa ss co de'
-        $customerReportMarkdown | Should -Not -Match 'Primary Owner'
-        $customerReportMarkdown | Should -Not -Match 'Action:'
-        $customerReportMarkdown | Should -Not -Match 'Recommended Next Steps'
-        $customerReportMarkdown | Should -Not -Match 'must register separately in this tenant'
-        $customerReportMarkdown | Should -Not -Match '15\.10 Full Findings Inventory'
-        $customerReportMarkdown | Should -Not -Match '\| Term \| What It Means In This Report \|'
-        $customerReportMarkdown | Should -Not -Match '\| Application \| SSO Enabled \| SSO Mode \| Observation \|'
-        $customerReportMarkdown | Should -Not -Match '\| Application \| SSO Mode \| Privilege / Activity \| Observation \|'
-        $customerReportMarkdown | Should -Not -Match '\| Application \| Cleanup Signal \| Latest Activity \| Observation \|'
-        $customerReportMarkdown | Should -Not -Match '\| Application \| Credential State \| Latest Activity \| Observation \|'
-        $customerReportMarkdown | Should -Not -Match '#### Messaging Snapshot At A Glance'
 
         $roadmapDocument | Should -Match 'Microsoft 365 Remediation Roadmap'
         $roadmapDocument | Should -Match 'Document revision: 1\.0'
         $roadmapDocument | Should -Match 'Executive Summary'
         $roadmapDocument | Should -Match 'Reviewed Footprint'
+        $roadmapDocument | Should -Not -Match 'Assessment Evidence Confidence'
+        $roadmapDocument | Should -Not -Match 'Evidence coverage status'
+        $roadmapDocument | Should -Not -Match 'Objective families covered'
+        $roadmapDocument | Should -Not -Match '\.\.\.'
+        $roadmapDocument | Should -Not -Match 'Engineer Pack|support JSON|Support artifacts'
+        $roadmapDocument | Should -Not -Match 'assessment also reviewed|assessment evidence|objective families'
         $roadmapDocument | Should -Match 'Workload'
         $roadmapDocument | Should -Match 'Reviewed Count'
         $roadmapDocument | Should -Match 'Purview / Compliance'
@@ -1660,7 +1555,7 @@ Describe 'Improve workflow' {
         $improveSource | Should -Match 'OptimizeMedia'
     }
 
-    It 'embeds customer-report chart images in the DOCX and skips them in markdown when chart datasets are renderable' {
+    It 'embeds customer-report chart images in the DOCX without creating a customer markdown companion' {
         $snapshot = New-ArrayaTenantSnapshot -Data @{
             Identity = @{
                 Admins = @(
@@ -1909,22 +1804,9 @@ Describe 'Improve workflow' {
 
         $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
         $customerReportEntryNames = Get-TestDocxEntryNames -Path $result.CustomerAssessmentReportPath
-        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
 
         @($customerReportEntryNames | Where-Object { $_ -match '^word/media/customer-chart-\d+\.png$' }).Count | Should -BeGreaterOrEqual 8
-        $customerReportMarkdown | Should -Match '#### MFA Enrollment Status'
-        $customerReportMarkdown | Should -Match '#### Registered MFA Method Mix'
-        $customerReportMarkdown | Should -Match '#### Covered vs Not Covered by Active MFA Enforcement'
-        $customerReportMarkdown | Should -Match '#### MFA Enforcement Driver Breakdown'
-        $customerReportMarkdown | Should -Match '#### Recent vs Stale Admins'
-        $customerReportMarkdown | Should -Match '#### Admins Covered vs Not Covered by Active MFA Enforcement'
-        $customerReportMarkdown | Should -Match '### Data Footprint by Workload'
-        $customerReportMarkdown | Should -Match '### Device Platform Distribution'
-        $customerReportMarkdown | Should -Match '### Recipient Mix by Type'
-        $customerReportMarkdown | Should -Match '### Top Recipient Domains'
-        $customerReportMarkdown | Should -Match '### External Exposure by Category'
-        $customerReportMarkdown | Should -Not -Match '!\['
-        $customerReportMarkdown | Should -Not -Match 'word/media/customer-chart'
+        $result.CustomerAssessmentReportMarkdownPath | Should -BeNullOrEmpty
     }
 
     It 'does not raise ID-010 and labels owner validation as incomplete when owner enrichment is unavailable' {
@@ -1954,11 +1836,11 @@ Describe 'Improve workflow' {
 
         $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
         $payload = Get-Content -Raw $result.JsonPath | ConvertFrom-Json -Depth 20
-        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
+        $customerReportText = Get-TestDocxPlainText -Path $result.CustomerAssessmentReportPath
 
         @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-010' }).Count | Should -Be 0
-        $customerReportMarkdown | Should -Match 'Owner validation was not fully validated in this run\.'
-        $customerReportMarkdown | Should -Not -Match 'without owner coverage'
+        $customerReportText | Should -Match 'Owner validation was not fully validated in this run\.'
+        $customerReportText | Should -Not -Match 'without owner coverage'
     }
 
     It 'does not raise ID-012 and avoids inactivity count claims when activity enrichment is unavailable' {
@@ -1988,11 +1870,11 @@ Describe 'Improve workflow' {
 
         $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
         $payload = Get-Content -Raw $result.JsonPath | ConvertFrom-Json -Depth 20
-        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
+        $customerReportText = Get-TestDocxPlainText -Path $result.CustomerAssessmentReportPath
 
         @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-012' }).Count | Should -Be 0
-        $customerReportMarkdown | Should -Match 'Recent activity validation was not fully validated in this run\.'
-        $customerReportMarkdown | Should -Not -Match 'with no recent activity signal'
+        $customerReportText | Should -Match 'Recent activity validation was not fully validated in this run\.'
+        $customerReportText | Should -Not -Match 'with no recent activity signal'
     }
 
     It 'does not classify unknown-source apps as first-party or third-party findings' {
@@ -2022,12 +1904,12 @@ Describe 'Improve workflow' {
 
         $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
         $payload = Get-Content -Raw $result.JsonPath | ConvertFrom-Json -Depth 20
-        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
+        $customerReportText = Get-TestDocxPlainText -Path $result.CustomerAssessmentReportPath
 
         @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-009' }).Count | Should -Be 0
         @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-010' }).Count | Should -Be 0
-        $customerReportMarkdown | Should -Not -Match 'third-party app\(s\) with application permissions'
-        $customerReportMarkdown | Should -Not -Match 'without owner coverage'
+        $customerReportText | Should -Not -Match 'third-party app\(s\) with application permissions'
+        $customerReportText | Should -Not -Match 'without owner coverage'
     }
 
     It 'merges AuthenticationSSOApplications into the customer report app section when raw enterprise rows are missing' {
@@ -2050,12 +1932,12 @@ Describe 'Improve workflow' {
         Export-ArrayaTenantSnapshot -Snapshot $snapshot -Path $snapshotPath
 
         $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
-        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
+        $customerReportText = Get-TestDocxPlainText -Path $result.CustomerAssessmentReportPath
 
-        $customerReportMarkdown | Should -Match '### SSO-Enabled Applications'
-        $customerReportMarkdown | Should -Match '- Salesforce - SAML;'
-        $customerReportMarkdown | Should -Match 'Applications: Salesforce; SSO: SAML;'
-        $customerReportMarkdown | Should -Match '### SSO-Enabled Applications'
+        $customerReportText | Should -Match 'SSO-Enabled Applications'
+        $customerReportText | Should -Match 'Salesforce'
+        $customerReportText | Should -Match 'SAML'
+        $customerReportText | Should -Match 'Applications: Salesforce; SSO: SAML;'
     }
 
     It 'surfaces a noteworthy app outside the alphabetical first eight in the customer report sample' {
@@ -2108,10 +1990,10 @@ Describe 'Improve workflow' {
         Export-ArrayaTenantSnapshot -Snapshot $snapshot -Path $snapshotPath
 
         $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
-        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
+        $customerReportText = Get-TestDocxPlainText -Path $result.CustomerAssessmentReportPath
 
-        $customerReportMarkdown | Should -Match 'Applications: Zulu Risky App; SSO: SAML;'
-        $customerReportMarkdown | Should -Match '- Zulu Risky App -'
+        $customerReportText | Should -Match 'Applications: Zulu Risky App; SSO: SAML;'
+        $customerReportText | Should -Match 'Zulu Risky App'
     }
 
     It 'allows redirect-risk findings from partial data without emitting a zero-risk narrative' {
@@ -2141,11 +2023,11 @@ Describe 'Improve workflow' {
 
         $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
         $payload = Get-Content -Raw $result.JsonPath | ConvertFrom-Json -Depth 20
-        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
+        $customerReportText = Get-TestDocxPlainText -Path $result.CustomerAssessmentReportPath
 
         @($payload.Findings | Where-Object { $_.RuleId -eq 'ID-011' }).Count | Should -BeGreaterThan 0
-        $customerReportMarkdown | Should -Match 'Redirect URI review was not fully validated in this run\.'
-        $customerReportMarkdown | Should -Not -Match '1 redirect URI review flag\(s\)'
+        $customerReportText | Should -Match 'Redirect URI review was not fully validated in this run\.'
+        $customerReportText | Should -Not -Match '1 redirect URI review flag\(s\)'
     }
 
     It 'derives MFA enrollment output from registration details when summary objects are missing' {
@@ -2232,20 +2114,22 @@ Describe 'Improve workflow' {
 
         $result = & $script:improveScriptPath -AssessmentJsonPath $snapshotPath -OutputFolder $TestDrive -PassThru
 
-        Test-Path $result.CustomerAssessmentReportMarkdownPath | Should -BeTrue
-        $customerReportMarkdown = Get-Content -Raw $result.CustomerAssessmentReportMarkdownPath
+        $result.CustomerAssessmentReportMarkdownPath | Should -BeNullOrEmpty
+        $customerReportText = Get-TestDocxPlainText -Path $result.CustomerAssessmentReportPath
 
-        $customerReportMarkdown | Should -Match '## 6\.0 Authentication Methods, MFA Enrollment, and MFA Enforcement'
-        $customerReportMarkdown | Should -Match '\| Users reviewed \| 2 \|'
-        $customerReportMarkdown | Should -Match '\| Registered for MFA \| 1 \|'
-        $customerReportMarkdown | Should -Match '\| Not registered for MFA \| 1 \|'
-        $customerReportMarkdown | Should -Match '\| MFA enrollment rate \| 50% \|'
-        $customerReportMarkdown | Should -Match '\| Registered method mix \|'
-        $customerReportMarkdown | Should -Match '\| Enabled users reviewed \| 2 \|'
-        $customerReportMarkdown | Should -Match '\| Enabled member users reviewed \| 2 \|'
-        $customerReportMarkdown | Should -Match 'The reviewed enabled-user inventory included 2 enabled account\(s\), but the current source did not surface a complete covered-user total\.'
-        $customerReportMarkdown | Should -Match 'Enrollment shows readiness, not enforcement\. In the reviewed data, MFA enrollment is 50%'
-        $customerReportMarkdown | Should -Not -Match '\| MFA enrollment rate \| Not validated from the reviewed data \|'
-        $customerReportMarkdown | Should -Not -Match 'an unconfirmed number of an unconfirmed number'
+        $customerReportText | Should -Match '6\.0 Authentication Methods, MFA Enrollment, and MFA Enforcement'
+        $customerReportText | Should -Match 'Users reviewed'
+        $customerReportText | Should -Match 'Registered for MFA'
+        $customerReportText | Should -Match 'Not registered for MFA'
+        $customerReportText | Should -Match 'MFA enrollment rate'
+        $customerReportText | Should -Match '50%'
+        $customerReportText | Should -Match 'Registered method mix'
+        $customerReportText | Should -Match 'Enabled users reviewed'
+        $customerReportText | Should -Match 'Enabled member users reviewed'
+        $customerReportText | Should -Match 'The reviewed enabled-user inventory included 2 enabled account\(s\), but the current tenant data did not surface a complete covered-user total\.'
+        $customerReportText | Should -Match 'Enrollment shows readiness, not enforcement\. In the tenant data, MFA enrollment is 50%'
+        $customerReportText | Should -Not -Match 'MFA enrollment rate Not validated from the reviewed data'
+        $customerReportText | Should -Not -Match '\.\.\.'
+        $customerReportText | Should -Not -Match 'an unconfirmed number of an unconfirmed number'
     }
 }

@@ -205,26 +205,49 @@ function Resolve-AssessmentLatestManifestPath {
         [string]$ExportPath
     )
 
-    $candidateManifestPaths = New-Object System.Collections.Generic.List[string]
-    $fullExportPath = [System.IO.Path]::GetFullPath($ExportPath)
-    if (Test-Path -Path $fullExportPath -PathType Container) {
-        $candidateManifestPaths.Add((Join-Path -Path $fullExportPath -ChildPath 'Support\Run.manifest.json'))
-        $supportPath = Join-Path -Path $fullExportPath -ChildPath 'Support'
-        if (Test-Path -Path $supportPath -PathType Container) {
-            foreach ($manifest in @(Get-ChildItem -Path $supportPath -Filter '*-Run.manifest.json' -File -ErrorAction SilentlyContinue)) {
-                $candidateManifestPaths.Add($manifest.FullName)
+    function Add-AssessmentManifestCandidatesFromSupportDirectory {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$SupportPath,
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyCollection()]
+            [System.Collections.Generic.List[string]]$Candidates
+        )
+
+        $Candidates.Add((Join-Path -Path $SupportPath -ChildPath 'Run.manifest.json'))
+        if (Test-Path -Path $SupportPath -PathType Container) {
+            foreach ($manifest in @(Get-ChildItem -Path $SupportPath -Filter '*-Run.manifest.json' -File -ErrorAction SilentlyContinue)) {
+                $Candidates.Add($manifest.FullName)
             }
         }
     }
-    $fullExportPathParent = Split-Path -Path $fullExportPath -Parent
-    if (-not [string]::IsNullOrWhiteSpace($fullExportPathParent)) {
-        $candidateManifestPaths.Add((Join-Path -Path $fullExportPathParent -ChildPath 'Support\Run.manifest.json'))
-        $parentSupportPath = Join-Path -Path $fullExportPathParent -ChildPath 'Support'
-        if (Test-Path -Path $parentSupportPath -PathType Container) {
-            foreach ($manifest in @(Get-ChildItem -Path $parentSupportPath -Filter '*-Run.manifest.json' -File -ErrorAction SilentlyContinue)) {
-                $candidateManifestPaths.Add($manifest.FullName)
+
+    function Add-AssessmentManifestCandidatesFromDirectory {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$DirectoryPath,
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyCollection()]
+            [System.Collections.Generic.List[string]]$Candidates
+        )
+
+        Add-AssessmentManifestCandidatesFromSupportDirectory -SupportPath (Join-Path -Path $DirectoryPath -ChildPath 'Support') -Candidates $Candidates
+        if ([string]::Equals((Split-Path -Path $DirectoryPath -Leaf), 'Deliverables', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $runRoot = Split-Path -Path $DirectoryPath -Parent
+            if (-not [string]::IsNullOrWhiteSpace($runRoot)) {
+                Add-AssessmentManifestCandidatesFromSupportDirectory -SupportPath (Join-Path -Path $runRoot -ChildPath 'Support') -Candidates $Candidates
             }
         }
+    }
+
+    $candidateManifestPaths = New-Object System.Collections.Generic.List[string]
+    $fullExportPath = [System.IO.Path]::GetFullPath($ExportPath)
+    if (Test-Path -Path $fullExportPath -PathType Container) {
+        Add-AssessmentManifestCandidatesFromDirectory -DirectoryPath $fullExportPath -Candidates $candidateManifestPaths
+    }
+    $fullExportPathParent = Split-Path -Path $fullExportPath -Parent
+    if (-not [string]::IsNullOrWhiteSpace($fullExportPathParent)) {
+        Add-AssessmentManifestCandidatesFromDirectory -DirectoryPath $fullExportPathParent -Candidates $candidateManifestPaths
     }
 
     if (Test-Path -Path $fullExportPath -PathType Leaf) {
@@ -238,6 +261,12 @@ function Resolve-AssessmentLatestManifestPath {
                 if ($leafBaseName.EndsWith($suffix, [System.StringComparison]::OrdinalIgnoreCase)) {
                     $manifestLeaf = '{0}-Run.manifest.json' -f $leafBaseName.Substring(0, $leafBaseName.Length - $suffix.Length)
                     $candidateManifestPaths.Add((Join-Path -Path (Join-Path -Path (Split-Path -Path $fullExportPath -Parent) -ChildPath 'Support') -ChildPath $manifestLeaf))
+                    if (-not [string]::IsNullOrWhiteSpace($fullExportPathParent) -and [string]::Equals((Split-Path -Path $fullExportPathParent -Leaf), 'Deliverables', [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $runRoot = Split-Path -Path $fullExportPathParent -Parent
+                        if (-not [string]::IsNullOrWhiteSpace($runRoot)) {
+                            $candidateManifestPaths.Add((Join-Path -Path (Join-Path -Path $runRoot -ChildPath 'Support') -ChildPath $manifestLeaf))
+                        }
+                    }
                     break
                 }
             }
@@ -404,22 +433,6 @@ function Update-AssessmentArtifactManifestWithImproveOutputs {
             $artifactEntries += [pscustomobject][ordered]@{
                 Type = ('Customer Assessment Report {0}' -f $reportIndex)
                 Path = [string]$reportPath
-            }
-        }
-    }
-    if ($ImproveResult.PSObject.Properties.Name -contains 'CustomerAssessmentReportMarkdownPath' -and -not [string]::IsNullOrWhiteSpace([string]$ImproveResult.CustomerAssessmentReportMarkdownPath)) {
-        $artifactEntries += [pscustomobject][ordered]@{
-            Type = 'Customer Assessment Report Markdown'
-            Path = [string]$ImproveResult.CustomerAssessmentReportMarkdownPath
-        }
-    }
-    elseif ($ImproveResult.PSObject.Properties.Name -contains 'CustomerAssessmentReportMarkdownPaths') {
-        $markdownIndex = 0
-        foreach ($markdownPath in @($ImproveResult.CustomerAssessmentReportMarkdownPaths | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)) {
-            $markdownIndex++
-            $artifactEntries += [pscustomobject][ordered]@{
-                Type = ('Customer Assessment Report Markdown {0}' -f $markdownIndex)
-                Path = [string]$markdownPath
             }
         }
     }

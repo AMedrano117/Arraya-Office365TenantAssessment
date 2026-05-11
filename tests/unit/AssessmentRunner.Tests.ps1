@@ -51,7 +51,7 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match 'IncludeLegacyAssessmentArtifacts'
         $runnerSource | Should -Match 'Invoke-M365ImproveForAssessmentRun'
         $runnerSource | Should -Match 'Customer Assessment Report'
-        $runnerSource | Should -Match 'Customer Assessment Report Markdown'
+        $runnerSource | Should -Not -Match 'Customer Assessment Report Markdown'
         $runnerSource | Should -Match 'Roadmap Remediation Plan'
         $runnerSource | Should -Not -Match 'Customer Remediation HTML'
         $runnerSource | Should -Not -Match 'Customer Remediation Markdown'
@@ -146,7 +146,7 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $legacyEntraReportSource | Should -Match 'unsupported legacy reference script'
     }
 
-    It 'updates the assessment manifest with improve artifacts including the markdown companion' {
+    It 'updates the assessment manifest with improve artifacts without a customer markdown companion' {
         $manifestPath = Join-Path $TestDrive 'assessment.manifest.json'
         [pscustomobject]@{
             SchemaVersion = 2
@@ -169,10 +169,9 @@ Describe 'Arraya.M365.AssessmentRunner' {
         } | ConvertTo-Json -Depth 10 | Set-Content -Path $manifestPath -Encoding UTF8
 
         $improveResult = [pscustomobject]@{
-            CustomerAssessmentReportPath         = 'C:\Temp\Contoso-CustRpt.docx'
-            CustomerAssessmentReportMarkdownPath = 'C:\Temp\Contoso-CustRpt.md'
-            RoadmapRemediationPlanPath          = 'C:\Temp\Contoso-Roadmap.docx'
-            EngineerActionPackPath               = 'C:\Temp\Contoso-EngPack.md'
+            CustomerAssessmentReportPath         = 'C:\Temp\Deliverables\Contoso-CustomerReport.docx'
+            RoadmapRemediationPlanPath          = 'C:\Temp\Deliverables\Contoso-Roadmap.docx'
+            EngineerActionPackPath               = 'C:\Temp\Deliverables\Contoso-EngPack.md'
             JsonPath                             = 'C:\Temp\Support\Contoso-Plan.json'
             RemediationPs1Path                   = 'C:\Temp\Support\Contoso-Snips.ps1'
             CsvPath                              = $null
@@ -189,7 +188,7 @@ Describe 'Arraya.M365.AssessmentRunner' {
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Workbook' }).Count | Should -Be 1
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Assessment Snapshot JSON' }).Count | Should -Be 1
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Customer Assessment Report' }).Count | Should -Be 1
-        @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Customer Assessment Report Markdown' }).Count | Should -Be 1
+        @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Customer Assessment Report Markdown' }).Count | Should -Be 0
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Roadmap Remediation Plan' }).Count | Should -Be 1
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Engineer Action Pack' }).Count | Should -Be 1
         @($updatedManifest.Artifacts | Where-Object { $_.Type -eq 'Improvement Plan JSON' }).Count | Should -Be 1
@@ -208,6 +207,28 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $null = New-Item -ItemType Directory -Path $supportPath -Force
 
         $workbookPath = Join-Path $runRoot 'Contoso Ltd - Tenant Details.xlsx'
+        Set-Content -Path $workbookPath -Value 'placeholder' -Encoding UTF8
+
+        $manifestPath = Join-Path $supportPath 'Contoso Ltd-Run.manifest.json'
+        Set-Content -Path $manifestPath -Value '{}' -Encoding UTF8
+
+        $module = Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction Stop | Select-Object -First 1
+        $resolvedManifest = & $module {
+            param($Path)
+            Resolve-AssessmentLatestManifestPath -ExportPath $Path
+        } $workbookPath
+
+        $resolvedManifest | Should -Be (Resolve-Path -Path $manifestPath).Path
+    }
+
+    It 'resolves the run manifest from a Tenant Details workbook path in Deliverables' {
+        $runRoot = Join-Path $TestDrive 'Contoso SE Split'
+        $deliverablesPath = Join-Path $runRoot 'Deliverables'
+        $supportPath = Join-Path $runRoot 'Support'
+        $null = New-Item -ItemType Directory -Path $deliverablesPath -Force
+        $null = New-Item -ItemType Directory -Path $supportPath -Force
+
+        $workbookPath = Join-Path $deliverablesPath 'Contoso Ltd - Tenant Details.xlsx'
         Set-Content -Path $workbookPath -Value 'placeholder' -Encoding UTF8
 
         $manifestPath = Join-Path $supportPath 'Contoso Ltd-Run.manifest.json'

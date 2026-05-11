@@ -58,6 +58,9 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:exportPipelineSource | Should -Match 'WorkbookExportPolicy'
         $script:exportPipelineSource | Should -Match 'TechnicalHtmlPolicy'
         $script:exportPipelineSource | Should -Match 'GenerateMigrationPack'
+        $script:collectorSource | Should -Match 'function Resolve-AssessmentHumanDeliverableTargetPath'
+        $script:collectorSource | Should -Match 'Resolve-AssessmentHumanDeliverableTargetPath -ResolvedExportTargetPath \$resolvedExportTargetPath'
+        $script:collectorSource | Should -Match 'Get-ExportPath -FileName \$defaultReportFileName -UserInputPath \$humanDeliverableTargetPath'
         $script:exportPipelineSource | Should -Match 'Export-HashTableToExcel -hashtable \$ExportTenantStatsHash -ExportDetails \$ExportDetails -WorkbookExportPolicy \$WorkbookExportPolicy'
         $script:exportPipelineSource | Should -Match 'Export-ArrayaTenantToTenantCutoverPack -TenantStatsHash \$TenantStatsHash -BaseExportPath \$ExportDetails'
         $script:exportPipelineSource | Should -Match 'New-TenantMigrationCutoverHtmlReport -TenantStatsHash \$TenantStatsHash -OutputPath \$htmlExportPath -CollectionScopePolicy ''TenantToTenantCutover'''
@@ -226,19 +229,22 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
 
     It 'separates connection from assessment and uses the new six-section assessment flow' {
         $script:collectorSource | Should -Match "Write-ConsoleSection -Step 'Connection' -Title 'Connection / Preflight'"
-        $script:collectorSource | Should -Match "Write-ConsoleSection -Step '1/6' -Title 'Tenant Overview'"
-        $script:collectorSource | Should -Match "Write-ConsoleSection -Step '2/6' -Title 'Identity'"
-        $script:collectorSource | Should -Match "Write-ConsoleSection -Step '3/6' -Title 'Exchange'"
-        $script:collectorSource | Should -Match "Write-ConsoleSection -Step '4/6' -Title 'Collaboration'"
-        $script:collectorSource | Should -Match "Write-ConsoleSection -Step '5/6' -Title 'Endpoint'"
-        $script:collectorSource | Should -Match "Write-ConsoleSection -Step '6/6' -Title 'Governance'"
+        $script:collectorSource | Should -Match 'function New-AssessmentCollectorSections'
+        $script:collectorSource | Should -Match "\[pscustomobject\]@\{ Step = '1/6'; Name = 'Tenant Overview' \}"
+        $script:collectorSource | Should -Match "\[pscustomobject\]@\{ Step = '2/6'; Name = 'Identity' \}"
+        $script:collectorSource | Should -Match "\[pscustomobject\]@\{ Step = '3/6'; Name = 'Exchange' \}"
+        $script:collectorSource | Should -Match "\[pscustomobject\]@\{ Step = '4/6'; Name = 'Collaboration' \}"
+        $script:collectorSource | Should -Match "\[pscustomobject\]@\{ Step = '5/6'; Name = 'Endpoint' \}"
+        $script:collectorSource | Should -Match "\[pscustomobject\]@\{ Step = '6/6'; Name = 'Governance' \}"
+        $script:collectorSource | Should -Match 'Invoke-ArrayaCollectorPlan'
+        $script:collectorSource | Should -Match 'Write-ConsoleSection -Step \(\[string\]\$Section\.Step\) -Title \(\[string\]\$Section\.Name\)'
         $script:collectorSource | Should -Match "Write-ConsoleSection -Step 'Export' -Title 'Exporting results'"
         $script:collectorSource | Should -Not -Match 'Consolidating Discovery Report'
     }
 
     It 'moves license collection into Tenant Overview and removes combined mailbox reporting from Exchange collection' {
-        $script:collectorSource | Should -Match "Write-ConsoleSection -Step '1/6' -Title 'Tenant Overview'[\s\S]*Invoke-AssessmentProgressStep -Name 'License SKUs'"
-        $script:collectorSource | Should -Not -Match "Write-ConsoleSection -Step '2/6' -Title 'Identity'[\s\S]*Invoke-AssessmentProgressStep -Name 'License SKUs'"
+        $script:collectorSource | Should -Match "New-ArrayaCollectorStep -Name 'License SKUs' -Section 'Tenant Overview'"
+        $script:collectorSource | Should -Not -Match "New-ArrayaCollectorStep -Name 'License SKUs' -Section 'Identity'"
         $script:collectorSource | Should -Not -Match "Invoke-ProfileAwareAssessmentStep -Name 'Combined user/mailbox reporting'"
         $script:collectorSource | Should -Match 'function Prepare-AssessmentExportData'
         $script:collectorSource | Should -Match 'Export preparation: combined user/mailbox reporting'

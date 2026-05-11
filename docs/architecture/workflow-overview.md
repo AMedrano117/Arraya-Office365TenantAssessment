@@ -6,11 +6,11 @@ This document explains the supported launcher actions in `src/scripts/operations
 
 | Action | Primary purpose | Input source | Primary outputs | Uses output profiles? | Notes |
 |---|---|---|---|---|---|
-| `M365` | Full Microsoft 365 assessment run | Live tenant connections | Customer remediation HTML, engineer action pack, support artifacts, compatibility assessment artifacts when requested | Yes | Operator remediation-first collect + export path |
-| `M365Collect` | Collect tenant data only | Live tenant connections | JSON snapshot, manifest | Yes | Same core engine as `M365`, but collection-only |
-| `M365Export` | Rebuild artifacts from a saved snapshot | Existing tenant JSON snapshot | Customer remediation HTML, engineer action pack, support artifacts, compatibility assessment artifacts when requested | Yes | Same core engine as `M365`, but export-only |
+| `M365` | Full Microsoft 365 assessment run | Live tenant connections | `Deliverables` human reports/workbook plus `Support` machine artifacts | Yes | Operator assessment and improvement path |
+| `M365Collect` | Collect tenant data only | Live tenant connections | `Support` JSON snapshot and manifest | Yes | Same core engine as `M365`, but collection-only |
+| `M365Export` | Rebuild artifacts from a saved snapshot | Existing tenant JSON snapshot | `Deliverables` human reports/workbook plus `Support` machine artifacts | Yes | Same core engine as `M365`, but export-only |
 | `AD` | Active Directory assessment | Live on-prem AD | AD workbook/export set | No | Separate legacy workflow for AD objects and infra |
-| `Improve` | Build an improvement plan from one snapshot | Existing tenant JSON snapshot | Customer remediation HTML, engineer action pack, support JSON, support snippets | No | Snapshot post-processing workflow |
+| `Improve` | Build an improvement plan from one snapshot | Existing tenant JSON snapshot | `Deliverables` customer/roadmap/engineer reports plus `Support` JSON/snippets | No | Snapshot post-processing workflow |
 | `Compare` | Compare two snapshots over time | Two tenant JSON snapshots | Comparison JSON, CSV, Markdown | No | Snapshot post-processing workflow |
 
 ## Workflow Details
@@ -41,7 +41,7 @@ This workflow is not part of the Microsoft 365 snapshot/export model and does no
 
 ### `Improve`
 
-`Improve` is a snapshot post-processing workflow. It reads a single tenant snapshot and produces an improvement plan in JSON, CSV, and Markdown, plus a PowerShell snippet file with remediation starting points.
+`Improve` is a snapshot post-processing workflow. It reads a single tenant snapshot and produces customer, roadmap, and engineer deliverables under `Deliverables`, plus JSON/snippet support artifacts under `Support`. Solutions Engineer evidence coverage is kept in the engineer pack and `Support` artifacts rather than shown as process detail in the customer-facing DOCX files. CSV and Markdown planning artifacts are only produced when legacy artifact output is requested.
 
 It can also use Graph fallback calls when explicitly requested and when certain datasets are missing from the snapshot.
 

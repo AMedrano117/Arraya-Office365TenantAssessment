@@ -285,20 +285,49 @@ function Resolve-LauncherLatestManifestPath {
         [string]$ExportPath
     )
 
+    function Add-LauncherManifestCandidatesFromSupportDirectory {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$SupportPath,
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyCollection()]
+            [System.Collections.Generic.List[string]]$Candidates
+        )
+
+        $Candidates.Add((Join-Path -Path $SupportPath -ChildPath 'Run.manifest.json'))
+        if (Test-Path -Path $SupportPath -PathType Container) {
+            foreach ($manifest in @(Get-ChildItem -Path $SupportPath -Filter '*-Run.manifest.json' -File -ErrorAction SilentlyContinue)) {
+                $Candidates.Add($manifest.FullName)
+            }
+        }
+    }
+
+    function Add-LauncherManifestCandidatesFromDirectory {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$DirectoryPath,
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyCollection()]
+            [System.Collections.Generic.List[string]]$Candidates
+        )
+
+        Add-LauncherManifestCandidatesFromSupportDirectory -SupportPath (Join-Path -Path $DirectoryPath -ChildPath 'Support') -Candidates $Candidates
+        if ([string]::Equals((Split-Path -Path $DirectoryPath -Leaf), 'Deliverables', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $runRoot = Split-Path -Path $DirectoryPath -Parent
+            if (-not [string]::IsNullOrWhiteSpace($runRoot)) {
+                Add-LauncherManifestCandidatesFromSupportDirectory -SupportPath (Join-Path -Path $runRoot -ChildPath 'Support') -Candidates $Candidates
+            }
+        }
+    }
+
     $candidateManifestPaths = New-Object System.Collections.Generic.List[string]
     $fullExportPath = [System.IO.Path]::GetFullPath($ExportPath)
     if (Test-Path -Path $fullExportPath -PathType Container) {
-        $candidateManifestPaths.Add((Join-Path -Path $fullExportPath -ChildPath 'Support\Run.manifest.json'))
-        foreach ($manifest in @(Get-ChildItem -Path (Join-Path -Path $fullExportPath -ChildPath 'Support') -Filter '*-Run.manifest.json' -File -ErrorAction SilentlyContinue)) {
-            $candidateManifestPaths.Add($manifest.FullName)
-        }
+        Add-LauncherManifestCandidatesFromDirectory -DirectoryPath $fullExportPath -Candidates $candidateManifestPaths
     }
     $fullExportPathParent = Split-Path -Path $fullExportPath -Parent
     if (-not [string]::IsNullOrWhiteSpace($fullExportPathParent)) {
-        $candidateManifestPaths.Add((Join-Path -Path $fullExportPathParent -ChildPath 'Support\Run.manifest.json'))
-        foreach ($manifest in @(Get-ChildItem -Path (Join-Path -Path $fullExportPathParent -ChildPath 'Support') -Filter '*-Run.manifest.json' -File -ErrorAction SilentlyContinue)) {
-            $candidateManifestPaths.Add($manifest.FullName)
-        }
+        Add-LauncherManifestCandidatesFromDirectory -DirectoryPath $fullExportPathParent -Candidates $candidateManifestPaths
     }
 
     if (Test-Path -Path $fullExportPath -PathType Leaf) {
@@ -312,6 +341,12 @@ function Resolve-LauncherLatestManifestPath {
                 if ($leafBaseName.EndsWith($suffix, [System.StringComparison]::OrdinalIgnoreCase)) {
                     $manifestLeaf = '{0}-Run.manifest.json' -f $leafBaseName.Substring(0, $leafBaseName.Length - $suffix.Length)
                     $candidateManifestPaths.Add((Join-Path -Path (Join-Path -Path (Split-Path -Path $fullExportPath -Parent) -ChildPath 'Support') -ChildPath $manifestLeaf))
+                    if (-not [string]::IsNullOrWhiteSpace($fullExportPathParent) -and [string]::Equals((Split-Path -Path $fullExportPathParent -Leaf), 'Deliverables', [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $runRoot = Split-Path -Path $fullExportPathParent -Parent
+                        if (-not [string]::IsNullOrWhiteSpace($runRoot)) {
+                            $candidateManifestPaths.Add((Join-Path -Path (Join-Path -Path $runRoot -ChildPath 'Support') -ChildPath $manifestLeaf))
+                        }
+                    }
                     break
                 }
             }

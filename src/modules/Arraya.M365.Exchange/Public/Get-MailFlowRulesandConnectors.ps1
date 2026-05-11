@@ -15,6 +15,17 @@ function Get-MailFlowRulesandConnectors {
     $initialStart = Get-ArrayaExchangeCollectorStartTime -Context $Context
     $start = Get-Date
     $mailFlowProgressId = 34
+    $cacheKey = "Exchange:MailFlowRulesConnectors:$detailLevel"
+    $cachedMailFlow = Get-ArrayaCollectorCacheValue -Context $Context -Key $cacheKey
+    if ($null -ne $cachedMailFlow) {
+        $tenantStatsHash['MailFlowRules'] = $cachedMailFlow.MailFlowRules
+        $tenantStatsHash['MailFlowConnectors'] = $cachedMailFlow.MailFlowConnectors
+        if ($cachedMailFlow.PSObject.Properties['RemoteDomains']) {
+            $tenantStatsHash['RemoteDomains'] = $cachedMailFlow.RemoteDomains
+        }
+        Write-Log -Type INFO -Message "[Get-MailFlowRulesandConnectors] Reused cached mail flow rules/connectors for $detailLevel details." -ExportFileLocation $exportDetails
+        return $cachedMailFlow
+    }
     $tenantStatsHash['MailFlowRules'] = @{}
     $tenantStatsHash['MailFlowConnectors'] = @{}
 
@@ -132,6 +143,11 @@ function Get-MailFlowRulesandConnectors {
         if ($mailFlowOutboundConnectors) {
             Add-ConnectorToHash -ConnectorList $mailFlowOutboundConnectors -Direction 'Outbound'
         }
+        Set-ArrayaCollectorCacheValue -Context $Context -Key $cacheKey -Value ([pscustomobject]@{
+            MailFlowRules      = $tenantStatsHash['MailFlowRules']
+            MailFlowConnectors = $tenantStatsHash['MailFlowConnectors']
+            RemoteDomains      = if ($tenantStatsHash.ContainsKey('RemoteDomains')) { $tenantStatsHash['RemoteDomains'] } else { $null }
+        }) | Out-Null
         Write-Log -Type INFO -Message '[Get-MailFlowRulesandConnectors] Add Mail Connectors Details to Tenant Stats Hash' -ExportFileLocation $exportDetails
     }
     catch {

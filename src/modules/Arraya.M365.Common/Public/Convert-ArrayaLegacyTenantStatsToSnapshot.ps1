@@ -262,7 +262,8 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
     $diagnosticKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($key in @(
         'PrimaryMailboxStatsCollectionSummary', 'UnifiedGroupMailboxStatsCollectionSummary',
-        'CollectorInventory', 'CollectorPerformance', 'CollectorMemoryImpact'
+        'CollectorInventory', 'CollectorPerformance', 'CollectorMemoryImpact',
+        'CollectorGraphApiStats', 'CollectorCacheStats', 'CollectorPlanResults'
     )) {
         $null = $diagnosticKeys.Add($key)
     }
