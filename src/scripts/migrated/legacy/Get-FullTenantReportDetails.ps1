@@ -2640,6 +2640,17 @@ function Export-ArrayaGraphReportCsv {
         [hashtable]$Headers
     )
 
+    $context = Ensure-AssessmentCollectorContext
+    $cacheKey = "GraphReportCsv:$Uri"
+    if (
+        $context -and
+        $context.Runtime -is [System.Collections.IDictionary] -and
+        $context.Runtime.Contains('CollectorCache') -and
+        $context.Runtime['CollectorCache'].Contains($cacheKey)
+    ) {
+        return @(Get-ArrayaCollectorCacheValue -Context $context -Key $cacheKey)
+    }
+
     $tempCsvPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("arraya-graph-report-" + [guid]::NewGuid().ToString('N') + '.csv')
     $resolvedHeaders = @{}
     if ($Headers) {
@@ -2699,7 +2710,9 @@ function Export-ArrayaGraphReportCsv {
             throw "CSV report file was not created for '$Activity'."
         }
 
-        return @(Import-Csv -Path $tempCsvPath -ErrorAction Stop)
+        $rows = @(Import-Csv -Path $tempCsvPath -ErrorAction Stop)
+        Set-ArrayaCollectorCacheValue -Context $context -Key $cacheKey -Value $rows | Out-Null
+        return $rows
     }
     finally {
         if (Test-Path -Path $tempCsvPath) {
@@ -5207,9 +5220,19 @@ function Ensure-AssessmentCollectorContext {
     $script:AssessmentContext.Policies['ReportingMode'] = ((Get-Culture).TextInfo.ToTitleCase($reportingMode))
     $script:AssessmentContext.Policies['CollectionDepth'] = $script:CollectionDepthPolicy
     $script:AssessmentContext.Metadata['StartedAt'] = $global:InitialStart
-    $script:AssessmentContext.Runtime['MailboxUsageGraphLookup'] = $script:MailboxUsageGraphLookup
-    $script:AssessmentContext.Runtime['UnifiedGroupsInventoryCache'] = $script:UnifiedGroupsInventoryCache
-    $script:AssessmentContext.Runtime['Office365GroupsActivityMailboxLookup'] = $script:Office365GroupsActivityMailboxLookup
+    if ($script:MailboxUsageGraphLookup -is [System.Collections.IDictionary] -and $script:MailboxUsageGraphLookup.Count -gt 0) {
+        $script:AssessmentContext.Runtime['MailboxUsageGraphLookup'] = $script:MailboxUsageGraphLookup
+    }
+    if ($script:UnifiedGroupsInventoryCache -and @($script:UnifiedGroupsInventoryCache).Count -gt 0) {
+        $script:AssessmentContext.Runtime['UnifiedGroupsInventoryCache'] = $script:UnifiedGroupsInventoryCache
+    }
+    if (
+        $script:Office365GroupsActivityMailboxLookup -and
+        $script:Office365GroupsActivityMailboxLookup.PSObject.Properties['ByGroupId'] -and
+        $script:Office365GroupsActivityMailboxLookup.PSObject.Properties['ByPrimarySmtpAddress']
+    ) {
+        $script:AssessmentContext.Runtime['Office365GroupsActivityMailboxLookup'] = $script:Office365GroupsActivityMailboxLookup
+    }
 
     return $script:AssessmentContext
 }

@@ -512,6 +512,16 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match '\$script:tenantStatsHash\[''CollectorCacheStats''\]'
     }
 
+    It 'caches Graph report CSV downloads and preserves populated runtime caches during script context sync' {
+        $script:collectorSource | Should -Match 'function Export-ArrayaGraphReportCsv'
+        $script:collectorSource | Should -Match 'GraphReportCsv:\$Uri'
+        $script:collectorSource | Should -Match 'Get-ArrayaCollectorCacheValue -Context \$context -Key \$cacheKey'
+        $script:collectorSource | Should -Match 'Set-ArrayaCollectorCacheValue -Context \$context -Key \$cacheKey -Value \$rows'
+        $script:collectorSource | Should -Match '\$script:MailboxUsageGraphLookup -is \[System\.Collections\.IDictionary\] -and \$script:MailboxUsageGraphLookup\.Count -gt 0'
+        $script:collectorSource | Should -Match '\$script:UnifiedGroupsInventoryCache -and @\(\$script:UnifiedGroupsInventoryCache\)\.Count -gt 0'
+        $script:collectorSource | Should -Match '\$script:Office365GroupsActivityMailboxLookup\.PSObject\.Properties\[''ByGroupId''\]'
+    }
+
     It 'emits compact one-line assessment step status output instead of the older redundant progress pair' {
         $script:collectorSource | Should -Not -Match 'Write-Host \("Gathering \{0\} \.\.\." -f \$Name\)'
         $script:collectorSource | Should -Not -Match 'Overall progress:'

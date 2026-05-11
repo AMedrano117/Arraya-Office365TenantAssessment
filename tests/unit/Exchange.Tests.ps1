@@ -7,6 +7,8 @@ Describe 'Arraya.M365.Exchange' {
         $script:hybridSource = Get-Content -Raw -Path $script:hybridPath
         $script:mailboxPath = Join-Path $script:moduleRoot 'Public\Get-AllExchangeMailboxDetails.ps1'
         $script:mailboxSource = Get-Content -Raw -Path $script:mailboxPath
+        $script:mailboxStatHelperPath = Join-Path $script:moduleRoot 'Private\Invoke-ExchangeMailboxStatHelpers.ps1'
+        $script:mailboxStatHelperSource = Get-Content -Raw -Path $script:mailboxStatHelperPath
         $script:expectedExports = @(
             'Get-AllExchangeMailboxDetails'
             'Get-AllPublicFolderDetails'
@@ -113,5 +115,16 @@ Describe 'Arraya.M365.Exchange' {
         $script:mailboxSource | Should -Match 'GrantSendOnBehalfTo'
         $script:mailboxSource | Should -Match '\^\(\?i\)x500:'
         $script:mailboxSource | Should -Match '\^\(\?i\)x400:'
+    }
+
+    It 'reuses run-scoped collector cache for expensive Exchange activity reports' {
+        Test-Path $script:mailboxPath | Should -BeTrue
+        Test-Path $script:mailboxStatHelperPath | Should -BeTrue
+        $script:mailboxSource | Should -Match 'GraphActivityReport:MailboxUsage:D180'
+        $script:mailboxSource | Should -Match 'Get-ArrayaCollectorCacheValue -Context \$Context -Key \$graphReportCacheKey'
+        $script:mailboxSource | Should -Match 'Set-ArrayaCollectorCacheValue -Context \$Context -Key \$graphReportCacheKey -Value \$graphReportData'
+        $script:mailboxStatHelperSource | Should -Match 'GraphActivityReport:Office365GroupsActivity:D180'
+        $script:mailboxStatHelperSource | Should -Match 'Get-ArrayaCollectorCacheValue -Context \$Context -Key \$reportCacheKey'
+        $script:mailboxStatHelperSource | Should -Match 'Set-ArrayaCollectorCacheValue -Context \$Context -Key \$reportCacheKey -Value \$rows'
     }
 }
