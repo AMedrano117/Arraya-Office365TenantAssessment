@@ -466,7 +466,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'if \(\$claimState -eq \$true\)'
         $script:collectorSource | Should -Match '\$requirementNames = @\(\$PermissionNames \| Where-Object'
         $script:collectorSource | Should -Match '\$graphRequirementNames = @\(\$graphCheck\.PermissionNames \| Where-Object'
-        $script:collectorSource | Should -Match 'if \(\$claimState -eq \$false\) \{[\s\S]*Missing Graph scope: \$requirementLabel[\s\S]*return'
+        $script:collectorSource | Should -Match 'if \(\$claimState -eq \$false -and \$TrustClaimPresence\) \{[\s\S]*Missing Graph scope: \$requirementLabel[\s\S]*return'
         $script:collectorSource | Should -Match 'TrustClaimPresence = \$true'
         $script:collectorSource | Should -Match "PermissionNames = @\('SharePointTenantSettings.Read.All'\)"
         $script:collectorSource | Should -Match "PermissionNames = @\('Reports.Read.All'\)"
@@ -474,7 +474,10 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match "PermissionNames = @\('OnPremDirectorySynchronization.Read.All'\)"
         $script:collectorSource | Should -Match 'Sites\.ReadWrite\.All'
         $script:collectorSource | Should -Match 'Application\.ReadWrite\.All'
+        $script:collectorSource | Should -Match 'RoleManagement\.Read\.All'
         $script:collectorSource | Should -Match 'RoleManagement\.ReadWrite\.Directory'
+        $script:collectorSource | Should -Match 'Directory\.Read\.All'
+        $script:collectorSource | Should -Match 'Directory\.ReadWrite\.All'
         $script:collectorSource | Should -Match "PermissionNames = @\('CrossTenantInformation.ReadBasic.All'\)"
         $script:collectorSource | Should -Match "PermissionNames = @\('Application.Read.All'\)"
         $script:collectorSource | Should -Match "PermissionNames = @\('Sites.Read.All'\)"
