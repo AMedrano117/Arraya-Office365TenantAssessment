@@ -100,7 +100,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
 
     It 'connects Exchange Online before Microsoft Graph for interactive assessment runs' {
         $script:collectorSource | Should -Match '\$connectExchangeFirst = \(\[string\]\$WorkloadPlan\.AuthenticationType -eq ''Interactive''\)'
-        $script:collectorSource | Should -Match 'Interactive auth optimization: connecting Exchange Online and Purview before Microsoft Graph\.'
+        $script:collectorSource | Should -Match 'Interactive sign-in sequence: Exchange Online, Purview, then Microsoft Graph\.'
         $script:collectorSource | Should -Match 'if \(\$connectExchangeFirst\) \{[\s\S]*Connect-AssessmentExchange[\s\S]*Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload ExchangeOnline[\s\S]*if \(\$WorkloadPlan\.Workloads\.PurviewCompliance\.Required\) \{[\s\S]*Connect-AssessmentPurview[\s\S]*Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload Purview[\s\S]*Connect-AssessmentGraph[\s\S]*Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload Graph'
     }
 
@@ -214,6 +214,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match "Get-AssessmentGraphDelegatedScopes"
         $script:collectorSource | Should -Match '\$scopes\.Add\(''Sites\.Read\.All''\)'
         $script:collectorSource | Should -Match '\$scopes\.Add\(''SharePointTenantSettings\.Read\.All''\)'
+        $script:collectorSource | Should -Match 'Graph scopes requested:'
         $script:collectorSource | Should -Match 'Requested Microsoft Graph delegated scopes:'
         $script:collectorSource | Should -Match 'function Get-AssessmentGraphPreflightOperatorGuidance'
         $script:collectorSource | Should -Match 'Run Disconnect-MgGraph, then rerun the assessment'
@@ -320,8 +321,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Connected to Purview compliance PowerShell using certificate authentication'
         $script:collectorSource | Should -Match 'interactive authentication with -DisableWAM'
         $script:collectorSource | Should -Match 'device code authentication'
-        $script:collectorSource | Should -Match 'Purview auth: attempting interactive sign-in'
-        $script:collectorSource | Should -Match 'Purview auth: this ExchangeOnlineManagement version does not expose device code for Connect-IPPSSession; only interactive and -DisableWAM are available'
+        $script:collectorSource | Should -Match 'Connect-IPPSSession does not expose device code in this ExchangeOnlineManagement version'
         $script:collectorSource | Should -Match 'Purview auth: interactive sign-in hit a Windows broker / WAM token issue, retrying with -DisableWAM'
         $script:collectorSource | Should -Match 'Purview auth: interactive sign-in hit a Windows broker / WAM token issue, retrying with device code'
         $script:collectorSource | Should -Match 'Client secret authentication is not supported for Purview compliance PowerShell in this workflow'
@@ -382,7 +382,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     }
 
     It 'uses a stable preflight progress counter and suppresses inner Graph record-count progress' {
-        $script:collectorSource | Should -Match 'Running \{0\} permission preflight\.\.\.'
+        $script:collectorSource | Should -Match 'Checking \{0\} access\.\.\.'
         $script:collectorSource | Should -Match '\$preflightProgressTotal\s*=\s*\$selectedGraphChecks\.Count \+ \$selectedExchangeChecks\.Count'
         $script:collectorSource | Should -Match 'Write-ProgressHelper -Total \(\[Math\]::Max\(\$preflightProgressTotal, 1\)\) -Id \$preflightProgressId'
         $script:collectorSource | Should -Match '\$ProgressIndex\.Value\+\+'
