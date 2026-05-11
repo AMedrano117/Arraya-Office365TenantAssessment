@@ -43,6 +43,7 @@ Describe 'Arraya.M365.AssessmentRunner' {
     It 'routes the M365 family through the internal mode-based workflow helper' {
         $runnerSource = Get-Content -Raw -Path $script:runnerPath
         $runnerSource | Should -Match "ValidateSet\('Full', 'CollectOnly', 'ExportOnly', 'PreflightOnly'\)"
+        $runnerSource | Should -Match '\[switch\]\$PassThruInvocation'
         $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode Full'
         $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode PreflightOnly'
         $runnerSource | Should -Match 'Invoke-M365TenantWorkflow -Mode CollectOnly'
@@ -75,6 +76,48 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match 'function Test-AssessmentPlanSkipsImproveByDefault'
         $runnerSource | Should -Match 'SkipImproveByDefault'
         $runnerSource | Should -Match 'Tenant-to-tenant migration profile defaults to workbook, cutover pack, technical HTML, and JSON snapshot output\. Skipping Improve/customer-style follow-up artifacts unless requested separately\.'
+    }
+
+    It 'builds phase-specific collector invocations without crossing run-mode boundaries' {
+        $module = Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction Stop | Select-Object -First 1
+
+        $preflightInvocation = & $module {
+            param($Path)
+            Invoke-M365TenantWorkflow -Mode PreflightOnly -ExportPath $Path -OutputProfile SolutionsEngineer -PassThruInvocation
+        } $TestDrive
+        $preflightInvocation.Parameters.PreflightOnly | Should -BeTrue
+        $preflightInvocation.Parameters.GenerateJsonOverride | Should -BeFalse
+        $preflightInvocation.Parameters.ContainsKey('DataCollectionOnly') | Should -BeFalse
+        $preflightInvocation.Parameters.ContainsKey('ExportOnly') | Should -BeFalse
+
+        $defaultCollectionInvocation = & $module {
+            param($Path)
+            Invoke-M365TenantWorkflow -Mode CollectOnly -ExportPath $Path -OutputProfile SolutionsEngineer -PassThruInvocation
+        } $TestDrive
+        $defaultCollectionInvocation.Parameters.DataCollectionOnly | Should -BeTrue
+        $defaultCollectionInvocation.Parameters.GenerateJsonOverride | Should -BeTrue
+        $defaultCollectionInvocation.Parameters.ContainsKey('UseExistingConnections') | Should -BeFalse
+        $defaultCollectionInvocation.Parameters.ContainsKey('SkipAuth') | Should -BeFalse
+
+        $existingConnectionInvocation = & $module {
+            param($Path)
+            Invoke-M365TenantWorkflow -Mode CollectOnly -ExportPath $Path -OutputProfile SolutionsEngineer -UseExistingConnections -SkipAuth -SkipPermissionPreflight -AuthMode Interactive -PassThruInvocation
+        } $TestDrive
+        $existingConnectionInvocation.Parameters.DataCollectionOnly | Should -BeTrue
+        $existingConnectionInvocation.Parameters.UseExistingConnections | Should -BeTrue
+        $existingConnectionInvocation.Parameters.ContainsKey('SkipAuth') | Should -BeFalse
+        $existingConnectionInvocation.Parameters.ContainsKey('SkipPermissionPreflight') | Should -BeFalse
+        $existingConnectionInvocation.Parameters.ContainsKey('AuthMode') | Should -BeFalse
+
+        $snapshotPath = Join-Path $TestDrive 'tenant-Snapshot.json'
+        $exportInvocation = & $module {
+            param($Path, $Snapshot)
+            Invoke-M365TenantWorkflow -Mode ExportOnly -ExportPath $Path -AssessmentJsonPath $Snapshot -OutputProfile SolutionsEngineer -PassThruInvocation
+        } $TestDrive $snapshotPath
+        $exportInvocation.Parameters.ExportOnly | Should -BeTrue
+        $exportInvocation.Parameters.TenantStatsJsonPath | Should -Be $snapshotPath
+        $exportInvocation.Parameters.ContainsKey('PreflightOnly') | Should -BeFalse
+        $exportInvocation.Parameters.ContainsKey('DataCollectionOnly') | Should -BeFalse
     }
 
     It 'validates the manifest contains a usable snapshot before launching Improve from a completed run' {
