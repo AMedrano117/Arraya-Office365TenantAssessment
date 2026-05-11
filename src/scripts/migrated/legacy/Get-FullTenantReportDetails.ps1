@@ -4649,7 +4649,12 @@ function Get-AssessmentGraphPreflightOperatorGuidance {
     }
 
     if (@($graphFailures | Where-Object { [string]$_.Requirement -match 'Sites\.Read\.All' }).Count -gt 0) {
-        $guidance.Add('For Sites.Read.All specifically, the assessment probes /sites/getAllSites. A 403 here means the effective token still cannot read SharePoint/OneDrive site inventory even if the user is Global Administrator.') | Out-Null
+        if ([string]::Equals($effectiveAuthenticationType, 'Interactive', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $guidance.Add('For Sites.Read.All specifically, interactive preflight checks the delegated-safe /sites/root endpoint. A 403 here means the effective delegated token cannot read the tenant root site.') | Out-Null
+        }
+        else {
+            $guidance.Add('For Sites.Read.All specifically, app-only preflight checks /sites/getAllSites. A 403 here means the effective app token cannot enumerate SharePoint/OneDrive site inventory.') | Out-Null
+        }
     }
 
     return @($guidance)
@@ -4669,6 +4674,17 @@ function Test-AssessmentPermissionPreflight {
     $grantedPermissions = $grantedPermissionInfo.PermissionSet
     $permissionFailures = New-Object System.Collections.Generic.List[psobject]
     $permissionWarnings = New-Object System.Collections.Generic.List[psobject]
+    $effectiveAuthenticationType = if (
+        $script:AssessmentAuthWorkloadPlan -and
+        $script:AssessmentAuthWorkloadPlan.PSObject.Properties['AuthenticationType'] -and
+        -not [string]::IsNullOrWhiteSpace([string]$script:AssessmentAuthWorkloadPlan.AuthenticationType)
+    ) {
+        [string]$script:AssessmentAuthWorkloadPlan.AuthenticationType
+    }
+    else {
+        'Unknown'
+    }
+    $isInteractiveGraphAuth = [string]::Equals($effectiveAuthenticationType, 'Interactive', [System.StringComparison]::OrdinalIgnoreCase)
 
     $resolvedTenantId = $null
     if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
@@ -4952,8 +4968,13 @@ function Test-AssessmentPermissionPreflight {
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
         PermissionNames = @('Sites.Read.All')
-        NeededFor       = 'SharePoint and OneDrive site inventory'
-        Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/sites/getAllSites?$top=1' -Activity 'Permission preflight: Sites.Read.All getAllSites' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
+        NeededFor       = 'SharePoint and OneDrive site access'
+        Probe           = if ($isInteractiveGraphAuth) {
+            { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/sites/root?$select=id,webUrl,displayName' -Activity 'Permission preflight: Sites.Read.All root site' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
+        }
+        else {
+            { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/sites/getAllSites?$top=1' -Activity 'Permission preflight: Sites.Read.All getAllSites' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
+        }
     }) | Out-Null
     $graphChecks.Add([pscustomobject]@{
         Area            = 'Graph'
@@ -7397,7 +7418,15 @@ function Get-SharePointAndOneDriveSites {
                 Write-Host "Throttling detected. Please try again later." -ForegroundColor Yellow
             }
             elseif ($statusCodeValue -in @(401, 403) -or $statusCodeText -in @('Unauthorized', 'Forbidden')) {
-                $guidance = 'SharePoint/OneDrive Graph site inventory was denied by /sites/getAllSites. Confirm the app or signed-in user has Sites.Read.All with admin consent, then rerun preflight.'
+                $guidance = if (
+                    $script:AssessmentAuthWorkloadPlan -and
+                    [string]::Equals([string]$script:AssessmentAuthWorkloadPlan.AuthenticationType, 'Interactive', [System.StringComparison]::OrdinalIgnoreCase)
+                ) {
+                    'SharePoint/OneDrive Graph getAllSites inventory was denied. Microsoft Graph getAllSites requires application permissions; interactive runs should use the connected SharePoint Online PowerShell fallback when available.'
+                }
+                else {
+                    'SharePoint/OneDrive Graph site inventory was denied by /sites/getAllSites. Confirm the app has Sites.Read.All application permission with admin consent, then rerun preflight.'
+                }
                 Write-AssessmentConsoleSubstep -Message $guidance -ForegroundColor Yellow
                 Write-Log -Type WARNING -Message "[Get-SharePointAndOneDriveSitesFromRESTAPI] $guidance Underlying error: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
 
@@ -7411,7 +7440,7 @@ function Get-SharePointAndOneDriveSites {
                         Status      = 'Skipped'
                         Source      = 'Graph getAllSites'
                         Reason      = 'Forbidden'
-                        Remediation = 'Grant/admin-consent Sites.Read.All for the assessment app, or run interactive auth with a SharePoint admin session available for SPO fallback.'
+                        Remediation = 'For app-only runs, grant/admin-consent Sites.Read.All application permission for the assessment app. For interactive runs, connect a SharePoint admin session so the SPO fallback can collect site inventory.'
                     }
                 }
             }

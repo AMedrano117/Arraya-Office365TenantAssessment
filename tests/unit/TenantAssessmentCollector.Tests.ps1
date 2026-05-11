@@ -219,7 +219,8 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'function Get-AssessmentGraphPreflightOperatorGuidance'
         $script:collectorSource | Should -Match 'Run Disconnect-MgGraph, then rerun the assessment'
         $script:collectorSource | Should -Match 'sign in as a Global Administrator'
-        $script:collectorSource | Should -Match 'A 403 here means the effective token still cannot read SharePoint/OneDrive site inventory'
+        $script:collectorSource | Should -Match 'interactive preflight checks the delegated-safe /sites/root endpoint'
+        $script:collectorSource | Should -Match 'app-only preflight checks /sites/getAllSites'
     }
 
     It 'restores Graph globals after the run and labels remaining beta fallbacks explicitly' {
@@ -293,12 +294,14 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
             $escapedPattern = [regex]::Escape($_)
             $script:collectorSource | Should -Match $escapedPattern
         }
+        $script:collectorSource | Should -Match 'https://graph\.microsoft\.com/v1\.0/sites/root\?\$select=id,webUrl,displayName'
         $script:collectorSource | Should -Match 'https://graph\.microsoft\.com/v1\.0/sites/getAllSites\?\$top=1'
+        $script:collectorSource | Should -Match '\$isInteractiveGraphAuth'
     }
 
     It 'handles SharePoint getAllSites access denied with operator guidance and SPO fallback when available' {
-        $script:collectorSource | Should -Match 'SharePoint/OneDrive Graph site inventory was denied by /sites/getAllSites'
-        $script:collectorSource | Should -Match 'Confirm the app or signed-in user has Sites.Read.All with admin consent'
+        $script:collectorSource | Should -Match 'Microsoft Graph getAllSites requires application permissions'
+        $script:collectorSource | Should -Match 'Confirm the app has Sites.Read.All application permission with admin consent'
         $script:collectorSource | Should -Match 'falling back to connected SharePoint Online PowerShell session'
         $script:collectorSource | Should -Match "SharePointCollectionSummary"
         $script:collectorSource | Should -Match 'Site usage report coverage unavailable because no SharePoint/OneDrive site inventory rows were collected'
