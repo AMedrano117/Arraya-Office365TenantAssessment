@@ -163,6 +163,8 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$PreflightOnly,
     [Parameter(Mandatory = $false)]
+    [switch]$UseExistingConnections,
+    [Parameter(Mandatory = $false)]
     [switch]$ExportOnly,
     [Parameter(Mandatory = $false)]
     [string]$TenantStatsJsonPath
@@ -226,6 +228,7 @@ $isMergedOutputProfileSelection = $false
 $runExportOnly = $ExportOnly.IsPresent
 $runCollectionOnly = $DataCollectionOnly.IsPresent
 $runPreflightOnly = $PreflightOnly.IsPresent
+$runUseExistingConnections = $UseExistingConnections.IsPresent
 $script:LoadedTenantSnapshot = $null
 $script:CurrentGraphMode = 'UNKNOWN'
 $script:AssessmentAuthWorkloadPlan = $null
@@ -233,6 +236,10 @@ $script:SuppressCollectorCompletionBanners = $true
 
 if ((@($runCollectionOnly, $runExportOnly, $runPreflightOnly) | Where-Object { $_ }).Count -gt 1) {
     throw "Data collection only mode, preflight only mode, and export only mode cannot be used together."
+}
+
+if ($runUseExistingConnections -and ($runExportOnly -or $runPreflightOnly)) {
+    throw "UseExistingConnections can only be used with live data collection."
 }
 
 if ($runExportOnly -and [string]::IsNullOrWhiteSpace($TenantStatsJsonPath)) {
@@ -1837,32 +1844,46 @@ function Test-AssessmentExistingSessions {
         [Parameter(Mandatory = $true)]
         [pscustomobject]$WorkloadPlan,
         [Parameter(Mandatory = $false)]
-        [string]$TenantId
+        [string]$TenantId,
+        [Parameter(Mandatory = $false)]
+        [string]$ModeLabel = 'SkipAuth'
     )
 
     $connectedWorkloads = New-Object System.Collections.Generic.List[string]
     $skippedWorkloads = New-Object System.Collections.Generic.List[string]
     $fallbackWorkloads = New-Object System.Collections.Generic.List[string]
+    $connectionRecoveryMessage = if ([string]::Equals($ModeLabel, 'SkipAuth', [System.StringComparison]::OrdinalIgnoreCase)) {
+        'Connect first, then rerun with -SkipAuth.'
+    }
+    else {
+        'Run Invoke-M365TenantConnectionPreflight first or omit -UseExistingConnections.'
+    }
+    $purviewRecoveryMessage = if ([string]::Equals($ModeLabel, 'SkipAuth', [System.StringComparison]::OrdinalIgnoreCase)) {
+        'Connect to Purview compliance PowerShell first, confirm Get-RetentionCompliancePolicy and Get-DlpCompliancePolicy work, then rerun with -SkipAuth.'
+    }
+    else {
+        'Run Invoke-M365TenantConnectionPreflight first, or connect Purview compliance PowerShell manually and confirm Get-RetentionCompliancePolicy and Get-DlpCompliancePolicy work.'
+    }
 
     $existingGraphContext = Get-MgContext -ErrorAction SilentlyContinue
     if (-not $existingGraphContext) {
-        throw 'SkipAuth was requested, but no existing Microsoft Graph session was found. Connect first, then rerun with -SkipAuth.'
+        throw ("{0} was requested, but no existing Microsoft Graph session was found. {1}" -f $ModeLabel, $connectionRecoveryMessage)
     }
-    $graphTenantDetails = Assert-AssessmentGraphContextMatchesTenant -TenantId $TenantId -ServiceName 'SkipAuth session reuse'
+    $graphTenantDetails = Assert-AssessmentGraphContextMatchesTenant -TenantId $TenantId -ServiceName "$ModeLabel session reuse"
     $connectedWorkloads.Add('Graph') | Out-Null
 
     if (-not (Test-AssessmentExchangeCmdletsAvailable)) {
-        throw 'SkipAuth was requested, but Exchange Online cmdlets are not available in the current session. Connect to Exchange Online first, then rerun with -SkipAuth.'
+        throw ("{0} was requested, but Exchange Online cmdlets are not available in the current session. {1}" -f $ModeLabel, $connectionRecoveryMessage)
     }
     $validationDomain = if ($graphTenantDetails) { [string]$graphTenantDetails.InitialDomain } else { $null }
     if (-not [string]::IsNullOrWhiteSpace($TenantId) -or -not [string]::IsNullOrWhiteSpace($validationDomain)) {
-        Assert-AssessmentExchangeSessionMatchesTenant -InitialDomain $validationDomain -TenantId $TenantId -ServiceName 'SkipAuth session reuse' | Out-Null
+        Assert-AssessmentExchangeSessionMatchesTenant -InitialDomain $validationDomain -TenantId $TenantId -ServiceName "$ModeLabel session reuse" | Out-Null
     }
     $connectedWorkloads.Add('ExchangeOnline') | Out-Null
 
     if ($WorkloadPlan.Workloads.PurviewCompliance.Required) {
         if (-not (Test-AssessmentPurviewSessionReady -ProbeCommands)) {
-            throw 'SkipAuth was requested, but Purview compliance session is not usable in the current session. Connect to Purview compliance PowerShell first, confirm Get-RetentionCompliancePolicy and Get-DlpCompliancePolicy work, then rerun with -SkipAuth.'
+            throw ("{0} was requested, but Purview compliance session is not usable in the current session. {1}" -f $ModeLabel, $purviewRecoveryMessage)
         }
         $connectedWorkloads.Add('PurviewCompliance') | Out-Null
     }
@@ -15516,7 +15537,9 @@ function Ensure-AssessmentServiceContext {
         [Parameter(Mandatory = $false)]
         [securestring]$ClientSecretSecure,
         [Parameter(Mandatory = $false)]
-        [string]$InitialDomain
+        [string]$InitialDomain,
+        [Parameter(Mandatory = $false)]
+        [switch]$ExistingConnectionsOnly
     )
 
     $mgContext = Get-MgContext -ErrorAction SilentlyContinue
@@ -15534,7 +15557,7 @@ function Ensure-AssessmentServiceContext {
         }
     }
 
-    if (-not $mgContext) {
+    if (-not $mgContext -and -not $ExistingConnectionsOnly) {
         try {
             if (
                 -not [string]::IsNullOrWhiteSpace($TenantId) -and
@@ -15580,14 +15603,19 @@ function Ensure-AssessmentServiceContext {
         }
     }
     else {
-        $graphMessage = "[Ensure-AssessmentServiceContext] Microsoft Graph context is unavailable after connection bootstrap."
+        $graphMessage = if ($ExistingConnectionsOnly) {
+            "[Ensure-AssessmentServiceContext] Microsoft Graph context is unavailable. Run Invoke-M365TenantConnectionPreflight first or omit -UseExistingConnections."
+        }
+        else {
+            "[Ensure-AssessmentServiceContext] Microsoft Graph context is unavailable after connection bootstrap."
+        }
         Write-Log -Type ERROR -Message $graphMessage -ExportFileLocation $ExportDetails
         throw $graphMessage
     }
 
     $hasExoMailboxCommand = [bool](Get-Command -Name 'Get-EXOMailbox' -ErrorAction SilentlyContinue)
     $hasUnifiedGroupCommand = [bool](Get-Command -Name 'Get-UnifiedGroup' -ErrorAction SilentlyContinue)
-    if (-not ($hasExoMailboxCommand -and $hasUnifiedGroupCommand)) {
+    if (-not ($hasExoMailboxCommand -and $hasUnifiedGroupCommand) -and -not $ExistingConnectionsOnly) {
         try {
             $existingExchangeConnection = @()
             if (Get-Command -Name 'Get-ConnectionInformation' -ErrorAction SilentlyContinue) {
@@ -15634,7 +15662,12 @@ function Ensure-AssessmentServiceContext {
     $hasExoMailboxCommand = [bool](Get-Command -Name 'Get-EXOMailbox' -ErrorAction SilentlyContinue)
     $hasUnifiedGroupCommand = [bool](Get-Command -Name 'Get-UnifiedGroup' -ErrorAction SilentlyContinue)
     if (-not ($hasExoMailboxCommand -and $hasUnifiedGroupCommand)) {
-        $exchangeMessage = "[Ensure-AssessmentServiceContext] Exchange Online cmdlets are unavailable after connection bootstrap."
+        $exchangeMessage = if ($ExistingConnectionsOnly) {
+            "[Ensure-AssessmentServiceContext] Exchange Online cmdlets are unavailable. Run Invoke-M365TenantConnectionPreflight first or omit -UseExistingConnections."
+        }
+        else {
+            "[Ensure-AssessmentServiceContext] Exchange Online cmdlets are unavailable after connection bootstrap."
+        }
         Write-Log -Type ERROR -Message $exchangeMessage -ExportFileLocation $ExportDetails
         throw $exchangeMessage
     }
@@ -15686,17 +15719,24 @@ else {
         -NeedsSharePointData ([bool]$script:ProfileCollectionPlan.CollectSharePointAndOneDriveSites)
     $script:AssessmentAuthWorkloadPlan = $assessmentAuthWorkloadPlan
 
-    Write-ConsoleSection -Step 'Connection' -Title 'Connection / Preflight'
-    $connectionResult = Initialize-AssessmentAuthentication `
-        -WorkloadPlan $assessmentAuthWorkloadPlan `
-        -SkipAuth:$SkipAuth `
-        -SkipPermissionPreflight:$SkipPermissionPreflight `
-        -TenantId $TenantId `
-        -ClientId $ClientId `
-        -CertificateThumbprint $CertificateThumbprint `
-        -ClientSecret $ClientSecret `
-        -ClientSecretCredential $ClientSecretCredential `
-        -ClientSecretSecure $ClientSecretSecure
+    if ($runUseExistingConnections) {
+        Write-ConsoleSection -Step 'Connection' -Title 'Existing Connection Check'
+        Write-Host 'Using existing Microsoft 365 connections for data collection. Authentication and permission preflight are skipped.' -ForegroundColor Cyan
+        $connectionResult = Test-AssessmentExistingSessions -WorkloadPlan $assessmentAuthWorkloadPlan -TenantId $TenantId -ModeLabel 'UseExistingConnections'
+    }
+    else {
+        Write-ConsoleSection -Step 'Connection' -Title 'Connection / Preflight'
+        $connectionResult = Initialize-AssessmentAuthentication `
+            -WorkloadPlan $assessmentAuthWorkloadPlan `
+            -SkipAuth:$SkipAuth `
+            -SkipPermissionPreflight:$SkipPermissionPreflight `
+            -TenantId $TenantId `
+            -ClientId $ClientId `
+            -CertificateThumbprint $CertificateThumbprint `
+            -ClientSecret $ClientSecret `
+            -ClientSecretCredential $ClientSecretCredential `
+            -ClientSecretSecure $ClientSecretSecure
+    }
     if (
         -not $connectionResult -or
         -not $connectionResult.Graph -or
@@ -15716,8 +15756,13 @@ else {
     if ($connectionResult -and $connectionResult.PSObject.Properties['InitialDomain'] -and $connectionResult.InitialDomain) {
         $initialDomainForContext = [string]$connectionResult.InitialDomain
     }
-    Ensure-AssessmentServiceContext -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -ClientSecret $ClientSecret -ClientSecretCredential $ClientSecretCredential -ClientSecretSecure $ClientSecretSecure -InitialDomain $initialDomainForContext
-    Write-ConnectionPreflightSummary -ConnectionResult ([pscustomobject]$connectionResult) -PermissionPreflightSkipped:$SkipPermissionPreflight
+    Ensure-AssessmentServiceContext -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -ClientSecret $ClientSecret -ClientSecretCredential $ClientSecretCredential -ClientSecretSecure $ClientSecretSecure -InitialDomain $initialDomainForContext -ExistingConnectionsOnly:$runUseExistingConnections
+    if ($runUseExistingConnections) {
+        Write-Host 'Existing connections ready for data collection.' -ForegroundColor Green
+    }
+    else {
+        Write-ConnectionPreflightSummary -ConnectionResult ([pscustomobject]$connectionResult) -PermissionPreflightSkipped:$SkipPermissionPreflight
+    }
 
     if ($runPreflightOnly) {
         return

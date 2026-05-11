@@ -768,6 +768,8 @@ function Invoke-M365TenantWorkflow {
         [Parameter(Mandatory = $false)]
         [switch]$SkipPermissionPreflight,
         [Parameter(Mandatory = $false)]
+        [switch]$UseExistingConnections,
+        [Parameter(Mandatory = $false)]
         [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
         [string]$AuthMode,
         [Parameter(Mandatory = $false)]
@@ -846,17 +848,20 @@ function Invoke-M365TenantWorkflow {
             $invokeParams.GeneratePdfOverride = $false
             $invokeParams.GenerateMigrationPackOverride = $false
             $invokeParams.DataCollectionOnly = $true
+            if ($PSBoundParameters.ContainsKey('UseExistingConnections')) { $invokeParams.UseExistingConnections = $UseExistingConnections }
             if ($PSBoundParameters.ContainsKey('StoreTenantStatsGlobal')) { $invokeParams.StoreTenantStatsGlobal = $StoreTenantStatsGlobal }
             if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
-            if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
-            if ($PSBoundParameters.ContainsKey('SkipPermissionPreflight')) { $invokeParams.SkipPermissionPreflight = $SkipPermissionPreflight }
-            if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
             if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
-            if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
-            if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
-            if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
-            if ($PSBoundParameters.ContainsKey('ClientSecretCredential')) { $invokeParams.ClientSecretCredential = $ClientSecretCredential }
-            if ($PSBoundParameters.ContainsKey('ClientSecretSecure')) { $invokeParams.ClientSecretSecure = $ClientSecretSecure }
+            if (-not $UseExistingConnections) {
+                if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
+                if ($PSBoundParameters.ContainsKey('SkipPermissionPreflight')) { $invokeParams.SkipPermissionPreflight = $SkipPermissionPreflight }
+                if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
+                if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
+                if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
+                if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
+                if ($PSBoundParameters.ContainsKey('ClientSecretCredential')) { $invokeParams.ClientSecretCredential = $ClientSecretCredential }
+                if ($PSBoundParameters.ContainsKey('ClientSecretSecure')) { $invokeParams.ClientSecretSecure = $ClientSecretSecure }
+            }
         }
         'ExportOnly' {
             if ([string]::IsNullOrWhiteSpace($AssessmentJsonPath)) {
@@ -1059,6 +1064,8 @@ function Invoke-M365TenantDataCollection {
         [Parameter(Mandatory = $false)]
         [switch]$SkipPermissionPreflight,
         [Parameter(Mandatory = $false)]
+        [switch]$UseExistingConnections,
+        [Parameter(Mandatory = $false)]
         [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
         [string]$AuthMode,
         [Parameter(Mandatory = $false)]
@@ -1080,15 +1087,18 @@ function Invoke-M365TenantDataCollection {
     if ($PSBoundParameters.ContainsKey('OutputProfile')) { $invokeParams.OutputProfile = $OutputProfile }
     if ($PSBoundParameters.ContainsKey('StoreTenantStatsGlobal')) { $invokeParams.StoreTenantStatsGlobal = $StoreTenantStatsGlobal }
     if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
-    if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
-    if ($PSBoundParameters.ContainsKey('SkipPermissionPreflight')) { $invokeParams.SkipPermissionPreflight = $SkipPermissionPreflight }
-    if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
+    if ($PSBoundParameters.ContainsKey('UseExistingConnections')) { $invokeParams.UseExistingConnections = $UseExistingConnections }
     if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
-    if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
-    if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
-    if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
-    if ($PSBoundParameters.ContainsKey('ClientSecretCredential')) { $invokeParams.ClientSecretCredential = $ClientSecretCredential }
-    if ($PSBoundParameters.ContainsKey('ClientSecretSecure')) { $invokeParams.ClientSecretSecure = $ClientSecretSecure }
+    if (-not $UseExistingConnections) {
+        if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
+        if ($PSBoundParameters.ContainsKey('SkipPermissionPreflight')) { $invokeParams.SkipPermissionPreflight = $SkipPermissionPreflight }
+        if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
+        if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
+        if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
+        if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
+        if ($PSBoundParameters.ContainsKey('ClientSecretCredential')) { $invokeParams.ClientSecretCredential = $ClientSecretCredential }
+        if ($PSBoundParameters.ContainsKey('ClientSecretSecure')) { $invokeParams.ClientSecretSecure = $ClientSecretSecure }
+    }
 
     Invoke-M365TenantWorkflow -Mode CollectOnly @invokeParams
 
