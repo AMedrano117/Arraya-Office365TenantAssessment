@@ -708,6 +708,16 @@ function Get-AssessmentMissingGraphDelegatedScopes {
         }
     }
 
+    try {
+        $grantedPermissionInfo = Get-AssessmentGrantedGraphPermissions
+        foreach ($permission in @($grantedPermissionInfo.Permissions)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$permission)) {
+                $null = $grantedScopes.Add(([string]$permission).Trim())
+            }
+        }
+    }
+    catch {}
+
     return @(
         Get-AssessmentGraphDelegatedScopes -WorkloadPlan $WorkloadPlan |
             Where-Object { -not (Test-AssessmentGraphScopeSatisfied -GrantedScopes $grantedScopes -RequiredScope ([string]$_)) } |
@@ -1654,8 +1664,9 @@ function Test-AssessmentGraphScopeSatisfied {
 
     switch -Regex ($RequiredScope) {
         '^Sites\.Read\.All$' { return $GrantedScopes.Contains('Sites.ReadWrite.All') }
-        '^Application\.Read\.All$' { return $GrantedScopes.Contains('Application.ReadWrite.All') }
-        '^RoleManagement\.Read\.Directory$' { return $GrantedScopes.Contains('RoleManagement.ReadWrite.Directory') }
+        '^Application\.Read\.All$' { return ($GrantedScopes.Contains('Application.ReadWrite.All') -or $GrantedScopes.Contains('Directory.Read.All') -or $GrantedScopes.Contains('Directory.ReadWrite.All')) }
+        '^RoleManagement\.Read\.Directory$' { return ($GrantedScopes.Contains('RoleManagement.Read.All') -or $GrantedScopes.Contains('RoleManagement.ReadWrite.Directory') -or $GrantedScopes.Contains('Directory.Read.All') -or $GrantedScopes.Contains('Directory.ReadWrite.All')) }
+        '^CrossTenantInformation\.ReadBasic\.All$' { return ($GrantedScopes.Contains('Directory.Read.All') -or $GrantedScopes.Contains('Directory.ReadWrite.All')) }
         default { return $false }
     }
 }
@@ -5259,10 +5270,20 @@ function Test-AssessmentPermissionPreflight {
                 }
                 '^Application\.Read\.All$' {
                     $null = $equivalentPermissions.Add('Application.ReadWrite.All')
+                    $null = $equivalentPermissions.Add('Directory.Read.All')
+                    $null = $equivalentPermissions.Add('Directory.ReadWrite.All')
                     continue
                 }
                 '^RoleManagement\.Read\.Directory$' {
+                    $null = $equivalentPermissions.Add('RoleManagement.Read.All')
                     $null = $equivalentPermissions.Add('RoleManagement.ReadWrite.Directory')
+                    $null = $equivalentPermissions.Add('Directory.Read.All')
+                    $null = $equivalentPermissions.Add('Directory.ReadWrite.All')
+                    continue
+                }
+                '^CrossTenantInformation\.ReadBasic\.All$' {
+                    $null = $equivalentPermissions.Add('Directory.Read.All')
+                    $null = $equivalentPermissions.Add('Directory.ReadWrite.All')
                     continue
                 }
             }
@@ -5308,7 +5329,7 @@ function Test-AssessmentPermissionPreflight {
             return
         }
 
-        if ($claimState -eq $false) {
+        if ($claimState -eq $false -and $TrustClaimPresence) {
             $missingScopeMessage = "Missing Graph scope: $requirementLabel"
             if ($IsBlocking) {
                 & $addFailure $Area $requirementLabel $NeededFor $missingScopeMessage
