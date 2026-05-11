@@ -18,6 +18,9 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'function Invoke-AssessmentPermissionPreflightWithStatus'
         $script:collectorSource | Should -Match '\[switch\]\$PreflightOnly'
         $script:collectorSource | Should -Match '\[switch\]\$UseExistingConnections'
+        $script:collectorSource | Should -Match "\[ValidateSet\('Tenant Overview', 'Identity', 'Exchange', 'Collaboration', 'Endpoint', 'Governance'\)\]"
+        $script:collectorSource | Should -Match '\[string\[\]\]\$CollectorSection'
+        $script:collectorSource | Should -Match '\[string\[\]\]\$CollectorStep'
         $script:collectorSource | Should -Match '\[switch\]\$SkipPermissionPreflight'
         $script:collectorSource | Should -Match 'Permission preflight failed\. The assessment will not continue'
         $script:collectorSource | Should -Match 'Permission preflight warnings:'
@@ -78,6 +81,8 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     It 'uses an assessment-owned auth orchestrator instead of the generic Office365 connector bootstrap' {
         $script:collectorSource | Should -Match 'function Resolve-AssessmentProfileCollectionPlan'
         $script:collectorSource | Should -Match 'function Resolve-AssessmentGraphScopePlan'
+        $script:collectorSource | Should -Match 'function Get-AssessmentGraphScopePlanFlag'
+        $script:collectorSource | Should -Match 'function Get-AssessmentMissingGraphDelegatedScopes'
         $script:collectorSource | Should -Match 'function Resolve-AssessmentRequestedAuthMode'
         $script:collectorSource | Should -Match 'function Resolve-AssessmentClientSecretAuthContext'
         $script:collectorSource | Should -Match 'function Get-AssessmentGraphDelegatedScopes'
@@ -107,7 +112,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
 
     It 'connects Exchange Online before Microsoft Graph for interactive assessment runs' {
         $script:collectorSource | Should -Match '\$connectExchangeFirst = \(\[string\]\$WorkloadPlan\.AuthenticationType -eq ''Interactive''\)'
-        $script:collectorSource | Should -Match 'Sign-in sequence: Exchange Online, Purview, Microsoft Graph\.'
+        $script:collectorSource | Should -Match 'Connection mode: connect/preflight; existing sessions may be reused\.'
         $script:collectorSource | Should -Match 'if \(\$connectExchangeFirst\) \{[\s\S]*Connect-AssessmentExchange[\s\S]*Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload ExchangeOnline[\s\S]*if \(\$WorkloadPlan\.Workloads\.PurviewCompliance\.Required\) \{[\s\S]*Connect-AssessmentPurview[\s\S]*Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload Purview[\s\S]*Connect-AssessmentGraph[\s\S]*Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload Graph'
     }
 
@@ -126,6 +131,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'NeedsDeviceData'
         $script:collectorSource | Should -Match 'NeedsSecureScore'
         $script:collectorSource | Should -Match 'NeedsReportsData'
+        $script:collectorSource | Should -Match '''SolutionsEngineer'' \{[\s\S]*\$plan\.CollectEmailActivityDetails = \$true[\s\S]*\$plan\.CollectGovernanceCompliancePolicies = \$true'
     }
 
     It 'adds a reduced-scope tenant-to-tenant collection policy and uses it to trim collectors and Graph scopes' {
@@ -194,12 +200,14 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     It 'validates only the required workload sessions when SkipAuth is used' {
         $script:collectorSource | Should -Match 'Reusing existing workload sessions for this run'
         $script:collectorSource | Should -Match '\{0\} was requested, but no existing Microsoft Graph session was found'
-        $script:collectorSource | Should -Match '\{0\} was requested, but Exchange Online cmdlets are not available in the current session'
+        $script:collectorSource | Should -Match '\{0\} was requested, but an existing Exchange Online session was not usable in the current session'
         $script:collectorSource | Should -Match 'Connect first, then rerun with -SkipAuth\.'
         $script:collectorSource | Should -Match 'function Test-AssessmentPurviewSessionReady'
+        $script:collectorSource | Should -Match 'function Test-AssessmentExchangeSessionReady'
         $script:collectorSource | Should -Match 'function Test-AssessmentSharePointSessionReady'
         $script:collectorSource | Should -Match 'function Test-AssessmentTeamsSessionReady'
         $script:collectorSource | Should -Match '\{0\} was requested, but Purview compliance session is not usable in the current session'
+        $script:collectorSource | Should -Match 'the current Microsoft Graph token is missing required scope\(s\):'
         $script:collectorSource | Should -Match 'Test-AssessmentExistingSessions -WorkloadPlan \$WorkloadPlan'
         $script:collectorSource | Should -Match 'SkipAuth was requested and no existing SharePoint admin session was found\. Graph fallback remains active'
         $script:collectorSource | Should -Match 'SkipAuth was requested and no existing Teams PowerShell session was found\. Graph-only Teams collection remains active'
@@ -208,10 +216,33 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     It 'validates tenant alignment before reusing Graph and Exchange sessions and removes the public tenant lookup fallback' {
         $script:collectorSource | Should -Match 'function Get-AssessmentGraphOrganizationDetails'
         $script:collectorSource | Should -Match 'function Assert-AssessmentGraphContextMatchesTenant'
+        $script:collectorSource | Should -Match 'function Disconnect-AssessmentExistingSessions'
+        $script:collectorSource | Should -Match 'function Get-AssessmentExchangeSessionDetails'
+        $script:collectorSource | Should -Match 'function Get-AssessmentSharePointSessionDetails'
+        $script:collectorSource | Should -Match 'function Write-AssessmentGraphTenantDetails'
+        $script:collectorSource | Should -Match 'GraphTenantDetails'
+        $script:collectorSource | Should -Match 'ExchangeTenantDetails'
+        $script:collectorSource | Should -Match 'SharePointTenantDetails'
+        $script:collectorSource | Should -Match 'Connection mode: connect/preflight; existing sessions may be reused\.'
+        $script:collectorSource | Should -Match 'Microsoft Graph already connected; reusing the current Graph session\.'
+        $script:collectorSource | Should -Match 'function Confirm-AssessmentExistingGraphTenant'
+        $script:collectorSource | Should -Match "Write-AssessmentGraphTenantDetails -GraphTenantDetails \`$GraphTenantDetails -Heading 'Existing Microsoft Graph tenant detected'"
+        $script:collectorSource | Should -Match 'Continue \{0\} with this tenant\? Type Y to continue or N to disconnect all current sessions'
+        $script:collectorSource | Should -Match 'Disconnect-MgGraph -ErrorAction SilentlyContinue'
+        $script:collectorSource | Should -Match 'Disconnect-SPOService -ErrorAction SilentlyContinue'
+        $script:collectorSource | Should -Match 'Disconnect-MicrosoftTeams -ErrorAction SilentlyContinue'
+        $script:collectorSource | Should -Match 'Disconnect-ExchangeOnline -Confirm:\$false -ErrorAction SilentlyContinue'
+        $script:collectorSource | Should -Match 'Remove-PSSession -ErrorAction SilentlyContinue'
+        $script:collectorSource | Should -Match 'Current Microsoft 365 sessions were disconnected'
+        $script:collectorSource | Should -Match 'or pass -TenantId to require an exact tenant match'
         $script:collectorSource | Should -Match 'function Resolve-AssessmentValidationInitialDomain'
         $script:collectorSource | Should -Match 'function Assert-AssessmentExchangeSessionMatchesTenant'
         $script:collectorSource | Should -Match 'Get-AcceptedDomain -Identity \$validationDomain'
+        $script:collectorSource | Should -Match '\$hasExplicitTenantId = -not \[string\]::IsNullOrWhiteSpace\(\$TenantId\)'
+        $script:collectorSource | Should -Match 'Tenant validation: no -TenantId supplied; using the current shell sessions as connected'
+        $script:collectorSource | Should -Match 'if \(\$hasExplicitTenantId\) \{[\s\S]*Assert-AssessmentExchangeSessionMatchesTenant'
         $script:collectorSource | Should -Match 'Test-AssessmentExistingSessions -WorkloadPlan \$WorkloadPlan -TenantId \$TenantId'
+        $script:collectorSource | Should -Match 'Test-AssessmentExistingSessions -WorkloadPlan \$assessmentAuthWorkloadPlan -TenantId \$TenantId -ModeLabel ''UseExistingConnections'' -ConfirmTenantSelection'
         $script:collectorSource | Should -Match 'Connect-AssessmentExchange -AuthenticationType \$WorkloadPlan\.AuthenticationType -TenantId \$TenantId'
         $script:collectorSource | Should -Match 'Disconnect-MgGraph -ErrorAction SilentlyContinue'
         $script:collectorSource | Should -Not -Match 'tenantinfoapp\.azurewebsites\.us'
@@ -225,8 +256,13 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Graph scopes requested:'
         $script:collectorSource | Should -Match 'Requested Microsoft Graph delegated scopes:'
         $script:collectorSource | Should -Match 'function Get-AssessmentGraphPreflightOperatorGuidance'
+        $script:collectorSource | Should -Match 'function Test-AssessmentGraphScopeSatisfied'
+        $script:collectorSource | Should -Match 'Microsoft Graph already connected, but the current token is missing required scope\(s\):'
+        $script:collectorSource | Should -Match 'Reconnecting Microsoft Graph so the assessment can request the missing scope\(s\)\.'
         $script:collectorSource | Should -Match 'Run Disconnect-MgGraph, then rerun the assessment'
-        $script:collectorSource | Should -Match 'sign in as a Global Administrator'
+        $script:collectorSource | Should -Match 'Missing delegated Graph scope\(s\):'
+        $script:collectorSource | Should -Match 'Missing Graph scope: \$requirementLabel'
+        $script:collectorSource | Should -Match 'Graph preflight failed\. Missing Graph scope\(s\): \{0\}\. Run Disconnect-MgGraph, then rerun the assessment\.'
         $script:collectorSource | Should -Match 'interactive preflight checks the delegated-safe /sites/root endpoint'
         $script:collectorSource | Should -Match 'app-only preflight checks /sites/getAllSites'
     }
@@ -251,6 +287,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     It 'separates connection from assessment and uses the new six-section assessment flow' {
         $script:collectorSource | Should -Match "Write-ConsoleSection -Step 'Connection' -Title 'Connection / Preflight'"
         $script:collectorSource | Should -Match 'function New-AssessmentCollectorSections'
+        $script:collectorSource | Should -Match 'function Select-AssessmentCollectorPlan'
         $script:collectorSource | Should -Match "\[pscustomobject\]@\{ Step = '1/6'; Name = 'Tenant Overview' \}"
         $script:collectorSource | Should -Match "\[pscustomobject\]@\{ Step = '2/6'; Name = 'Identity' \}"
         $script:collectorSource | Should -Match "\[pscustomobject\]@\{ Step = '3/6'; Name = 'Exchange' \}"
@@ -258,6 +295,11 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match "\[pscustomobject\]@\{ Step = '5/6'; Name = 'Endpoint' \}"
         $script:collectorSource | Should -Match "\[pscustomobject\]@\{ Step = '6/6'; Name = 'Governance' \}"
         $script:collectorSource | Should -Match 'Invoke-ArrayaCollectorPlan'
+        $script:collectorSource | Should -Match 'Select-AssessmentCollectorPlan -Sections \$collectorSections -Steps \$collectorPlan -CollectorSection \$CollectorSection -CollectorStep \$CollectorStep'
+        $script:collectorSource | Should -Match 'Initialize-AssessmentProgress -TotalSteps \(\[Math\]::Max\(@\(\$collectorPlan\)\.Count, 1\)\)'
+        $script:collectorSource | Should -Match 'Collector filter matched no steps'
+        $script:collectorSource | Should -Match 'Available collector steps'
+        $script:collectorSource | Should -Match 'Targeted collector filter active:'
         $script:collectorSource | Should -Match 'Write-ConsoleSection -Step \(\[string\]\$Section\.Step\) -Title \(\[string\]\$Section\.Name\)'
         $script:collectorSource | Should -Match "Write-ConsoleSection -Step 'Export' -Title 'Exporting results'"
         $script:collectorSource | Should -Not -Match 'Consolidating Discovery Report'
@@ -310,7 +352,12 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     It 'handles SharePoint getAllSites access denied with operator guidance and SPO fallback when available' {
         $script:collectorSource | Should -Match 'Microsoft Graph getAllSites requires application permissions'
         $script:collectorSource | Should -Match 'Confirm the app has Sites.Read.All application permission with admin consent'
-        $script:collectorSource | Should -Match 'falling back to connected SharePoint Online PowerShell session'
+        $script:collectorSource | Should -Match 'Write-Verbose \$guidance'
+        $script:collectorSource | Should -Match 'SharePoint/OneDrive inventory using connected SharePoint Online PowerShell fallback'
+        $script:collectorSource | Should -Not -Match 'SharePoint/OneDrive API inventory denied; falling back to connected SharePoint Online PowerShell session'
+        $script:collectorSource | Should -Match "'Graph/SPO'"
+        $script:collectorSource | Should -Match 'SharePointDiscoveryLabel'
+        $script:collectorSource | Should -Match 'Get-SharePointAndOneDriveSites -detailLevel \$reportingMode -ServiceName \$SharePointDiscoveryService'
         $script:collectorSource | Should -Match "SharePointCollectionSummary"
         $script:collectorSource | Should -Match 'Site usage report coverage unavailable because no SharePoint/OneDrive site inventory rows were collected'
     }
@@ -364,6 +411,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Exchange auth: broker / WAM sign-in failed, retrying with -DisableWAM'
         $script:collectorSource | Should -Match 'Exchange auth: broker / WAM sign-in failed, retrying with device code'
         $script:collectorSource | Should -Match 'Exchange Online interactive sign-in hit a Windows broker / WAM token acquisition failure'
+        $script:collectorSource | Should -Match 'Checking existing SharePoint admin connection'
         $script:collectorSource | Should -Match 'SharePoint admin already connected for this session.'
         $script:collectorSource | Should -Match 'Write-AssessmentInteractiveAuthNotice -ServiceName ''SharePoint admin'''
         $script:collectorSource | Should -Match 'SharePoint admin interactive sign-in'
@@ -374,6 +422,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Continuing with Graph-only Teams coverage'
         $script:collectorSource | Should -Match 'Write-AssessmentInteractiveAuthNotice -ServiceName ''Purview compliance PowerShell'''
         $script:collectorSource | Should -Match 'Write-AssessmentInteractiveAuthNotice -ServiceName ''Purview compliance PowerShell'' -SupportsDisableWam:\$ConnectCommandMetadata\.Parameters\.ContainsKey\(''DisableWAM''\) -SupportsDeviceCode:\$ConnectCommandMetadata\.Parameters\.ContainsKey\(''Device''\)'
+        $script:collectorSource | Should -Match 'Purview compliance: \{0\}'
         $script:collectorSource | Should -Not -Match 'Invoke-PurviewComplianceDelegatedConnect -BaseParameters \$connectParams -ConnectCommandMetadata \$connectCommand -GraphAccount \$graphAccount'
     }
 
@@ -404,6 +453,9 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Get-ArrayaGraphResource .* -SuppressProgress'
         $script:collectorSource | Should -Match 'Get-ArrayaGraphResource .* -SuppressAccessDeniedWarning'
         $script:collectorSource | Should -Match 'Get-ArrayaGraphAdminReportSettings -Headers \$global:GraphHeaders -SuppressProgress'
+        $script:collectorSource | Should -Match '\$preflightNeedsReportsData = \$true'
+        $script:collectorSource | Should -Match 'Get-AssessmentGraphScopePlanFlag -GraphScopePlan \$script:AssessmentAuthWorkloadPlan\.GraphScopePlan -Name ''NeedsReportsData'' -Default \$true'
+        $script:collectorSource | Should -Match 'if \(\$preflightNeedsReportsData\) \{[\s\S]*PermissionNames = @\(''Reports.Read.All''\)[\s\S]*PermissionNames = @\(''ReportSettings.Read.All''\)'
         $script:graphDataSource | Should -Match '\(\?i\)\(\?:\[\?&\]\)\\\$top='
         $script:graphDataSource | Should -Match '\[switch\]\$SuppressProgress'
         $script:graphDataSource | Should -Match '\[switch\]\$SuppressAccessDeniedWarning'
@@ -411,7 +463,10 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
 
     It 'fast-passes core Graph permission checks from token claims and keeps live probes for ambiguous endpoints' {
         $script:collectorSource | Should -Match '\[bool\]\$TrustClaimPresence = \$false'
-        $script:collectorSource | Should -Match 'if \(\$TrustClaimPresence -and \$claimState -eq \$true\)'
+        $script:collectorSource | Should -Match 'if \(\$claimState -eq \$true\)'
+        $script:collectorSource | Should -Match '\$requirementNames = @\(\$PermissionNames \| Where-Object'
+        $script:collectorSource | Should -Match '\$graphRequirementNames = @\(\$graphCheck\.PermissionNames \| Where-Object'
+        $script:collectorSource | Should -Match 'if \(\$claimState -eq \$false\) \{[\s\S]*Missing Graph scope: \$requirementLabel[\s\S]*return'
         $script:collectorSource | Should -Match 'TrustClaimPresence = \$true'
         $script:collectorSource | Should -Match "PermissionNames = @\('SharePointTenantSettings.Read.All'\)"
         $script:collectorSource | Should -Match "PermissionNames = @\('Reports.Read.All'\)"
@@ -549,6 +604,10 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Not -Match 'Overall progress:'
         $script:collectorSource | Should -Match 'Write-AssessmentCollectorCompletionBanner'
         $script:collectorSource | Should -Match 'if \(\$script:AssessmentProgressState\) \{\s*return\s*\}'
+        $script:collectorSource | Should -Match 'AssessmentProgressLinePending'
+        $script:collectorSource | Should -Match '\$usesDirectConsoleOutput = \[bool\]\(\$Name -match'
+        $script:collectorSource | Should -Match 'Write-Host \$progressLinePrefix -ForegroundColor Cyan -NoNewline'
+        $script:collectorSource | Should -Match 'if \(\$script:AssessmentProgressLinePending\) \{[\s\S]*Write-Host '''''
         $script:collectorSource | Should -Match '\[\{0\}/\{1\} \| \{2\}%\] \{3\} - \{4\} in \{5\}\{6\}'
     }
 

@@ -51,6 +51,10 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match 'function Invoke-M365TenantConnectionPreflight'
         $runnerSource | Should -Match '\[switch\]\$UseExistingConnections'
         $runnerSource | Should -Match '\$invokeParams\.UseExistingConnections = \$UseExistingConnections'
+        $runnerSource | Should -Match '\[string\[\]\]\$CollectorSection'
+        $runnerSource | Should -Match '\[string\[\]\]\$CollectorStep'
+        $runnerSource | Should -Match '\$invokeParams\.CollectorSection = \$CollectorSection'
+        $runnerSource | Should -Match '\$invokeParams\.CollectorStep = \$CollectorStep'
         $runnerSource | Should -Match 'IncludeLegacyAssessmentArtifacts'
         $runnerSource | Should -Match 'Invoke-M365ImproveForAssessmentRun'
         $runnerSource | Should -Match 'Customer Assessment Report'
@@ -86,7 +90,7 @@ Describe 'Arraya.M365.AssessmentRunner' {
             Invoke-M365TenantWorkflow -Mode PreflightOnly -ExportPath $Path -OutputProfile SolutionsEngineer -PassThruInvocation
         } $TestDrive
         $preflightInvocation.Parameters.PreflightOnly | Should -BeTrue
-        $preflightInvocation.Parameters.GenerateJsonOverride | Should -BeFalse
+        $preflightInvocation.Parameters.GenerateJsonOverride | Should -BeTrue
         $preflightInvocation.Parameters.ContainsKey('DataCollectionOnly') | Should -BeFalse
         $preflightInvocation.Parameters.ContainsKey('ExportOnly') | Should -BeFalse
 
@@ -97,14 +101,18 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $defaultCollectionInvocation.Parameters.DataCollectionOnly | Should -BeTrue
         $defaultCollectionInvocation.Parameters.GenerateJsonOverride | Should -BeTrue
         $defaultCollectionInvocation.Parameters.ContainsKey('UseExistingConnections') | Should -BeFalse
+        $defaultCollectionInvocation.Parameters.ContainsKey('CollectorSection') | Should -BeFalse
+        $defaultCollectionInvocation.Parameters.ContainsKey('CollectorStep') | Should -BeFalse
         $defaultCollectionInvocation.Parameters.ContainsKey('SkipAuth') | Should -BeFalse
 
         $existingConnectionInvocation = & $module {
             param($Path)
-            Invoke-M365TenantWorkflow -Mode CollectOnly -ExportPath $Path -OutputProfile SolutionsEngineer -UseExistingConnections -SkipAuth -SkipPermissionPreflight -AuthMode Interactive -PassThruInvocation
+            Invoke-M365TenantWorkflow -Mode CollectOnly -ExportPath $Path -OutputProfile SolutionsEngineer -UseExistingConnections -CollectorSection Collaboration -CollectorStep 'SharePoint/OneDrive sites' -SkipAuth -SkipPermissionPreflight -AuthMode Interactive -PassThruInvocation
         } $TestDrive
         $existingConnectionInvocation.Parameters.DataCollectionOnly | Should -BeTrue
         $existingConnectionInvocation.Parameters.UseExistingConnections | Should -BeTrue
+        $existingConnectionInvocation.Parameters.CollectorSection | Should -Be @('Collaboration')
+        $existingConnectionInvocation.Parameters.CollectorStep | Should -Be @('SharePoint/OneDrive sites')
         $existingConnectionInvocation.Parameters.ContainsKey('SkipAuth') | Should -BeFalse
         $existingConnectionInvocation.Parameters.ContainsKey('SkipPermissionPreflight') | Should -BeFalse
         $existingConnectionInvocation.Parameters.ContainsKey('AuthMode') | Should -BeFalse

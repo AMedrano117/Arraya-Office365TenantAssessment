@@ -770,6 +770,11 @@ function Invoke-M365TenantWorkflow {
         [Parameter(Mandatory = $false)]
         [switch]$UseExistingConnections,
         [Parameter(Mandatory = $false)]
+        [ValidateSet('Tenant Overview', 'Identity', 'Exchange', 'Collaboration', 'Endpoint', 'Governance')]
+        [string[]]$CollectorSection,
+        [Parameter(Mandatory = $false)]
+        [string[]]$CollectorStep,
+        [Parameter(Mandatory = $false)]
         [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
         [string]$AuthMode,
         [Parameter(Mandatory = $false)]
@@ -851,6 +856,8 @@ function Invoke-M365TenantWorkflow {
             $invokeParams.GenerateMigrationPackOverride = $false
             $invokeParams.DataCollectionOnly = $true
             if ($PSBoundParameters.ContainsKey('UseExistingConnections')) { $invokeParams.UseExistingConnections = $UseExistingConnections }
+            if ($PSBoundParameters.ContainsKey('CollectorSection')) { $invokeParams.CollectorSection = $CollectorSection }
+            if ($PSBoundParameters.ContainsKey('CollectorStep')) { $invokeParams.CollectorStep = $CollectorStep }
             if ($PSBoundParameters.ContainsKey('StoreTenantStatsGlobal')) { $invokeParams.StoreTenantStatsGlobal = $StoreTenantStatsGlobal }
             if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
             if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
@@ -891,7 +898,9 @@ function Invoke-M365TenantWorkflow {
             $invokeParams.GenerateTechnicalHtmlOverride = $false
             $invokeParams.GenerateBestPracticesHtmlOverride = $false
             $invokeParams.GenerateQuestionnaireOverride = $false
-            $invokeParams.GenerateJsonOverride = $false
+            # Preflight must plan against the same live collection surface as CollectOnly so
+            # a successful preflight guarantees the follow-up data-only run has its sessions.
+            $invokeParams.GenerateJsonOverride = $true
             $invokeParams.GeneratePdfOverride = $false
             $invokeParams.GenerateMigrationPackOverride = $false
             $invokeParams.PreflightOnly = $true
@@ -1077,6 +1086,11 @@ function Invoke-M365TenantDataCollection {
         [Parameter(Mandatory = $false)]
         [switch]$UseExistingConnections,
         [Parameter(Mandatory = $false)]
+        [ValidateSet('Tenant Overview', 'Identity', 'Exchange', 'Collaboration', 'Endpoint', 'Governance')]
+        [string[]]$CollectorSection,
+        [Parameter(Mandatory = $false)]
+        [string[]]$CollectorStep,
+        [Parameter(Mandatory = $false)]
         [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
         [string]$AuthMode,
         [Parameter(Mandatory = $false)]
@@ -1099,6 +1113,8 @@ function Invoke-M365TenantDataCollection {
     if ($PSBoundParameters.ContainsKey('StoreTenantStatsGlobal')) { $invokeParams.StoreTenantStatsGlobal = $StoreTenantStatsGlobal }
     if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
     if ($PSBoundParameters.ContainsKey('UseExistingConnections')) { $invokeParams.UseExistingConnections = $UseExistingConnections }
+    if ($PSBoundParameters.ContainsKey('CollectorSection')) { $invokeParams.CollectorSection = $CollectorSection }
+    if ($PSBoundParameters.ContainsKey('CollectorStep')) { $invokeParams.CollectorStep = $CollectorStep }
     if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
     if (-not $UseExistingConnections) {
         if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }

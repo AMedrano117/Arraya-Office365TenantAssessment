@@ -73,3 +73,5 @@ When validating on another machine, start with the safest path first:
 3. Run `Improve` against the newly collected snapshot.
 
 This separates environment/setup issues from tenant-authentication and collector issues.
+
+For targeted live collector validation, import the assessment runner module and use `Invoke-M365TenantDataCollection` with `-CollectorSection` or `-CollectorStep`. For example, `-CollectorSection Collaboration` runs only the Collaboration collector section, and `-CollectorStep 'SharePoint/OneDrive sites'` runs only that site inventory collector. See [../../RUN.md](../../RUN.md) for the full examples and supported section names.
