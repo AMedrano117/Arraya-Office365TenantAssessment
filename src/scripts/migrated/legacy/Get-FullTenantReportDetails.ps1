@@ -11650,23 +11650,25 @@ function Get-SecuritySecureScoreReport {
         if ($MostRecent) {
             $secureScoreUri = "https://graph.microsoft.com/v1.0/security/secureScores?`$orderby=createdDateTime desc&`$top=1"
             $secureScoreResponse = $null
-            if ((Get-Command Invoke-MgGraphRequest -ErrorAction SilentlyContinue) -and (Get-MgContext -ErrorAction SilentlyContinue)) {
-                $savedProgressPreference = $ProgressPreference
-                try {
-                    $ProgressPreference = 'SilentlyContinue'
-                    $secureScoreResponse = Invoke-MgGraphRequest -Uri $secureScoreUri -Method GET -OutputType PSObject -ProgressAction SilentlyContinue -ErrorAction Stop
+            $secureScoreResponse = Invoke-ArrayaGraphCollectionRequest -Uri $secureScoreUri -Activity 'Secure Score most recent' -GraphMode $script:CurrentGraphMode -Headers $global:GraphHeaders -Context $script:AssessmentContext -ScriptBlock {
+                if ((Get-Command Invoke-MgGraphRequest -ErrorAction SilentlyContinue) -and (Get-MgContext -ErrorAction SilentlyContinue)) {
+                    $savedProgressPreference = $ProgressPreference
+                    try {
+                        $ProgressPreference = 'SilentlyContinue'
+                        Invoke-MgGraphRequest -Uri $secureScoreUri -Method GET -OutputType PSObject -ProgressAction SilentlyContinue -ErrorAction Stop
+                    }
+                    finally {
+                        $ProgressPreference = $savedProgressPreference
+                    }
                 }
-                finally {
-                    $ProgressPreference = $savedProgressPreference
-                }
-            }
-            else {
-                $secureScoreResponse = Invoke-QuietRestMethod -Parameters @{
-                    Uri         = $secureScoreUri
-                    Headers     = $global:GraphHeaders
-                    Method      = 'Get'
-                    ContentType = 'application/json'
-                    ErrorAction = 'Stop'
+                else {
+                    Invoke-QuietRestMethod -Parameters @{
+                        Uri         = $secureScoreUri
+                        Headers     = $global:GraphHeaders
+                        Method      = 'Get'
+                        ContentType = 'application/json'
+                        ErrorAction = 'Stop'
+                    }
                 }
             }
             $secureScore = @($secureScoreResponse.value | Where-Object { $null -ne $_.ID } | Select-Object -First 1)
@@ -12780,7 +12782,7 @@ function Get-AuthenticationConfiguration {
         # Check MFA/Authentication methods policies
         try {
             $authMethodsPolicyUri = "https://graph.microsoft.com/v1.0/policies/authenticationMethodsPolicy"
-            $authPolicyData = Office365Custom\Get-GraphData -Uri $authMethodsPolicyUri -Activity "Fetching Authentication Methods Policy"
+            $authPolicyData = Get-ArrayaGraphResource -Uri $authMethodsPolicyUri -Activity "Fetching Authentication Methods Policy"
             
             if ($authPolicyData) {
                 # Extract enabled authentication methods
@@ -12819,7 +12821,7 @@ function Get-AuthenticationConfiguration {
 
         # Check authorization policy (app consent posture)
         try {
-            $authorizationPolicyResponse = Office365Custom\Get-GraphData -Uri "https://graph.microsoft.com/v1.0/policies/authorizationPolicy" -Activity "Fetching authorization policy"
+            $authorizationPolicyResponse = Get-ArrayaGraphResource -Uri "https://graph.microsoft.com/v1.0/policies/authorizationPolicy" -Activity "Fetching authorization policy"
             $authorizationPolicy = @($authorizationPolicyResponse | Select-Object -First 1)
             if ($authorizationPolicy.Count -gt 0 -and $authorizationPolicy[0]) {
                 if ($authorizationPolicy[0].PSObject.Properties['allowInvitesFrom']) {
@@ -12894,7 +12896,7 @@ function Get-AuthenticationConfiguration {
 
         # Check admin consent request workflow
         try {
-            $adminConsentPolicyResponse = Office365Custom\Get-GraphData -Uri "https://graph.microsoft.com/v1.0/policies/adminConsentRequestPolicy" -Activity "Fetching admin consent request policy"
+            $adminConsentPolicyResponse = Get-ArrayaGraphResource -Uri "https://graph.microsoft.com/v1.0/policies/adminConsentRequestPolicy" -Activity "Fetching admin consent request policy"
             $adminConsentPolicy = @($adminConsentPolicyResponse | Select-Object -First 1)
             if ($adminConsentPolicy.Count -gt 0 -and $adminConsentPolicy[0]) {
                 if ($adminConsentPolicy[0].PSObject.Properties['isEnabled']) {
@@ -12917,7 +12919,7 @@ function Get-AuthenticationConfiguration {
 
         # Check Security Defaults policy state
         try {
-            $securityDefaultsResponse = Office365Custom\Get-GraphData -Uri "https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy" -Activity "Fetching security defaults policy"
+            $securityDefaultsResponse = Get-ArrayaGraphResource -Uri "https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy" -Activity "Fetching security defaults policy"
             $securityDefaultsPolicy = @($securityDefaultsResponse | Select-Object -First 1)
             if ($securityDefaultsPolicy.Count -gt 0 -and $securityDefaultsPolicy[0]) {
                 $isEnabled = $null
@@ -13794,7 +13796,7 @@ function Get-AdConnectSyncDetails {
                 $syncServiceResponse = Get-MgDirectoryOnPremiseSynchronization -ErrorAction Stop
             }
             elseif ($global:GraphHeaders) {
-                $syncServiceResponse = Office365Custom\Get-GraphData -Uri 'https://graph.microsoft.com/v1.0/directory/onPremisesSynchronization' -Activity 'Fetching directory synchronization service features'
+                $syncServiceResponse = Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/directory/onPremisesSynchronization' -Activity 'Fetching directory synchronization service features'
             }
 
             $syncServiceObject = @($syncServiceResponse) | Select-Object -First 1
@@ -14498,7 +14500,7 @@ function Get-MfaRegistrationDetails {
         if (-not $regData -or $regData.Count -eq 0) {
             try {
                 $uri = "https://graph.microsoft.com/v1.0/reports/authenticationMethods/userRegistrationDetails"
-                $regData = Office365Custom\Get-GraphData -Uri $uri -Activity "Fetching MFA Registration Details"
+                $regData = Get-ArrayaGraphResource -Uri $uri -Activity "Fetching MFA Registration Details"
             } catch {
                 Write-Log -Type WARNING -Message "[Get-MfaRegistrationDetails] Unable to retrieve registration report: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
             }
@@ -16324,7 +16326,7 @@ function Update-TierBOperationalSummaries {
         Write-ProgressHelper -Total $tierBProgressTotal -Id $tierBProgressId -Index 3 -Activity 'Tier B operational summaries' -Operation 'Reviewing SharePoint tenant settings from Microsoft Graph'
         Write-AssessmentConsoleSubstep -Message 'Tier B operational summaries: reviewing SharePoint tenant settings from Microsoft Graph'
         try {
-            $sharePointSettingsResponse = Office365Custom\Get-GraphData -Uri 'https://graph.microsoft.com/v1.0/admin/sharepoint/settings' -Activity 'Fetching SharePoint tenant settings'
+            $sharePointSettingsResponse = Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/admin/sharepoint/settings' -Activity 'Fetching SharePoint tenant settings'
             $sharePointSettings = @($sharePointSettingsResponse | Select-Object -First 1)
             if ($sharePointSettings.Count -gt 0 -and $sharePointSettings[0]) {
                 $graphSharePointSettingsRetrieved = $true
@@ -16348,7 +16350,7 @@ function Update-TierBOperationalSummaries {
         Write-AssessmentConsoleSubstep -Message 'Tier B operational summaries: attempting beta SharePoint settings fallback for remaining fields' -ForegroundColor Yellow
         try {
             Write-Log -Type WARNING -Message "[Update-TierBOperationalSummaries] Some SharePoint tenant settings are not available from Graph v1.0 in this run. Attempting a best-effort beta fallback for the remaining fields." -ExportFileLocation $ExportDetails
-            $sharePointBetaSettingsResponse = Office365Custom\Get-GraphData -Uri 'https://graph.microsoft.com/beta/admin/sharepoint/settings' -Activity 'Fetching SharePoint tenant settings (beta best-effort fallback)'
+            $sharePointBetaSettingsResponse = Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/beta/admin/sharepoint/settings' -Activity 'Fetching SharePoint tenant settings (beta best-effort fallback)'
             $sharePointBetaSettings = @($sharePointBetaSettingsResponse | Select-Object -First 1)
             if ($sharePointBetaSettings.Count -gt 0 -and $sharePointBetaSettings[0]) {
                 $graphSharePointSettingsRetrieved = $true
