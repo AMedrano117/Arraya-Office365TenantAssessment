@@ -23,6 +23,8 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$SkipPermissionPreflight,
     [Parameter(Mandatory = $false)]
+    [switch]$UseExistingConnections,
+    [Parameter(Mandatory = $false)]
     [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
     [string]$AuthMode,
     [Parameter(Mandatory = $false)]
@@ -58,6 +60,7 @@ if ($PSBoundParameters.ContainsKey('StoreTenantStatsGlobal')) { $invokeParams.St
 if ($PSBoundParameters.ContainsKey('TenantStatsVariableName')) { $invokeParams.TenantStatsVariableName = $TenantStatsVariableName }
 if ($PSBoundParameters.ContainsKey('SkipAuth')) { $invokeParams.SkipAuth = $SkipAuth }
 if ($PSBoundParameters.ContainsKey('SkipPermissionPreflight')) { $invokeParams.SkipPermissionPreflight = $SkipPermissionPreflight }
+if ($PSBoundParameters.ContainsKey('UseExistingConnections')) { $invokeParams.UseExistingConnections = $UseExistingConnections }
 if ($PSBoundParameters.ContainsKey('AuthMode')) { $invokeParams.AuthMode = $AuthMode }
 if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $TenantId }
 if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
