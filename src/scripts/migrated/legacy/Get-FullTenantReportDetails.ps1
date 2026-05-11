@@ -1018,12 +1018,11 @@ function Write-AssessmentInteractiveAuthNotice {
         $fallbackParts.Add('device code') | Out-Null
     }
 
-    $message = "{0} sign-in: complete the prompt if one appears." -f $ServiceName
     if ($fallbackParts.Count -gt 0) {
         Write-Log -Type INFO -Message ("[{0} auth] Available fallback path(s): {1}" -f $ServiceName, ($fallbackParts -join ', ')) -ExportFileLocation $ExportDetails
     }
 
-    Write-AssessmentConsoleSubstep -Message $message
+    Write-Log -Type INFO -Message ("[{0} auth] Interactive prompt guidance: {1}." -f $ServiceName, $PromptDescription) -ExportFileLocation $ExportDetails
 }
 
 function Invoke-AssessmentExchangeDelegatedConnect {
@@ -1473,7 +1472,7 @@ function Connect-AssessmentGraph {
 
     $graphDetails = Get-AssessmentGraphOrganizationDetails
 
-    Write-Host 'Graph connected for assessment collection.' -ForegroundColor Green
+    Write-Host 'Microsoft Graph connected.' -ForegroundColor Green
     return [pscustomobject][ordered]@{
         Graph         = $true
         TenantName    = $graphDetails.TenantName
@@ -1561,7 +1560,7 @@ function Connect-AssessmentExchange {
         Invoke-AssessmentExchangeDelegatedConnect -BaseParameters $exchangeConnectParams -GraphAccount $graphAccount
     }
 
-    Write-Host 'Exchange Online connected for assessment collection.' -ForegroundColor Green
+    Write-Host 'Exchange Online connected.' -ForegroundColor Green
     return [pscustomobject]@{
         ExchangeOnline = $true
         Existing       = $false
@@ -1730,10 +1729,10 @@ function Connect-AssessmentSharePoint {
     }
 
     try {
-        Write-Host 'Connecting SharePoint admin...' -ForegroundColor Cyan
+        Write-Host 'Connecting SharePoint admin for full site inventory...' -ForegroundColor Cyan
         Write-AssessmentInteractiveAuthNotice -ServiceName 'SharePoint admin' -PromptDescription 'browser sign-in prompt should appear'
         Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
-        Write-Host 'SharePoint admin session connected.' -ForegroundColor Green
+        Write-Host 'SharePoint admin connected.' -ForegroundColor Green
         return [pscustomobject]@{
             SharePointOnline = $true
             Status           = 'Connected'
@@ -1744,10 +1743,11 @@ function Connect-AssessmentSharePoint {
     catch {
         $sharePointError = $_.Exception.Message
         $sharePointOperatorMessage = Get-AssessmentInteractiveTokenFailureOperatorMessage -ServiceName 'SharePoint admin interactive sign-in' -UnderlyingError $sharePointError
+        Write-Log -Type WARNING -Message "[Connect-AssessmentSharePoint] SharePoint admin connection unavailable; continuing with Graph/SPO fallback coverage. Underlying error: $sharePointError" -ExportFileLocation $ExportDetails
         return [pscustomobject]@{
             SharePointOnline = $false
             Status           = 'GraphFallback'
-            Message          = $(if (-not [string]::IsNullOrWhiteSpace($sharePointOperatorMessage)) { "$sharePointOperatorMessage Graph fallback remains active for SharePoint data in this run. Next step: Try Connect-SPOService manually in a fresh PowerShell window, or continue with Graph fallback." } else { $sharePointError })
+            Message          = $(if (-not [string]::IsNullOrWhiteSpace($sharePointOperatorMessage)) { "$sharePointOperatorMessage Continuing without the SharePoint admin session." } else { 'SharePoint admin connection was not available. Continuing without the SharePoint admin session.' })
         }
     }
 }
@@ -1803,10 +1803,11 @@ function Connect-AssessmentTeams {
     catch {
         $teamsError = $_.Exception.Message
         $teamsOperatorMessage = Get-AssessmentInteractiveTokenFailureOperatorMessage -ServiceName 'Teams interactive sign-in' -UnderlyingError $teamsError
+        Write-Log -Type WARNING -Message "[Connect-AssessmentTeams] Teams PowerShell connection unavailable; continuing with Graph-only Teams coverage. Underlying error: $teamsError" -ExportFileLocation $ExportDetails
         return [pscustomobject]@{
             Teams   = $false
             Status  = 'GraphOnly'
-            Message = $(if (-not [string]::IsNullOrWhiteSpace($teamsOperatorMessage)) { "$teamsOperatorMessage Graph-only Teams collection remains active for this run. Next step: Try Connect-MicrosoftTeams manually in a fresh PowerShell window, or continue with Graph-only collection." } else { $teamsError })
+            Message = $(if (-not [string]::IsNullOrWhiteSpace($teamsOperatorMessage)) { "$teamsOperatorMessage Continuing with Graph-only Teams coverage." } else { 'Teams PowerShell connection was not available. Continuing with Graph-only Teams coverage.' })
         }
     }
 }
@@ -1824,7 +1825,7 @@ function Connect-AssessmentPurview {
         throw $purviewMessage
     }
 
-    Write-Host 'Purview compliance session ready for assessment collection.' -ForegroundColor Green
+    Write-Host 'Purview compliance connected.' -ForegroundColor Green
     return [pscustomobject]@{
         PurviewCmdletsAvailable = [bool](Test-AssessmentPurviewCmdletsAvailable)
     }
@@ -1963,8 +1964,7 @@ function Initialize-AssessmentAuthentication {
         Teams                    = $false
     }
 
-    Write-Host ("Assessment login mode: {0}" -f $WorkloadPlan.AuthenticationType) -ForegroundColor Cyan
-    Write-Host ("Required auth workloads: {0}" -f ($WorkloadPlan.RequiredWorkloads -join ', ')) -ForegroundColor DarkGray
+    Write-Host ("Authentication mode: {0}" -f $WorkloadPlan.AuthenticationType) -ForegroundColor Cyan
     if ($SkipPermissionPreflight) {
         Write-Host 'Workload preflight skipped by request. Collection will continue and may fail later where access is missing.' -ForegroundColor Yellow
     }
@@ -1987,7 +1987,7 @@ function Initialize-AssessmentAuthentication {
         $connectExchangeFirst = ([string]$WorkloadPlan.AuthenticationType -eq 'Interactive')
 
         if ($connectExchangeFirst) {
-            Write-Host 'Interactive sign-in sequence: Exchange Online, Purview, then Microsoft Graph.' -ForegroundColor DarkGray
+            Write-Host 'Sign-in sequence: Exchange Online, Purview, Microsoft Graph. SharePoint admin and Teams may be requested only for richer PowerShell-backed inventory.' -ForegroundColor DarkGray
 
             $exchangeResult = Connect-AssessmentExchange -AuthenticationType $WorkloadPlan.AuthenticationType -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -InitialDomain $authResult.InitialDomain
             $authResult.ExchangeOnline = [bool]$exchangeResult.ExchangeOnline
@@ -2084,7 +2084,7 @@ function Initialize-AssessmentAuthentication {
             'Connected' { $authResult.ConnectedWorkloads += 'SharePointOnline' }
             'GraphFallback' {
                 if ($authResult.FallbackWorkloads -notcontains 'SharePointOnline') { $authResult.FallbackWorkloads += 'SharePointOnline' }
-                Write-Host ("SharePoint auth: Graph fallback active. {0}" -f $sharePointResult.Message) -ForegroundColor DarkGray
+                Write-Host 'SharePoint admin unavailable; continuing with Graph/SPO fallback coverage. Full site inventory may be limited.' -ForegroundColor Yellow
             }
             default {
                 $authResult.SkippedWorkloads += 'SharePointOnline'
@@ -2103,7 +2103,7 @@ function Initialize-AssessmentAuthentication {
             'Connected' { $authResult.ConnectedWorkloads += 'Teams' }
             'GraphOnly' {
                 if ($authResult.FallbackWorkloads -notcontains 'Teams') { $authResult.FallbackWorkloads += 'Teams' }
-                Write-Host ("Teams auth: Graph-only path active. {0}" -f $teamsResult.Message) -ForegroundColor DarkGray
+                Write-Host 'Teams PowerShell unavailable; continuing with Graph-only Teams coverage.' -ForegroundColor Yellow
             }
             default {
                 $authResult.SkippedWorkloads += 'Teams'
@@ -2357,8 +2357,10 @@ function Invoke-AssessmentPermissionPreflightWithStatus {
         default { $Workload }
     }
 
-    Write-Host ("Checking {0} access..." -f $workloadLabel) -ForegroundColor DarkCyan
-    Test-AssessmentPermissionPreflight -ConnectionResult $ConnectionResult -Workload $Workload
+    $preflightSummary = Test-AssessmentPermissionPreflight -ConnectionResult $ConnectionResult -Workload $Workload
+    if ($preflightSummary) {
+        Write-Host ("{0} access OK ({1} checks)." -f $workloadLabel, $preflightSummary.SuccessfulCount) -ForegroundColor Green
+    }
 }
 
 function Write-ConnectionPreflightSummary {
@@ -5217,7 +5219,6 @@ function Test-AssessmentPermissionPreflight {
 
     $preflightSummary = & $formatPreflightSummary $summaryLabel ($preflightProgressTotal - ($permissionFailures.Count + $permissionWarnings.Count)) $permissionFailures.Count $permissionWarnings.Count
 
-    Write-Host $preflightSummary.SummaryText -ForegroundColor Cyan
     Write-Log -Type INFO -Message $preflightSummary.SummaryText -ExportFileLocation $ExportDetails
 
     if ($permissionFailures.Count -gt 0) {
@@ -5267,6 +5268,7 @@ function Test-AssessmentPermissionPreflight {
     }
 
     Write-Log -Type INFO -Message ('[PermissionPreflight] Required Graph, Exchange Online, and supported governance access checks passed. ' + $preflightSummary.SummaryText) -ExportFileLocation $ExportDetails
+    return $preflightSummary
 }
 
 function Get-CurrentProcessMemorySnapshot {
