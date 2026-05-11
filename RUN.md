@@ -311,6 +311,32 @@ Collect data only and let the run continue even if some startup permission check
   -SkipPermissionPreflight
 ```
 
+Run a targeted collector section for live validation. Targeted runs still use the selected output profile's normal connection and permission requirements; the switches only reduce which collector steps execute.
+
+```powershell
+Import-Module .\src\modules\Arraya.M365.AssessmentRunner\Arraya.M365.AssessmentRunner.psd1 -Force
+
+Invoke-M365TenantDataCollection `
+  -OutputProfile SolutionsEngineer `
+  -ExportPath .\output\live-validation\collection-collaboration `
+  -UseExistingConnections `
+  -CollectorSection Collaboration
+```
+
+Run only the SharePoint/OneDrive site inventory collector:
+
+```powershell
+Import-Module .\src\modules\Arraya.M365.AssessmentRunner\Arraya.M365.AssessmentRunner.psd1 -Force
+
+Invoke-M365TenantDataCollection `
+  -OutputProfile SolutionsEngineer `
+  -ExportPath .\output\live-validation\sharepoint-only `
+  -UseExistingConnections `
+  -CollectorStep 'SharePoint/OneDrive sites'
+```
+
+Supported `-CollectorSection` values are `Tenant Overview`, `Identity`, `Exchange`, `Collaboration`, `Endpoint`, and `Governance`. `-CollectorStep` accepts the full displayed step name or a stable prefix, such as `SharePoint/OneDrive sites`.
+
 The following actions prompt you for additional inputs at runtime:
 
 - `M365Export`: asks for the saved JSON snapshot path.

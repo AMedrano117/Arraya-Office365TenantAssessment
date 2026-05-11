@@ -165,6 +165,11 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$UseExistingConnections,
     [Parameter(Mandatory = $false)]
+    [ValidateSet('Tenant Overview', 'Identity', 'Exchange', 'Collaboration', 'Endpoint', 'Governance')]
+    [string[]]$CollectorSection,
+    [Parameter(Mandatory = $false)]
+    [string[]]$CollectorStep,
+    [Parameter(Mandatory = $false)]
     [switch]$ExportOnly,
     [Parameter(Mandatory = $false)]
     [string]$TenantStatsJsonPath
@@ -594,6 +599,10 @@ function Resolve-AssessmentProfileCollectionPlan {
 
     if (-not $IsMergedOutputProfileSelection) {
         switch ($OutputProfile) {
+            'SolutionsEngineer' {
+                $plan.CollectEmailActivityDetails = $true
+                $plan.CollectGovernanceCompliancePolicies = $true
+            }
             'ExecutiveLevel' {
                 $plan.CollectExchangeRecipients = $false
                 $plan.CollectEmailActivityDetails = $true
@@ -648,6 +657,62 @@ function Resolve-AssessmentGraphScopePlan {
         NeedsSecureScore    = [bool]$ProfileCollectionPlan.CollectSecuritySecureScore
         NeedsReportsData    = [bool]$ProfileCollectionPlan.CollectEmailActivityDetails
     }
+}
+
+function Get-AssessmentGraphScopePlanFlag {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [object]$GraphScopePlan,
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $false)]
+        [bool]$Default = $true
+    )
+
+    if (-not $GraphScopePlan) {
+        return $Default
+    }
+
+    if ($GraphScopePlan -is [System.Collections.IDictionary]) {
+        if ($GraphScopePlan.Contains($Name)) {
+            return [bool]$GraphScopePlan[$Name]
+        }
+        return $Default
+    }
+
+    if ($GraphScopePlan.PSObject.Properties[$Name]) {
+        return [bool]$GraphScopePlan.$Name
+    }
+
+    return $Default
+}
+
+function Get-AssessmentMissingGraphDelegatedScopes {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [object]$GraphContext,
+        [Parameter(Mandatory = $false)]
+        [pscustomobject]$WorkloadPlan
+    )
+
+    if (-not $GraphContext) {
+        return @()
+    }
+
+    $grantedScopes = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($scope in @($GraphContext.Scopes)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$scope)) {
+            $null = $grantedScopes.Add(([string]$scope).Trim())
+        }
+    }
+
+    return @(
+        Get-AssessmentGraphDelegatedScopes -WorkloadPlan $WorkloadPlan |
+            Where-Object { -not (Test-AssessmentGraphScopeSatisfied -GrantedScopes $grantedScopes -RequiredScope ([string]$_)) } |
+            Select-Object -Unique
+    )
 }
 
 function Resolve-AssessmentRequestedAuthMode {
@@ -787,12 +852,12 @@ function Get-AssessmentGraphDelegatedScopes {
     $needsSecureScore = $true
     $needsReportsData = $true
     if ($graphScopePlan) {
-        $needsSharePointData = [bool]$graphScopePlan.NeedsSharePointData
-        $needsTeamsInventory = [bool]$graphScopePlan.NeedsTeamsInventory
-        $needsTeamsVoice = [bool]$graphScopePlan.NeedsTeamsVoice
-        $needsDeviceData = [bool]$graphScopePlan.NeedsDeviceData
-        $needsSecureScore = [bool]$graphScopePlan.NeedsSecureScore
-        $needsReportsData = [bool]$graphScopePlan.NeedsReportsData
+        $needsSharePointData = Get-AssessmentGraphScopePlanFlag -GraphScopePlan $graphScopePlan -Name 'NeedsSharePointData' -Default $true
+        $needsTeamsInventory = Get-AssessmentGraphScopePlanFlag -GraphScopePlan $graphScopePlan -Name 'NeedsTeamsInventory' -Default $false
+        $needsTeamsVoice = Get-AssessmentGraphScopePlanFlag -GraphScopePlan $graphScopePlan -Name 'NeedsTeamsVoice' -Default $false
+        $needsDeviceData = Get-AssessmentGraphScopePlanFlag -GraphScopePlan $graphScopePlan -Name 'NeedsDeviceData' -Default $true
+        $needsSecureScore = Get-AssessmentGraphScopePlanFlag -GraphScopePlan $graphScopePlan -Name 'NeedsSecureScore' -Default $true
+        $needsReportsData = Get-AssessmentGraphScopePlanFlag -GraphScopePlan $graphScopePlan -Name 'NeedsReportsData' -Default $true
     }
 
     if ($needsDeviceData) {
@@ -868,15 +933,9 @@ function Resolve-AssessmentAuthWorkloadPlan {
     )
 
     if ($GraphScopePlan) {
-        if ($GraphScopePlan.PSObject.Properties['NeedsSharePointData']) {
-            $NeedsSharePointData = [bool]$GraphScopePlan.NeedsSharePointData
-        }
-        if ($GraphScopePlan.PSObject.Properties['NeedsTeamsInventory']) {
-            $NeedsTeamsInventory = [bool]$GraphScopePlan.NeedsTeamsInventory
-        }
-        if ($GraphScopePlan.PSObject.Properties['NeedsTeamsVoice']) {
-            $NeedsTeamsVoice = [bool]$GraphScopePlan.NeedsTeamsVoice
-        }
+        $NeedsSharePointData = Get-AssessmentGraphScopePlanFlag -GraphScopePlan $GraphScopePlan -Name 'NeedsSharePointData' -Default $NeedsSharePointData
+        $NeedsTeamsInventory = Get-AssessmentGraphScopePlanFlag -GraphScopePlan $GraphScopePlan -Name 'NeedsTeamsInventory' -Default $NeedsTeamsInventory
+        $NeedsTeamsVoice = Get-AssessmentGraphScopePlanFlag -GraphScopePlan $GraphScopePlan -Name 'NeedsTeamsVoice' -Default $NeedsTeamsVoice
     }
 
     $requiredWorkloads = New-Object System.Collections.Generic.List[string]
@@ -920,9 +979,9 @@ function Resolve-AssessmentAuthWorkloadPlan {
             NeedsSharePointData = [bool]$NeedsSharePointData
             NeedsTeamsInventory = [bool]$NeedsTeamsInventory
             NeedsTeamsVoice     = [bool]$NeedsTeamsVoice
-            NeedsDeviceData     = if ($GraphScopePlan -and $GraphScopePlan.PSObject.Properties['NeedsDeviceData']) { [bool]$GraphScopePlan.NeedsDeviceData } else { $true }
-            NeedsSecureScore    = if ($GraphScopePlan -and $GraphScopePlan.PSObject.Properties['NeedsSecureScore']) { [bool]$GraphScopePlan.NeedsSecureScore } else { $true }
-            NeedsReportsData    = if ($GraphScopePlan -and $GraphScopePlan.PSObject.Properties['NeedsReportsData']) { [bool]$GraphScopePlan.NeedsReportsData } else { $true }
+            NeedsDeviceData     = Get-AssessmentGraphScopePlanFlag -GraphScopePlan $GraphScopePlan -Name 'NeedsDeviceData' -Default $true
+            NeedsSecureScore    = Get-AssessmentGraphScopePlanFlag -GraphScopePlan $GraphScopePlan -Name 'NeedsSecureScore' -Default $true
+            NeedsReportsData    = Get-AssessmentGraphScopePlanFlag -GraphScopePlan $GraphScopePlan -Name 'NeedsReportsData' -Default $true
         }
         Workloads          = [ordered]@{
             Graph = [ordered]@{
@@ -1130,6 +1189,82 @@ function Test-AssessmentExchangeCmdletsAvailable {
     return ($hasExoMailboxCommand -and $hasUnifiedGroupCommand)
 }
 
+function Test-AssessmentExchangeSessionReady {
+    [CmdletBinding()]
+    param()
+
+    if (-not (Test-AssessmentExchangeCmdletsAvailable)) {
+        return $false
+    }
+
+    if (Get-Command -Name 'Get-ConnectionInformation' -ErrorAction SilentlyContinue) {
+        try {
+            $existingExchangeConnection = @(Get-ConnectionInformation -ErrorAction Stop | Select-Object -First 1)
+            if ($existingExchangeConnection.Count -gt 0) {
+                return $true
+            }
+        }
+        catch {}
+    }
+
+    if (Get-Command -Name 'Get-OrganizationConfig' -ErrorAction SilentlyContinue) {
+        try {
+            $null = Get-OrganizationConfig -ErrorAction Stop
+            return $true
+        }
+        catch {}
+    }
+
+    return $false
+}
+
+function Get-AssessmentExchangeSessionDetails {
+    [CmdletBinding()]
+    param()
+
+    $connectionInfo = $null
+    if (Get-Command -Name 'Get-ConnectionInformation' -ErrorAction SilentlyContinue) {
+        try {
+            $connectionInfo = @(Get-ConnectionInformation -ErrorAction Stop | Select-Object -First 1)
+            if ($connectionInfo.Count -gt 0) {
+                $connectionInfo = $connectionInfo[0]
+            }
+            else {
+                $connectionInfo = $null
+            }
+        }
+        catch {}
+    }
+
+    $organizationConfig = $null
+    if (Get-Command -Name 'Get-OrganizationConfig' -ErrorAction SilentlyContinue) {
+        try {
+            $organizationConfig = Get-OrganizationConfig -ErrorAction Stop
+        }
+        catch {}
+    }
+
+    $connectionName = if ($connectionInfo) { [string](Get-ArrayaObjectValue -Object $connectionInfo -Names @('Name', 'ConnectionName')) } else { $null }
+    $organization = if ($connectionInfo) { [string](Get-ArrayaObjectValue -Object $connectionInfo -Names @('Organization', 'Tenant', 'OrganizationName')) } else { $null }
+    if ([string]::IsNullOrWhiteSpace($organization) -and $organizationConfig) {
+        $organization = [string](Get-ArrayaObjectValue -Object $organizationConfig -Names @('DisplayName', 'Name'))
+    }
+    $tenantIdValue = if ($connectionInfo) { [string](Get-ArrayaObjectValue -Object $connectionInfo -Names @('TenantId', 'TenantID', 'TenantGuid')) } else { $null }
+    if ([string]::IsNullOrWhiteSpace($tenantIdValue) -and $organizationConfig) {
+        $tenantIdValue = [string](Get-ArrayaObjectValue -Object $organizationConfig -Names @('Guid', 'ExternalDirectoryOrganizationId'))
+    }
+    $account = if ($connectionInfo) { [string](Get-ArrayaObjectValue -Object $connectionInfo -Names @('UserPrincipalName', 'UserPrincipalNameOrCertificate', 'Account')) } else { $null }
+
+    return [pscustomobject][ordered]@{
+        Service       = 'Exchange Online'
+        TenantName    = $organization
+        TenantId      = $tenantIdValue
+        InitialDomain = $null
+        Account       = $account
+        Connection    = $connectionName
+    }
+}
+
 function Test-AssessmentPurviewCmdletsAvailable {
     [CmdletBinding()]
     param()
@@ -1283,6 +1418,132 @@ function Assert-AssessmentGraphContextMatchesTenant {
     return $graphDetails
 }
 
+function Disconnect-AssessmentExistingSessions {
+    [CmdletBinding()]
+    param()
+
+    Write-Host 'Disconnecting current Microsoft 365 PowerShell sessions...' -ForegroundColor Yellow
+
+    if (Get-Command -Name 'Disconnect-MgGraph' -ErrorAction SilentlyContinue) {
+        try {
+            Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
+            Write-AssessmentConsoleSubstep -Message 'Microsoft Graph: disconnected' -ForegroundColor 'DarkGray'
+        }
+        catch {}
+    }
+
+    if (Get-Command -Name 'Disconnect-SPOService' -ErrorAction SilentlyContinue) {
+        try {
+            Disconnect-SPOService -ErrorAction SilentlyContinue
+            Write-AssessmentConsoleSubstep -Message 'SharePoint admin: disconnected' -ForegroundColor 'DarkGray'
+        }
+        catch {}
+    }
+
+    if (Get-Command -Name 'Disconnect-MicrosoftTeams' -ErrorAction SilentlyContinue) {
+        try {
+            Disconnect-MicrosoftTeams -ErrorAction SilentlyContinue | Out-Null
+            Write-AssessmentConsoleSubstep -Message 'Teams PowerShell: disconnected' -ForegroundColor 'DarkGray'
+        }
+        catch {}
+    }
+
+    if (Get-Command -Name 'Disconnect-ExchangeOnline' -ErrorAction SilentlyContinue) {
+        try {
+            Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+            Write-AssessmentConsoleSubstep -Message 'Exchange Online and Purview compliance PowerShell: disconnected' -ForegroundColor 'DarkGray'
+        }
+        catch {}
+    }
+
+    try {
+        $exchangeSessions = @(
+            Get-PSSession -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.ConfigurationName -eq 'Microsoft.Exchange' -or
+                    $_.Name -like 'ExchangeOnline*' -or
+                    $_.ComputerName -like '*.outlook.com'
+                }
+        )
+        if ($exchangeSessions.Count -gt 0) {
+            $exchangeSessions | Remove-PSSession -ErrorAction SilentlyContinue
+            Write-AssessmentConsoleSubstep -Message ('Exchange-backed remote session cleanup: removed {0} session(s)' -f $exchangeSessions.Count) -ForegroundColor 'DarkGray'
+        }
+    }
+    catch {}
+}
+
+function Write-AssessmentGraphTenantDetails {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [object]$GraphTenantDetails,
+        [Parameter(Mandatory = $false)]
+        [string]$Heading = 'Microsoft Graph tenant'
+    )
+
+    if (-not $GraphTenantDetails) {
+        Write-Host ("{0}: tenant details were not returned by Microsoft Graph." -f $Heading) -ForegroundColor Yellow
+        return
+    }
+
+    $tenantName = if ($GraphTenantDetails.PSObject.Properties['TenantName'] -and -not [string]::IsNullOrWhiteSpace([string]$GraphTenantDetails.TenantName)) {
+        [string]$GraphTenantDetails.TenantName
+    }
+    else {
+        '(name not returned)'
+    }
+    $tenantIdValue = if ($GraphTenantDetails.PSObject.Properties['TenantId'] -and -not [string]::IsNullOrWhiteSpace([string]$GraphTenantDetails.TenantId)) {
+        [string]$GraphTenantDetails.TenantId
+    }
+    else {
+        '(tenant id not returned)'
+    }
+    $initialDomainValue = if ($GraphTenantDetails.PSObject.Properties['InitialDomain'] -and -not [string]::IsNullOrWhiteSpace([string]$GraphTenantDetails.InitialDomain)) {
+        [string]$GraphTenantDetails.InitialDomain
+    }
+    else {
+        '(initial domain not returned)'
+    }
+
+    Write-Host ("{0}:" -f $Heading) -ForegroundColor Cyan
+    Write-Host ("  Tenant name: {0}" -f $tenantName) -ForegroundColor DarkGray
+    Write-Host ("  Tenant ID: {0}" -f $tenantIdValue) -ForegroundColor DarkGray
+    Write-Host ("  Initial domain: {0}" -f $initialDomainValue) -ForegroundColor DarkGray
+}
+
+function Confirm-AssessmentExistingGraphTenant {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [object]$GraphTenantDetails,
+        [Parameter(Mandatory = $false)]
+        [string]$ModeLabel = 'UseExistingConnections'
+    )
+
+    if (-not $GraphTenantDetails) {
+        return
+    }
+
+    Write-Host ''
+    Write-AssessmentGraphTenantDetails -GraphTenantDetails $GraphTenantDetails -Heading 'Existing Microsoft Graph tenant detected'
+    Write-Host 'The collector will use this Graph tenant together with the current Exchange, SharePoint, Teams, and Purview sessions.' -ForegroundColor Yellow
+
+    while ($true) {
+        $confirmation = Read-Host ("Continue {0} with this tenant? Type Y to continue or N to disconnect all current sessions" -f $ModeLabel)
+        if ($confirmation -match '^(?i:y|yes)$') {
+            return
+        }
+
+        if ($confirmation -match '^(?i:n|no)$') {
+            Disconnect-AssessmentExistingSessions
+            throw ("{0} cancelled before collection because the detected Microsoft Graph tenant was rejected. Current Microsoft 365 sessions were disconnected. Reconnect to the intended tenant, or pass -TenantId to require an exact tenant match." -f $ModeLabel)
+        }
+
+        Write-Host 'Enter Y to continue with this tenant, or N to disconnect current sessions and stop.' -ForegroundColor Yellow
+    }
+}
+
 function Get-AssessmentExistingExchangeConnectionLabel {
     [CmdletBinding()]
     param()
@@ -1378,6 +1639,27 @@ function Assert-AssessmentExchangeSessionMatchesTenant {
     return $validationDomain
 }
 
+function Test-AssessmentGraphScopeSatisfied {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Collections.Generic.HashSet[string]]$GrantedScopes,
+        [Parameter(Mandatory = $true)]
+        [string]$RequiredScope
+    )
+
+    if ($GrantedScopes.Contains($RequiredScope)) {
+        return $true
+    }
+
+    switch -Regex ($RequiredScope) {
+        '^Sites\.Read\.All$' { return $GrantedScopes.Contains('Sites.ReadWrite.All') }
+        '^Application\.Read\.All$' { return $GrantedScopes.Contains('Application.ReadWrite.All') }
+        '^RoleManagement\.Read\.Directory$' { return $GrantedScopes.Contains('RoleManagement.ReadWrite.Directory') }
+        default { return $false }
+    }
+}
+
 function Connect-AssessmentGraph {
     [CmdletBinding()]
     param(
@@ -1402,16 +1684,42 @@ function Connect-AssessmentGraph {
 
     $existing = Get-MgContext -ErrorAction SilentlyContinue
     if ($existing) {
+        $requestedGraphScopesForReuse = @(Get-AssessmentGraphDelegatedScopes -WorkloadPlan $WorkloadPlan)
+        if ($AuthenticationType -eq 'Interactive' -and $requestedGraphScopesForReuse.Count -gt 0) {
+            $currentGraphScopeSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            foreach ($scope in @($existing.Scopes)) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$scope)) {
+                    $null = $currentGraphScopeSet.Add(([string]$scope).Trim())
+                }
+            }
+
+            $missingGraphScopesForReuse = @(
+                $requestedGraphScopesForReuse |
+                    Where-Object { -not (Test-AssessmentGraphScopeSatisfied -GrantedScopes $currentGraphScopeSet -RequiredScope ([string]$_)) }
+            )
+
+            if ($missingGraphScopesForReuse.Count -gt 0 -and (Get-Command -Name 'Disconnect-MgGraph' -ErrorAction SilentlyContinue)) {
+                Write-Host ("Microsoft Graph already connected, but the current token is missing required scope(s): {0}" -f ($missingGraphScopesForReuse -join ', ')) -ForegroundColor Yellow
+                Write-Host 'Reconnecting Microsoft Graph so the assessment can request the missing scope(s).' -ForegroundColor Yellow
+                Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
+                $existing = $null
+            }
+        }
+    }
+
+    if ($existing) {
         $graphDetails = Assert-AssessmentGraphContextMatchesTenant -TenantId $TenantId -ServiceName 'Microsoft Graph session reuse'
-        Write-Host "Graph already connected for this session." -ForegroundColor Green
+        Write-Host "Microsoft Graph already connected; reusing the current Graph session." -ForegroundColor Green
         if ($AuthenticationType -eq 'Interactive') {
-            Write-Host "Interactive Graph auth is reusing the current Microsoft Graph session. If permission preflight fails even after admin consent, run Disconnect-MgGraph and re-run the assessment to request a fresh token with the assessment scopes." -ForegroundColor Yellow
+            Write-Host "Graph token reuse note: if scope preflight fails after admin consent, run Disconnect-MgGraph and reconnect." -ForegroundColor Yellow
         }
 
         return [pscustomobject][ordered]@{
             Graph         = $true
             TenantName    = $graphDetails.TenantName
+            TenantId      = $graphDetails.TenantId
             InitialDomain = $graphDetails.InitialDomain
+            TenantDetails = $graphDetails
             Existing      = $true
         }
     }
@@ -1483,7 +1791,9 @@ function Connect-AssessmentGraph {
     return [pscustomobject][ordered]@{
         Graph         = $true
         TenantName    = $graphDetails.TenantName
+        TenantId      = $graphDetails.TenantId
         InitialDomain = $graphDetails.InitialDomain
+        TenantDetails = $graphDetails
         Existing      = $false
     }
 }
@@ -1530,6 +1840,7 @@ function Connect-AssessmentExchange {
         return [pscustomobject]@{
             ExchangeOnline = $true
             Existing       = $true
+            TenantDetails  = Get-AssessmentExchangeSessionDetails
         }
     }
 
@@ -1571,6 +1882,7 @@ function Connect-AssessmentExchange {
     return [pscustomobject]@{
         ExchangeOnline = $true
         Existing       = $false
+        TenantDetails  = Get-AssessmentExchangeSessionDetails
     }
 }
 
@@ -1612,6 +1924,49 @@ function Test-AssessmentSharePointSessionReady {
     }
     catch {
         return $false
+    }
+}
+
+function Get-AssessmentSharePointSessionDetails {
+    [CmdletBinding()]
+    param()
+
+    if (-not (Ensure-AssessmentSharePointModuleAvailable)) {
+        return $null
+    }
+
+    if (-not (Get-Command -Name 'Get-SPOTenant' -ErrorAction SilentlyContinue)) {
+        return $null
+    }
+
+    $tenant = $null
+    try {
+        $tenant = Get-SPOTenant -ErrorAction Stop
+    }
+    catch {
+        return $null
+    }
+
+    $tenantIdValue = [string](Get-ArrayaObjectValue -Object $tenant -Names @('TenantInstanceId', 'TenantId', 'TenantID'))
+    $rootSiteUrl = [string](Get-ArrayaObjectValue -Object $tenant -Names @('RootSiteUrl', 'RootSite'))
+    $mySiteHostUrl = [string](Get-ArrayaObjectValue -Object $tenant -Names @('MySiteHostUrl', 'OneDriveForBusinessHostUrl'))
+    $tenantName = [string](Get-ArrayaObjectValue -Object $tenant -Names @('DisplayName', 'Name'))
+    if ([string]::IsNullOrWhiteSpace($tenantName) -and -not [string]::IsNullOrWhiteSpace($rootSiteUrl)) {
+        try {
+            $tenantName = ([System.Uri]$rootSiteUrl).Host
+        }
+        catch {
+            $tenantName = $rootSiteUrl
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        Service       = 'SharePoint Online'
+        TenantName    = $tenantName
+        TenantId      = $tenantIdValue
+        InitialDomain = $null
+        Account       = $null
+        Connection    = $(if (-not [string]::IsNullOrWhiteSpace($rootSiteUrl)) { $rootSiteUrl } else { $mySiteHostUrl })
     }
 }
 
@@ -1716,6 +2071,7 @@ function Connect-AssessmentSharePoint {
         }
     }
 
+    Write-Host 'Checking existing SharePoint admin connection...' -ForegroundColor Cyan
     if (Test-AssessmentSharePointSessionReady) {
         Write-Host 'SharePoint admin already connected for this session.' -ForegroundColor Green
         return [pscustomobject]@{
@@ -1723,6 +2079,7 @@ function Connect-AssessmentSharePoint {
             Status           = 'Connected'
             Message          = 'Reusing existing SharePoint Online admin PowerShell session.'
             Existing         = $true
+            TenantDetails    = Get-AssessmentSharePointSessionDetails
         }
     }
 
@@ -1745,6 +2102,7 @@ function Connect-AssessmentSharePoint {
             Status           = 'Connected'
             Message          = 'Connected to SharePoint Online admin PowerShell.'
             Existing         = $false
+            TenantDetails    = Get-AssessmentSharePointSessionDetails
         }
     }
     catch {
@@ -1846,7 +2204,9 @@ function Test-AssessmentExistingSessions {
         [Parameter(Mandatory = $false)]
         [string]$TenantId,
         [Parameter(Mandatory = $false)]
-        [string]$ModeLabel = 'SkipAuth'
+        [string]$ModeLabel = 'SkipAuth',
+        [Parameter(Mandatory = $false)]
+        [switch]$ConfirmTenantSelection
     )
 
     $connectedWorkloads = New-Object System.Collections.Generic.List[string]
@@ -1865,33 +2225,56 @@ function Test-AssessmentExistingSessions {
         'Run Invoke-M365TenantConnectionPreflight first, or connect Purview compliance PowerShell manually and confirm Get-RetentionCompliancePolicy and Get-DlpCompliancePolicy work.'
     }
 
+    Write-AssessmentConsoleSubstep -Message 'Graph: checking current Microsoft Graph context'
     $existingGraphContext = Get-MgContext -ErrorAction SilentlyContinue
     if (-not $existingGraphContext) {
         throw ("{0} was requested, but no existing Microsoft Graph session was found. {1}" -f $ModeLabel, $connectionRecoveryMessage)
     }
-    $graphTenantDetails = Assert-AssessmentGraphContextMatchesTenant -TenantId $TenantId -ServiceName "$ModeLabel session reuse"
+    $missingGraphScopes = @(Get-AssessmentMissingGraphDelegatedScopes -GraphContext $existingGraphContext -WorkloadPlan $WorkloadPlan)
+    if ($missingGraphScopes.Count -gt 0) {
+        throw ("{0} was requested, but the current Microsoft Graph token is missing required scope(s): {1}. Run Disconnect-MgGraph, then Invoke-M365TenantConnectionPreflight so Graph can request the missing scope(s)." -f $ModeLabel, ($missingGraphScopes -join ', '))
+    }
+    $hasExplicitTenantId = -not [string]::IsNullOrWhiteSpace($TenantId)
+    $graphTenantDetails = if ($hasExplicitTenantId) {
+        Assert-AssessmentGraphContextMatchesTenant -TenantId $TenantId -ServiceName "$ModeLabel session reuse"
+    }
+    else {
+        Get-AssessmentGraphOrganizationDetails
+    }
+    if ($ConfirmTenantSelection -and -not $hasExplicitTenantId) {
+        Confirm-AssessmentExistingGraphTenant -GraphTenantDetails $graphTenantDetails -ModeLabel $ModeLabel
+    }
     $connectedWorkloads.Add('Graph') | Out-Null
 
-    if (-not (Test-AssessmentExchangeCmdletsAvailable)) {
-        throw ("{0} was requested, but Exchange Online cmdlets are not available in the current session. {1}" -f $ModeLabel, $connectionRecoveryMessage)
+    Write-AssessmentConsoleSubstep -Message 'Exchange Online: checking current PowerShell session'
+    if (-not (Test-AssessmentExchangeSessionReady)) {
+        throw ("{0} was requested, but an existing Exchange Online session was not usable in the current session. Exchange Online cmdlets are not available or the current session did not answer a lightweight organization check. {1}" -f $ModeLabel, $connectionRecoveryMessage)
     }
-    $validationDomain = if ($graphTenantDetails) { [string]$graphTenantDetails.InitialDomain } else { $null }
-    if (-not [string]::IsNullOrWhiteSpace($TenantId) -or -not [string]::IsNullOrWhiteSpace($validationDomain)) {
+    $validationDomain = if ($hasExplicitTenantId -and $graphTenantDetails) { [string]$graphTenantDetails.InitialDomain } else { $null }
+    if ($hasExplicitTenantId) {
         Assert-AssessmentExchangeSessionMatchesTenant -InitialDomain $validationDomain -TenantId $TenantId -ServiceName "$ModeLabel session reuse" | Out-Null
+    }
+    elseif ([string]::Equals($ModeLabel, 'UseExistingConnections', [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-AssessmentConsoleSubstep -Message 'Tenant validation: no -TenantId supplied; using the current shell sessions as connected'
     }
     $connectedWorkloads.Add('ExchangeOnline') | Out-Null
 
     if ($WorkloadPlan.Workloads.PurviewCompliance.Required) {
+        Write-AssessmentConsoleSubstep -Message 'Purview compliance: checking current PowerShell session'
         if (-not (Test-AssessmentPurviewSessionReady -ProbeCommands)) {
             throw ("{0} was requested, but Purview compliance session is not usable in the current session. {1}" -f $ModeLabel, $purviewRecoveryMessage)
         }
-        $connectedWorkloads.Add('PurviewCompliance') | Out-Null
+        else {
+            $connectedWorkloads.Add('PurviewCompliance') | Out-Null
+        }
     }
     else {
+        Write-AssessmentConsoleSubstep -Message 'Purview compliance: not required by the selected output profile; skipping'
         $skippedWorkloads.Add('PurviewCompliance') | Out-Null
     }
 
     if ($WorkloadPlan.Workloads.SharePointOnline.Connect) {
+        Write-AssessmentConsoleSubstep -Message 'SharePoint admin: checking current PowerShell session before Graph fallback'
         if (Test-AssessmentSharePointSessionReady) {
             $connectedWorkloads.Add('SharePointOnline') | Out-Null
             $sharePointOnlineConnected = $true
@@ -1911,6 +2294,7 @@ function Test-AssessmentExistingSessions {
     }
 
     if ($WorkloadPlan.Workloads.Teams.Connect) {
+        Write-AssessmentConsoleSubstep -Message 'Teams PowerShell: checking current PowerShell session before Graph-only fallback'
         if (Test-AssessmentTeamsSessionReady -TenantId $TenantId) {
             $connectedWorkloads.Add('Teams') | Out-Null
             $teamsConnected = $true
@@ -1936,6 +2320,9 @@ function Test-AssessmentExistingSessions {
         SkippedWorkloads         = @($skippedWorkloads)
         FallbackWorkloads        = @($fallbackWorkloads)
         InitialDomain            = if ($graphTenantDetails) { $graphTenantDetails.InitialDomain } else { $null }
+        GraphTenantDetails       = $graphTenantDetails
+        ExchangeTenantDetails    = Get-AssessmentExchangeSessionDetails
+        SharePointTenantDetails  = $(if ($sharePointOnlineConnected) { Get-AssessmentSharePointSessionDetails } else { $null })
         Graph                    = $true
         GraphContextAvailable    = $true
         ExchangeOnline           = $true
@@ -1976,6 +2363,9 @@ function Initialize-AssessmentAuthentication {
         SkippedWorkloads         = @()
         FallbackWorkloads        = @($WorkloadPlan.FallbackWorkloads)
         InitialDomain            = $null
+        GraphTenantDetails       = $null
+        ExchangeTenantDetails    = $null
+        SharePointTenantDetails  = $null
         Graph                    = $false
         GraphContextAvailable    = $false
         ExchangeOnline           = $false
@@ -1986,6 +2376,9 @@ function Initialize-AssessmentAuthentication {
     }
 
     Write-Host ("Authentication mode: {0}" -f $WorkloadPlan.AuthenticationType) -ForegroundColor Cyan
+    if (-not $SkipAuth) {
+        Write-Host 'Connection mode: connect/preflight; existing sessions may be reused.' -ForegroundColor Cyan
+    }
     if ($SkipPermissionPreflight) {
         Write-Host 'Workload preflight skipped by request. Collection will continue and may fail later where access is missing.' -ForegroundColor Yellow
     }
@@ -2008,11 +2401,10 @@ function Initialize-AssessmentAuthentication {
         $connectExchangeFirst = ([string]$WorkloadPlan.AuthenticationType -eq 'Interactive')
 
         if ($connectExchangeFirst) {
-            Write-Host 'Sign-in sequence: Exchange Online, Purview, Microsoft Graph. SharePoint admin and Teams may be requested only for richer PowerShell-backed inventory.' -ForegroundColor DarkGray
-
             $exchangeResult = Connect-AssessmentExchange -AuthenticationType $WorkloadPlan.AuthenticationType -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -InitialDomain $authResult.InitialDomain
             $authResult.ExchangeOnline = [bool]$exchangeResult.ExchangeOnline
             $authResult.ExchangeCmdletsAvailable = [bool](Test-AssessmentExchangeCmdletsAvailable)
+            $authResult.ExchangeTenantDetails = $exchangeResult.TenantDetails
             $authResult.ConnectedWorkloads += 'ExchangeOnline'
             if (-not $SkipPermissionPreflight) {
                 Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult ([pscustomobject]$authResult) -Workload ExchangeOnline
@@ -2034,6 +2426,7 @@ function Initialize-AssessmentAuthentication {
             $authResult.Graph = [bool]$graphResult.Graph
             $authResult.GraphContextAvailable = [bool](Get-MgContext -ErrorAction SilentlyContinue)
             $authResult.InitialDomain = $graphResult.InitialDomain
+            $authResult.GraphTenantDetails = $graphResult.TenantDetails
             $authResult.ConnectedWorkloads += 'Graph'
             if (-not $SkipPermissionPreflight) {
                 Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult ([pscustomobject]$authResult) -Workload Graph
@@ -2044,6 +2437,7 @@ function Initialize-AssessmentAuthentication {
             $authResult.Graph = [bool]$graphResult.Graph
             $authResult.GraphContextAvailable = [bool](Get-MgContext -ErrorAction SilentlyContinue)
             $authResult.InitialDomain = $graphResult.InitialDomain
+            $authResult.GraphTenantDetails = $graphResult.TenantDetails
             $authResult.ConnectedWorkloads += 'Graph'
             if (-not $SkipPermissionPreflight) {
                 Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult ([pscustomobject]$authResult) -Workload Graph
@@ -2052,6 +2446,7 @@ function Initialize-AssessmentAuthentication {
             $exchangeResult = Connect-AssessmentExchange -AuthenticationType $WorkloadPlan.AuthenticationType -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -InitialDomain $authResult.InitialDomain
             $authResult.ExchangeOnline = [bool]$exchangeResult.ExchangeOnline
             $authResult.ExchangeCmdletsAvailable = [bool](Test-AssessmentExchangeCmdletsAvailable)
+            $authResult.ExchangeTenantDetails = $exchangeResult.TenantDetails
             $authResult.ConnectedWorkloads += 'ExchangeOnline'
             if (-not $SkipPermissionPreflight) {
                 Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult ([pscustomobject]$authResult) -Workload ExchangeOnline
@@ -2101,6 +2496,7 @@ function Initialize-AssessmentAuthentication {
     elseif ($WorkloadPlan.Workloads.SharePointOnline.Connect) {
         $sharePointResult = Connect-AssessmentSharePoint -AuthenticationType $WorkloadPlan.AuthenticationType -InitialDomain $authResult.InitialDomain
         $authResult.SharePointOnline = [bool]$sharePointResult.SharePointOnline
+        $authResult.SharePointTenantDetails = $sharePointResult.TenantDetails
         switch ($sharePointResult.Status) {
             'Connected' { $authResult.ConnectedWorkloads += 'SharePointOnline' }
             'GraphFallback' {
@@ -2358,6 +2754,11 @@ function Write-AssessmentConsoleSubstep {
         [string]$ForegroundColor = 'DarkCyan'
     )
 
+    if ($script:AssessmentProgressLinePending) {
+        Write-Host ''
+        $script:AssessmentProgressLinePending = $false
+    }
+
     Write-Host ("    > {0}" -f $Message) -ForegroundColor $ForegroundColor
 }
 
@@ -2397,11 +2798,52 @@ function Write-ConnectionPreflightSummary {
     $fallbackWorkloads = @($ConnectionResult.FallbackWorkloads | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
     $skippedWorkloads = @($ConnectionResult.SkippedWorkloads | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
 
+    $formatTenantSummary = {
+        param([object]$TenantDetails)
+
+        if (-not $TenantDetails) {
+            return 'not reported'
+        }
+
+        $parts = New-Object System.Collections.Generic.List[string]
+        $tenantName = [string](Get-ArrayaObjectValue -Object $TenantDetails -Names @('TenantName', 'Name', 'DisplayName'))
+        $tenantIdValue = [string](Get-ArrayaObjectValue -Object $TenantDetails -Names @('TenantId', 'TenantID', 'TenantInstanceId'))
+        $initialDomain = [string](Get-ArrayaObjectValue -Object $TenantDetails -Names @('InitialDomain', 'Domain'))
+        $connection = [string](Get-ArrayaObjectValue -Object $TenantDetails -Names @('Connection', 'RootSiteUrl', 'ConnectionUri'))
+        $account = [string](Get-ArrayaObjectValue -Object $TenantDetails -Names @('Account', 'UserPrincipalName'))
+
+        if (-not [string]::IsNullOrWhiteSpace($tenantName)) { $parts.Add($tenantName) | Out-Null }
+        if (-not [string]::IsNullOrWhiteSpace($initialDomain)) { $parts.Add($initialDomain) | Out-Null }
+        if (-not [string]::IsNullOrWhiteSpace($tenantIdValue)) { $parts.Add("TenantId=$tenantIdValue") | Out-Null }
+        if (-not [string]::IsNullOrWhiteSpace($connection)) { $parts.Add($connection) | Out-Null }
+        if (-not [string]::IsNullOrWhiteSpace($account)) { $parts.Add("Account=$account") | Out-Null }
+
+        if ($parts.Count -eq 0) {
+            return 'connected; tenant details not reported'
+        }
+
+        return ($parts -join ' | ')
+    }
+
     Write-Host ''
     Write-Host 'Connection / preflight ready.' -ForegroundColor Green
-    Write-Host ("  Connected workloads: {0}" -f $(if ($connectedWorkloads.Count -gt 0) { $connectedWorkloads -join ', ' } else { 'None' })) -ForegroundColor DarkGray
+    Write-Host ("  Graph: {0} - {1}" -f $(if ($ConnectionResult.Graph) { 'Connected' } else { 'Not connected' }), (& $formatTenantSummary $ConnectionResult.GraphTenantDetails)) -ForegroundColor $(if ($ConnectionResult.Graph) { 'Green' } else { 'Yellow' })
+    Write-Host ("  Exchange Online: {0} - {1}" -f $(if ($ConnectionResult.ExchangeOnline) { 'Connected' } else { 'Not connected' }), (& $formatTenantSummary $ConnectionResult.ExchangeTenantDetails)) -ForegroundColor $(if ($ConnectionResult.ExchangeOnline) { 'Green' } else { 'Yellow' })
+    if ($ConnectionResult.SharePointOnline) {
+        Write-Host ("  SharePoint admin: Connected - {0}" -f (& $formatTenantSummary $ConnectionResult.SharePointTenantDetails)) -ForegroundColor Green
+    }
+    elseif ($fallbackWorkloads -contains 'SharePointOnline') {
+        Write-Host '  SharePoint admin: Graph/SPO fallback active - SharePoint Online PowerShell tenant not connected' -ForegroundColor Yellow
+    }
+    else {
+        Write-Host '  SharePoint admin: Not connected' -ForegroundColor Yellow
+    }
+    Write-Host ("  Teams PowerShell: {0}" -f $(if ($ConnectionResult.Teams) { 'Connected' } else { 'Graph-only or not required' })) -ForegroundColor $(if ($ConnectionResult.Teams) { 'Green' } else { 'Yellow' })
+    Write-Host ("  Purview compliance: {0}" -f $(if ($ConnectionResult.PurviewCmdletsAvailable) { 'Connected' } elseif ($skippedWorkloads -contains 'PurviewCompliance') { 'Not required by profile' } else { 'Not connected' })) -ForegroundColor $(if ($ConnectionResult.PurviewCmdletsAvailable) { 'Green' } else { 'Yellow' })
+
+    Write-Host ("  Connected workloads: {0}" -f $(if ($connectedWorkloads.Count -gt 0) { $connectedWorkloads -join ', ' } else { 'None' })) -ForegroundColor Cyan
     if ($fallbackWorkloads.Count -gt 0) {
-        Write-Host ("  Fallback workloads: {0}" -f ($fallbackWorkloads -join ', ')) -ForegroundColor DarkGray
+        Write-Host ("  Fallback workloads: {0}" -f ($fallbackWorkloads -join ', ')) -ForegroundColor Yellow
     }
     if ($skippedWorkloads.Count -gt 0) {
         Write-Host ("  Skipped workloads: {0}" -f ($skippedWorkloads -join ', ')) -ForegroundColor Yellow
@@ -2413,7 +2855,7 @@ function Write-ConnectionPreflightSummary {
     else {
         'Passed for required workloads'
     }
-    Write-Host ("  Permission checks: {0}" -f $permissionSummary) -ForegroundColor $(if ($PermissionPreflightSkipped) { 'Yellow' } else { 'DarkGray' })
+    Write-Host ("  Permission checks: {0}" -f $permissionSummary) -ForegroundColor $(if ($PermissionPreflightSkipped) { 'Yellow' } else { 'Green' })
 }
 
 function Invoke-QuietRestMethod {
@@ -4647,9 +5089,23 @@ function Get-AssessmentGraphPreflightOperatorGuidance {
     }
 
     if ([string]::Equals($effectiveAuthenticationType, 'Interactive', [System.StringComparison]::OrdinalIgnoreCase)) {
-        $guidance.Add('Interactive Graph auth note: confirm the signed-in account has the admin role needed to consent to the requested Microsoft Graph delegated permissions for this tenant.') | Out-Null
-        $guidance.Add('If that account is correct, the current PowerShell session may be reusing a cached Graph token from an earlier sign-in. Run Disconnect-MgGraph, then rerun the assessment so Connect-MgGraph can request the assessment scopes again.') | Out-Null
-        $guidance.Add('When prompted, sign in as a Global Administrator or another account allowed to grant tenant-wide admin consent, and approve the requested scopes.') | Out-Null
+        $missingScopeNames = @(
+            $graphFailures |
+                ForEach-Object {
+                    if ([string]$_.Details -match '^Missing Graph scope:\s*(?<scope>[^.]+(?:\.[^.]+)+)') {
+                        $Matches['scope']
+                    }
+                } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                Select-Object -Unique
+        )
+        if ($missingScopeNames.Count -gt 0) {
+            $guidance.Add(("Missing delegated Graph scope(s): {0}" -f ($missingScopeNames -join ', '))) | Out-Null
+            $guidance.Add('Run Disconnect-MgGraph, then rerun the assessment so Connect-MgGraph can request the missing scope(s). When prompted, sign in with an admin account that can consent to those scopes.') | Out-Null
+            return @($guidance)
+        }
+
+        $guidance.Add('Interactive Graph auth note: access was denied by Microsoft Graph even though the token appeared to contain the requested scope. Confirm the signed-in account can use that permission in this tenant.') | Out-Null
 
         $requestedScopes = @()
         if ($script:AssessmentAuthWorkloadPlan) {
@@ -4657,14 +5113,6 @@ function Get-AssessmentGraphPreflightOperatorGuidance {
         }
         if ($requestedScopes.Count -gt 0) {
             $guidance.Add(("The assessment requested these delegated Graph scopes during Connect-MgGraph: {0}" -f ($requestedScopes -join ', '))) | Out-Null
-        }
-
-        $currentPermissions = @()
-        if ($GrantedPermissionInfo -and $GrantedPermissionInfo.PSObject.Properties['Permissions']) {
-            $currentPermissions = @($GrantedPermissionInfo.Permissions | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-        }
-        if ($currentPermissions.Count -gt 0) {
-            $guidance.Add(("Current Graph token permissions detected by preflight: {0}" -f ($currentPermissions -join ', '))) | Out-Null
         }
     }
     elseif ($effectiveAuthenticationType -in @('Certificate', 'ClientSecret')) {
@@ -4708,6 +5156,14 @@ function Test-AssessmentPermissionPreflight {
         'Unknown'
     }
     $isInteractiveGraphAuth = [string]::Equals($effectiveAuthenticationType, 'Interactive', [System.StringComparison]::OrdinalIgnoreCase)
+    $preflightNeedsReportsData = $true
+    if (
+        $script:AssessmentAuthWorkloadPlan -and
+        $script:AssessmentAuthWorkloadPlan.PSObject.Properties['GraphScopePlan'] -and
+        $script:AssessmentAuthWorkloadPlan.GraphScopePlan
+    ) {
+        $preflightNeedsReportsData = Get-AssessmentGraphScopePlanFlag -GraphScopePlan $script:AssessmentAuthWorkloadPlan.GraphScopePlan -Name 'NeedsReportsData' -Default $true
+    }
 
     $resolvedTenantId = $null
     if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
@@ -4837,31 +5293,33 @@ function Test-AssessmentPermissionPreflight {
         )
 
         $claimState = & $testClaimPresence (& $getClaimEquivalents $PermissionNames)
-        $requirementLabel = ($PermissionNames -join ' or ')
+        $requirementNames = @($PermissionNames | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+        $requirementLabel = if ($requirementNames.Count -gt 0) {
+            $requirementNames -join ' or '
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($NeededFor)) {
+            $NeededFor
+        }
+        else {
+            $Area
+        }
 
-        if ($TrustClaimPresence -and $claimState -eq $true) {
+        if ($claimState -eq $true) {
+            return
+        }
+
+        if ($claimState -eq $false) {
+            $missingScopeMessage = "Missing Graph scope: $requirementLabel"
+            if ($IsBlocking) {
+                & $addFailure $Area $requirementLabel $NeededFor $missingScopeMessage
+            }
+            else {
+                & $addWarning $Area $requirementLabel $NeededFor $missingScopeMessage
+            }
             return
         }
 
         if ($null -eq $Probe) {
-            if ($claimState -eq $false) {
-                if ($IsBlocking) {
-                    & $addFailure $Area $requirementLabel $NeededFor 'The current Microsoft Graph token does not include this permission.'
-                }
-                else {
-                    & $addWarning $Area $requirementLabel $NeededFor 'The current Microsoft Graph token does not include this permission. The assessment will continue, but related fields may remain not validated.'
-                }
-            }
-            return
-        }
-
-        if ($TrustClaimPresence -and $claimState -eq $false) {
-            if ($IsBlocking) {
-                & $addFailure $Area $requirementLabel $NeededFor 'The current Microsoft Graph token does not include this permission.'
-            }
-            else {
-                & $addWarning $Area $requirementLabel $NeededFor 'The current Microsoft Graph token does not include this permission. The assessment will continue, but related fields may remain not validated.'
-            }
             return
         }
 
@@ -5019,29 +5477,31 @@ function Test-AssessmentPermissionPreflight {
         Probe           = { Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/security/secureScores?$top=1' -Activity 'Permission preflight: SecurityEvents.Read.All' -SuppressProgress -SuppressAccessDeniedWarning | Out-Null }
         TrustClaimPresence = $true
     }) | Out-Null
-    $graphChecks.Add([pscustomobject]@{
-        Area            = 'Graph'
-        PermissionNames = @('Reports.Read.All')
-        NeededFor       = 'usage reports, mailbox activity, and SharePoint/OneDrive usage coverage'
-        Probe           = { Export-ArrayaGraphReportCsv -Uri "https://graph.microsoft.com/v1.0/reports/getOffice365ActiveUserDetail(period='D7')" -Activity 'Permission preflight: Reports.Read.All' | Out-Null }
-    }) | Out-Null
-    $graphChecks.Add([pscustomobject]@{
-        Area            = 'Graph'
-        PermissionNames = @('ReportSettings.Read.All')
-        NeededFor       = 'report-settings validation for activity reporting'
-        Probe           = {
-            $adminReportSettings = Get-ArrayaGraphAdminReportSettings -Headers $global:GraphHeaders -SuppressProgress
-            if (-not $adminReportSettings -or -not $adminReportSettings.Available) {
-                $reportSettingsError = if ($adminReportSettings -and $adminReportSettings.PSObject.Properties['ErrorMessage'] -and -not [string]::IsNullOrWhiteSpace([string]$adminReportSettings.ErrorMessage)) {
-                    [string]$adminReportSettings.ErrorMessage
+    if ($preflightNeedsReportsData) {
+        $graphChecks.Add([pscustomobject]@{
+            Area            = 'Graph'
+            PermissionNames = @('Reports.Read.All')
+            NeededFor       = 'usage reports, mailbox activity, and SharePoint/OneDrive usage coverage'
+            Probe           = { Export-ArrayaGraphReportCsv -Uri "https://graph.microsoft.com/v1.0/reports/getOffice365ActiveUserDetail(period='D7')" -Activity 'Permission preflight: Reports.Read.All' | Out-Null }
+        }) | Out-Null
+        $graphChecks.Add([pscustomobject]@{
+            Area            = 'Graph'
+            PermissionNames = @('ReportSettings.Read.All')
+            NeededFor       = 'report-settings validation for activity reporting'
+            Probe           = {
+                $adminReportSettings = Get-ArrayaGraphAdminReportSettings -Headers $global:GraphHeaders -SuppressProgress
+                if (-not $adminReportSettings -or -not $adminReportSettings.Available) {
+                    $reportSettingsError = if ($adminReportSettings -and $adminReportSettings.PSObject.Properties['ErrorMessage'] -and -not [string]::IsNullOrWhiteSpace([string]$adminReportSettings.ErrorMessage)) {
+                        [string]$adminReportSettings.ErrorMessage
+                    }
+                    else {
+                        'The admin report settings endpoint was not available.'
+                    }
+                    throw $reportSettingsError
                 }
-                else {
-                    'The admin report settings endpoint was not available.'
-                }
-                throw $reportSettingsError
             }
-        }
-    }) | Out-Null
+        }) | Out-Null
+    }
 
     if ($script:ProfileCollectionPlan.CollectTeamsDetails) {
         $graphChecks.Add([pscustomobject]@{
@@ -5183,7 +5643,15 @@ function Test-AssessmentPermissionPreflight {
                 $trustClaimPresence = [bool]$graphCheck.TrustClaimPresence
             }
 
-            & $updatePreflightProgress $graphCheck.Area (($graphCheck.PermissionNames -join ' or ')) ([ref]$preflightProgressIndex)
+            $graphRequirementNames = @($graphCheck.PermissionNames | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+            $graphRequirementLabel = if ($graphRequirementNames.Count -gt 0) {
+                $graphRequirementNames -join ' or '
+            }
+            else {
+                [string]$graphCheck.NeededFor
+            }
+
+            & $updatePreflightProgress $graphCheck.Area $graphRequirementLabel ([ref]$preflightProgressIndex)
             & $invokeGraphProbe $graphCheck.Area $graphCheck.PermissionNames $graphCheck.NeededFor $graphCheck.Probe $isBlocking $trustClaimPresence
         }
 
@@ -5269,7 +5737,23 @@ function Test-AssessmentPermissionPreflight {
 
         $failureMessage = ($messageLines -join [System.Environment]::NewLine)
         Write-Log -Type ERROR -Message $failureMessage -ExportFileLocation $ExportDetails
-        throw $failureMessage
+
+        $missingGraphScopes = @(
+            $permissionFailures |
+                Where-Object { [string]$_.Area -eq 'Graph' -and [string]$_.Details -match '^Missing Graph scope:' } |
+                ForEach-Object { ([string]$_.Details -replace '^Missing Graph scope:\s*', '').Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                Select-Object -Unique
+        )
+        if ($missingGraphScopes.Count -gt 0) {
+            throw ("Graph preflight failed. Missing Graph scope(s): {0}. Run Disconnect-MgGraph, then rerun the assessment." -f ($missingGraphScopes -join ', '))
+        }
+
+        $conciseFailures = @(
+            $permissionFailures |
+                ForEach-Object { "{0}: {1}" -f $_.Requirement, $_.Details }
+        )
+        throw ("{0} {1}" -f $failureHeading, ($conciseFailures -join '; '))
     }
 
     if ($permissionWarnings.Count -gt 0) {
@@ -5392,6 +5876,7 @@ function Initialize-AssessmentProgress {
         Current = 0
     }
     $script:AssessmentStepMetrics = New-Object System.Collections.Generic.List[object]
+    $script:AssessmentProgressLinePending = $false
 
     if (Test-ShowAssessmentProgress) {
         Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Status "[0/$($script:AssessmentProgressState.Total)] Starting" -PercentComplete 0
@@ -5449,7 +5934,16 @@ function Invoke-AssessmentProgressStep {
     if (Test-ShowAssessmentProgress) {
         Write-Progress -Id $script:AssessmentProgressId -Activity 'Assessment progress' -Status "[$current/$total] $Name" -PercentComplete $percent
     }
-    Write-Host ("  [{0}/{1} | {2}%] {3}" -f $current, $total, $percent, $Name) -ForegroundColor Cyan
+    $progressLinePrefix = "  [{0}/{1} | {2}%] {3}" -f $current, $total, $percent, $Name
+    $usesDirectConsoleOutput = [bool]($Name -match '^(Exchange mailboxes|Exchange groups|Unified groups|SharePoint/OneDrive sites)')
+    if ($usesDirectConsoleOutput) {
+        $script:AssessmentProgressLinePending = $false
+        Write-Host $progressLinePrefix -ForegroundColor Cyan
+    }
+    else {
+        $script:AssessmentProgressLinePending = $true
+        Write-Host $progressLinePrefix -ForegroundColor Cyan -NoNewline
+    }
     try {
         Sync-CollectorModuleRuntimeContext
         $stepResult = & $ScriptBlock
@@ -5477,7 +5971,13 @@ function Invoke-AssessmentProgressStep {
             default { 'Red' }
         }
         $statusSuffix = if ([string]::IsNullOrWhiteSpace($stepMessage)) { '' } else { " - $stepMessage" }
-        Write-Host ("  [{0}/{1} | {2}%] {3} - {4} in {5}{6}" -f $current, $total, $percent, $Name, $stepStatus, $elapsed.ToString('hh\:mm\:ss'), $statusSuffix) -ForegroundColor $statusColor
+        if ($script:AssessmentProgressLinePending) {
+            Write-Host (" - {0} in {1}{2}" -f $stepStatus, $elapsed.ToString('hh\:mm\:ss'), $statusSuffix) -ForegroundColor $statusColor
+        }
+        else {
+            Write-Host ("  [{0}/{1} | {2}%] {3} - {4} in {5}{6}" -f $current, $total, $percent, $Name, $stepStatus, $elapsed.ToString('hh\:mm\:ss'), $statusSuffix) -ForegroundColor $statusColor
+        }
+        $script:AssessmentProgressLinePending = $false
         $script:AssessmentStepMetrics.Add([PSCustomObject]@{
             StepName             = $Name
             StartedAt            = $stepStart
@@ -5536,6 +6036,89 @@ function New-AssessmentCollectorSections {
     )
 }
 
+function Select-AssessmentCollectorPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [array]$Sections,
+        [Parameter(Mandatory = $true)]
+        [array]$Steps,
+        [Parameter(Mandatory = $false)]
+        [string[]]$CollectorSection,
+        [Parameter(Mandatory = $false)]
+        [string[]]$CollectorStep
+    )
+
+    $sectionFilters = @($CollectorSection | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    $stepFilters = @($CollectorStep | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+
+    if ($sectionFilters.Count -eq 0 -and $stepFilters.Count -eq 0) {
+        return [pscustomobject][ordered]@{
+            Sections = @($Sections)
+            Steps    = @($Steps)
+            Filtered = $false
+            Summary  = $null
+        }
+    }
+
+    $selectedSteps = @($Steps)
+    if ($sectionFilters.Count -gt 0) {
+        $selectedSteps = @(
+            $selectedSteps |
+                Where-Object {
+                    $stepSection = [string]$_.Section
+                    @($sectionFilters | Where-Object { [string]::Equals([string]$_, $stepSection, [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
+                }
+        )
+    }
+
+    if ($stepFilters.Count -gt 0) {
+        $selectedSteps = @(
+            $selectedSteps |
+                Where-Object {
+                    $stepName = [string]$_.Name
+                    @(
+                        $stepFilters |
+                            Where-Object {
+                                $filter = [string]$_
+                                [string]::Equals($filter, $stepName, [System.StringComparison]::OrdinalIgnoreCase) -or
+                                    $stepName.StartsWith($filter, [System.StringComparison]::OrdinalIgnoreCase) -or
+                                    ($stepName -like $filter)
+                            }
+                    ).Count -gt 0
+                }
+        )
+    }
+
+    if ($selectedSteps.Count -eq 0) {
+        $validSections = @($Sections | ForEach-Object { [string]$_.Name }) -join ', '
+        $validSteps = @($Steps | ForEach-Object { [string]$_.Name }) -join '; '
+        $filterSummary = @()
+        if ($sectionFilters.Count -gt 0) { $filterSummary += "CollectorSection=$($sectionFilters -join ', ')" }
+        if ($stepFilters.Count -gt 0) { $filterSummary += "CollectorStep=$($stepFilters -join ', ')" }
+        throw ("Collector filter matched no steps ({0}). Valid sections: {1}. Available collector steps: {2}" -f ($filterSummary -join '; '), $validSections, $validSteps)
+    }
+
+    $selectedSectionNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($step in $selectedSteps) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$step.Section)) {
+            $null = $selectedSectionNames.Add([string]$step.Section)
+        }
+    }
+
+    $selectedSections = @($Sections | Where-Object { $selectedSectionNames.Contains([string]$_.Name) })
+    $summaryParts = @()
+    if ($sectionFilters.Count -gt 0) { $summaryParts += "sections=$($sectionFilters -join ', ')" }
+    if ($stepFilters.Count -gt 0) { $summaryParts += "steps=$($stepFilters -join ', ')" }
+
+    return [pscustomobject][ordered]@{
+        Sections = @($selectedSections)
+        Steps    = @($selectedSteps)
+        Filtered = $true
+        Summary  = ($summaryParts -join '; ')
+    }
+}
+
 function New-AssessmentLiveCollectorPlan {
     [CmdletBinding()]
     param(
@@ -5543,9 +6126,15 @@ function New-AssessmentLiveCollectorPlan {
         [string]$GraphMode,
         [Parameter(Mandatory = $true)]
         [string]$SharePointDiscoveryService,
+        [Parameter(Mandatory = $false)]
+        [string]$SharePointDiscoveryLabel,
         [Parameter(Mandatory = $true)]
         [string]$TeamsDiscoveryService
     )
+
+    if ([string]::IsNullOrWhiteSpace($SharePointDiscoveryLabel)) {
+        $SharePointDiscoveryLabel = $SharePointDiscoveryService
+    }
 
     $steps = New-Object System.Collections.Generic.List[object]
     $steps.Add((New-ArrayaCollectorStep -Name 'Tenant overview' -Section 'Tenant Overview' -Workload 'Tenant' -Produces @('TenantInfo') -ScriptBlock { Get-TenantOverviewInfo })) | Out-Null
@@ -5590,7 +6179,7 @@ function New-AssessmentLiveCollectorPlan {
     $steps.Add((New-ArrayaCollectorStep -Name 'Exchange governance summaries' -Section 'Exchange' -Workload 'ExchangeOnline' -Produces @('ExchangeGovernanceSummary') -ScriptBlock { Update-ExchangeGovernanceTables -TenantStatsHash $script:tenantStatsHash -DetailLevel $reportingMode })) | Out-Null
 
     $steps.Add((New-ArrayaCollectorStep -Name 'Unified groups' -Section 'Collaboration' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectUnifiedGroups) -SkipReason 'Not required for this profile output.' -Produces @('UnifiedGroups') -ScriptBlock { Get-AllUnifiedGroups -detailLevel $reportingMode })) | Out-Null
-    $steps.Add((New-ArrayaCollectorStep -Name "SharePoint/OneDrive sites ($SharePointDiscoveryService)" -Section 'Collaboration' -Workload 'SharePointOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectSharePointAndOneDriveSites) -SkipReason 'SharePoint and OneDrive collection is disabled for this profile.' -Produces @('SharePoint', 'OneDrive') -ScriptBlock { Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName $SharePointDiscoveryService })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name "SharePoint/OneDrive sites ($SharePointDiscoveryLabel)" -Section 'Collaboration' -Workload 'SharePointOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectSharePointAndOneDriveSites) -SkipReason 'SharePoint and OneDrive collection is disabled for this profile.' -Produces @('SharePoint', 'OneDrive') -ScriptBlock { Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName $SharePointDiscoveryService })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name 'Teams voice details' -Section 'Collaboration' -Workload 'Teams' -Enabled ([bool]$script:ProfileCollectionPlan.CollectTeamsVoiceDetails) -SkipReason 'Not required for this profile output.' -Produces @('TeamsVoice') -ScriptBlock { Get-TeamsVoiceDetails })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name "Teams inventory ($TeamsDiscoveryService)" -Section 'Collaboration' -Workload 'Teams' -Enabled ([bool]$script:ProfileCollectionPlan.CollectTeamsDetails) -SkipReason 'Not required for this profile output.' -Produces @('AllTeams') -ScriptBlock { Get-TeamsDetails -detailLevel $reportingMode -ServiceName $TeamsDiscoveryService })) | Out-Null
 
@@ -7450,15 +8039,16 @@ function Get-SharePointAndOneDriveSites {
                 else {
                     'SharePoint/OneDrive Graph site inventory was denied by /sites/getAllSites. Confirm the app has Sites.Read.All application permission with admin consent, then rerun preflight.'
                 }
-                Write-AssessmentConsoleSubstep -Message $guidance -ForegroundColor Yellow
                 Write-Log -Type WARNING -Message "[Get-SharePointAndOneDriveSitesFromRESTAPI] $guidance Underlying error: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
 
                 if ($connectionResult -and $connectionResult.SharePointOnline) {
-                    Write-AssessmentConsoleSubstep -Message 'SharePoint/OneDrive API inventory denied; falling back to connected SharePoint Online PowerShell session.' -ForegroundColor Yellow
+                    Write-Verbose $guidance
+                    Write-AssessmentConsoleSubstep -Message 'SharePoint/OneDrive inventory using connected SharePoint Online PowerShell fallback.'
                     $usedSpoFallback = $true
                     Get-SharePointAndOneDriveSitesFromSPO -detailLevel $detailLevel
                 }
                 else {
+                    Write-AssessmentConsoleSubstep -Message $guidance -ForegroundColor Yellow
                     $script:tenantStatsHash['SharePointCollectionSummary'] = [pscustomobject][ordered]@{
                         Status      = 'Skipped'
                         Source      = 'Graph getAllSites'
@@ -15722,7 +16312,7 @@ else {
     if ($runUseExistingConnections) {
         Write-ConsoleSection -Step 'Connection' -Title 'Existing Connection Check'
         Write-Host 'Using existing Microsoft 365 connections for data collection. Authentication and permission preflight are skipped.' -ForegroundColor Cyan
-        $connectionResult = Test-AssessmentExistingSessions -WorkloadPlan $assessmentAuthWorkloadPlan -TenantId $TenantId -ModeLabel 'UseExistingConnections'
+        $connectionResult = Test-AssessmentExistingSessions -WorkloadPlan $assessmentAuthWorkloadPlan -TenantId $TenantId -ModeLabel 'UseExistingConnections' -ConfirmTenantSelection
     }
     else {
         Write-ConsoleSection -Step 'Connection' -Title 'Connection / Preflight'
@@ -17470,15 +18060,18 @@ if ($runExportOnly) {
     }
 }
 else {
-    $tenantOverviewSteps = 3
-    $identitySteps = 8
-    $exchangeSteps = 10
-    $collaborationSteps = 4
-    $endpointSteps = 2
-    $governanceSteps = 8
-    $overallCollectionSteps = $tenantOverviewSteps + $identitySteps + $exchangeSteps + $collaborationSteps + $endpointSteps + $governanceSteps
-    Initialize-AssessmentProgress -TotalSteps $overallCollectionSteps
-
+    $sharePointDiscoveryLabel = if ($GraphTest -in @('REST', 'SDK') -and $connectionResult -and $connectionResult.SharePointOnline) {
+        'Graph/SPO'
+    }
+    elseif ($GraphTest -in @('REST', 'SDK')) {
+        'API'
+    }
+    elseif ($connectionResult -and $connectionResult.SharePointOnline) {
+        'SPO'
+    }
+    else {
+        'API'
+    }
     $sharePointDiscoveryService = if ($GraphTest -in @('REST', 'SDK')) {
         'API'
     }
@@ -17497,7 +18090,15 @@ else {
     }
 
     $collectorSections = New-AssessmentCollectorSections
-    $collectorPlan = New-AssessmentLiveCollectorPlan -GraphMode $GraphTest -SharePointDiscoveryService $sharePointDiscoveryService -TeamsDiscoveryService $teamsDiscoveryService
+    $collectorPlan = New-AssessmentLiveCollectorPlan -GraphMode $GraphTest -SharePointDiscoveryService $sharePointDiscoveryService -SharePointDiscoveryLabel $sharePointDiscoveryLabel -TeamsDiscoveryService $teamsDiscoveryService
+    $collectorSelection = Select-AssessmentCollectorPlan -Sections $collectorSections -Steps $collectorPlan -CollectorSection $CollectorSection -CollectorStep $CollectorStep
+    $collectorSections = @($collectorSelection.Sections)
+    $collectorPlan = @($collectorSelection.Steps)
+    if ($collectorSelection.Filtered) {
+        Write-Host ("Targeted collector filter active: {0}" -f $collectorSelection.Summary) -ForegroundColor Yellow
+        Write-Log -Type INFO -Message ("Targeted collector filter active: {0}" -f $collectorSelection.Summary) -ExportFileLocation $ExportDetails
+    }
+    Initialize-AssessmentProgress -TotalSteps ([Math]::Max(@($collectorPlan).Count, 1))
     $script:AssessmentCollectorPlan = $collectorPlan
     Sync-CollectorModuleRuntimeContext
     Invoke-ArrayaCollectorPlan `
