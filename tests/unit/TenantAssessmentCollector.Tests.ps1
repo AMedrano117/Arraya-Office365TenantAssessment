@@ -502,6 +502,16 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Not -Match 'Get-AssessmentEnterpriseApplicationLatestSignIn -AppId'
     }
 
+    It 'uses the shared run-scoped Graph request cache for high-volume Graph collection paths' {
+        $script:collectorSource | Should -Match 'function Get-ArrayaGraphResource'
+        $script:collectorSource | Should -Match 'Invoke-ArrayaGraphCollectionRequest `'
+        $script:collectorSource | Should -Match 'Secure Score most recent'
+        $script:collectorSource | Should -Match "Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/admin/sharepoint/settings'"
+        $script:collectorSource | Should -Match 'Get-ArrayaGraphResource -Uri \$uri -Activity "Fetching MFA Registration Details"'
+        $script:collectorSource | Should -Match '\$script:tenantStatsHash\[''CollectorGraphApiStats''\]'
+        $script:collectorSource | Should -Match '\$script:tenantStatsHash\[''CollectorCacheStats''\]'
+    }
+
     It 'emits compact one-line assessment step status output instead of the older redundant progress pair' {
         $script:collectorSource | Should -Not -Match 'Write-Host \("Gathering \{0\} \.\.\." -f \$Name\)'
         $script:collectorSource | Should -Not -Match 'Overall progress:'
