@@ -27,6 +27,24 @@ if (-not (Test-Path -Path $legacyScriptPath)) {
     throw "Assessment-comparison implementation script not found: $legacyScriptPath"
 }
 
+$commonManifestPath = Join-Path $repoRoot 'src\modules\Arraya.M365.Common\Arraya.M365.Common.psd1'
+if (-not (Get-Module -Name 'Arraya.M365.Common' -ErrorAction SilentlyContinue)) {
+    Import-Module -Name $commonManifestPath -WarningAction SilentlyContinue -ErrorAction Stop
+}
+
+$baselineSnapshot = Import-ArrayaTenantSnapshot -Path $BaselineJsonPath -SkipValidation
+$currentSnapshot  = Import-ArrayaTenantSnapshot -Path $CurrentJsonPath  -SkipValidation
+
+if ($null -eq $baselineSnapshot) { throw "Baseline snapshot could not be loaded: $BaselineJsonPath" }
+if ($null -eq $currentSnapshot)  { throw "Current snapshot could not be loaded: $CurrentJsonPath" }
+
+$baselineVersion = if ($baselineSnapshot.Contains('SchemaVersion')) { [int]$baselineSnapshot['SchemaVersion'] } else { 0 }
+$currentVersion  = if ($currentSnapshot.Contains('SchemaVersion'))  { [int]$currentSnapshot['SchemaVersion'] }  else { 0 }
+
+if ($baselineVersion -ne $currentVersion) {
+    throw "Schema version mismatch: baseline is v$baselineVersion, current is v$currentVersion. Both snapshots must use the same schema version for comparison."
+}
+
 $invokeParams = @{}
 if ($PSBoundParameters.ContainsKey('BaselineJsonPath')) { $invokeParams.BaselineJsonPath = $BaselineJsonPath }
 if ($PSBoundParameters.ContainsKey('CurrentJsonPath')) { $invokeParams.CurrentJsonPath = $CurrentJsonPath }

@@ -39,6 +39,8 @@ Progress output also now uses plain-language governance step names instead of ol
 The operator docs now distinguish between the core Graph permission set used by the standard assessment and optional extended-enrichment permissions, so the app registration ask is easier to defend and keep least-privileged.
 App-based Teams collection now keeps team and channel inventory as part of the standard run, but member-count and guest-count enrichment are treated as optional. If `TeamMember.Read.All` or `TeamMember.ReadWrite.All` is not granted, the assessment logs a one-time warning and continues without that deeper Teams membership expansion.
 
+> **Note — Purview collection not yet implemented:** `Connect-IPPSSession` is not called in the current release. Retention policies, DLP policies, eDiscovery cases, and sensitivity labels are not collected. Questionnaire output reflects this with "Not collected by current script" for all Purview-related fields. The section below documents the intended behavior for a future release.
+
 Retention and DLP policy collection uses Purview compliance PowerShell through `Connect-IPPSSession`, not the main Graph collector path. In this workflow:
 - delegated auth is supported
 - interactive delegated auth first uses a normal `Connect-IPPSSession` attempt, then retries with `-DisableWAM` when supported

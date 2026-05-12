@@ -351,4 +351,48 @@ Describe 'Arraya.M365.AssessmentRunner' {
             } $workbookPath
         } | Should -Not -Throw
     }
+
+    Context 'Auth parameter forwarding - Invoke-M365FullTenantAssessment.ps1' {
+        BeforeAll {
+            $script:fullAssessmentPath = Join-Path $script:repoRoot 'src\scripts\assessments\tenant-wide\Invoke-M365FullTenantAssessment.ps1'
+        }
+
+        It 'declares ClientSecretCredential and ClientSecretSecure parameters' {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+                $script:fullAssessmentPath, [ref]$null, [ref]$null)
+            $paramBlock = $ast.Find({ $args[0] -is [System.Management.Automation.Language.ParamBlockAst] }, $true)
+            $paramNames = $paramBlock.Parameters.Name.VariablePath.UserPath
+            $paramNames | Should -Contain 'ClientSecretCredential'
+            $paramNames | Should -Contain 'ClientSecretSecure'
+        }
+
+        It 'forwards ClientSecretCredential and ClientSecretSecure to Invoke-M365TenantAssessment' {
+            $source = Get-Content -Raw -Path $script:fullAssessmentPath
+            $source | Should -Match "ContainsKey\('ClientSecretCredential'\)"
+            $source | Should -Match "ContainsKey\('ClientSecretSecure'\)"
+        }
+
+        It 'declares OutputProfile as a string array' {
+            $source = Get-Content -Raw -Path $script:fullAssessmentPath
+            $source | Should -Match '\[string\[\]\]\$OutputProfile'
+        }
+    }
+
+    Context 'Auth parameter forwarding - Invoke-M365TenantDataCollection.ps1' {
+        BeforeAll {
+            $script:dataCollectionPath = Join-Path $script:repoRoot 'src\scripts\assessments\tenant-wide\Invoke-M365TenantDataCollection.ps1'
+        }
+
+        It 'declares ClientSecretCredential and ClientSecretSecure parameters' {
+            $source = Get-Content -Raw -Path $script:dataCollectionPath
+            $source | Should -Match '\[pscredential\]\$ClientSecretCredential'
+            $source | Should -Match '\[securestring\]\$ClientSecretSecure'
+        }
+
+        It 'forwards both secure credential parameters to Invoke-M365TenantDataCollection' {
+            $source = Get-Content -Raw -Path $script:dataCollectionPath
+            $source | Should -Match "ContainsKey\('ClientSecretCredential'\)"
+            $source | Should -Match "ContainsKey\('ClientSecretSecure'\)"
+        }
+    }
 }
