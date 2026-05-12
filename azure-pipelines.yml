@@ -27,3 +27,15 @@ stages:
       displayName: Run ScriptAnalyzer
     - powershell: ./tools/run-pester.ps1
       displayName: Run Pester tests
+    - task: PublishTestResults@2
+      displayName: Publish test results
+      inputs:
+        testResultsFormat: NUnit
+        testResultsFiles: TestResults.xml
+      condition: always()
+    - task: PublishCodeCoverageResults@2
+      displayName: Publish code coverage
+      inputs:
+        codeCoverageTool: JaCoCo
+        summaryFileLocation: CoverageResults.xml
+      condition: always()

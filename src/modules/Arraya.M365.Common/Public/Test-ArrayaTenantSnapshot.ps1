@@ -44,7 +44,7 @@ function Test-ArrayaTenantSnapshot {
             }
 
             if ($Snapshot.Contains('Data') -and ($Snapshot['Data'] -is [System.Collections.IDictionary])) {
-                $requiredDataDomains = @('Exchange', 'Identity', 'Collaboration', 'Security', 'Tenant')
+                $requiredDataDomains = @('Exchange', 'Identity', 'Collaboration', 'Security', 'Tenant', 'Governance', 'Other')
                 foreach ($domain in $requiredDataDomains) {
                     if (-not $Snapshot['Data'].Contains($domain)) {
                         $warnings.Add("Data domain '$domain' is not present. Exporters may emit partial output.")

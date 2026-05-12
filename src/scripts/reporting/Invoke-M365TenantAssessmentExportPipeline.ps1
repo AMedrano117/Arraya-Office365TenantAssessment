@@ -178,6 +178,14 @@ function Invoke-M365TenantAssessmentExportPipeline {
         $ExportTenantStatsHash = $TenantStatsHash
     }
 
+    $snapshotValidation = Test-ArrayaTenantSnapshot -Snapshot $TenantStatsHash -Purpose Export
+    if (-not $snapshotValidation.Valid) {
+        throw "Export pipeline received an invalid snapshot: $($snapshotValidation.Errors -join '; ')"
+    }
+    foreach ($snapshotWarning in $snapshotValidation.Warnings) {
+        Write-PipelineLog -Type WARNING -Message "Snapshot pre-export validation: $snapshotWarning"
+    }
+
     if ($requiresExcelArtifacts) {
         try {
             if (Get-Command -Name Ensure-ImportExcelReady -ErrorAction SilentlyContinue) {

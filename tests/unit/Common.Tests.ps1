@@ -1484,4 +1484,44 @@ Describe 'Arraya.M365.Common' {
         $mailFlowSource | Should -Match 'Parameters\.ContainsKey\(''IncludeTestModeConnectors''\)'
         $mailFlowSource | Should -Match "Get-Command -Name 'Get-OutboundConnector' -ErrorAction Ignore"
     }
+
+    Context 'Invoke-ArrayaCollectorPlan - failure isolation' {
+        It 'continues executing steps after one step fails' {
+            $sections = @([pscustomobject]@{ Name = 'Core' })
+            $steps = @(
+                New-ArrayaCollectorStep -Name 'Step1' -Section 'Core' -Enabled $true `
+                    -ScriptBlock { throw 'Intentional failure' }
+                New-ArrayaCollectorStep -Name 'Step2' -Section 'Core' -Enabled $true `
+                    -ScriptBlock { 'step2-ran' }
+            )
+
+            $results = Invoke-ArrayaCollectorPlan -Sections $sections -Steps $steps
+            ($results | Where-Object Name -eq 'Step1').Status | Should -Be 'Failed'
+            ($results | Where-Object Name -eq 'Step2').Status | Should -Be 'Completed'
+        }
+
+        It 'returns all step results even when early steps fail' {
+            $sections = @([pscustomobject]@{ Name = 'Core' })
+            $steps = @(
+                New-ArrayaCollectorStep -Name 'Fail' -Section 'Core' -Enabled $true `
+                    -ScriptBlock { throw 'boom' }
+                New-ArrayaCollectorStep -Name 'Pass' -Section 'Core' -Enabled $true `
+                    -ScriptBlock { 'ok' }
+            )
+
+            $results = Invoke-ArrayaCollectorPlan -Sections $sections -Steps $steps
+            $results.Count | Should -Be 2
+        }
+
+        It 'records the failure message for a failed step' {
+            $sections = @([pscustomobject]@{ Name = 'Core' })
+            $steps = @(
+                New-ArrayaCollectorStep -Name 'FailStep' -Section 'Core' -Enabled $true `
+                    -ScriptBlock { throw 'specific error message' }
+            )
+
+            $results = Invoke-ArrayaCollectorPlan -Sections $sections -Steps $steps
+            ($results | Where-Object Name -eq 'FailStep').Message | Should -Be 'specific error message'
+        }
+    }
 }
