@@ -1735,6 +1735,10 @@ function Get-M365GuidanceBaselineMap {
             Recommendation = 'Review endpoint-management scope, stale devices, unsupported operating systems, compliance failures, and unmanaged-device access. Close enrollment and compliance gaps for devices expected to access protected resources, and document approved exceptions before enforcing stricter access controls.'
             TargetValue    = 'Endpoint inventory, compliance, and managed-access coverage aligned to the approved device baseline'
         }
+        LicensingGovernance = [pscustomobject]@{
+            Recommendation = 'Review paid license assignments for capacity-constrained SKUs, reclaim licenses from inactive or ineligible accounts, review duplicate direct-plus-group assignments, and confirm that group-based licensing groups have accountable owners and a documented assignment-error review cadence.'
+            TargetValue    = 'License assignments align to active users, purchased capacity is not exceeded, and licensing groups have documented ownership and recurring review'
+        }
     }
 }
 
@@ -1757,8 +1761,10 @@ function Get-M365GuidanceBaselineProfile {
     if ($RuleId -match '^(ID-00[7-9]|ID-010|ID-011|ID-012|SEC-00[23])$' -or $lookup -match 'enterprise app|application consent|permission grant|redirect uri|client secret|certificate|credential') { return $map.EnterpriseApplications }
     if ($RuleId -match '^(COL-|TM-)' -or $lookup -match 'sharepoint|onedrive|teams|microsoft 365 group|external sharing|ownerless|dormant|collaboration') { return $map.CollaborationGovernance }
     if ($RuleId -match '^(EX-|DOMAIN-001)' -or $lookup -match 'exchange|mail flow|spf|dkim|dmarc|remote domain|connector|smtp|forwarding|public folder') { return $map.ExchangeMailFlow }
-    if ($lookup -match 'purview|retention|dlp|data loss prevention') { return $map.PurviewGovernance }
+    if ($RuleId -notmatch '^(INACTIVEMAILBOXES-|IDENTITYADMINS-)' -and $lookup -match 'purview|retention|dlp|data loss prevention') { return $map.PurviewGovernance }
+    if ($RuleId -match '^INACTIVEMAILBOXES-') { return $map.ExchangeMailFlow }
     if ($RuleId -eq 'SEC-001' -or $lookup -match 'secure score') { return $map.SecureScore }
+    if ($RuleId -match '^LIC-') { return $map.LicensingGovernance }
     if ($RuleId -match '^DEV-' -or $lookup -match 'device|endpoint|intune|compliance|managed access') { return $map.EndpointGovernance }
 
     return $null
@@ -1860,7 +1866,7 @@ function Get-FindingPresentationOverrides {
         }
     }
 
-    if ($lookup -match 'missing owner|owners and require ownership assignment|ownerless') {
+    if ($RuleId -notmatch '^LIC-' -and ($lookup -match 'missing owner|owners and require ownership assignment|ownerless')) {
         $override['WhyFlagged'] = 'The assessment found collaboration assets without a clear accountable owner, which creates gaps in stewardship, lifecycle handling, and access governance.'
         $override['Recommendation'] = 'Assign an active accountable owner or documented steward to each flagged asset, confirm the business purpose, and retire spaces that no longer have a sponsor. Record the ownership decision in the operating model before closing the finding.'
         $override['TargetValue'] = 'Each flagged collaboration asset has an active owner or documented steward'
@@ -1885,10 +1891,20 @@ function Get-FindingPresentationOverrides {
         $override['Recommendation'] = 'Review why the compliance baseline is being missed, remediate the highest-volume failure conditions, and tighten exception handling for devices that should not remain non-compliant.'
         $override['TargetValue'] = 'Device compliance meets the approved endpoint baseline'
     }
-    elseif ($lookup -match 'appear unowned|ownerless team|without owners') {
+    elseif ($RuleId -notmatch '^LIC-' -and ($lookup -match 'appear unowned|ownerless team|without owners')) {
         $override['WhyFlagged'] = 'The collaboration data shows workspaces without an accountable owner, which creates gaps in access control, lifecycle handling, and business accountability.'
         $override['Recommendation'] = 'Assign an accountable owner to each flagged workspace, confirm the business purpose, and retire any workspace that no longer has a sponsor.'
         $override['TargetValue'] = 'Each flagged workspace has an active owner or has been retired'
+    }
+
+    if ($RuleId -match '^HYBRIDFEDERATION-' -and $lookup -match 'cross-tenant|b2b|external identit') {
+        $override['Recommendation'] = 'Review cross-tenant access settings, B2B collaboration policies, and external identity trust configuration. Confirm that inbound MFA trust, cross-tenant partner trust, and guest invitation scope are explicitly configured to match the approved external-access baseline rather than left in a default or unconfigured state.'
+        $override['TargetValue'] = 'Cross-tenant access posture and B2B collaboration settings documented and aligned to the approved external-access baseline'
+    }
+
+    if ($RuleId -match '^IDENTITYADMINS-' -and $lookup -match 'telemetry|sign-in coverage|under-reported') {
+        $override['Recommendation'] = 'Ensure sign-in log collection is active and that sign-in telemetry coverage is sufficient before treating inactivity findings as a complete picture. Low telemetry coverage means inactive-account findings may under-report the true stale population.'
+        $override['TargetValue'] = 'Sign-in telemetry coverage validated and inactivity review scope confirmed against the full enabled-user population'
     }
 
     return $override
