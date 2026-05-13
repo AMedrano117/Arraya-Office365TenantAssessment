@@ -3184,14 +3184,11 @@ function New-RoadmapRemediationDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Remediation Roadmap' -Style 'Heading1')) | Out-Null
     foreach ($bucketHeading in @('0-30 Days (Foundation)', '31-60 Days (Enforcement & Cleanup)', '61-90 Days (Stabilization)', 'Operational Model')) {
         $bucketBlocks = @(New-CustomerRoadmapActionBlocks -RoadmapActions $roadmapActions -BucketHeading $bucketHeading)
-        $blocks.Add((New-CustomerWordParagraphBlock -Text $bucketHeading -Style 'Heading2')) | Out-Null
         if ($bucketBlocks.Count -gt 0) {
+            $blocks.Add((New-CustomerWordParagraphBlock -Text $bucketHeading -Style 'Heading2')) | Out-Null
             foreach ($block in $bucketBlocks) {
                 $blocks.Add($block) | Out-Null
             }
-        }
-        else {
-            $blocks.Add((New-CustomerWordParagraphBlock -Text 'No roadmap action was placed in this bucket from the reviewed data.' -Style 'Normal')) | Out-Null
         }
     }
 
@@ -5266,9 +5263,7 @@ function New-CustomerAssessmentDocumentBlocks {
         @('Mailbox retention policies assigned', $mailboxesWithExplicitRetentionPolicy),
         @('Mailboxes with hold signals', $mailboxesWithHoldSignals),
         @('Unique retention policies named', $(if ($uniqueRetentionPolicyNames.Count -gt 0) { ($uniqueRetentionPolicyNames | Select-Object -First 5) -join '; ' } else { 'Not surfaced in current source' })),
-        @('Data loss prevention controls', $(if ($dlpPolicyRows.Count -gt 0) { $dlpPolicyRows.Count } else { 'Not surfaced in current source' })),
-        @('Secure Score posture', (Get-CustomerObservationState -Observation $governanceObservation -Signal 'Secure Score')),
-        @('Highest license utilization', (Get-CustomerObservationState -Observation $governanceObservation -Signal 'Highest license utilization'))
+        @('Data loss prevention controls', $(if ($dlpPolicyRows.Count -gt 0) { $dlpPolicyRows.Count } else { 'Not surfaced in current source' }))
     )
     $offboardingSupportRows = @(
         @('Inactive guest accounts (>90 days)', (Get-CustomerObservationState -Observation $lifecycleObservation -Signal 'Inactive guest accounts (>90 days)')),
@@ -5701,7 +5696,7 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Why It Matters' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text $guestWhyItMattersText -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommended Next Step' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ((@($guestRecommendedNextStepParts) -join ' ')) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'For the recommended approach to guest MFA enforcement and cross-tenant trust, see the MFA Enforcement section (§6.0).' -Style 'Normal')) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.4 Entra Applications and Access Review' -Style 'Heading2')) | Out-Null
     if ($applicationInventoryClearlyEmpty) {
@@ -6693,8 +6688,14 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'A prescriptive end-to-end offboarding workflow was not visible in the tenant data. The tenant data still supports the lifecycle actions already prioritized in the recommendation set, especially for stale privileged access, inactive guests, stale collaboration locations, and shared mailboxes without ownership signals.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Supporting Observations from Environment Review' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Lifecycle Signal', 'Current State') -Rows $offboardingSupportRows)) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text (Convert-ToCustomerAssessmentNarrativeText -Text $(if ($null -ne $lifecycleConsultativeSummary) { $lifecycleConsultativeSummary.Narrative } else { $lifecycleObservation.ObservedNarrative })) -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text (Convert-ToCustomerAssessmentNarrativeText -Text $lifecycleObservation.WhyItMatters) -Style 'Normal')) | Out-Null
+    $lifecycleNarrativeText = Convert-ToCustomerAssessmentNarrativeText -Text $(if ($null -ne $lifecycleConsultativeSummary) { $lifecycleConsultativeSummary.Narrative } else { $lifecycleObservation.ObservedNarrative })
+    $lifecycleWhyItMattersText = Convert-ToCustomerAssessmentNarrativeText -Text $lifecycleObservation.WhyItMatters
+    if (-not [string]::IsNullOrWhiteSpace($lifecycleNarrativeText)) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text $lifecycleNarrativeText -Style 'Normal')) | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($lifecycleWhyItMattersText) -and $lifecycleWhyItMattersText -ne $lifecycleNarrativeText) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text $lifecycleWhyItMattersText -Style 'Normal')) | Out-Null
+    }
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $lifecycleConsultativeSummary) { $lifecycleConsultativeSummary.RecommendationSupport } else { 'This section supports the lifecycle and ownership-governance recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '15.0 Appendix' -Style 'Heading1')) | Out-Null
