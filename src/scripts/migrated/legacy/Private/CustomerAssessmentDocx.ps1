@@ -118,14 +118,16 @@ function New-CustomerWordTableBlock {
     param(
         [Parameter(Mandatory = $true)][string[]]$Headers,
         [Parameter(Mandatory = $true)]$Rows,
-        [Parameter(Mandatory = $false)][string]$Style
+        [Parameter(Mandatory = $false)][string]$Style,
+        [Parameter(Mandatory = $false)][int[]]$ColumnWidths
     )
 
     return [pscustomobject]@{
-        Type    = 'Table'
-        Headers = @($Headers | ForEach-Object { Convert-ToCustomerFacingText -Value $_ })
-        Rows    = $Rows
-        Style   = $Style
+        Type         = 'Table'
+        Headers      = @($Headers | ForEach-Object { Convert-ToCustomerFacingText -Value $_ })
+        Rows         = $Rows
+        Style        = $Style
+        ColumnWidths = $ColumnWidths
     }
 }
 
@@ -3064,35 +3066,35 @@ function New-CustomerRoadmapActionBlocks {
     )
 
     $blocks = New-Object System.Collections.Generic.List[object]
+    $itemIndex = 0
     foreach ($action in @($RoadmapActions | Where-Object { (Get-CustomerRoadmapBucketHeading -RoadmapPhase ([string]$_.RoadmapPhase)) -eq $BucketHeading })) {
-            $title = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $action -Names @('ActionTitle')) -Default 'Priority work item'
-            $phase = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $action -Names @('RoadmapPhase')) -Default 'Monitor'
-            $criticality = Get-CustomerActionCriticalityLabel -Severity ([string](Get-ArrayaObjectValue -Object $action -Names @('HighestSeverity')))
-            $effortTier = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $action -Names @('EffortTier')) -Default 'Standard'
-            $estimatedPsHours = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $action -Names @('EstimatedPsHours')) -Default 'Not validated from the reviewed data'
-            $owner = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $action -Names @('PrimaryOwner')) -Default 'Shared operational owner'
-            $nextStep = [string](Get-ArrayaObjectValue -Object $action -Names @('RecommendedNextStep'))
-            $successCheck = [string](Get-ArrayaObjectValue -Object $action -Names @('SuccessCheck'))
+        $itemIndex++
+        $title = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $action -Names @('ActionTitle')) -Default 'Priority work item'
+        $criticality = Get-CustomerActionCriticalityLabel -Severity ([string](Get-ArrayaObjectValue -Object $action -Names @('HighestSeverity')))
+        $effortTier = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $action -Names @('EffortTier')) -Default 'Standard'
+        $estimatedPsHours = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $action -Names @('EstimatedPsHours')) -Default 'Not validated from the reviewed data'
+        $owner = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $action -Names @('PrimaryOwner')) -Default 'Shared operational owner'
+        $nextStep = [string](Get-ArrayaObjectValue -Object $action -Names @('RecommendedNextStep'))
+        $successCheck = [string](Get-ArrayaObjectValue -Object $action -Names @('SuccessCheck'))
 
-            $detailItems = New-Object System.Collections.Generic.List[string]
-            $detailItems.Add(('Phase: {0}' -f $phase)) | Out-Null
-            $detailItems.Add(('Criticality: {0}' -f $criticality)) | Out-Null
-            $detailItems.Add(('Level of Effort: {0}' -f $effortTier)) | Out-Null
-            $detailItems.Add(('Rough PS Hours: {0}' -f $estimatedPsHours)) | Out-Null
-            $detailItems.Add(('Owner: {0}' -f $owner)) | Out-Null
+        $detailedRecommendation = @((Get-CustomerRoadmapNarrativeSegments -Text $nextStep -MaxSentences 2 -MaxLength 320) | Select-Object -First 2)
+        $recommendationText = if ($detailedRecommendation.Count -gt 0) { $detailedRecommendation -join ' ' } else { 'See finding detail.' }
 
-            $detailedRecommendation = @((Get-CustomerRoadmapNarrativeSegments -Text $nextStep -MaxSentences 2 -MaxLength 320) | Select-Object -First 2)
-            if ($detailedRecommendation.Count -gt 0) {
-                $detailItems.Add(('Detailed Recommendation: {0}' -f (($detailedRecommendation -join ' ')))) | Out-Null
-            }
-            $successSignal = @((Get-CustomerRoadmapNarrativeSegments -Text $successCheck -MaxSentences 1 -MaxLength 260) | Select-Object -First 1)
-            if ($successSignal.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($successSignal[0])) {
-                $detailItems.Add(('Success Signal: {0}' -f $successSignal[0])) | Out-Null
-            }
+        $successSignal = @((Get-CustomerRoadmapNarrativeSegments -Text $successCheck -MaxSentences 1 -MaxLength 260) | Select-Object -First 1)
+        $successText = if ($successSignal.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($successSignal[0])) { $successSignal[0] } else { 'Confirm remediation applied and finding resolved.' }
 
-            $blocks.Add((New-CustomerWordParagraphBlock -Text $title -Style 'Heading3')) | Out-Null
-            $blocks.Add((New-CustomerWordListBlock -Items @($detailItems.ToArray()))) | Out-Null
-        }
+        $tableRows = @(
+            @('Criticality', $criticality),
+            @('Level of Effort', $effortTier),
+            @('Rough PS Hours', $estimatedPsHours),
+            @('Owner', $owner),
+            @('Detailed Recommendation', $recommendationText),
+            @('Success Signal', $successText)
+        )
+
+        $blocks.Add((New-CustomerWordParagraphBlock -Text ('{0}. {1}' -f $itemIndex, $title) -Style 'Heading3')) | Out-Null
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('Field', 'Detail') -Rows $tableRows -ColumnWidths @(2640, 6720))) | Out-Null
+    }
 
     return @($blocks.ToArray())
 }
@@ -3587,15 +3589,17 @@ function New-CustomerWordTableXml {
     param(
         [Parameter(Mandatory = $true)][string[]]$Headers,
         [Parameter(Mandatory = $true)]$Rows,
-        [Parameter(Mandatory = $false)][string]$Style
+        [Parameter(Mandatory = $false)][string]$Style,
+        [Parameter(Mandatory = $false)][int[]]$ColumnWidths
     )
 
     $columnCount = @($Headers).Count
     $tblGridColumns = @()
     $gridWidths = @()
     if ($columnCount -gt 0) {
-        $gridWidth = [math]::Floor(9360 / $columnCount)
+        $useCustomWidths = $ColumnWidths -and @($ColumnWidths).Count -eq $columnCount
         for ($index = 0; $index -lt $columnCount; $index++) {
+            $gridWidth = if ($useCustomWidths) { $ColumnWidths[$index] } else { [math]::Floor(9360 / $columnCount) }
             $gridWidths += $gridWidth
             $tblGridColumns += "<w:gridCol w:w=""$gridWidth""/>"
         }
@@ -3909,7 +3913,9 @@ function New-CustomerAssessmentDocumentXml {
                 }
             }
             'Table' {
-                $bodyElements.Add((New-CustomerWordTableXml -Headers @($block.Headers) -Rows @($block.Rows) -Style ([string]$block.Style))) | Out-Null
+                $tableParams = @{ Headers = @($block.Headers); Rows = @($block.Rows); Style = ([string]$block.Style) }
+                if ($block.ColumnWidths -and @($block.ColumnWidths).Count -gt 0) { $tableParams['ColumnWidths'] = @($block.ColumnWidths) }
+                $bodyElements.Add((New-CustomerWordTableXml @tableParams)) | Out-Null
             }
             'Image' {
                 $bodyElements.Add((New-CustomerWordImageXml -Block $block)) | Out-Null
