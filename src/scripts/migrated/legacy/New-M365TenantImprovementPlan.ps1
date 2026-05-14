@@ -4009,6 +4009,26 @@ function Get-CustomerMfaEnforcementSummary {
             $reviewedPolicies = $ConditionalAccessPolicies.Count
         }
         $guestUserEnforcementState = Get-CustomerGuestUserEnforcementState -ExistingSummary $ExistingSummary -ConditionalAccessPolicies $ConditionalAccessPolicies -ConditionalAccessSummary $ConditionalAccessSummary
+        $existingCoveragePct = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('UserCoveragePercent'))
+        $existingEnabledPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnabledPoliciesRequiringMfa'))
+        $existingSecDefaults = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('SecurityDefaultsEnabled'))
+        $coverageBasedEnforcementState = if ($null -ne $existingCoveragePct) {
+            if ($existingCoveragePct -ge 95) {
+                'Full coverage — enabled Conditional Access policies cover virtually all enabled users.'
+            } elseif ($existingCoveragePct -ge 70) {
+                ("Partial coverage ({0}%) — enabled CA policies do not reach all enabled users; enforcement gaps remain." -f [math]::Round($existingCoveragePct))
+            } elseif ($existingCoveragePct -gt 0) {
+                ("Minimal coverage ({0}%) — enabled CA policies cover only a small portion of enabled users; most accounts fall outside current policy scope." -f [math]::Round($existingCoveragePct))
+            } else {
+                'Enforcement policies are in place but no user coverage was computed from the available data.'
+            }
+        } elseif ($existingSecDefaults -eq $true) {
+            'MFA enforcement is active through Security Defaults.'
+        } elseif ($null -ne $existingEnabledPolicies -and $existingEnabledPolicies -gt 0) {
+            'Enabled Conditional Access policies require MFA; user coverage scope was not computed from the reviewed data.'
+        } else {
+            Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnforcementState')) -Default 'Not validated from the reviewed data'
+        }
 
         return [pscustomobject]@{
             ConditionalAccessPoliciesReviewed   = $reviewedPolicies
@@ -4036,7 +4056,7 @@ function Get-CustomerMfaEnforcementSummary {
             RiskBasedCoverage                   = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('RiskBasedCoverage'))
             CompliantDeviceRequirement          = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('CompliantDeviceRequirement'))
             GuestUserEnforcementState           = $guestUserEnforcementState
-            EnforcementState                    = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnforcementState')) -Default 'Not validated from the reviewed data'
+            EnforcementState                    = $coverageBasedEnforcementState
             CollectionState                     = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('CollectionState')) -Default 'Not validated from the reviewed data'
         }
     }
@@ -4050,10 +4070,10 @@ function Get-CustomerMfaEnforcementSummary {
     }
 
     $enforcementState = if ($enabledMfaPolicies.Count -gt 0 -and $securityDefaultsEnabled -eq $true) {
-        'Conditional Access and Security Defaults both enforce MFA; confirm that the overlapping baseline is intentional.'
+        'Conditional Access and Security Defaults both enforce MFA; confirm that the overlapping baseline is intentional. User coverage scope was not computed from the reviewed data.'
     }
     elseif ($enabledMfaPolicies.Count -gt 0) {
-        'MFA enforcement is active through enabled Conditional Access policies.'
+        'Enabled Conditional Access policies require MFA; user coverage scope was not computed from the reviewed data.'
     }
     elseif ($securityDefaultsEnabled -eq $true) {
         'MFA enforcement is active through Security Defaults.'
