@@ -1847,7 +1847,7 @@ function Get-CustomerAssessmentAppendixSections {
             )
         },
         [pscustomobject]@{
-            Title      = '16.9 Pass-Through Authentication and Password Writeback'
+            Title      = '16.10 Pass-Through Authentication and Password Writeback'
             Intro      = 'These references support the password writeback, SSPR, and hybrid identity posture observations described in the report.'
             References = @(
                 (New-CustomerDocumentationReference -Title 'User self-service password reset deep dive' -Url 'https://learn.microsoft.com/en-us/entra/identity/authentication/concept-sspr-howitworks' -WhyItIsRelevant 'Supports the password reset and self-service password reset observations.'),
@@ -5658,6 +5658,19 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This section is the streamlined execution view for the report. Use it to prioritize the work, confirm ownership, and align the roadmap to the areas carrying the most risk.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Recommendation', 'Criticality', 'Level of Effort', 'Rough PS Hours') -Rows $recommendationRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Level of Effort is an initial delivery-planning estimate intended to help sequence work at a glance. Rough PS Hours is a combined engineering and project-management estimate covering prep, review, presentation, implementation, QA, and finalization. It does not include customer-side wait states or third-party execution.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Completion Signals' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'The table below defines what a closed state looks like for each key area. Use these signals to confirm that a recommendation has reached the intended target state, not just that work has begun.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordTableBlock -Headers @('Area', 'Target State') -Rows @(
+        ,@('Identity and Access', 'Global Administrator count at or below the approved threshold; all enabled admin accounts show confirmed sign-in within 90 days; all admins covered by an enabled MFA enforcement Conditional Access policy'),
+        ,@('MFA and Conditional Access', 'All enabled users covered by at least one enabled MFA enforcement policy or Security Defaults; report-only policies graduated to enforcement or formally deferred with documented rationale; CA policies with exclusions reviewed and scoped to the minimum required set'),
+        ,@('Password and Hybrid Identity', 'Password writeback, self-service password reset, and directory synchronization states confirmed and aligned to the approved hybrid identity design; on-premises sync lag within acceptable threshold'),
+        ,@('Exchange Online', 'No unapproved external mail forwarding paths active; SMTP AUTH limited to documented service accounts with named owners; shared mailboxes with no ownership signal resolved'),
+        ,@('Microsoft Teams', 'Ownerless Teams inventoried and assigned or archived; dormant Teams actioned within the approved dormancy window; guest-heavy Teams with no documented exception reviewed'),
+        ,@('SharePoint and OneDrive', 'Tenant external sharing set to the documented approved baseline; site-level sharing overrides reviewed and either approved or removed; stale externally shared content cleaned up'),
+        ,@('Licensing', 'No license SKUs exceeding purchased capacity; group-based licensing groups have named owners and a documented review cadence; inactive or ineligible licensed users reclaimed'),
+        ,@('Purview and Compliance', 'At least one retention policy active and covering primary workloads; DLP policies in enforcement mode for critical workloads; sensitivity label and audit log scope decisions documented even where not yet implemented'),
+        ,@('Offboarding and Lifecycle', 'Account deprovisioning completed within the documented SLA; licenses reclaimed at or before deprovisioning; inactive guest and member accounts reviewed on a documented cadence')
+    ))) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.0 Entra ID Review: User and Device Inventory' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Review of the tenant configuration indicated that identity hygiene and device governance need to be read together in this environment. The same parts of the tenant that are carrying stale privileged access are also the parts of the environment where compliance-driven access control is least mature.' -Style 'Normal')) | Out-Null
@@ -6889,7 +6902,7 @@ function New-CustomerAssessmentDocumentBlocks {
         (New-CustomerDocumentationReference -Title 'Learn about data loss prevention' -Url 'https://learn.microsoft.com/en-us/purview/dlp-learn-about-dlp' -WhyItIsRelevant 'Provides Microsoft guidance for DLP and data-protection governance.')
     )))) | Out-Null
 
-    $blocks.Add((New-CustomerWordParagraphBlock -Text '16.9 Pass-Through Authentication and Password Writeback' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '16.10 Pass-Through Authentication and Password Writeback' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Hybrid identity references are included here because directory synchronization, PTA, password writeback, and SSPR visibility all influence how identity operations can be supported safely and consistently.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Pass-Through Authentication (PTA)' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'PTA guidance is relevant anywhere the tenant depends on on-premises credential validation or is still deciding between hybrid sign-in approaches. These references support the hybrid identity observations surfaced in the report.' -Style 'Normal')) | Out-Null
