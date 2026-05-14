@@ -5613,6 +5613,27 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text ('The scope of this report is limited to the Microsoft 365 signals surfaced in the tenant review across identity, devices, messaging, collaboration, Purview/compliance, governance, and lifecycle controls. {0} The document focuses on the conditions that were visible in the tenant data and maps those conditions into the operating areas most likely to affect security, administration, and day-to-day support.' -f $purviewScopeSentence) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Where a data point was not available, the report labels it clearly instead of inferring a value.' -Style 'Normal')) | Out-Null
 
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '2.1 Assessment Methodology' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("Tenant data for {0} was collected on {1} using read-only Microsoft Graph API calls and PowerShell-based connectors. No configuration changes were made during data collection. The snapshot represents the state of the tenant at collection time and does not reflect changes made after that date." -f $tenantName, $GeneratedAt.ToString('MMMM d, yyyy')) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Data Collection Scope' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordTableBlock -Headers @('Area', 'Data Collected') -Rows @(
+        ,@('Identity and Access', 'Entra ID users, guests, device registrations, admin role assignments, Conditional Access policies, MFA registration state, service principals, and application registrations'),
+        ,@('Exchange Online', 'Mailbox configuration, accepted domains, mail forwarding rules, recipient domains, archive and litigation hold state, and SMTP relay configuration'),
+        ,@('Microsoft Teams', 'Team lifecycle signals, guest access configuration, external access policy, and meeting and messaging policy settings'),
+        ,@('SharePoint Online and OneDrive', 'Site-level sharing configuration, external sharing policies, and storage signals'),
+        ,@('Purview / Compliance', 'Retention policy configuration and DLP policy inventory with enforcement mode'),
+        ,@('Licensing and Governance', 'License assignment state, group-based licensing configuration, and license utilization signals')
+    ))) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Workloads Not in Scope' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'The following capability areas were not collected or analyzed in this engagement. Section 15.0 documents each exclusion explicitly so the report does not imply coverage it did not provide.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(
+        'Microsoft Defender for Endpoint and Microsoft Defender XDR — device compliance posture, endpoint protection signals, and Defender XDR incident data',
+        'Microsoft Power Platform (Power Apps, Power Automate, Power BI) — environment sprawl, connector usage, and platform-level DLP policies',
+        'Microsoft Copilot for Microsoft 365 — readiness posture, data oversharing risk, and prompt usage analytics',
+        'Microsoft Purview Sensitivity Labels — label taxonomy, auto-labeling policy configuration, and classification coverage',
+        'Microsoft Purview Audit Log — unified audit log review, alert policy coverage, and forensic event query scope'
+    ))) | Out-Null
+
     $blocks.Add((New-CustomerWordParagraphBlock -Text '3.0 Executive Summary' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text "The summary below gives leadership a decision-ready view of where risk is clustering and why those patterns matter now." -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $executiveDecisionSummary) { $executiveDecisionSummary.Narrative } else { $SourceModel.ExecutiveNarrative })) -Style 'Normal')) | Out-Null
