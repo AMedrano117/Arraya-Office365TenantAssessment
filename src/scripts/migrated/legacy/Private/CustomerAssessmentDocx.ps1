@@ -1782,7 +1782,7 @@ function Get-CustomerAssessmentAppendixSections {
 
     return @(
         [pscustomobject]@{
-            Title      = '15.1 Device Management'
+            Title      = '16.1 Device Management'
             Intro      = 'These Microsoft references support the device management, compliance, and managed access observations documented in this report.'
             References = @(
                 (New-CustomerDocumentationReference -Title 'Get started with device compliance policies in Microsoft Intune' -Url 'https://learn.microsoft.com/en-us/intune/intune-service/protect/device-compliance-get-started' -WhyItIsRelevant 'Supports the compliance baseline and managed-device observations in the endpoint review.'),
@@ -1790,7 +1790,7 @@ function Get-CustomerAssessmentAppendixSections {
             )
         },
         [pscustomobject]@{
-            Title      = '15.2 Entra Guest Access Best Practices'
+            Title      = '16.2 Entra Guest Access Best Practices'
             Intro      = 'These references support the observations related to guest lifecycle, external collaboration, and guest governance.'
             References = @(
                 (New-CustomerDocumentationReference -Title 'B2B collaboration fundamentals' -Url 'https://learn.microsoft.com/en-us/entra/external-id/b2b-fundamentals' -WhyItIsRelevant 'Supports guest access governance and external collaboration design.'),
@@ -1798,7 +1798,7 @@ function Get-CustomerAssessmentAppendixSections {
             )
         },
         [pscustomobject]@{
-            Title      = '15.3 Application Consent and Authentication Methods'
+            Title      = '16.3 Application Consent and Authentication Methods'
             Intro      = 'These Microsoft references support the application governance, consent, and authentication-method observations in the tenant review.'
             References = @(
                 (New-CustomerDocumentationReference -Title 'Configure the admin consent workflow' -Url 'https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/configure-admin-consent-workflow' -WhyItIsRelevant 'Relevant to application governance and approval workflow maturity.'),
@@ -1806,7 +1806,7 @@ function Get-CustomerAssessmentAppendixSections {
             )
         },
         [pscustomobject]@{
-            Title      = '15.4 Access and Privileged Identity Management'
+            Title      = '16.4 Access and Privileged Identity Management'
             Intro      = 'These references support the Conditional Access, privileged-access, and standing-admin observations documented in this report.'
             References = @(
                 (New-CustomerDocumentationReference -Title 'Conditional Access overview' -Url 'https://learn.microsoft.com/en-us/entra/identity/conditional-access/overview' -WhyItIsRelevant 'Supports the policy coverage, exclusions, and enforcement observations.'),
@@ -1814,7 +1814,7 @@ function Get-CustomerAssessmentAppendixSections {
             )
         },
         [pscustomobject]@{
-            Title      = '15.5 Exchange Online Archives and SMTP Relay'
+            Title      = '16.5 Exchange Online Archives and SMTP Relay'
             Intro      = 'These references support the messaging, forwarding, transport, archive, and relay observations documented in the Exchange review.'
             References = @(
                 (New-CustomerDocumentationReference -Title 'Control automatic external email forwarding in Microsoft 365' -Url 'https://learn.microsoft.com/en-us/microsoft-365/security/office-365-security/outbound-spam-policies-external-email-forwarding' -WhyItIsRelevant 'Supports the forwarding-control observations in the messaging section.'),
@@ -1822,7 +1822,7 @@ function Get-CustomerAssessmentAppendixSections {
             )
         },
         [pscustomobject]@{
-            Title      = '15.6 Microsoft Teams and SharePoint Online'
+            Title      = '16.6 Microsoft Teams and SharePoint Online'
             Intro      = 'These references support the collaboration observations related to ownership, lifecycle, and sharing controls.'
             References = @(
                 (New-CustomerDocumentationReference -Title 'Manage who can create Microsoft 365 Groups' -Url 'https://learn.microsoft.com/en-us/microsoft-365/solutions/manage-creation-of-groups' -WhyItIsRelevant 'Supports governance of Teams-connected groups and workspace sprawl.'),
@@ -1830,7 +1830,7 @@ function Get-CustomerAssessmentAppendixSections {
             )
         },
         [pscustomobject]@{
-            Title      = '15.8 DNS DMARC and OneDrive'
+            Title      = '16.8 DNS DMARC and OneDrive'
             Intro      = 'These references support the domain-authentication and OneDrive lifecycle observations documented in this report.'
             References = @(
                 (New-CustomerDocumentationReference -Title 'Set up SPF in Microsoft 365 to help prevent spoofing' -Url 'https://learn.microsoft.com/en-us/microsoft-365/security/office-365-security/set-up-spf-in-office-365-to-help-prevent-spoofing' -WhyItIsRelevant 'Supports SPF and anti-spoofing guidance for the reviewed domains.'),
@@ -1839,7 +1839,7 @@ function Get-CustomerAssessmentAppendixSections {
             )
         },
         [pscustomobject]@{
-            Title      = '15.9 Retention Policies and Data Loss Prevention'
+            Title      = '16.9 Retention Policies and Data Loss Prevention'
             Intro      = 'These references support the current-state observations around retention visibility, data lifecycle governance, and DLP maturity.'
             References = @(
                 (New-CustomerDocumentationReference -Title 'Learn about retention policies and retention labels' -Url 'https://learn.microsoft.com/en-us/purview/retention' -WhyItIsRelevant 'Supports the retention-policy observations and the need for documented lifecycle controls.'),
@@ -1847,7 +1847,7 @@ function Get-CustomerAssessmentAppendixSections {
             )
         },
         [pscustomobject]@{
-            Title      = '15.9 Pass-Through Authentication and Password Writeback'
+            Title      = '16.9 Pass-Through Authentication and Password Writeback'
             Intro      = 'These references support the password writeback, SSPR, and hybrid identity posture observations described in the report.'
             References = @(
                 (New-CustomerDocumentationReference -Title 'User self-service password reset deep dive' -Url 'https://learn.microsoft.com/en-us/entra/identity/authentication/concept-sspr-howitworks' -WhyItIsRelevant 'Supports the password reset and self-service password reset observations.'),
@@ -4288,6 +4288,7 @@ function New-CustomerAssessmentDocumentBlocks {
     $externalExposureFindings = Convert-ArrayaObjectToArray $Signals.ExternalExposureFindings
     $retentionPolicyRows = Convert-ArrayaObjectToArray $Signals.RetentionPolicies
     $dlpPolicyRows = Convert-ArrayaObjectToArray $Signals.DlpPolicies
+    $caPolicies = @(Convert-ArrayaObjectToArray $Signals.ConditionalAccessPolicies)
     $purviewScopeStateText = Get-CustomerPurviewScopeStateText -RetentionPolicyRows $retentionPolicyRows -DlpPolicyRows $dlpPolicyRows
     $purviewScopeSentence = if ($retentionPolicyRows.Count -gt 0 -or $dlpPolicyRows.Count -gt 0) {
         'Purview retention and DLP visibility is explicitly summarized in the opening snapshot so compliance policy evidence is not hidden under general governance.'
@@ -6432,6 +6433,27 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Representative MFA Scope Examples' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Policy', 'Scope Type', 'Scope Signal', 'Why It Matters') -Rows $mfaScopeExampleRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $identityConsultativeSummary) { $identityConsultativeSummary.RecommendationSupport } else { 'This section supports the identity and access recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Conditional Access Policy Inventory' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'The table below lists all Conditional Access policies collected from this tenant. State values are Enabled, Disabled, or Report-only. Use this inventory to verify that all users are covered by at least one MFA-enforcing enabled policy and that report-only policies are either graduated to enforcement or documented as intentionally deferred.' -Style 'Normal')) | Out-Null
+    if ($caPolicies.Count -gt 0) {
+        $caPolicyTableRows = @($caPolicies | ForEach-Object {
+            $policyDisplayName = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName')) -Default 'Unnamed policy'
+            $policyStateRaw = [string](Get-ArrayaObjectValue -Object $_ -Names @('State'))
+            $policyStateLabel = switch ($policyStateRaw.ToLowerInvariant()) {
+                'enabled'                           { 'Enabled' }
+                'disabled'                          { 'Disabled' }
+                'enabledforreportingbutnotenforced' { 'Report-only' }
+                default                             { if ([string]::IsNullOrWhiteSpace($policyStateRaw)) { 'Unknown' } else { $policyStateRaw } }
+            }
+            $policyMfaRequired = if ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RequiresMfaEnforcement'))) -eq $true) { 'Yes' } else { 'No' }
+            $policyHasExclusions = if ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasExclusions'))) -eq $true) { 'Yes' } else { 'No' }
+            ,@($policyDisplayName, $policyStateLabel, $policyMfaRequired, $policyHasExclusions)
+        })
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('Policy Name', 'State', 'MFA Required', 'Has Exclusions') -Rows $caPolicyTableRows)) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Conditional Access policy inventory was not surfaced in the reviewed data.' -Style 'Normal')) | Out-Null
+    }
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '7.0 Password Writeback and Self-Service Password Reset' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Configuration Signal', 'Current State') -Rows @(
@@ -6666,6 +6688,17 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Configuration Signal', 'Current State') -Rows $retentionRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'The retention view is stronger than a simple yes-or-no check, but it still shows a gap between mailbox-level lifecycle controls and a clearly surfaced cross-workload retention or DLP program. In the current source, explicit retention signals are visible on individual mailboxes, while DLP detail remains limited or absent.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This matters because retention and DLP are the point where messaging, collaboration, and compliance expectations converge. If those controls are partially implemented or insufficiently visible, legal, operational, and security outcomes become harder to validate with confidence.' -Style 'Normal')) | Out-Null
+    if ($dlpPolicyRows.Count -gt 0) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'DLP Policy Inventory' -Style 'Heading2')) | Out-Null
+        $dlpInventoryTableRows = @($dlpPolicyRows | ForEach-Object {
+            $dlpPolicyName = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('PolicyName')) -Default 'Unnamed policy'
+            $dlpEnabled = if ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('Enabled'))) -eq $true) { 'Yes' } else { 'No' }
+            $dlpMode = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Mode')) -Default 'Not surfaced'
+            $dlpWorkload = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Workload')) -Default 'Not surfaced'
+            ,@($dlpPolicyName, $dlpEnabled, $dlpMode, $dlpWorkload)
+        })
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('Policy Name', 'Enabled', 'Mode', 'Workloads') -Rows $dlpInventoryTableRows)) | Out-Null
+    }
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '13.0 Domain Configuration and DNS Overview' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("The tenant review surfaced {0} verified domain(s) out of {1} domain record(s) reviewed. This section keeps domain registration state and DNS trust controls together because accepted-domain hygiene, spoofing resistance, and message trust are closely related in the current environment." -f $verifiedDomains.Count, $(if ($domainRows.Count -gt 0) { $domainRows.Count } else { 'an unconfirmed number of' })) -Style 'Normal')) | Out-Null
@@ -6704,24 +6737,34 @@ function New-CustomerAssessmentDocumentBlocks {
     }
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $lifecycleConsultativeSummary) { $lifecycleConsultativeSummary.RecommendationSupport } else { 'This section supports the lifecycle and ownership-governance recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
 
-    $blocks.Add((New-CustomerWordParagraphBlock -Text '15.0 Appendix' -Style 'Heading1')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '15.0 Workloads Outside Assessment Scope' -Style 'Heading1')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'This assessment covered the workloads and signals described in Sections 1–14. The capability areas listed below were not collected or analyzed in this engagement. They are documented explicitly so the report does not imply coverage it did not provide.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordTableBlock -Headers @('Workload', 'Scope Note') -Rows @(
+        @('Microsoft Defender for Endpoint / Microsoft Defender XDR', 'Device compliance posture, endpoint protection signals, Defender XDR incident data, and device health reporting require a dedicated security review and were not part of this engagement.'),
+        @('Microsoft Power Platform (Power Apps, Power Automate, Power BI)', 'Power Platform environment sprawl, connector usage, and platform-level DLP policies are outside the current assessment boundary.'),
+        @('Microsoft Copilot for Microsoft 365', 'Copilot readiness, data oversharing risk, and prompt usage analytics require a dedicated Copilot assessment engagement.'),
+        @('Microsoft Purview Sensitivity Labels', 'Sensitivity label taxonomy, auto-labeling policy configuration, and classification coverage were not analyzed in this review.'),
+        @('Microsoft Purview Audit Log', 'Unified audit log review, alert policy coverage, and forensic event query scope were not part of this assessment.')
+    ))) | Out-Null
+
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '16.0 Appendix' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'The appendix sections that follow provide Microsoft documentation references and a full finding reference table for leadership review and technical planning.' -Style 'Normal')) | Out-Null
 
-    $blocks.Add((New-CustomerWordParagraphBlock -Text '15.1 Device Management' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '16.1 Device Management' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Device management is central to maintaining security and compliance in a tenant where unmanaged and stale devices remain part of the current footprint. The references below support the endpoint observations documented in this assessment.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
         (New-CustomerDocumentationReference -Title 'Get started with device compliance policies in Microsoft Intune' -Url 'https://learn.microsoft.com/en-us/intune/intune-service/protect/device-compliance-get-started' -WhyItIsRelevant 'Supports the compliance baseline and managed-device observations in the endpoint review.'),
         (New-CustomerDocumentationReference -Title 'Require compliant or hybrid Microsoft Entra joined device' -Url 'https://learn.microsoft.com/en-us/entra/identity/conditional-access/policy-all-users-device-compliance' -WhyItIsRelevant 'Provides Microsoft guidance for tying device state to access-control enforcement.')
     )))) | Out-Null
 
-    $blocks.Add((New-CustomerWordParagraphBlock -Text '15.2 Entra Guest Access Best Practices' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '16.2 Entra Guest Access Best Practices' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Guest access best practices matter in this tenant because external collaboration, inactive guests, and sharing posture are all part of the current risk picture. These references support the guest lifecycle and external-access observations in the report.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
         (New-CustomerDocumentationReference -Title 'B2B collaboration fundamentals' -Url 'https://learn.microsoft.com/en-us/entra/external-id/b2b-fundamentals' -WhyItIsRelevant 'Supports guest access governance and external collaboration design.'),
         (New-CustomerDocumentationReference -Title 'Overview of external sharing in SharePoint and OneDrive' -Url 'https://learn.microsoft.com/en-us/sharepoint/external-sharing-overview' -WhyItIsRelevant 'Provides Microsoft guidance for the collaboration-sharing observations in this report.')
     )))) | Out-Null
 
-    $blocks.Add((New-CustomerWordParagraphBlock -Text '15.3 Application Consent and Authentication Methods' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '16.3 Application Consent and Authentication Methods' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Application governance and authentication-method controls both affect how quickly identity exposure can grow in a tenant. The references in this appendix support the application-consent, MFA, and authentication-method observations documented earlier in this report.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Application User Consent Management' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Application user consent should be managed deliberately wherever users can authorize apps to access organizational data. In a tenant where privileged app permissions and consent workflow maturity are already part of the review, consent governance becomes an important control boundary.' -Style 'Normal')) | Out-Null
@@ -6737,14 +6780,14 @@ function New-CustomerAssessmentDocumentBlocks {
         (New-CustomerDocumentationReference -Title 'Manage authentication methods' -Url 'https://learn.microsoft.com/en-us/azure/active-directory/authentication/concept-authentication-methods-manage' -WhyItIsRelevant 'Supports migration away from legacy MFA and SSPR policy management.'),
         (New-CustomerDocumentationReference -Title 'Self-service password reset deep dive' -Url 'https://learn.microsoft.com/en-us/entra/identity/authentication/concept-sspr-howitworks' -WhyItIsRelevant 'Provides Microsoft guidance for SSPR design and operational implications.')
     )))) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text '15.4 Access and Privileged Identity Management' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '16.4 Access and Privileged Identity Management' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Conditional Access and privileged-role governance are two of the strongest levers available for reducing identity risk in this tenant. These references support the policy-state, exclusions, and standing-admin observations documented in the report.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
         (New-CustomerDocumentationReference -Title 'Conditional Access overview' -Url 'https://learn.microsoft.com/en-us/entra/identity/conditional-access/overview' -WhyItIsRelevant 'Supports the policy coverage, exclusions, and enforcement observations.'),
         (New-CustomerDocumentationReference -Title 'Privileged Identity Management overview' -Url 'https://learn.microsoft.com/en-us/entra/id-governance/privileged-identity-management/pim-configure' -WhyItIsRelevant 'Supports the recommendations related to privileged role hygiene and reducing standing access.')
     )))) | Out-Null
 
-    $blocks.Add((New-CustomerWordParagraphBlock -Text '15.5 Exchange Online Archives and SMTP Relay' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '16.5 Exchange Online Archives and SMTP Relay' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'The Exchange appendix supports the mailbox-growth, archive, forwarding, and relay observations documented in this report. These references are useful where mailbox lifecycle and transport controls are both part of the same remediation path.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Exchange Online Archives and Retention Policies' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Archive usage and mailbox retention are part of the same long-term lifecycle story. The references below support archive enablement, mailbox retention, and storage planning.' -Style 'Normal')) | Out-Null
@@ -6759,7 +6802,7 @@ function New-CustomerAssessmentDocumentBlocks {
         (New-CustomerDocumentationReference -Title 'How to set up a multifunction device or application to send email using Microsoft 365 or Office 365' -Url 'https://learn.microsoft.com/en-us/exchange/mail-flow-best-practices/how-to-set-up-a-multifunction-device-or-application-to-send-email-using-microsoft-365-or-office-365' -WhyItIsRelevant 'Relevant to SMTP relay, connector, and mail-flow exception handling.')
     )))) | Out-Null
 
-    $blocks.Add((New-CustomerWordParagraphBlock -Text '15.6 Microsoft Teams and SharePoint Online' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '16.6 Microsoft Teams and SharePoint Online' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Teams and SharePoint governance are closely linked in this tenant because collaboration growth, ownership, and sharing posture are moving together. The following Microsoft guidance supports the observations documented in the collaboration sections.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Microsoft Teams Governance' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Teams governance references are most relevant where ownerless workspaces, dormant collaboration spaces, and group-creation controls are part of the current-state review.' -Style 'Normal')) | Out-Null
@@ -6767,14 +6810,14 @@ function New-CustomerAssessmentDocumentBlocks {
         (New-CustomerDocumentationReference -Title 'Manage who can create Microsoft 365 Groups' -Url 'https://learn.microsoft.com/en-us/microsoft-365/solutions/manage-creation-of-groups' -WhyItIsRelevant 'Supports governance of Teams-connected groups and workspace sprawl.'),
         (New-CustomerDocumentationReference -Title 'Set expiration for Microsoft 365 groups' -Url 'https://learn.microsoft.com/en-us/entra/identity/users/groups-lifecycle' -WhyItIsRelevant 'Relevant to dormant collaboration spaces and lifecycle control.')
     )))) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text '15.7 SharePoint Online Collaboration' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '16.7 SharePoint Online Collaboration' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'SharePoint and OneDrive guidance is particularly relevant where storage growth, stale content, and external sharing need to be evaluated together rather than as separate issues.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
         (New-CustomerDocumentationReference -Title 'Overview of external sharing in SharePoint and OneDrive' -Url 'https://learn.microsoft.com/en-us/sharepoint/external-sharing-overview' -WhyItIsRelevant 'Supports the collaboration-sharing observations in this report.'),
         (New-CustomerDocumentationReference -Title 'Retention and deletion in OneDrive and SharePoint' -Url 'https://learn.microsoft.com/en-us/sharepoint/retention-and-deletion' -WhyItIsRelevant 'Relevant to stale OneDrive and SharePoint lifecycle handling.')
     )))) | Out-Null
 
-    $blocks.Add((New-CustomerWordParagraphBlock -Text '15.8 DNS DMARC and OneDrive' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '16.8 DNS DMARC and OneDrive' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This appendix supports the domain-authentication, DMARC, and OneDrive lifecycle observations that surfaced during the review of accepted domains and collaboration services.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'DMARC Records' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'DMARC guidance is especially relevant where recipient volume is concentrated on a small set of accepted domains and mail-authentication posture is uneven across those namespaces.' -Style 'Normal')) | Out-Null
@@ -6789,7 +6832,7 @@ function New-CustomerAssessmentDocumentBlocks {
         (New-CustomerDocumentationReference -Title 'Retention and deletion in OneDrive and SharePoint' -Url 'https://learn.microsoft.com/en-us/sharepoint/retention-and-deletion' -WhyItIsRelevant 'Relevant to stale OneDrive lifecycle handling and post-departure content management.')
     )))) | Out-Null
 
-    $blocks.Add((New-CustomerWordParagraphBlock -Text '15.9 Retention Policies and Data Loss Prevention' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '16.9 Retention Policies and Data Loss Prevention' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Retention and DLP guidance becomes especially important where the tenant shows partial retention visibility, but not enough evidence to confirm a mature cross-workload lifecycle and data-protection program.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Additional Resources' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordListBlock -Items @(Convert-CustomerDocumentationReferencesToListItems -References @(
@@ -6797,7 +6840,7 @@ function New-CustomerAssessmentDocumentBlocks {
         (New-CustomerDocumentationReference -Title 'Learn about data loss prevention' -Url 'https://learn.microsoft.com/en-us/purview/dlp-learn-about-dlp' -WhyItIsRelevant 'Provides Microsoft guidance for DLP and data-protection governance.')
     )))) | Out-Null
 
-    $blocks.Add((New-CustomerWordParagraphBlock -Text '15.9 Pass-Through Authentication and Password Writeback' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '16.9 Pass-Through Authentication and Password Writeback' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Hybrid identity references are included here because directory synchronization, PTA, password writeback, and SSPR visibility all influence how identity operations can be supported safely and consistently.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Pass-Through Authentication (PTA)' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'PTA guidance is relevant anywhere the tenant depends on on-premises credential validation or is still deciding between hybrid sign-in approaches. These references support the hybrid identity observations surfaced in the report.' -Style 'Normal')) | Out-Null
