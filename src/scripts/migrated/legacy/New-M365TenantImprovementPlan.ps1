@@ -6815,6 +6815,11 @@ elseif ($null -ne $enterpriseApplicationSummary -and $null -ne $enterpriseApplic
 }
 $guestSignInSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('GuestSignInSummary')
 $privilegedAccessSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('PrivilegedAccessSummary')
+$privilegedSummaryRecord = if ($privilegedAccessSummary) { Get-ArrayaObjectValue -Object $privilegedAccessSummary -Names @('Summary') } else { $null }
+$canonicalGlobalAdminCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $privilegedSummaryRecord -Names @('GlobalAdministratorCount'))
+if ($null -eq $canonicalGlobalAdminCount) {
+    $canonicalGlobalAdminCount = @($adminRows | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('Role', 'RolesAssigned'))) -match 'global administrator' }).Count
+}
 $inboxRulesExternalForwarding = Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $tenantData -Names @('InboxRulesExternalForwarding'))
 $inboxRuleForwardingSummary = Get-ArrayaObjectValue -Object $tenantData -Names @('InboxRuleForwardingSummary')
 $forwardingPolicySummary = Get-ArrayaObjectValue -Object $tenantData -Names @('ForwardingPolicySummary')
@@ -7076,8 +7081,8 @@ if (-not (Test-DerivedCoverage -Tags @('mfa enforcement') -DerivedFindings $deri
     }
 }
 
-if (-not (Test-DerivedCoverage -Tags @('global administrator', 'privileged') -DerivedFindings $derivedFindings) -and $snapshotMetrics.GlobalAdminCount -gt $MaxGlobalAdmins) {
-    Add-HeuristicFinding -Store $findingStore -RuleId 'ADMIN-001' -Area 'Identity Governance' -Category 'Privileged Access' -Severity 'High' -Finding 'Global administrator count exceeds the recommended threshold.' -Recommendation 'Reduce active Global Administrator assignments, remove stale admins from the role entirely, move infrequent administrators to lower-privilege roles such as Global Reader where possible, and use eligible activation with approval for full tenant-wide access where that operating model is supported.' -CurrentValue "$($snapshotMetrics.GlobalAdminCount) accounts" -TargetValue "<= $MaxGlobalAdmins accounts" -RelatedWorksheet 'Admins' -RelatedSection 'Privileged Access'
+if (-not (Test-DerivedCoverage -Tags @('global administrator', 'privileged') -DerivedFindings $derivedFindings) -and $canonicalGlobalAdminCount -gt $MaxGlobalAdmins) {
+    Add-HeuristicFinding -Store $findingStore -RuleId 'ADMIN-001' -Area 'Identity Governance' -Category 'Privileged Access' -Severity 'High' -Finding 'Global administrator count exceeds the recommended threshold.' -Recommendation 'Reduce active Global Administrator assignments, remove stale admins from the role entirely, move infrequent administrators to lower-privilege roles such as Global Reader where possible, and use eligible activation with approval for full tenant-wide access where that operating model is supported.' -CurrentValue "$canonicalGlobalAdminCount accounts" -TargetValue "<= $MaxGlobalAdmins accounts" -RelatedWorksheet 'Admins' -RelatedSection 'Privileged Access'
 }
 
 $adminMfaEnforcementSignal = @($privilegedAccessRemediationSummary | Where-Object { [string]$_.Signal -eq 'Admin MFA enforcement gaps' -and [string]$_.Status -eq 'Review' } | Select-Object -First 1)
@@ -7945,16 +7950,20 @@ if ($IncludeLegacyArtifacts) {
     Set-Content -Path $mdOutPath -Value ($summaryLines -join [Environment]::NewLine) -Encoding UTF8
 }
 
+if (-not $Quiet) { Write-Host '  Loading evidence coverage and building report model...' }
 $solutionsEngineerEvidenceCoverageSummary = Import-SolutionsEngineerEvidenceCoverageSummary -AssessmentJsonPath $AssessmentJsonPath -SupportFolderPath $supportFolder
 $solutionsEngineerEvidenceCoverageSummary = Copy-SolutionsEngineerEvidenceCoverageArtifact -EvidenceCoverageSummary $solutionsEngineerEvidenceCoverageSummary -SupportFolderPath $supportFolder -TenantName $tenantName -FallbackPrefix $OutputPrefix
 $customerSourceModel = New-CustomerReportSourceModel -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -SourceInputPath $AssessmentJsonPath -SourceType 'Snapshot' -SourceLabel ([System.IO.Path]::GetFileNameWithoutExtension($AssessmentJsonPath)) -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TechnicalObservations $technicalObservations -ConsultativeSummaries $consultativeSummaries -AssessmentVersion $assessmentVersionLabel -EvidenceCoverageSummary $solutionsEngineerEvidenceCoverageSummary
 $customerAssessmentTemplatePath = Get-CustomerAssessmentTemplatePath
+if (-not $Quiet) { Write-Host '  Generating customer assessment report...' }
 $customerAssessmentBlocks = New-CustomerAssessmentDocumentBlocks -SourceModel $customerSourceModel -Signals $customerAssessmentSignals -GeneratedAt $generatedAt
 Write-CustomerAssessmentDocxFromModel -TemplatePath $customerAssessmentTemplatePath -OutputPath $customerAssessmentReportOutPath -TenantName $tenantName -GeneratedAt $generatedAt -Blocks $customerAssessmentBlocks
 $roadmapRemediationTemplatePath = Get-RoadmapRemediationTemplatePath
+if (-not $Quiet) { Write-Host '  Generating remediation roadmap...' }
 $roadmapRemediationBlocks = New-RoadmapRemediationDocumentBlocks -SourceModel $customerSourceModel -Signals $customerAssessmentSignals -GeneratedAt $generatedAt
 Write-CustomerAssessmentDocxFromModel -TemplatePath $roadmapRemediationTemplatePath -OutputPath $roadmapRemediationPlanOutPath -TenantName $tenantName -GeneratedAt $generatedAt -Blocks $roadmapRemediationBlocks -DocumentTitle "$tenantName Microsoft 365 Remediation Roadmap" -OptimizeMedia
 
+if (-not $Quiet) { Write-Host '  Generating engineer pack...' }
 $engineerActionPackMarkdown = New-EngineerActionPack -Findings $sortedFindings -WorkstreamSummaries $sortedWorkstreamSummaries -TenantName $tenantName -AssessmentJsonPath $AssessmentJsonPath -GeneratedAt $generatedAt -JsonOutPath $jsonOutPath -CsvOutPath $csvOutPath -SnippetOutPath $snippetOutPath -SupportFolderPath $supportFolder -EvidenceCoverageSummary $solutionsEngineerEvidenceCoverageSummary
 Set-Content -Path $engineerMdOutPath -Value $engineerActionPackMarkdown -Encoding UTF8
 
