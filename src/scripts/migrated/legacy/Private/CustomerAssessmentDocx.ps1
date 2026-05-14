@@ -4651,9 +4651,9 @@ function New-CustomerAssessmentDocumentBlocks {
         @((New-CustomerWordTableRow -Cells @('Not surfaced in current source', 'Not surfaced in current source', 'Not surfaced in current source', 'Not surfaced in current source', 'Not surfaced in current source', 'Not surfaced in current source')))
     }
 
-    $userMailboxStatsRows = @($primaryMailboxStatsRows | Where-Object { (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('MailboxType')) -Default '') -eq 'UserMailbox' })
-    $sharedMailboxStatsRows = @($primaryMailboxStatsRows | Where-Object { (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('MailboxType')) -Default '') -eq 'SharedMailbox' })
-    $groupMailboxStatsRows = @($primaryMailboxStatsRows | Where-Object { (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('MailboxType')) -Default '') -eq 'GroupMailbox' })
+    $userMailboxStatsRows = @($primaryMailboxStatsRows | Where-Object { (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('MailboxType', 'RecipientTypeDetails')) -Default '') -eq 'UserMailbox' })
+    $sharedMailboxStatsRows = @($primaryMailboxStatsRows | Where-Object { (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('MailboxType', 'RecipientTypeDetails')) -Default '') -eq 'SharedMailbox' })
+    $groupMailboxStatsRows = @($primaryMailboxStatsRows | Where-Object { (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('MailboxType', 'RecipientTypeDetails')) -Default '') -eq 'GroupMailbox' })
     $largestUserMailbox = @($userMailboxStatsRows | Sort-Object { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('TotalItemSizeBytes')) } -Descending | Select-Object -First 1)
     $largestSharedMailbox = @($sharedMailboxStatsRows | Sort-Object { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('TotalItemSizeBytes')) } -Descending | Select-Object -First 1)
     $largestGroupMailbox = @($groupMailboxStatsRows | Sort-Object { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('TotalItemSizeBytes')) } -Descending | Select-Object -First 1)
@@ -5056,11 +5056,19 @@ function New-CustomerAssessmentDocumentBlocks {
     $dnsRows = if ($domainRows.Count -gt 0) {
         @(
             foreach ($domainRow in $domainRows) {
+                $dnsDmarcPolicy  = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $domainRow -Names @('DmarcPolicy')) -Default ''
+                $dnsDmarcPercent = Get-ArrayaObjectValue -Object $domainRow -Names @('DmarcPercent')
+                $dnsDmarcCell    = if (-not [string]::IsNullOrWhiteSpace($dnsDmarcPolicy)) {
+                    if ($null -ne $dnsDmarcPercent) { "$dnsDmarcPolicy (pct=$dnsDmarcPercent%)" } else { $dnsDmarcPolicy }
+                } else {
+                    $dnsDmarcConfigured = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $domainRow -Names @('DmarcConfigured'))
+                    if ($null -eq $dnsDmarcConfigured) { 'Not surfaced in current source' } elseif ($dnsDmarcConfigured) { 'Configured' } else { 'Not configured' }
+                }
                 New-CustomerWordTableRow -Cells @(
                     (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $domainRow -Names @('Domain', 'Id')) -Default 'Not surfaced in current source'),
                     (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $domainRow -Names @('SpfPolicyMode', 'SpfRecord')) -Default 'Not surfaced in current source'),
                     (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $domainRow -Names @('DkimConfigured')) -Default 'Not surfaced in current source'),
-                    (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $domainRow -Names @('DmarcPolicy', 'DmarcConfigured')) -Default 'Not surfaced in current source'),
+                    $dnsDmarcCell,
                     (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $domainRow -Names @('AuthenticationType')) -Default 'Not surfaced in current source')
                 )
             }
@@ -5617,12 +5625,12 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("Tenant data for {0} was collected on {1} using read-only Microsoft Graph API calls and PowerShell-based connectors. No configuration changes were made during data collection. The snapshot represents the state of the tenant at collection time and does not reflect changes made after that date." -f $tenantName, $GeneratedAt.ToString('MMMM d, yyyy')) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Data Collection Scope' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Area', 'Data Collected') -Rows @(
-        ,@('Identity and Access', 'Entra ID users, guests, device registrations, admin role assignments, Conditional Access policies, MFA registration state, service principals, and application registrations'),
-        ,@('Exchange Online', 'Mailbox configuration, accepted domains, mail forwarding rules, recipient domains, archive and litigation hold state, and SMTP relay configuration'),
-        ,@('Microsoft Teams', 'Team lifecycle signals, guest access configuration, external access policy, and meeting and messaging policy settings'),
-        ,@('SharePoint Online and OneDrive', 'Site-level sharing configuration, external sharing policies, and storage signals'),
-        ,@('Purview / Compliance', 'Retention policy configuration and DLP policy inventory with enforcement mode'),
-        ,@('Licensing and Governance', 'License assignment state, group-based licensing configuration, and license utilization signals')
+        @('Identity and Access', 'Entra ID users, guests, device registrations, admin role assignments, Conditional Access policies, MFA registration state, service principals, and application registrations'),
+        @('Exchange Online', 'Mailbox configuration, accepted domains, mail forwarding rules, recipient domains, archive and litigation hold state, and SMTP relay configuration'),
+        @('Microsoft Teams', 'Team lifecycle signals, guest access configuration, external access policy, and meeting and messaging policy settings'),
+        @('SharePoint Online and OneDrive', 'Site-level sharing configuration, external sharing policies, and storage signals'),
+        @('Purview / Compliance', 'Retention policy configuration and DLP policy inventory with enforcement mode'),
+        @('Licensing and Governance', 'License assignment state, group-based licensing configuration, and license utilization signals')
     ))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Workloads Not in Scope' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'The following capability areas were not collected or analyzed in this engagement. Section 15.0 documents each exclusion explicitly so the report does not imply coverage it did not provide.' -Style 'Normal')) | Out-Null
@@ -5659,17 +5667,17 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Recommendation', 'Criticality', 'Level of Effort', 'Rough PS Hours') -Rows $recommendationRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Level of Effort is an initial delivery-planning estimate intended to help sequence work at a glance. Rough PS Hours is a combined engineering and project-management estimate covering prep, review, presentation, implementation, QA, and finalization. It does not include customer-side wait states or third-party execution.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Completion Signals' -Style 'Heading2')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'The table below defines what a closed state looks like for each key area. Use these signals to confirm that a recommendation has reached the intended target state, not just that work has begun.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Area', 'Target State') -Rows @(
-        ,@('Identity and Access', 'Global Administrator count at or below the approved threshold; all enabled admin accounts show confirmed sign-in within 90 days; all admins covered by an enabled MFA enforcement Conditional Access policy'),
-        ,@('MFA and Conditional Access', 'All enabled users covered by at least one enabled MFA enforcement policy or Security Defaults; report-only policies graduated to enforcement or formally deferred with documented rationale; CA policies with exclusions reviewed and scoped to the minimum required set'),
-        ,@('Password and Hybrid Identity', 'Password writeback, self-service password reset, and directory synchronization states confirmed and aligned to the approved hybrid identity design; on-premises sync lag within acceptable threshold'),
-        ,@('Exchange Online', 'No unapproved external mail forwarding paths active; SMTP AUTH limited to documented service accounts with named owners; shared mailboxes with no ownership signal resolved'),
-        ,@('Microsoft Teams', 'Ownerless Teams inventoried and assigned or archived; dormant Teams actioned within the approved dormancy window; guest-heavy Teams with no documented exception reviewed'),
-        ,@('SharePoint and OneDrive', 'Tenant external sharing set to the documented approved baseline; site-level sharing overrides reviewed and either approved or removed; stale externally shared content cleaned up'),
-        ,@('Licensing', 'No license SKUs exceeding purchased capacity; group-based licensing groups have named owners and a documented review cadence; inactive or ineligible licensed users reclaimed'),
-        ,@('Purview and Compliance', 'At least one retention policy active and covering primary workloads; DLP policies in enforcement mode for critical workloads; sensitivity label and audit log scope decisions documented even where not yet implemented'),
-        ,@('Offboarding and Lifecycle', 'Account deprovisioning completed within the documented SLA; licenses reclaimed at or before deprovisioning; inactive guest and member accounts reviewed on a documented cadence')
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'The following signals indicate that each area has reached a closed or stabilized state. Use these to confirm that a recommendation reached the intended outcome, not just that work began.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @(
+        'Identity and Access: Global Administrator count at or below the approved threshold, break-glass accounts excluded from Conditional Access and documented, and guest access reviewed within the last 90 days.',
+        'MFA and Conditional Access: All enabled users covered by at least one MFA-enforcing policy, no broad exclusions without compensating controls, and named policy owners on record.',
+        'Password and Hybrid Identity: Password writeback, SSPR, and directory synchronization states confirmed and aligned to the approved hybrid identity design, with on-premises sync lag within the acceptable threshold.',
+        'Exchange Online: External forwarding disabled or limited to approved recipients, no anonymous SMTP relay paths without a documented owner, and archive or litigation hold state confirmed for in-scope mailboxes.',
+        'Microsoft Teams: No teams older than 180 days without an active owner, external access scoped to approved partner domains, and guest access reviewed within the last 90 days.',
+        'SharePoint and OneDrive: External sharing limited to authenticated guests or more restrictive, no anonymous link sharing for sensitive sites, and site-level sharing overrides reviewed.',
+        'Licensing and Governance: No license SKU at or above 95 percent utilization without a procurement plan, inactive licensed accounts reviewed, and group-based licensing groups with documented owners.',
+        'Purview and Compliance: At least one active retention policy covering Exchange and SharePoint, and DLP policies in enforce mode for regulated data classifications.',
+        'Offboarding and Lifecycle: Account deprovisioning completed within the documented SLA, licenses reclaimed at or before deprovisioning, and inactive guest and member accounts reviewed on a documented cadence.'
     ))) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.0 Entra ID Review: User and Device Inventory' -Style 'Heading1')) | Out-Null
@@ -6330,35 +6338,25 @@ function New-CustomerAssessmentDocumentBlocks {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'Registered MFA method mix was not surfaced clearly enough to render a chart from the reviewed data.' -Style 'Normal')) | Out-Null
     }
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'MFA Enforcement' -Style 'Heading2')) | Out-Null
-    $blocks.Add((New-CustomerWordTableBlock -Headers @('Configuration Signal', 'Current State') -Rows @(
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Coverage by User Type' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordTableBlock -Headers @('User Type', 'Reviewed', 'Covered by Active Policies', 'Coverage') -Rows @(
+        @('All enabled users', $(if ($null -ne $mfaEnabledUsersReviewed) { $mfaEnabledUsersReviewed } else { 'Not confirmed' }), $(if ($null -ne $mfaUsersCoveredByEnabledPolicies) { $mfaUsersCoveredByEnabledPolicies } else { 'Not confirmed' }), $(if ($null -ne $mfaUserCoveragePercent) { "$mfaUserCoveragePercent%" } else { 'Not confirmed' })),
+        @('Member users', $(if ($null -ne $mfaEnabledMemberUsersReviewed) { $mfaEnabledMemberUsersReviewed } else { 'Not confirmed' }), $(if ($null -ne $mfaMemberUsersCoveredByEnabledPolicies) { $mfaMemberUsersCoveredByEnabledPolicies } else { 'Not confirmed' }), $(if ($null -ne $mfaMemberUserCoveragePercent) { "$mfaMemberUserCoveragePercent%" } else { 'Not confirmed' })),
+        @('Guest users', $(if ($null -ne $mfaEnabledGuestUsersReviewed) { $mfaEnabledGuestUsersReviewed } else { 'Not confirmed' }), $(if ($null -ne $mfaGuestUsersCoveredByEnabledPolicies) { $mfaGuestUsersCoveredByEnabledPolicies } else { 'Not confirmed' }), $(if ($null -ne $mfaGuestUserCoveragePercent) { "$mfaGuestUserCoveragePercent%" } else { 'Not confirmed' })),
+        @('Admin users', $(if ($null -ne $enabledAdminUsersReviewed) { $enabledAdminUsersReviewed } else { 'Not confirmed' }), $(if ($null -ne $adminUsersCoveredByMfaEnforcement) { $adminUsersCoveredByMfaEnforcement } else { 'Not confirmed' }), $(if ($null -ne $adminUserCoveragePercent) { "$adminUserCoveragePercent%" } else { 'Not confirmed' })),
+        @('Admin users registered for MFA', $(if ($null -ne $adminUsersRegisteredForMfa) { $adminUsersRegisteredForMfa } else { 'Not confirmed' }), '—', '—')
+    ))) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Conditional Access Policy Configuration' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordTableBlock -Headers @('Signal', 'Current State') -Rows @(
         @('Conditional Access policies reviewed', $(if ($null -ne $mfaConditionalAccessPoliciesReviewed) { $mfaConditionalAccessPoliciesReviewed } else { (Get-CustomerObservationState -Observation $identityObservation -Signal 'Conditional Access policies') })),
         @('Enabled MFA enforcement policies', $(if ($null -ne $enabledMfaEnforcementPolicies) { $enabledMfaEnforcementPolicies } else { 'Not validated from the reviewed data' })),
         @('Report-only MFA enforcement policies', $(if ($null -ne $reportOnlyMfaEnforcementPolicies) { $reportOnlyMfaEnforcementPolicies } else { 'Not validated from the reviewed data' })),
-        @('Policies with exclusions', $(if ($null -ne $mfaPoliciesWithExclusions) { $mfaPoliciesWithExclusions } else { (Get-CustomerObservationState -Observation $identityObservation -Signal 'Policies with exclusions') })),
-        @('Enabled users reviewed', $(if ($null -ne $mfaEnabledUsersReviewed) { $mfaEnabledUsersReviewed } else { 'User data not collected for coverage analysis' })),
-        @('Users covered by enabled MFA enforcement policies', $(if ($null -ne $mfaUsersCoveredByEnabledPolicies) { $mfaUsersCoveredByEnabledPolicies } else { 'Coverage analysis not available' })),
-        @('Users not covered by enabled MFA enforcement policies', $(if ($null -ne $mfaUsersNotCoveredByEnabledPolicies) { $mfaUsersNotCoveredByEnabledPolicies } else { 'Coverage analysis not available' })),
-        @('Estimated enabled-user CA MFA coverage', $(if ($null -ne $mfaUserCoveragePercent) { "$mfaUserCoveragePercent%" } else { 'Coverage not calculated' })),
-        @('Enabled member users reviewed', $(if ($null -ne $mfaEnabledMemberUsersReviewed) { $mfaEnabledMemberUsersReviewed } else { 'User data not collected for coverage analysis' })),
-        @('Member users covered by enabled MFA enforcement policies', $(if ($null -ne $mfaMemberUsersCoveredByEnabledPolicies) { $mfaMemberUsersCoveredByEnabledPolicies } else { 'Coverage analysis not available' })),
-        @('Estimated member-user CA MFA coverage', $(if ($null -ne $mfaMemberUserCoveragePercent) { "$mfaMemberUserCoveragePercent%" } else { 'Coverage not calculated' })),
-        @('Enabled guest users reviewed', $(if ($null -ne $mfaEnabledGuestUsersReviewed) { $mfaEnabledGuestUsersReviewed } else { 'User data not collected for coverage analysis' })),
-        @('Guest users covered by enabled MFA enforcement policies', $(if ($null -ne $mfaGuestUsersCoveredByEnabledPolicies) { $mfaGuestUsersCoveredByEnabledPolicies } else { 'Coverage analysis not available' })),
-        @('Estimated guest-user CA MFA coverage', $(if ($null -ne $mfaGuestUserCoveragePercent) { "$mfaGuestUserCoveragePercent%" } else { 'Coverage not calculated' })),
-        @('Guest-user MFA enforcement summary', $guestUserEnforcementStateText),
-        @('Enabled admin users reviewed', $(if ($null -ne $enabledAdminUsersReviewed) { $enabledAdminUsersReviewed } else { 'User data not collected for coverage analysis' })),
-        @('Admin users registered for MFA', $(if ($null -ne $adminUsersRegisteredForMfa) { $adminUsersRegisteredForMfa } else { 'MFA registration data not collected' })),
-        @('Admin users not registered for MFA', $(if ($null -ne $adminUsersNotRegisteredForMfa) { $adminUsersNotRegisteredForMfa } else { 'MFA registration data not collected' })),
-        @('Admin users covered by enabled MFA enforcement policies', $(if ($null -ne $adminUsersCoveredByMfaEnforcement) { $adminUsersCoveredByMfaEnforcement } else { 'Coverage analysis not available' })),
-        @('Admin users not covered by enabled MFA enforcement policies', $(if ($null -ne $adminUsersNotCoveredByMfaEnforcement) { $adminUsersNotCoveredByMfaEnforcement } else { 'Coverage analysis not available' })),
-        @('Estimated admin-user CA MFA coverage', $(if ($null -ne $adminUserCoveragePercent) { "$adminUserCoveragePercent%" } else { 'Coverage not calculated' })),
+        @('Enabled policies with exclusions', $(if ($null -ne $mfaPoliciesWithExclusions) { $mfaPoliciesWithExclusions } else { (Get-CustomerObservationState -Observation $identityObservation -Signal 'Policies with exclusions') })),
         @('Guest / external-user Conditional Access coverage', $guestCoverageStateText),
         @('Privileged-role Conditional Access coverage', $privilegedCoverageStateText),
         @('Risk-based Conditional Access coverage', $riskCoverageStateText),
-        @('Compliant-device requirement in summary', $compliantDeviceRequirementStateText),
         @('Security Defaults policy', $securityDefaultsStateText),
-        @('MFA enforcement state', $mfaEnforcementStateText),
-        @('Coverage calculation note', $mfaCoverageCalculationNoteText)
+        @('MFA enforcement state', $mfaEnforcementStateText)
     ))) | Out-Null
     $caOptimizationReviewTableRows = @(
         $conditionalAccessOptimizationRows |
@@ -6386,8 +6384,7 @@ function New-CustomerAssessmentDocumentBlocks {
     else {
         'The current source did not surface enough enabled-user detail to calculate a reliable MFA coverage total.'
     }
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Enrollment and enforcement are intentionally reported as separate views in this report. Users who are not enrolled in MFA remain an important readiness gap, but they are not added into the Conditional Access enforcement counts below.' -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ("Enforcement shows whether users are actually being required to perform MFA, not just whether they have registered methods. In this review, the policy baseline shows {0} enabled Conditional Access policy/policies that require MFA and {1} still in report-only mode. {2} Report-only policies do not count as enforced coverage. Detailed uncovered-user and policy-scope review rows are available in the workbook tabs MfaEnforcementGapUsers and MfaEnforcementScopeReview." -f $(if ($null -eq $enabledMfaEnforcementPolicies) { 'an unconfirmed number of' } else { $enabledMfaEnforcementPolicies }), $(if ($null -eq $reportOnlyMfaEnforcementPolicies) { 'an unconfirmed number of policies' } else { $reportOnlyMfaEnforcementPolicies }), $mfaCoverageNarrativeText) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("The coverage tables above show enforcement by user type. Report-only policies are not counted as enforced coverage.$(if (-not [string]::IsNullOrWhiteSpace($mfaCoverageCalculationNoteText)) { ' ' + $mfaCoverageCalculationNoteText } else { '' }) Detailed uncovered-user rows are available in the workbook tab MfaEnforcementGapUsers.") -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Covered vs Not Covered by Active MFA Enforcement' -Style 'Heading3')) | Out-Null
     $mfaEnforcementCoverageChartBlock = New-CustomerChartImageBlock -ChartType 'Donut' -Rows $mfaEnforcementCoverageChartRows -AltText 'Covered vs Not Covered by Active MFA Enforcement' -WidthPx 540 -HeightPx 280
     if ($null -ne $mfaEnforcementCoverageChartBlock) {
@@ -6440,7 +6437,11 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Internal Member Users Outside Active MFA Include Scope' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'These users are enabled internal members who were not surfaced inside the active MFA include scope and did not show an explicit exclusion-policy hit in the reviewed data. This bucket is usually the fastest way to find populations that were never targeted cleanly enough by the baseline.' -Style 'Normal')) | Out-Null
     if ($mfaOutsideIncludeDetailRows.Count -gt 0) {
-        $blocks.Add((New-CustomerWordTableBlock -Headers @('Display Name', 'User Principal Name') -Rows $mfaOutsideIncludeDetailRows)) | Out-Null
+        $mfaOutsideIncludeDisplayRows = @($mfaOutsideIncludeDetailRows | Select-Object -First 15)
+        if ($mfaOutsideIncludeDetailRows.Count -gt 15) {
+            $blocks.Add((New-CustomerWordParagraphBlock -Text ("Showing first 15 of {0} users." -f $mfaOutsideIncludeDetailRows.Count) -Style 'Normal')) | Out-Null
+        }
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('Display Name', 'User Principal Name') -Rows $mfaOutsideIncludeDisplayRows)) | Out-Null
     }
     else {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'No internal member users outside the active MFA include scope were surfaced in the reviewed data.' -Style 'Normal')) | Out-Null
@@ -6448,7 +6449,11 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Internal Member Users Explicitly Excluded from Active MFA Policies' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'These users are enabled internal members who surfaced one or more explicit exclusion-policy hits in the reviewed MFA baseline. This bucket matters because exclusions can be intentional break-glass design, but they should be few, documented, and reviewed deliberately.' -Style 'Normal')) | Out-Null
     if ($mfaExcludedDetailRows.Count -gt 0) {
-        $blocks.Add((New-CustomerWordTableBlock -Headers @('Display Name', 'User Principal Name') -Rows $mfaExcludedDetailRows)) | Out-Null
+        $mfaExcludedDisplayRows = @($mfaExcludedDetailRows | Select-Object -First 15)
+        if ($mfaExcludedDetailRows.Count -gt 15) {
+            $blocks.Add((New-CustomerWordParagraphBlock -Text ("Showing first 15 of {0} users." -f $mfaExcludedDetailRows.Count) -Style 'Normal')) | Out-Null
+        }
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('Display Name', 'User Principal Name') -Rows $mfaExcludedDisplayRows)) | Out-Null
     }
     else {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'No internal member users explicitly excluded from active MFA policies were surfaced in the reviewed data.' -Style 'Normal')) | Out-Null
@@ -6515,8 +6520,7 @@ function New-CustomerAssessmentDocumentBlocks {
         @('On-premises last sync', $onPremisesLastSyncState),
         @('Authentication configuration visibility', $authenticationVisibilityState)
     ))) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ("The hybrid identity portion of the review shows self-service password reset as {0} and directory synchronization as {1}. Password writeback is currently {2}, while pass-through authentication is shown as {3}. This makes it possible to separate settings that are clearly visible from settings that still need additional validation before they are treated as design decisions." -f $selfServicePasswordResetState, $directorySynchronizationState, $passwordWritebackState, $passThroughAuthenticationState) -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ("The last surfaced on-premises sync timestamp is {0}. Validation note: where a password-lifecycle field is shown as not validated in current auth mode or not validated from the reviewed data, that should be read as a collection limitation rather than as proof that the tenant is misconfigured." -f $onPremisesLastSyncState) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("The last surfaced on-premises sync timestamp is {0}. Where a password-lifecycle field shows as not validated from the reviewed data, treat that as a collection limitation rather than confirmation of a misconfiguration." -f $onPremisesLastSyncState) -Style 'Normal')) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '8.0 Authorization: Admin Access and Role Assignments' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Administrative access stood out in this tenant because the privileged footprint is large enough that stale or excess assignments create more than a theoretical risk. The review showed both the number of Global Administrators and the age of some privileged identities, which is usually a sign that role cleanup has not kept pace with operational change.' -Style 'Normal')) | Out-Null
@@ -6657,7 +6661,11 @@ function New-CustomerAssessmentDocumentBlocks {
             $blocks.Add((New-CustomerWordParagraphBlock -Text 'Accounts to Validate' -Style 'Heading3')) | Out-Null
             $blocks.Add((New-CustomerWordTableBlock -Headers @('DisplayName', 'UserPrincipalName', 'Send Count', 'Last Activity') -Rows $smtpRelayServiceAccountRows)) | Out-Null
         }
-        $blocks.Add((New-CustomerWordParagraphBlock -Text 'These paths should have a named owner, an approved sending pattern, and a documented replacement plan where mailbox-based SMTP authentication is still in use.' -Style 'Normal')) | Out-Null
+        $blocks.Add((New-CustomerWordListBlock -Items @(
+            'Named owner on record for each SMTP relay path or service account',
+            'Approved sending pattern documented and scoped to internal or restricted recipients',
+            'Replacement or retirement plan documented for any path that pre-dates the current mail hygiene stack'
+        ))) | Out-Null
     }
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '10. Microsoft Teams Governance and Cleanup' -Style 'Heading1')) | Out-Null
@@ -6753,20 +6761,48 @@ function New-CustomerAssessmentDocumentBlocks {
     if ($dlpPolicyRows.Count -gt 0) {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'DLP Policy Inventory' -Style 'Heading2')) | Out-Null
         $dlpInventoryTableRows = @($dlpPolicyRows | ForEach-Object {
-            $dlpPolicyName = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('PolicyName')) -Default 'Unnamed policy'
-            $dlpEnabled = if ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('Enabled'))) -eq $true) { 'Yes' } else { 'No' }
-            $dlpMode = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Mode')) -Default 'Not surfaced'
-            $dlpWorkload = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Workload')) -Default 'Not surfaced'
-            ,@($dlpPolicyName, $dlpEnabled, $dlpMode, $dlpWorkload)
+            $dlpPolicyName  = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('PolicyName')) -Default 'Unnamed policy'
+            $dlpEnabled     = if ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('Enabled'))) -eq $true) { 'Yes' } else { 'No' }
+            $dlpMode        = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Mode')) -Default 'Not surfaced'
+            $dlpWorkload    = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Workload')) -Default 'Not surfaced'
+
+            $exLoc = Get-ArrayaObjectValue -Object $_ -Names @('ExchangeLocation')
+            $spLoc = Get-ArrayaObjectValue -Object $_ -Names @('SharePointLocation')
+            $odLoc = Get-ArrayaObjectValue -Object $_ -Names @('OneDriveLocation')
+            $tmLoc = Get-ArrayaObjectValue -Object $_ -Names @('TeamsLocation')
+            $scopeParts = @()
+            foreach ($locPair in @(@('Exchange', $exLoc), @('SharePoint', $spLoc), @('OneDrive', $odLoc), @('Teams', $tmLoc))) {
+                $locLabel = $locPair[0]; $locVal = [string]$locPair[1]
+                if (-not [string]::IsNullOrWhiteSpace($locVal) -and $locVal -notin @('All', 'all', 'AllUsers')) {
+                    $locCount = ($locVal -split ',').Count
+                    $scopeParts += "$locLabel`: $locCount resource(s)"
+                }
+            }
+            $dlpScope = if ($scopeParts.Count -eq 0) { 'Tenant-wide' } else { $scopeParts -join '; ' }
+
+            $exExc = Get-ArrayaObjectValue -Object $_ -Names @('ExchangeLocationException')
+            $spExc = Get-ArrayaObjectValue -Object $_ -Names @('SharePointLocationException')
+            $odExc = Get-ArrayaObjectValue -Object $_ -Names @('OneDriveLocationException')
+            $excParts = @()
+            foreach ($excPair in @(@('Exchange', $exExc), @('SharePoint', $spExc), @('OneDrive', $odExc))) {
+                $excLabel = $excPair[0]; $excVal = [string]$excPair[1]
+                if (-not [string]::IsNullOrWhiteSpace($excVal)) {
+                    $excCount = ($excVal -split ',').Count
+                    $excParts += "$excLabel`: $excCount excluded"
+                }
+            }
+            $dlpExclusions = if ($excParts.Count -eq 0) { 'None' } else { $excParts -join '; ' }
+
+            ,@($dlpPolicyName, $dlpEnabled, $dlpMode, $dlpWorkload, $dlpScope, $dlpExclusions)
         })
-        $blocks.Add((New-CustomerWordTableBlock -Headers @('Policy Name', 'Enabled', 'Mode', 'Workloads') -Rows $dlpInventoryTableRows)) | Out-Null
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('Policy Name', 'Enabled', 'Mode', 'Workloads', 'Scope', 'Exclusions') -Rows $dlpInventoryTableRows)) | Out-Null
     }
 
-    $blocks.Add((New-CustomerWordParagraphBlock -Text '13.0 Domain Configuration and DNS Overview' -Style 'Heading1')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ("The tenant review surfaced {0} verified domain(s) out of {1} domain record(s) reviewed. This section keeps domain registration state and DNS trust controls together because accepted-domain hygiene, spoofing resistance, and message trust are closely related in the current environment." -f $verifiedDomains.Count, $(if ($domainRows.Count -gt 0) { $domainRows.Count } else { 'an unconfirmed number of' })) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text '13.0 Email Authentication and Domain Configuration' -Style 'Heading1')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("The tenant review surfaced {0} verified domain(s) out of {1} domain record(s) reviewed. This section reviews email authentication posture — SPF, DKIM, and DMARC — alongside domain verification and namespace hygiene. SPF controls which servers are authorized to send on behalf of a domain. DKIM provides cryptographic proof that a message was not altered in transit. DMARC specifies what receiving servers should do with unauthenticated messages and enables aggregate reporting back to the domain owner." -f $verifiedDomains.Count, $(if ($domainRows.Count -gt 0) { $domainRows.Count } else { 'an unconfirmed number of' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Domain', 'Verified', 'Authentication Type', 'Domain Type', 'Default', 'DMARC') -Rows $domainOverviewRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text $(if ($null -ne $governanceConsultativeSummary) { $governanceConsultativeSummary.Narrative } else { 'The reviewed domain inventory did not surface a separate domain-registration remediation item beyond the authentication and DNS posture shown below. Where accepted domains remain active, verification state and default-domain usage should still be confirmed as part of normal namespace governance.' }) -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'DNS Configuration' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Email Authentication Records' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Domain', 'SPF', 'DKIM', 'DMARC', 'Notes') -Rows $dnsRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("DMARC is currently configured on {0} domain(s), while DKIM is configured on {1} domain(s). The largest recipient concentrations remain in {2}. That mix is notable because mail-authentication posture and recipient concentration are closely linked in a tenant where most messaging volume stays centered on a small set of accepted domains." -f $dmarcEnabledDomains, $dkimEnabledDomains, $(if ($largestDomainsByRecipients.Count -gt 0) { ((@($largestDomainsByRecipients | Select-Object -First 2 | ForEach-Object { Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Domain', 'Id')) -Default 'Not surfaced in current source' })) -join '; ') } else { 'domains not surfaced clearly enough for comparison' })) -Style 'Normal')) | Out-Null
     if ($domainsWithoutDmarc.Count -gt 0 -or $domainsWithoutDkim.Count -gt 0 -or $domainsWithoutSpfSignal.Count -gt 0) {
