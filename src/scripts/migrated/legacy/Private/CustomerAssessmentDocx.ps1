@@ -5248,7 +5248,7 @@ function New-CustomerAssessmentDocumentBlocks {
         @('Dormant Teams (>90 days)', $dormantTeams),
         @('Archived Teams', $archivedTeams),
         @('Guest-heavy Teams', (Get-CustomerObservationState -Observation $collaborationObservation -Signal 'Guest-heavy Teams')),
-        @('Voice-user signal', $(if ($null -ne $teamsVoiceUsers) { "$teamsVoiceUsers user(s); source=$teamsVoiceSource" } else { 'Not surfaced in current source' }))
+        @('Voice-user signal', $(if ($null -ne $teamsVoiceUsers) { "$teamsVoiceUsers user(s); source=$teamsVoiceSource" } else { 'Not collected in this engagement' }))
     )
     $sharePointStorageRows = if ($largestSharePointSites.Count -gt 0) {
         @(
@@ -5269,8 +5269,8 @@ function New-CustomerAssessmentDocumentBlocks {
         @('Retention policies surfaced', (Get-CustomerObservationState -Observation $governanceObservation -Signal 'Retention policies surfaced')),
         @('Mailbox retention policies assigned', $mailboxesWithExplicitRetentionPolicy),
         @('Mailboxes with hold signals', $mailboxesWithHoldSignals),
-        @('Unique retention policies named', $(if ($uniqueRetentionPolicyNames.Count -gt 0) { ($uniqueRetentionPolicyNames | Select-Object -First 5) -join '; ' } else { 'Not surfaced in current source' })),
-        @('Data loss prevention controls', $(if ($dlpPolicyRows.Count -gt 0) { $dlpPolicyRows.Count } else { 'Not surfaced in current source' }))
+        @('Unique retention policies named', $(if ($uniqueRetentionPolicyNames.Count -gt 0) { ($uniqueRetentionPolicyNames | Select-Object -First 5) -join '; ' } else { 'No named retention policies found in this tenant' })),
+        @('Data loss prevention controls', $(if ($dlpPolicyRows.Count -gt 0) { $dlpPolicyRows.Count } else { 'No Purview DLP policies found in this tenant' }))
     )
     $offboardingSupportRows = @(
         @('Inactive guest accounts (>90 days)', (Get-CustomerObservationState -Observation $lifecycleObservation -Signal 'Inactive guest accounts (>90 days)')),
@@ -6322,23 +6322,23 @@ function New-CustomerAssessmentDocumentBlocks {
         @('Enabled MFA enforcement policies', $(if ($null -ne $enabledMfaEnforcementPolicies) { $enabledMfaEnforcementPolicies } else { 'Not validated from the reviewed data' })),
         @('Report-only MFA enforcement policies', $(if ($null -ne $reportOnlyMfaEnforcementPolicies) { $reportOnlyMfaEnforcementPolicies } else { 'Not validated from the reviewed data' })),
         @('Policies with exclusions', $(if ($null -ne $mfaPoliciesWithExclusions) { $mfaPoliciesWithExclusions } else { (Get-CustomerObservationState -Observation $identityObservation -Signal 'Policies with exclusions') })),
-        @('Enabled users reviewed', $(if ($null -ne $mfaEnabledUsersReviewed) { $mfaEnabledUsersReviewed } else { 'Not validated from the reviewed data' })),
-        @('Users covered by enabled MFA enforcement policies', $(if ($null -ne $mfaUsersCoveredByEnabledPolicies) { $mfaUsersCoveredByEnabledPolicies } else { 'Not validated from the reviewed data' })),
-        @('Users not covered by enabled MFA enforcement policies', $(if ($null -ne $mfaUsersNotCoveredByEnabledPolicies) { $mfaUsersNotCoveredByEnabledPolicies } else { 'Not validated from the reviewed data' })),
-        @('Estimated enabled-user CA MFA coverage', $(if ($null -ne $mfaUserCoveragePercent) { "$mfaUserCoveragePercent%" } else { 'Not validated from the reviewed data' })),
-        @('Enabled member users reviewed', $(if ($null -ne $mfaEnabledMemberUsersReviewed) { $mfaEnabledMemberUsersReviewed } else { 'Not validated from the reviewed data' })),
-        @('Member users covered by enabled MFA enforcement policies', $(if ($null -ne $mfaMemberUsersCoveredByEnabledPolicies) { $mfaMemberUsersCoveredByEnabledPolicies } else { 'Not validated from the reviewed data' })),
-        @('Estimated member-user CA MFA coverage', $(if ($null -ne $mfaMemberUserCoveragePercent) { "$mfaMemberUserCoveragePercent%" } else { 'Not validated from the reviewed data' })),
-        @('Enabled guest users reviewed', $(if ($null -ne $mfaEnabledGuestUsersReviewed) { $mfaEnabledGuestUsersReviewed } else { 'Not validated from the reviewed data' })),
-        @('Guest users covered by enabled MFA enforcement policies', $(if ($null -ne $mfaGuestUsersCoveredByEnabledPolicies) { $mfaGuestUsersCoveredByEnabledPolicies } else { 'Not validated from the reviewed data' })),
-        @('Estimated guest-user CA MFA coverage', $(if ($null -ne $mfaGuestUserCoveragePercent) { "$mfaGuestUserCoveragePercent%" } else { 'Not validated from the reviewed data' })),
+        @('Enabled users reviewed', $(if ($null -ne $mfaEnabledUsersReviewed) { $mfaEnabledUsersReviewed } else { 'User data not collected for coverage analysis' })),
+        @('Users covered by enabled MFA enforcement policies', $(if ($null -ne $mfaUsersCoveredByEnabledPolicies) { $mfaUsersCoveredByEnabledPolicies } else { 'Coverage analysis not available' })),
+        @('Users not covered by enabled MFA enforcement policies', $(if ($null -ne $mfaUsersNotCoveredByEnabledPolicies) { $mfaUsersNotCoveredByEnabledPolicies } else { 'Coverage analysis not available' })),
+        @('Estimated enabled-user CA MFA coverage', $(if ($null -ne $mfaUserCoveragePercent) { "$mfaUserCoveragePercent%" } else { 'Coverage not calculated' })),
+        @('Enabled member users reviewed', $(if ($null -ne $mfaEnabledMemberUsersReviewed) { $mfaEnabledMemberUsersReviewed } else { 'User data not collected for coverage analysis' })),
+        @('Member users covered by enabled MFA enforcement policies', $(if ($null -ne $mfaMemberUsersCoveredByEnabledPolicies) { $mfaMemberUsersCoveredByEnabledPolicies } else { 'Coverage analysis not available' })),
+        @('Estimated member-user CA MFA coverage', $(if ($null -ne $mfaMemberUserCoveragePercent) { "$mfaMemberUserCoveragePercent%" } else { 'Coverage not calculated' })),
+        @('Enabled guest users reviewed', $(if ($null -ne $mfaEnabledGuestUsersReviewed) { $mfaEnabledGuestUsersReviewed } else { 'User data not collected for coverage analysis' })),
+        @('Guest users covered by enabled MFA enforcement policies', $(if ($null -ne $mfaGuestUsersCoveredByEnabledPolicies) { $mfaGuestUsersCoveredByEnabledPolicies } else { 'Coverage analysis not available' })),
+        @('Estimated guest-user CA MFA coverage', $(if ($null -ne $mfaGuestUserCoveragePercent) { "$mfaGuestUserCoveragePercent%" } else { 'Coverage not calculated' })),
         @('Guest-user MFA enforcement summary', $guestUserEnforcementStateText),
-        @('Enabled admin users reviewed', $(if ($null -ne $enabledAdminUsersReviewed) { $enabledAdminUsersReviewed } else { 'Not validated from the reviewed data' })),
-        @('Admin users registered for MFA', $(if ($null -ne $adminUsersRegisteredForMfa) { $adminUsersRegisteredForMfa } else { 'Not validated from the reviewed data' })),
-        @('Admin users not registered for MFA', $(if ($null -ne $adminUsersNotRegisteredForMfa) { $adminUsersNotRegisteredForMfa } else { 'Not validated from the reviewed data' })),
-        @('Admin users covered by enabled MFA enforcement policies', $(if ($null -ne $adminUsersCoveredByMfaEnforcement) { $adminUsersCoveredByMfaEnforcement } else { 'Not validated from the reviewed data' })),
-        @('Admin users not covered by enabled MFA enforcement policies', $(if ($null -ne $adminUsersNotCoveredByMfaEnforcement) { $adminUsersNotCoveredByMfaEnforcement } else { 'Not validated from the reviewed data' })),
-        @('Estimated admin-user CA MFA coverage', $(if ($null -ne $adminUserCoveragePercent) { "$adminUserCoveragePercent%" } else { 'Not validated from the reviewed data' })),
+        @('Enabled admin users reviewed', $(if ($null -ne $enabledAdminUsersReviewed) { $enabledAdminUsersReviewed } else { 'User data not collected for coverage analysis' })),
+        @('Admin users registered for MFA', $(if ($null -ne $adminUsersRegisteredForMfa) { $adminUsersRegisteredForMfa } else { 'MFA registration data not collected' })),
+        @('Admin users not registered for MFA', $(if ($null -ne $adminUsersNotRegisteredForMfa) { $adminUsersNotRegisteredForMfa } else { 'MFA registration data not collected' })),
+        @('Admin users covered by enabled MFA enforcement policies', $(if ($null -ne $adminUsersCoveredByMfaEnforcement) { $adminUsersCoveredByMfaEnforcement } else { 'Coverage analysis not available' })),
+        @('Admin users not covered by enabled MFA enforcement policies', $(if ($null -ne $adminUsersNotCoveredByMfaEnforcement) { $adminUsersNotCoveredByMfaEnforcement } else { 'Coverage analysis not available' })),
+        @('Estimated admin-user CA MFA coverage', $(if ($null -ne $adminUserCoveragePercent) { "$adminUserCoveragePercent%" } else { 'Coverage not calculated' })),
         @('Guest / external-user Conditional Access coverage', $guestCoverageStateText),
         @('Privileged-role Conditional Access coverage', $privilegedCoverageStateText),
         @('Risk-based Conditional Access coverage', $riskCoverageStateText),
