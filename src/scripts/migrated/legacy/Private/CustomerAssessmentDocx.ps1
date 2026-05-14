@@ -6475,6 +6475,23 @@ function New-CustomerAssessmentDocumentBlocks {
     else {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'Conditional Access policy inventory was not surfaced in the reviewed data.' -Style 'Normal')) | Out-Null
     }
+    $caPoliciesWithExclusions = @($caPolicies | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasExclusions'))) -eq $true })
+    if ($caPoliciesWithExclusions.Count -gt 0) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Policies with Exclusions' -Style 'Heading3')) | Out-Null
+        $blocks.Add((New-CustomerWordParagraphBlock -Text ("The following {0} policy or policies have user or group exclusions configured. Exclusions reduce effective coverage and should be reviewed to confirm they are intentional, documented, and scoped as narrowly as possible." -f $caPoliciesWithExclusions.Count) -Style 'Normal')) | Out-Null
+        $blocks.Add((New-CustomerWordListBlock -Items @($caPoliciesWithExclusions | ForEach-Object {
+            $exPolicyName = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName')) -Default 'Unnamed policy'
+            $exStateRaw = [string](Get-ArrayaObjectValue -Object $_ -Names @('State'))
+            $exStateLabel = switch ($exStateRaw.ToLowerInvariant()) {
+                'enabled'                           { 'Enabled' }
+                'disabled'                          { 'Disabled' }
+                'enabledforreportingbutnotenforced' { 'Report-only' }
+                default                             { if ([string]::IsNullOrWhiteSpace($exStateRaw)) { 'Unknown' } else { $exStateRaw } }
+            }
+            $exMfa = if ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RequiresMfaEnforcement'))) -eq $true) { 'MFA enforcement' } else { 'no MFA enforcement' }
+            "$exPolicyName — $exStateLabel, $exMfa"
+        }))) | Out-Null
+    }
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '7.0 Password Writeback and Self-Service Password Reset' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Configuration Signal', 'Current State') -Rows @(
@@ -6532,7 +6549,7 @@ function New-CustomerAssessmentDocumentBlocks {
     $privilegedAccessReviewTableRows = @(
         $privilegedAccessRemediationRows |
             Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('Status')) -eq 'Review' } |
-            Select-Object -First 5 |
+            Select-Object -First 10 |
             ForEach-Object {
                 New-CustomerWordTableRow -Cells @(
                     (Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Signal')) -Default 'Privileged access signal'),
@@ -6649,7 +6666,18 @@ function New-CustomerAssessmentDocumentBlocks {
             @('Guest-heavy or high-channel Teams', $guestOrChannelCleanupCount),
             @('License-managing groups without owners', $licenseGroupCleanupCount)
         ))) | Out-Null
-        $blocks.Add((New-CustomerWordParagraphBlock -Text 'This section stays focused on governance themes rather than row-level object inventory.' -Style 'Normal')) | Out-Null
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Teams and Groups Requiring Review' -Style 'Heading3')) | Out-Null
+        $cleanupSampleRows = @($teamsGroupsCleanupCandidateRows | Select-Object -First 8 | ForEach-Object {
+            New-CustomerWordTableRow -Cells @(
+                (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ObjectType')) -Default 'Not surfaced'),
+                (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Name')) -Default 'Not surfaced'),
+                (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('RiskSignal')) -Default 'Not surfaced')
+            )
+        })
+        $blocks.Add((New-CustomerWordTableBlock -Headers @('Type', 'Name', 'Risk Signal') -Rows $cleanupSampleRows)) | Out-Null
+        if ($teamsGroupsCleanupCandidateRows.Count -gt 8) {
+            $blocks.Add((New-CustomerWordParagraphBlock -Text ("Showing 8 of {0} cleanup candidate(s). The full list is available in the companion workbook." -f $teamsGroupsCleanupCandidateRows.Count) -Style 'Normal')) | Out-Null
+        }
     }
     $blocks.Add((New-CustomerWordParagraphBlock -Text (Convert-ToCustomerAssessmentNarrativeText -Text $(if ($null -ne $collaborationConsultativeSummary) { $collaborationConsultativeSummary.Narrative } else { $collaborationObservation.ObservedNarrative })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Opportunities for Cleanup' -Style 'Heading2')) | Out-Null
