@@ -4980,6 +4980,12 @@ function Get-CustomerConsultativeSummaries {
     $secureScoreRows = Convert-ArrayaObjectToArray $Signals.SecuritySecureScore
     $smtpRelaySummary = $Signals.SMTPRelaySummary
     $tenantInfoSummaryRecord = if ($Signals.TenantInfoSummary) { Get-ArrayaObjectValue -Object $Signals.TenantInfoSummary -Names @('Summary') } else { $null }
+    $deviceRows = Convert-ArrayaObjectToArray $Signals.DeviceDetails
+    $deviceManagementSummaryRecord = if ($Signals.DeviceManagementSummary) { Get-ArrayaObjectValue -Object $Signals.DeviceManagementSummary -Names @('Summary') } else { $null }
+    $retentionPolicyRows = Convert-ArrayaObjectToArray $Signals.RetentionPolicies
+    $dlpPolicyRows = Convert-ArrayaObjectToArray $Signals.DlpPolicies
+    $passwordLifecycleSummaryRecord = $Signals.PasswordLifecycleSummary
+    $adConnectSummaryRecord = if ($Signals.AdConnectConfiguration) { Get-ArrayaObjectValue -Object $Signals.AdConnectConfiguration -Names @('Summary') } else { $null }
 
     $globalAdminCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $privilegedSummaryRecord -Names @('GlobalAdministratorCount'))
     if ($null -eq $globalAdminCount) {
@@ -5080,6 +5086,56 @@ function Get-CustomerConsultativeSummaries {
         }
     ).Count
 
+    $memberCount = @($userRows | Where-Object { (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default '') -notmatch 'Guest' }).Count
+    $guestCount = @($userRows | Where-Object { (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default '') -match 'Guest' }).Count
+    $staleEnabledMembers90Days = @($userRows | Where-Object {
+        $uEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
+        $uLastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime'))
+        $uType = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default ''
+        $uType -notmatch 'Guest' -and $uEnabled -eq $true -and $uLastSignIn -and $uLastSignIn -lt (Get-Date).AddDays(-90)
+    }).Count
+    $disabledMemberCount = @($userRows | Where-Object {
+        $uEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
+        $uType = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default ''
+        $uType -notmatch 'Guest' -and $uEnabled -eq $false
+    }).Count
+
+    $staleDevices180Days = @($deviceRows | Where-Object {
+        $dLastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('ApproximateLastSignInDateTime', 'LastSignIn'))
+        $dLastSignIn -and $dLastSignIn -lt (Get-Date).AddDays(-180)
+    }).Count
+    $nonCompliantDevices = @($deviceRows | Where-Object {
+        (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsCompliant', 'ComplianceState'))) -eq $false
+    }).Count
+    $totalManagedDeviceCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $deviceManagementSummaryRecord -Names @('TotalDevices'))
+
+    $atCapacitySkuCount = @($licenseRows | Where-Object {
+        $consumed = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('ConsumedUnits'))
+        $purchased = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('PrepaidUnits', 'TotalUnits'))
+        $null -ne $consumed -and $null -ne $purchased -and $purchased -gt 0 -and $consumed -ge $purchased
+    }).Count
+    $licenseAssignmentErrorCount = @($licenseRows | Where-Object {
+        $errors = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('LicenseAssignmentErrors', 'AssignmentErrorCount'))
+        $null -ne $errors -and $errors -gt 0
+    }).Count
+
+    $passwordWritebackStateText = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $passwordLifecycleSummaryRecord -Names @('PasswordWriteback', 'PasswordWritebackEnabled')) -Default $null
+    if ([string]::IsNullOrWhiteSpace($passwordWritebackStateText)) {
+        $passwordWritebackStateText = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $adConnectSummaryRecord -Names @('PasswordWriteback', 'PasswordWritebackEnabled')) -Default $null
+    }
+    $ssrpStateText = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $passwordLifecycleSummaryRecord -Names @('SelfServicePasswordReset', 'SelfServicePasswordResetEnabled')) -Default $null
+    $dirSyncStateText = if ($null -eq $dirSyncEnabled) { $null } elseif ($dirSyncEnabled) { 'Enabled' } else { 'Disabled' }
+
+    $dlpTestModePolicies = @($dlpPolicyRows | Where-Object {
+        $dlpMode = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Mode')) -Default ''
+        $dlpMode -match 'TestWithoutNotifications|TestWithNotifications|Test'
+    }).Count
+    $dlpEnforcedPolicies = @($dlpPolicyRows | Where-Object {
+        $dlpMode = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Mode')) -Default ''
+        $dlpEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('Enabled'))
+        $dlpMode -match 'Enable|Enforce' -and $dlpEnabled -eq $true
+    }).Count
+
     return [pscustomobject]@{
         ExecutiveDecisionSummary = Get-CustomerExecutiveDecisionSummary -ExecutiveThemes $ExecutiveThemes -RoadmapActions $RoadmapActions -OwnerGroups $OwnerGroups
         GuestMfaExperienceSummary = $guestMfaExperienceSummary
@@ -5147,6 +5203,60 @@ function Get-CustomerConsultativeSummaries {
             (New-CustomerConfigurationRow -Signal 'OneDrive ownership mismatches' -State $oneDriveOwnerMismatches.Count),
             (New-CustomerConfigurationRow -Signal 'Shared mailboxes without owner signal' -State $sharedMailboxesWithoutOwnerSignal)
         ) -Narrative 'Lifecycle drift is showing up across identities, collaboration assets, and shared workloads, which makes cleanup slower and increases the chance that stale access or stale data remains in place.' -RecommendationSupport 'This section supports the lifecycle and ownership-governance recommendations in 4.0.')
+        IdentityInventoryConsultativeSummary = (New-CustomerConsultativeSummary -Title 'IdentityInventoryConsultativeSummary' -SnapshotRows @(
+            (New-CustomerConfigurationRow -Signal 'Total users in scope' -State $userRows.Count),
+            (New-CustomerConfigurationRow -Signal 'Member accounts' -State $memberCount),
+            (New-CustomerConfigurationRow -Signal 'Guest accounts' -State $guestCount),
+            (New-CustomerConfigurationRow -Signal 'Stale enabled members (>90 days)' -State $staleEnabledMembers90Days),
+            (New-CustomerConfigurationRow -Signal 'Disabled member accounts' -State $disabledMemberCount),
+            (New-CustomerConfigurationRow -Signal 'Inactive guest accounts (>90 days)' -State $inactiveGuests90Days),
+            (New-CustomerConfigurationRow -Signal 'Total devices in scope' -State $deviceRows.Count),
+            (New-CustomerConfigurationRow -Signal 'Stale devices (>180 days)' -State $staleDevices180Days),
+            (New-CustomerConfigurationRow -Signal 'Non-compliant devices' -State $nonCompliantDevices)
+        ) -Narrative 'The user and device inventory shows where stale access and enrollment drift are concentrating across the identity footprint.' -RecommendationSupport 'Focus lifecycle cleanup on stale member accounts, inactive guests, and devices that have not checked in recently. Disabled accounts with active license assignments should be reviewed for reclamation before any identity governance program is finalized.')
+        UserInventoryConsultativeSummary = (New-CustomerConsultativeSummary -Title 'UserInventoryConsultativeSummary' -SnapshotRows @(
+            (New-CustomerConfigurationRow -Signal 'Total users in scope' -State $userRows.Count),
+            (New-CustomerConfigurationRow -Signal 'Member accounts' -State $memberCount),
+            (New-CustomerConfigurationRow -Signal 'Guest accounts' -State $guestCount),
+            (New-CustomerConfigurationRow -Signal 'Stale enabled members (>90 days)' -State $staleEnabledMembers90Days),
+            (New-CustomerConfigurationRow -Signal 'Disabled member accounts' -State $disabledMemberCount),
+            (New-CustomerConfigurationRow -Signal 'Inactive guest accounts (>90 days)' -State $inactiveGuests90Days)
+        ) -Narrative 'User account hygiene is most visible where enabled accounts show extended inactivity and disabled accounts retain license assignments.' -RecommendationSupport 'Prioritize a review of enabled member accounts with no recent sign-in and disabled accounts that still carry license assignments. Guest accounts inactive for more than 90 days should be validated for continued business need before access is extended.')
+        DeviceConsultativeSummary = (New-CustomerConsultativeSummary -Title 'DeviceConsultativeSummary' -SnapshotRows @(
+            (New-CustomerConfigurationRow -Signal 'Total devices in scope' -State $deviceRows.Count),
+            (New-CustomerConfigurationRow -Signal 'Stale devices (>180 days)' -State $staleDevices180Days),
+            (New-CustomerConfigurationRow -Signal 'Non-compliant devices' -State $nonCompliantDevices),
+            (New-CustomerConfigurationRow -Signal 'Total managed devices (Intune)' -State $totalManagedDeviceCount)
+        ) -Narrative 'Device compliance gaps are concentrated where endpoint registration exists without matching management enrollment or where stale devices remain in the active device footprint.' -RecommendationSupport 'Target stale and non-compliant devices for cleanup or re-enrollment. Where unmanaged devices are actively authenticating, use Conditional Access device compliance requirements to enforce a managed endpoint baseline before those devices are treated as trusted access paths.')
+        LicensingConsultativeSummary = (New-CustomerConsultativeSummary -Title 'LicensingConsultativeSummary' -SnapshotRows @(
+            (New-CustomerConfigurationRow -Signal 'Total license SKUs' -State $licenseRows.Count),
+            (New-CustomerConfigurationRow -Signal 'SKUs at or over capacity' -State $atCapacitySkuCount),
+            (New-CustomerConfigurationRow -Signal 'Inactive or disabled licensed users' -State $inactiveLicensedUsers),
+            (New-CustomerConfigurationRow -Signal 'SKUs with assignment errors' -State $licenseAssignmentErrorCount),
+            (New-CustomerConfigurationRow -Signal 'License capacity pressure (top SKUs)' -State $licensePressure)
+        ) -Narrative 'Licensing pressure is accumulating at the intersection of at-capacity SKUs, license waste from stale accounts, and assignment errors that reduce visibility into actual consumption.' -RecommendationSupport 'Review at-capacity SKUs for reclamation opportunities from inactive or disabled users before purchasing additional seats. Resolve license assignment errors so that consumption data is trustworthy when making future licensing decisions. Group-based license assignments should be validated against current membership before the licensing baseline is treated as accurate.')
+        PasswordSsrpConsultativeSummary = (New-CustomerConsultativeSummary -Title 'PasswordSsrpConsultativeSummary' -SnapshotRows @(
+            (New-CustomerConfigurationRow -Signal 'Password writeback' -State $passwordWritebackStateText),
+            (New-CustomerConfigurationRow -Signal 'Self-service password reset' -State $ssrpStateText),
+            (New-CustomerConfigurationRow -Signal 'Directory synchronization' -State $dirSyncStateText)
+        ) -Narrative 'Password lifecycle risk concentrates where writeback and self-service reset are not aligned with the hybrid identity posture, leaving users dependent on manual IT processes for credential recovery.' -RecommendationSupport 'Confirm that password writeback is enabled if this tenant uses hybrid identity. Enabling self-service password reset reduces helpdesk burden while improving credential recovery speed. Where authentication visibility is limited, validate the current configuration directly in Entra ID and AD Connect settings before treating the password lifecycle as fully under control.')
+        SharePointConsultativeSummary = (New-CustomerConsultativeSummary -Title 'SharePointConsultativeSummary' -SnapshotRows @(
+            (New-CustomerConfigurationRow -Signal 'SharePoint sites in scope' -State $sharePointRows.Count),
+            (New-CustomerConfigurationRow -Signal 'OneDrive locations in scope' -State $oneDriveRows.Count),
+            (New-CustomerConfigurationRow -Signal 'Stale SharePoint sites (>180 days)' -State $staleSharePointSites),
+            (New-CustomerConfigurationRow -Signal 'Stale OneDrive locations (>180 days)' -State $staleOneDrives),
+            (New-CustomerConfigurationRow -Signal 'Tenant external sharing posture' -State $tenantSharingCapability),
+            (New-CustomerConfigurationRow -Signal 'Default sharing link type' -State $defaultSharingLinkType),
+            (New-CustomerConfigurationRow -Signal 'Site-level sharing overrides' -State $siteOverrideCount),
+            (New-CustomerConfigurationRow -Signal 'OneDrive ownership mismatches' -State $oneDriveOwnerMismatches.Count),
+            (New-CustomerConfigurationRow -Signal 'External exposure review rows' -State $externalExposureFindings.Count)
+        ) -Narrative 'SharePoint and OneDrive sharing risk is concentrated where tenant-level sharing is permissive, site-level overrides add further exceptions, and stale content locations have no active owner to govern access decisions.' -RecommendationSupport 'Tighten the default sharing link type to reduce accidental broad sharing. Review site-level sharing overrides against current business need and remove those that are no longer justified. Stale sites and OneDrive locations without active owners should be targeted for lifecycle review before external sharing posture is considered complete.')
+        PurviewConsultativeSummary = (New-CustomerConsultativeSummary -Title 'PurviewConsultativeSummary' -SnapshotRows @(
+            (New-CustomerConfigurationRow -Signal 'Retention policies in scope' -State $retentionPolicyRows.Count),
+            (New-CustomerConfigurationRow -Signal 'DLP policies in scope' -State $dlpPolicyRows.Count),
+            (New-CustomerConfigurationRow -Signal 'DLP policies in enforce mode' -State $dlpEnforcedPolicies),
+            (New-CustomerConfigurationRow -Signal 'DLP policies in test mode' -State $dlpTestModePolicies)
+        ) -Narrative 'Purview compliance coverage is uneven where retention policies exist at the mailbox level but DLP is absent, in test mode, or limited to a single workload, leaving cross-workload data protection incomplete.' -RecommendationSupport 'Move DLP policies from test mode to enforcement once rule accuracy is validated. Extend DLP coverage beyond Exchange to include SharePoint and Teams where sensitive data classification applies. Confirm that retention policies are scoped to cover all workloads where legal or regulatory hold requirements apply, not just Exchange mailboxes.')
     }
 }
 
@@ -5461,6 +5571,13 @@ function New-CustomerReportSourceModel {
     $sourceModel | Add-Member -NotePropertyName CollaborationConsultativeSummary -NotePropertyValue $consultativeSummaries.CollaborationConsultativeSummary
     $sourceModel | Add-Member -NotePropertyName GovernanceConsultativeSummary -NotePropertyValue $consultativeSummaries.GovernanceConsultativeSummary
     $sourceModel | Add-Member -NotePropertyName LifecycleConsultativeSummary -NotePropertyValue $consultativeSummaries.LifecycleConsultativeSummary
+    $sourceModel | Add-Member -NotePropertyName IdentityInventoryConsultativeSummary -NotePropertyValue $consultativeSummaries.IdentityInventoryConsultativeSummary
+    $sourceModel | Add-Member -NotePropertyName UserInventoryConsultativeSummary -NotePropertyValue $consultativeSummaries.UserInventoryConsultativeSummary
+    $sourceModel | Add-Member -NotePropertyName DeviceConsultativeSummary -NotePropertyValue $consultativeSummaries.DeviceConsultativeSummary
+    $sourceModel | Add-Member -NotePropertyName LicensingConsultativeSummary -NotePropertyValue $consultativeSummaries.LicensingConsultativeSummary
+    $sourceModel | Add-Member -NotePropertyName PasswordSsrpConsultativeSummary -NotePropertyValue $consultativeSummaries.PasswordSsrpConsultativeSummary
+    $sourceModel | Add-Member -NotePropertyName SharePointConsultativeSummary -NotePropertyValue $consultativeSummaries.SharePointConsultativeSummary
+    $sourceModel | Add-Member -NotePropertyName PurviewConsultativeSummary -NotePropertyValue $consultativeSummaries.PurviewConsultativeSummary
     return $sourceModel
 }
 

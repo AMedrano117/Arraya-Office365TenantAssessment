@@ -4174,6 +4174,13 @@ function New-CustomerAssessmentDocumentBlocks {
     $collaborationConsultativeSummary = $SourceModel.CollaborationConsultativeSummary
     $governanceConsultativeSummary = $SourceModel.GovernanceConsultativeSummary
     $lifecycleConsultativeSummary = $SourceModel.LifecycleConsultativeSummary
+    $identityInventoryConsultativeSummary = $SourceModel.IdentityInventoryConsultativeSummary
+    $userInventoryConsultativeSummary = $SourceModel.UserInventoryConsultativeSummary
+    $deviceConsultativeSummary = $SourceModel.DeviceConsultativeSummary
+    $licensingConsultativeSummary = $SourceModel.LicensingConsultativeSummary
+    $passwordSsrpConsultativeSummary = $SourceModel.PasswordSsrpConsultativeSummary
+    $sharePointConsultativeSummary = $SourceModel.SharePointConsultativeSummary
+    $purviewConsultativeSummary = $SourceModel.PurviewConsultativeSummary
     $leadershipDecisionRows = if ($null -ne $executiveDecisionSummary -and @($executiveDecisionSummary.DecisionRows).Count -gt 0) {
         Convert-CustomerThreeColumnRowsToWordTableRows -Rows @($executiveDecisionSummary.DecisionRows) -PropertyNames @('DecisionFocus', 'WhatShouldHappenNext', 'WhyNow')
     }
@@ -5683,7 +5690,11 @@ function New-CustomerAssessmentDocumentBlocks {
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.0 Entra ID Review: User and Device Inventory' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Review of the tenant configuration indicated that identity hygiene and device governance need to be read together in this environment. The same parts of the tenant that are carrying stale privileged access are also the parts of the environment where compliance-driven access control is least mature.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommendation' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $identityInventoryConsultativeSummary) { $identityInventoryConsultativeSummary.RecommendationSupport } else { 'Focus lifecycle cleanup on stale member accounts, inactive guests, and devices that have not checked in recently.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.1 Entra User' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommended Next Step' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $userInventoryConsultativeSummary) { $userInventoryConsultativeSummary.RecommendationSupport } else { 'Prioritize a review of enabled member accounts with no recent sign-in and disabled accounts that still carry license assignments.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'User Account Summary' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Metric', 'Current State') -Rows $userSummaryRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'User Account Status Comparison' -Style 'Heading3')) | Out-Null
@@ -5695,6 +5706,8 @@ function New-CustomerAssessmentDocumentBlocks {
         'Internal members and guest identities both show evidence of stale access, which increases the chance that a dormant identity still retains a path into collaboration, messaging, or privileged workflows.'
     ))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.2 Entra Device' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommended Next Step' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $deviceConsultativeSummary) { $deviceConsultativeSummary.RecommendationSupport } else { 'Target stale and non-compliant devices for cleanup or re-enrollment.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Registration Summary' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Metric', 'Current State') -Rows $deviceSummaryRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Device Platform Distribution' -Style 'Heading3')) | Out-Null
@@ -5851,6 +5864,10 @@ function New-CustomerAssessmentDocumentBlocks {
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.5 Microsoft 365 Licensing Governance' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Licensing is included with the identity review because Microsoft 365 license state is driven by user assignment, group-based assignment, ownership, and lifecycle cleanup. This section focuses on practical governance signals rather than a deep service-plan consumption model.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommended Next Step' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $licensingConsultativeSummary) { $licensingConsultativeSummary.RecommendationSupport } else { 'Review at-capacity SKUs for reclamation opportunities from inactive or disabled users before purchasing additional seats.' })) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'What To Review' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordListBlock -Items @($licenseGovernanceFocusItems.ToArray()))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Licensing Governance Snapshot' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('License Signal', 'Current State') -Rows $licenseGovernanceRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'License SKU Utilization' -Style 'Heading3')) | Out-Null
@@ -5893,9 +5910,6 @@ function New-CustomerAssessmentDocumentBlocks {
             $blocks.Add((New-CustomerWordParagraphBlock -Text ("Showing {0} of {1} license assignment error(s). Review the LicenseOptimizationCandidates worksheet for the full error list." -f $licenseAssignmentErrorDetailRows.Count, $assignmentErrorCount) -Style 'Normal')) | Out-Null
         }
     }
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'What To Review' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordListBlock -Items @($licenseGovernanceFocusItems.ToArray()))) | Out-Null
-
     $mfaEnrollmentRate = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummaryRecord -Names @('RegistrationPercent'))
     $mfaRegisteredUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummaryRecord -Names @('RegisteredUsers'))
     $mfaNotRegisteredUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnrollmentSummaryRecord -Names @('NotRegisteredUsers'))
@@ -6514,6 +6528,8 @@ function New-CustomerAssessmentDocumentBlocks {
     }
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '7.0 Password Writeback and Self-Service Password Reset' -Style 'Heading1')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommendation' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $passwordSsrpConsultativeSummary) { $passwordSsrpConsultativeSummary.RecommendationSupport } else { 'Confirm that password writeback is enabled if this tenant uses hybrid identity. Enabling self-service password reset reduces helpdesk burden while improving credential recovery speed.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Configuration Signal', 'Current State') -Rows @(
         @('Password writeback', $passwordWritebackState),
         @('Self-service password reset', $selfServicePasswordResetState),
@@ -6712,6 +6728,8 @@ function New-CustomerAssessmentDocumentBlocks {
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '11.0 SharePoint Online Storage and External Sharing' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("SharePoint and OneDrive storage were reviewed together with external-sharing posture because those signals show whether collaboration growth is still being matched by ownership, lifecycle, and sharing control. The tenant inventory includes {0} SharePoint sites and {1} OneDrive locations, which is enough to see where content has continued to accumulate." -f $sharePointRows.Count, $oneDriveRows.Count) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommendation' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $sharePointConsultativeSummary) { $sharePointConsultativeSummary.RecommendationSupport } else { 'Tighten the default sharing link type to reduce accidental broad sharing. Review site-level sharing overrides against current business need and remove those that are no longer justified.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Tenant External Sharing Snapshot' -Style 'Heading2')) | Out-Null
     if ($externalSharingSnapshotTableRows.Count -gt 0) {
         $blocks.Add((New-CustomerWordTableBlock -Headers @('Configuration Signal', 'Current State') -Rows $externalSharingSnapshotTableRows)) | Out-Null
@@ -6760,6 +6778,8 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This view uses tenant and workspace-level sharing signals. It is not a file-permission crawl, but it is enough to show where tenant sharing settings, site-level exceptions, stale externally exposed content, and guest collaboration patterns have started to diverge from a tighter external-access baseline.' -Style 'Normal')) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '12.0 Retention Policies and Data Loss Prevention' -Style 'Heading1')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommendation' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $purviewConsultativeSummary) { $purviewConsultativeSummary.RecommendationSupport } else { 'Move DLP policies from test mode to enforcement once rule accuracy is validated. Extend DLP coverage beyond Exchange to include SharePoint and Teams where sensitive data classification applies.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Configuration Signal', 'Current State') -Rows $retentionRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'The retention view is stronger than a simple yes-or-no check, but it still shows a gap between mailbox-level lifecycle controls and a clearly surfaced cross-workload retention or DLP program. In the current source, explicit retention signals are visible on individual mailboxes, while DLP detail remains limited or absent.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This matters because retention and DLP are the point where messaging, collaboration, and compliance expectations converge. If those controls are partially implemented or insufficiently visible, legal, operational, and security outcomes become harder to validate with confidence.' -Style 'Normal')) | Out-Null
