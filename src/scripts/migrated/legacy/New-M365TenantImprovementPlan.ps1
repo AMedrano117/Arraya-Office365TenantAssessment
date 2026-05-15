@@ -6224,7 +6224,7 @@ function New-EngineerActionPack {
     $lines.Add('') | Out-Null
     $lines.Add('- Confirm each recommendation against the latest tenant state before making changes.') | Out-Null
     $lines.Add('- Pilot security and access-policy changes with a limited scope before broad enforcement.') | Out-Null
-    $lines.Add('- Re-run `M365Collect` and `Improve` after remediation milestones to measure delta and retire closed findings.') | Out-Null
+    $lines.Add('- Re-run `Collect` and `Improve` after remediation milestones to measure delta and retire closed findings.') | Out-Null
     $lines.Add('') | Out-Null
     $lines.Add('## Supporting Files') | Out-Null
     $lines.Add('') | Out-Null

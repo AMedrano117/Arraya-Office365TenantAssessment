@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [ValidateSet('M365', 'M365Collect', 'M365Export', 'AD', 'Improve', 'Compare')]
+    [ValidateSet('Full', 'Collect', 'Report', 'AD', 'Improve', 'Compare')]
     [string]$Action,
     [Parameter(Mandatory = $false)]
     [switch]$RunImprove,

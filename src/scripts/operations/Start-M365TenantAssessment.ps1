@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [ValidateSet('M365', 'M365Preflight', 'M365Collect', 'M365Export', 'AD', 'Improve', 'Compare')]
+    [ValidateSet('Full', 'Preflight', 'Collect', 'Report', 'AD', 'Improve', 'Compare')]
     [string]$Action,
     [Parameter(Mandatory = $false)]
     [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
@@ -485,8 +485,8 @@ function Test-LauncherShouldRunImprove {
     )
 
     switch ($Action) {
-        'M365' { return (-not $SkipImprove) }
-        'M365Collect' { return ($RunImprove -and -not $SkipImprove) }
+        'Full'    { return (-not $SkipImprove) }
+        'Collect' { return ($RunImprove -and -not $SkipImprove) }
         default { return $false }
     }
 }
@@ -517,23 +517,31 @@ function Read-LauncherMenuChoice {
 
     Write-LauncherBanner
 
-    Write-LauncherMenuGroup -Label 'Live Assessment'
-    Write-Host -NoNewline '    '; Write-Host -NoNewline '1' -ForegroundColor Cyan; Write-Host '  Microsoft 365 Full Assessment + Improvement Plan'
-    Write-Host -NoNewline '    '; Write-Host -NoNewline '2' -ForegroundColor Cyan; Write-Host '  Microsoft 365 Connection / Preflight Only'
-    Write-Host -NoNewline '    '; Write-Host -NoNewline '3' -ForegroundColor Cyan; Write-Host '  Microsoft 365 Data Collection Only  (JSON snapshot)'
+    function Write-MenuItem {
+        param([string]$Number, [string]$Action, [string]$Description)
+        Write-Host -NoNewline '    '
+        Write-Host -NoNewline $Number    -ForegroundColor Cyan
+        Write-Host -NoNewline ('  {0,-10}' -f $Action) -ForegroundColor DarkGray
+        Write-Host $Description
+    }
+
+    Write-LauncherMenuGroup -Label 'Live'
+    Write-MenuItem '1' 'Full'      'Microsoft 365 full assessment + improvement plan'
+    Write-MenuItem '2' 'Preflight' 'Test M365 connections and permissions only'
+    Write-MenuItem '3' 'Collect'   'Collect M365 data to a JSON snapshot'
     Write-Host ''
-    Write-LauncherMenuGroup -Label 'Post-Processing'
-    Write-Host -NoNewline '    '; Write-Host -NoNewline '4' -ForegroundColor Cyan; Write-Host '  Export from Existing Snapshot + Improvement Plan'
-    Write-Host -NoNewline '    '; Write-Host -NoNewline '6' -ForegroundColor Cyan; Write-Host '  Build Improvement Plan from JSON Snapshot'
-    Write-Host -NoNewline '    '; Write-Host -NoNewline '7' -ForegroundColor Cyan; Write-Host '  Compare Two Snapshots'
+    Write-LauncherMenuGroup -Label 'From Snapshot'
+    Write-MenuItem '4' 'Report'  'Generate Excel report + improvement plan from snapshot'
+    Write-MenuItem '5' 'Improve' 'Build improvement plan docs only from snapshot'
+    Write-MenuItem '6' 'Compare' 'Compare two snapshots'
     Write-Host ''
     Write-LauncherMenuGroup -Label 'Other'
-    Write-Host -NoNewline '    '; Write-Host -NoNewline '5' -ForegroundColor Cyan; Write-Host '  Active Directory Assessment'
+    Write-MenuItem '7' 'AD' 'Active Directory assessment'
     Write-Host ''
 
     $actionMap = @{
-        '1' = 'M365'; '2' = 'M365Preflight'; '3' = 'M365Collect'
-        '4' = 'M365Export'; '5' = 'AD'; '6' = 'Improve'; '7' = 'Compare'
+        '1' = 'Full'; '2' = 'Preflight'; '3' = 'Collect'
+        '4' = 'Report'; '5' = 'Improve'; '6' = 'Compare'; '7' = 'AD'
     }
     while ($true) {
         $choice = Read-Host 'Select an option (1-7)'
@@ -641,7 +649,7 @@ if ($clientSecretRequested) {
 }
 
 switch ($Action) {
-    'M365' {
+    'Full' {
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
         $exportPathInput = if (-not [string]::IsNullOrWhiteSpace($ExportPath)) {
             $ExportPath
@@ -693,7 +701,7 @@ switch ($Action) {
         })
         Invoke-M365TenantAssessment @invokeParams
     }
-    'M365Preflight' {
+    'Preflight' {
         $selectedOutputProfiles = @($OutputProfile)
         if (-not $selectedOutputProfiles -or $selectedOutputProfiles.Count -eq 0) {
             $selectedOutputProfiles = @('SolutionsEngineer')
@@ -715,7 +723,7 @@ switch ($Action) {
         Write-LauncherActionHeader -Description 'Microsoft 365 Connection / Preflight Check'
         Invoke-M365TenantConnectionPreflight @invokeParams
     }
-    'M365Collect' {
+    'Collect' {
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
         $exportPathInput = if (-not [string]::IsNullOrWhiteSpace($ExportPath)) {
             $ExportPath
@@ -759,7 +767,7 @@ switch ($Action) {
         })
         Invoke-M365TenantDataCollection @invokeParams
     }
-    'M365Export' {
+    'Report' {
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
         $jsonPath = Read-LauncherFilePath -Prompt 'Path to collected tenant JSON snapshot' -CheckExists
         if ([string]::IsNullOrWhiteSpace($jsonPath)) {
@@ -796,7 +804,7 @@ switch ($Action) {
         if (-not [string]::IsNullOrWhiteSpace($ImproveOutputFolder)) { $invokeParams.ImproveOutputFolder = $ImproveOutputFolder }
         if ($UseGraphFallback) { $invokeParams.UseGraphFallback = $true }
 
-        Write-LauncherActionHeader -Description 'Export from Existing Snapshot + Improvement Plan'
+        Write-LauncherActionHeader -Description 'Report + Improvement Plan from Existing Snapshot'
         Write-LauncherRunSummary -Fields ([ordered]@{
             'Snapshot'    = $jsonPath
             'Export path' = $invokeParams.ExportPath
