@@ -1735,7 +1735,7 @@ function Connect-AssessmentGraph {
         }
     }
 
-    Write-Host 'Connecting Microsoft Graph...' -ForegroundColor Cyan
+    Write-Host '  → Microsoft Graph...' -ForegroundColor DarkGray
     switch ($AuthenticationType) {
         'Certificate' {
             Connect-MgGraph -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -NoWelcome -ErrorAction Stop | Out-Null
@@ -1798,7 +1798,7 @@ function Connect-AssessmentGraph {
 
     $graphDetails = Get-AssessmentGraphOrganizationDetails
 
-    Write-Host 'Microsoft Graph connected.' -ForegroundColor Green
+    Write-Host '  ✓ Microsoft Graph connected' -ForegroundColor Green
     return [pscustomobject][ordered]@{
         Graph         = $true
         TenantName    = $graphDetails.TenantName
@@ -1855,7 +1855,7 @@ function Connect-AssessmentExchange {
         }
     }
 
-    Write-Host 'Connecting Exchange Online...' -ForegroundColor Cyan
+    Write-Host '  → Exchange Online...' -ForegroundColor DarkGray
     $exchangeConnectParams = @{
         ShowBanner  = $false
         ErrorAction = 'Stop'
@@ -1889,7 +1889,7 @@ function Connect-AssessmentExchange {
         Invoke-AssessmentExchangeDelegatedConnect -BaseParameters $exchangeConnectParams -GraphAccount $graphAccount
     }
 
-    Write-Host 'Exchange Online connected.' -ForegroundColor Green
+    Write-Host '  ✓ Exchange Online connected' -ForegroundColor Green
     return [pscustomobject]@{
         ExchangeOnline = $true
         Existing       = $false
@@ -2082,7 +2082,7 @@ function Connect-AssessmentSharePoint {
         }
     }
 
-    Write-Host 'Checking existing SharePoint admin connection...' -ForegroundColor Cyan
+    Write-Host '  → SharePoint admin...' -ForegroundColor DarkGray
     if (Test-AssessmentSharePointSessionReady) {
         Write-Host 'SharePoint admin already connected for this session.' -ForegroundColor Green
         return [pscustomobject]@{
@@ -2104,10 +2104,10 @@ function Connect-AssessmentSharePoint {
     }
 
     try {
-        Write-Host 'Connecting SharePoint admin for full site inventory...' -ForegroundColor Cyan
+        Write-Host '  → SharePoint admin (full inventory)...' -ForegroundColor DarkGray
         Write-AssessmentInteractiveAuthNotice -ServiceName 'SharePoint admin' -PromptDescription 'browser sign-in prompt should appear'
         Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
-        Write-Host 'SharePoint admin connected.' -ForegroundColor Green
+        Write-Host '  ✓ SharePoint admin connected' -ForegroundColor Green
         return [pscustomobject]@{
             SharePointOnline = $true
             Status           = 'Connected'
@@ -2165,10 +2165,10 @@ function Connect-AssessmentTeams {
     }
 
     try {
-        Write-Host 'Connecting Teams PowerShell...' -ForegroundColor Cyan
+        Write-Host '  → Teams PowerShell...' -ForegroundColor DarkGray
         Write-AssessmentInteractiveAuthNotice -ServiceName 'Teams PowerShell' -PromptDescription 'browser sign-in prompt should appear'
         Connect-MicrosoftTeams -ErrorAction Stop | Out-Null
-        Write-Host 'Teams PowerShell connected.' -ForegroundColor Green
+        Write-Host '  ✓ Teams PowerShell connected' -ForegroundColor Green
         return [pscustomobject]@{
             Teams   = $true
             Status  = 'Connected'
@@ -2192,7 +2192,7 @@ function Connect-AssessmentPurview {
     [CmdletBinding()]
     param()
 
-    Write-Host 'Connecting Purview compliance...' -ForegroundColor Cyan
+    Write-Host '  → Purview compliance...' -ForegroundColor DarkGray
     if (-not (Ensure-PurviewComplianceSession)) {
         $purviewMessage = Get-PurviewComplianceDiagnosticMessage
         if ([string]::IsNullOrWhiteSpace($purviewMessage)) {
@@ -2201,7 +2201,7 @@ function Connect-AssessmentPurview {
         throw $purviewMessage
     }
 
-    Write-Host 'Purview compliance connected.' -ForegroundColor Green
+    Write-Host '  ✓ Purview compliance connected' -ForegroundColor Green
     return [pscustomobject]@{
         PurviewCmdletsAvailable = [bool](Test-AssessmentPurviewCmdletsAvailable)
     }
@@ -2386,12 +2386,14 @@ function Initialize-AssessmentAuthentication {
         Teams                    = $false
     }
 
-    Write-Host ("Authentication mode: {0}" -f $WorkloadPlan.AuthenticationType) -ForegroundColor Cyan
+    Write-Host -NoNewline '  Auth mode  :  ' -ForegroundColor DarkGray
+    Write-Host $WorkloadPlan.AuthenticationType -ForegroundColor Cyan
     if (-not $SkipAuth) {
-        Write-Host 'Connection mode: connect/preflight; existing sessions may be reused.' -ForegroundColor Cyan
+        Write-Host -NoNewline '  Connect    :  ' -ForegroundColor DarkGray
+        Write-Host 'preflight (existing sessions may be reused)' -ForegroundColor Cyan
     }
     if ($SkipPermissionPreflight) {
-        Write-Host 'Workload preflight skipped by request. Collection will continue and may fail later where access is missing.' -ForegroundColor Yellow
+        Write-Host '  ! Permission preflight skipped — collection may fail where access is missing.' -ForegroundColor Yellow
     }
 
     if ($SkipAuth) {
@@ -2712,9 +2714,13 @@ function Write-ConsoleSection {
         [string]$Title
     )
 
-    Write-Host ""
-    Write-Host "[$Step] $Title" -ForegroundColor White
-    Write-Host ('-' * 72) -ForegroundColor DarkGray
+    $line = [string]::new([char]0x2500, 68)
+    Write-Host ''
+    Write-Host ("  {0}" -f $line) -ForegroundColor DarkGray
+    Write-Host -NoNewline ("  [{0}]  " -f $Step) -ForegroundColor DarkGray
+    Write-Host $Title -ForegroundColor White
+    Write-Host ("  {0}" -f $line) -ForegroundColor DarkGray
+    Write-Host ''
 }
 
 function Write-AssessmentCollectorCompletionBanner {
@@ -2792,7 +2798,7 @@ function Invoke-AssessmentPermissionPreflightWithStatus {
 
     $preflightSummary = Test-AssessmentPermissionPreflight -ConnectionResult $ConnectionResult -Workload $Workload
     if ($preflightSummary) {
-        Write-Host ("{0} access OK ({1} checks)." -f $workloadLabel, $preflightSummary.SuccessfulCount) -ForegroundColor Green
+        Write-Host ("  ✓ {0}  access verified  ({1} checks)" -f $workloadLabel, $preflightSummary.SuccessfulCount) -ForegroundColor Green
     }
 }
 
@@ -2836,37 +2842,62 @@ function Write-ConnectionPreflightSummary {
         return ($parts -join ' | ')
     }
 
+    $allConnected = $ConnectionResult.Graph -and $ConnectionResult.ExchangeOnline
     Write-Host ''
-    Write-Host 'Connection / preflight ready.' -ForegroundColor Green
-    Write-Host ("  Graph: {0} - {1}" -f $(if ($ConnectionResult.Graph) { 'Connected' } else { 'Not connected' }), (& $formatTenantSummary $ConnectionResult.GraphTenantDetails)) -ForegroundColor $(if ($ConnectionResult.Graph) { 'Green' } else { 'Yellow' })
-    Write-Host ("  Exchange Online: {0} - {1}" -f $(if ($ConnectionResult.ExchangeOnline) { 'Connected' } else { 'Not connected' }), (& $formatTenantSummary $ConnectionResult.ExchangeTenantDetails)) -ForegroundColor $(if ($ConnectionResult.ExchangeOnline) { 'Green' } else { 'Yellow' })
-    if ($ConnectionResult.SharePointOnline) {
-        Write-Host ("  SharePoint admin: Connected - {0}" -f (& $formatTenantSummary $ConnectionResult.SharePointTenantDetails)) -ForegroundColor Green
+    if ($allConnected) {
+        Write-Host '  ✓ All required workloads connected' -ForegroundColor Green
+    } else {
+        Write-Host '  ! One or more required workloads not connected' -ForegroundColor Yellow
     }
-    elseif ($fallbackWorkloads -contains 'SharePointOnline') {
-        Write-Host '  SharePoint admin: Graph/SPO fallback active - SharePoint Online PowerShell tenant not connected' -ForegroundColor Yellow
-    }
-    else {
-        Write-Host '  SharePoint admin: Not connected' -ForegroundColor Yellow
-    }
-    Write-Host ("  Teams PowerShell: {0}" -f $(if ($ConnectionResult.Teams) { 'Connected' } else { 'Graph-only or not required' })) -ForegroundColor $(if ($ConnectionResult.Teams) { 'Green' } else { 'Yellow' })
-    Write-Host ("  Purview compliance: {0}" -f $(if ($ConnectionResult.PurviewCmdletsAvailable) { 'Connected' } elseif ($skippedWorkloads -contains 'PurviewCompliance') { 'Not required by profile' } else { 'Not connected' })) -ForegroundColor $(if ($ConnectionResult.PurviewCmdletsAvailable) { 'Green' } else { 'Yellow' })
+    Write-Host ''
 
-    Write-Host ("  Connected workloads: {0}" -f $(if ($connectedWorkloads.Count -gt 0) { $connectedWorkloads -join ', ' } else { 'None' })) -ForegroundColor Cyan
+    function Write-WorkloadStatus {
+        param([string]$Label, [bool]$Connected, [string]$Detail = '', [string]$Qualifier = '')
+        $icon  = if ($Connected) { '✓' } else { '!' }
+        $color = if ($Connected) { 'Green' } else { 'Yellow' }
+        Write-Host -NoNewline ("    {0}  {1,-18}" -f $icon, $Label) -ForegroundColor $color
+        if ($Qualifier) {
+            Write-Host -NoNewline ("{0,-10}" -f $Qualifier) -ForegroundColor Yellow
+        } else {
+            Write-Host -NoNewline (' ' * 10)
+        }
+        if ($Detail) {
+            Write-Host $Detail -ForegroundColor DarkGray
+        } else {
+            Write-Host ''
+        }
+    }
+
+    Write-WorkloadStatus -Label 'Graph'          -Connected ([bool]$ConnectionResult.Graph)                   -Detail (& $formatTenantSummary $ConnectionResult.GraphTenantDetails)
+    Write-WorkloadStatus -Label 'Exchange Online' -Connected ([bool]$ConnectionResult.ExchangeOnline)          -Detail (& $formatTenantSummary $ConnectionResult.ExchangeTenantDetails)
+
+    if ($ConnectionResult.SharePointOnline) {
+        Write-WorkloadStatus -Label 'SharePoint'     -Connected $true  -Detail (& $formatTenantSummary $ConnectionResult.SharePointTenantDetails)
+    } elseif ($fallbackWorkloads -contains 'SharePointOnline') {
+        Write-WorkloadStatus -Label 'SharePoint'     -Connected $false -Qualifier 'fallback' -Detail 'Graph/SPO fallback active'
+    } else {
+        Write-WorkloadStatus -Label 'SharePoint'     -Connected $false
+    }
+
+    Write-WorkloadStatus -Label 'Teams'          -Connected ([bool]$ConnectionResult.Teams)                   -Detail $(if (-not $ConnectionResult.Teams) { 'Graph-only or not required' })
+    $purviewStatus = if ($ConnectionResult.PurviewCmdletsAvailable) { $true } else { $false }
+    $purviewDetail = if ($skippedWorkloads -contains 'PurviewCompliance') { 'not required by profile' } else { '' }
+    Write-WorkloadStatus -Label 'Purview'         -Connected $purviewStatus                                    -Detail $purviewDetail
+
+    Write-Host ''
+    Write-Host -NoNewline '  Workloads  :  ' -ForegroundColor DarkGray
+    Write-Host $(if ($connectedWorkloads.Count -gt 0) { $connectedWorkloads -join ', ' } else { 'None' }) -ForegroundColor Cyan
     if ($fallbackWorkloads.Count -gt 0) {
-        Write-Host ("  Fallback workloads: {0}" -f ($fallbackWorkloads -join ', ')) -ForegroundColor Yellow
+        Write-Host -NoNewline '  Fallback   :  ' -ForegroundColor DarkGray
+        Write-Host ($fallbackWorkloads -join ', ') -ForegroundColor Yellow
     }
     if ($skippedWorkloads.Count -gt 0) {
-        Write-Host ("  Skipped workloads: {0}" -f ($skippedWorkloads -join ', ')) -ForegroundColor Yellow
+        Write-Host -NoNewline '  Skipped    :  ' -ForegroundColor DarkGray
+        Write-Host ($skippedWorkloads -join ', ') -ForegroundColor DarkGray
     }
-
-    $permissionSummary = if ($PermissionPreflightSkipped) {
-        'Skipped by request'
-    }
-    else {
-        'Passed for required workloads'
-    }
-    Write-Host ("  Permission checks: {0}" -f $permissionSummary) -ForegroundColor $(if ($PermissionPreflightSkipped) { 'Yellow' } else { 'Green' })
+    $permissionSummary = if ($PermissionPreflightSkipped) { 'Skipped by request' } else { 'Passed' }
+    Write-Host -NoNewline '  Permissions:  ' -ForegroundColor DarkGray
+    Write-Host $permissionSummary -ForegroundColor $(if ($PermissionPreflightSkipped) { 'Yellow' } else { 'Green' })
 }
 
 function Invoke-QuietRestMethod {
@@ -16399,7 +16430,8 @@ $ExportDetails = Get-ExportPath -FileName $defaultReportFileName -UserInputPath 
 $global:AllDiscoveryErrors = New-Object System.Collections.Generic.List[pscustomobject]
 
 # Resolve collection depth and output behavior from the selected profile.
-Write-Host "Output profile: $effectiveOutputProfileLabel (scope: $reportingMode)" -ForegroundColor Green
+Write-Host -NoNewline '  Output profile:  ' -ForegroundColor DarkGray
+Write-Host ("{0}  (scope: {1})" -f $effectiveOutputProfileLabel, $reportingMode) -ForegroundColor Cyan
 
 $script:CollectionDepthPolicy = Get-ArrayaCollectionDepthPolicy -ReportingMode ((Get-Culture).TextInfo.ToTitleCase($reportingMode)) -CollectionScopePolicy $effectiveCollectionScopePolicy
 
