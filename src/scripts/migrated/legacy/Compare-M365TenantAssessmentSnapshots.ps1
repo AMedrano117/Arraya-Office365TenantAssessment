@@ -34,6 +34,7 @@ function Import-ArrayaCommonModuleForSnapshotComparison {
         'Convert-ArrayaToNumber',
         'Convert-ArrayaToDate',
         'Get-ArrayaTenantSnapshotMetricSet',
+        'Get-ArrayaTenantSnapshotMetricSetFromContext',
         'Import-ArrayaTenantSnapshotContext',
         'Resolve-ArrayaSnapshotOutputContext'
     )
@@ -92,27 +93,8 @@ function New-MetricComparison {
 $baseline = Import-ArrayaTenantSnapshotContext -Path $BaselineJsonPath -Purpose Export
 $current = Import-ArrayaTenantSnapshotContext -Path $CurrentJsonPath -Purpose Export
 
-$baselineMetrics = Get-ArrayaTenantSnapshotMetricSet `
-    -SecureScoreRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $baseline.LegacyData -Names @('SecuritySecureScore', 'SecureScore'))) `
-    -ConditionalAccessRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $baseline.LegacyData -Names @('ConditionalAccessPolicies', 'ConditionalAccess'))) `
-    -AdminRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $baseline.LegacyData -Names @('AllOffice365Admins', 'Office365Admins', 'Admins'))) `
-    -DomainRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $baseline.LegacyData -Names @('Domains'))) `
-    -LicenseRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $baseline.LegacyData -Names @('LicenseSKUs', 'Licenses'))) `
-    -DeviceRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $baseline.LegacyData -Names @('DeviceDetails', 'Devices'))) `
-    -StaleDeviceDays $StaleDeviceDays
-$baselineMetrics | Add-Member -MemberType NoteProperty -Name GeneratedAt -Value $baseline.GeneratedAt -Force
-$baselineMetrics | Add-Member -MemberType NoteProperty -Name Path -Value $baseline.Path -Force
-
-$currentMetrics = Get-ArrayaTenantSnapshotMetricSet `
-    -SecureScoreRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $current.LegacyData -Names @('SecuritySecureScore', 'SecureScore'))) `
-    -ConditionalAccessRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $current.LegacyData -Names @('ConditionalAccessPolicies', 'ConditionalAccess'))) `
-    -AdminRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $current.LegacyData -Names @('AllOffice365Admins', 'Office365Admins', 'Admins'))) `
-    -DomainRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $current.LegacyData -Names @('Domains'))) `
-    -LicenseRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $current.LegacyData -Names @('LicenseSKUs', 'Licenses'))) `
-    -DeviceRows (Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $current.LegacyData -Names @('DeviceDetails', 'Devices'))) `
-    -StaleDeviceDays $StaleDeviceDays
-$currentMetrics | Add-Member -MemberType NoteProperty -Name GeneratedAt -Value $current.GeneratedAt -Force
-$currentMetrics | Add-Member -MemberType NoteProperty -Name Path -Value $current.Path -Force
+$baselineMetrics = Get-ArrayaTenantSnapshotMetricSetFromContext -Context $baseline -StaleDeviceDays $StaleDeviceDays
+$currentMetrics  = Get-ArrayaTenantSnapshotMetricSetFromContext -Context $current  -StaleDeviceDays $StaleDeviceDays
 
 $comparisons = @(
     New-MetricComparison -Metric 'SecureScorePercent' -Baseline $baselineMetrics.SecureScorePercent -Current $currentMetrics.SecureScorePercent -Direction HigherIsBetter
