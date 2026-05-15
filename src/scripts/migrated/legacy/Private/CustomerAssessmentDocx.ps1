@@ -5612,7 +5612,8 @@ function New-CustomerAssessmentDocumentBlocks {
     ))) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '1.0 Introduction' -Style 'Heading1')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text "This report summarizes the Microsoft 365 state observed in $tenantName and organizes the highest-value risks, decisions, and recommended actions." -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("Arraya Solutions conducted a Microsoft 365 tenant assessment for {0} to identify where the current environment carries security risk, where governance and operational gaps have accumulated, and where targeted improvements would deliver the most value. The assessment examined identity and access management, authentication and MFA enforcement, Exchange Online messaging, Teams and SharePoint collaboration, Purview compliance configuration, and licensing governance." -f $tenantName) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ("Data was collected on {0} using read-only Microsoft Graph API calls and PowerShell-based connectors. No configuration changes were made during collection. The findings reflect the state of the tenant at the time of collection." -f $GeneratedAt.ToString('MMMM d, yyyy')) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Tenant Snapshot At A Glance' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Signal', 'Current State') -Rows @($sourceSummaryRows | ForEach-Object { New-CustomerWordTableRow -Cells @($_.Signal, $_.State) }))) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($SourceModel.SummaryText) -Style 'Normal')) | Out-Null
@@ -5721,6 +5722,8 @@ function New-CustomerAssessmentDocumentBlocks {
     ))) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.3 Entra Guest Access Configuration' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommended Next Step' -Style 'Heading3')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'For the recommended approach to guest MFA enforcement and cross-tenant trust, see the MFA Enforcement section (§6.0).' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'External Access Snapshot' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Configuration Signal', 'Current State') -Rows $externalAccessSnapshotTableRows)) | Out-Null
     $guestObservedSegments = @(
@@ -5744,10 +5747,15 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text $guestObservedText -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Why It Matters' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text $guestWhyItMattersText -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommended Next Step' -Style 'Heading3')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'For the recommended approach to guest MFA enforcement and cross-tenant trust, see the MFA Enforcement section (§6.0).' -Style 'Normal')) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.4 Entra Applications and Access Review' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommendations for Application Governance' -Style 'Heading3')) | Out-Null
+    if ($applicationInventoryValidated -or $applicationInventoryClearlyEmpty) {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Use the prioritized application sample together with the SSO, inactivity, and credential lifecycle tables to identify cleanup candidates first. The most important follow-up actions are to confirm owners, retire apps that no longer show recent use, reduce broad permissions where business need is unclear, and rotate or remove expired client secrets and certificates before treating the current app estate as stable.' -Style 'Normal')) | Out-Null
+    }
+    else {
+        $blocks.Add((New-CustomerWordParagraphBlock -Text 'The current recommendation here is to validate the inventory first. Once the tenant surfaces a usable enterprise application list, the same identity-governance and least-privilege review rhythm can be applied to app ownership, consent, and permission scope.' -Style 'Normal')) | Out-Null
+    }
     if ($applicationInventoryClearlyEmpty) {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'The application review looked for enterprise application inventory, consent-related controls, and elevated permission signals. In the reviewed data, no enterprise applications were surfaced. That should be read as the current reported result for this source, with a follow-up validation only if the tenant expects line-of-business or third-party enterprise applications to appear here.' -Style 'Normal')) | Out-Null
     }
@@ -5839,13 +5847,6 @@ function New-CustomerAssessmentDocumentBlocks {
     }
     else {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'The most useful cleanup signals in this section are SSO configuration type, elevated permission posture, recent or absent app activity, and whether credential lifecycle hygiene is still being maintained. Applications that combine high privilege with stale activity or expired secrets/certificates are usually the fastest rationalization opportunities because they can represent both standing access and operational drift.' -Style 'Normal')) | Out-Null
-    }
-    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommendations for Application Governance' -Style 'Heading3')) | Out-Null
-    if ($applicationInventoryValidated -or $applicationInventoryClearlyEmpty) {
-        $blocks.Add((New-CustomerWordParagraphBlock -Text 'Use the prioritized application sample together with the SSO, inactivity, and credential lifecycle tables to identify cleanup candidates first. The most important follow-up actions are to confirm owners, retire apps that no longer show recent use, reduce broad permissions where business need is unclear, and rotate or remove expired client secrets and certificates before treating the current app estate as stable.' -Style 'Normal')) | Out-Null
-    }
-    else {
-        $blocks.Add((New-CustomerWordParagraphBlock -Text 'The current recommendation here is to validate the inventory first. Once the tenant surfaces a usable enterprise application list, the same identity-governance and least-privilege review rhythm can be applied to app ownership, consent, and permission scope.' -Style 'Normal')) | Out-Null
     }
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '5.5 Microsoft 365 Licensing Governance' -Style 'Heading2')) | Out-Null
@@ -6307,6 +6308,8 @@ function New-CustomerAssessmentDocumentBlocks {
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '6.0 Authentication Methods, MFA Enrollment, and MFA Enforcement' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This section separates MFA enrollment from MFA enforcement. Enrollment shows which authentication methods users have registered and whether weaker methods remain in use. Enforcement shows whether active access controls are actually requiring MFA during sign-in.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommendation' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $identityConsultativeSummary) { $identityConsultativeSummary.RecommendationSupport } else { 'This section supports the identity and access recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'MFA Enrollment' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Configuration Signal', 'Current State') -Rows @(
         @('Users reviewed', $(if ($null -ne $mfaTotalUsers) { $mfaTotalUsers } else { 'Not validated from the reviewed data' })),
@@ -6471,7 +6474,6 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("{0} {1} There are {2} guest or external-focused include row(s) and {3} guest or external-focused exclusion row(s) surfaced in the reviewed policy scope. {4}" -f $guestCoverageInterpretationText, $mfaScopeDriverText, $guestRelevantIncludeCount, $guestRelevantExcludeCount, $mfaScopeInterpretationText) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Representative MFA Scope Examples' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Policy', 'Scope Type', 'Scope Signal', 'Why It Matters') -Rows $mfaScopeExampleRows)) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $identityConsultativeSummary) { $identityConsultativeSummary.RecommendationSupport } else { 'This section supports the identity and access recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Conditional Access Policy Inventory' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'The table below lists all Conditional Access policies collected from this tenant. State values are Enabled, Disabled, or Report-only. Use this inventory to verify that all users are covered by at least one MFA-enforcing enabled policy and that report-only policies are either graduated to enforcement or documented as intentionally deferred.' -Style 'Normal')) | Out-Null
     if ($caPolicies.Count -gt 0) {
@@ -6524,6 +6526,8 @@ function New-CustomerAssessmentDocumentBlocks {
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '8.0 Authorization: Admin Access and Role Assignments' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Administrative access stood out in this tenant because the privileged footprint is large enough that stale or excess assignments create more than a theoretical risk. The review showed both the number of Global Administrators and the age of some privileged identities, which is usually a sign that role cleanup has not kept pace with operational change.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommendation' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $identityConsultativeSummary) { $identityConsultativeSummary.RecommendationSupport } else { 'This section supports the identity and access recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Summary of Findings' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Metric', 'Current State') -Rows @(
         @('Total admin accounts reviewed', $(if ($adminRows.Count -gt 0) { $adminRows.Count } else { 'Not surfaced in current source' })),
@@ -6552,7 +6556,6 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Admin registration gaps remain separate from admin enforcement gaps in this report. An admin can be enrolled but still sit outside the active enforcement baseline, and an unenrolled admin remains a readiness issue even where policy targeting is stronger.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Why This Matters' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $identityConsultativeSummary) { $identityConsultativeSummary.Narrative } else { 'Privileged access review matters most where stale administrative access and broad standing privileges begin to accumulate together.' })) -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $identityConsultativeSummary) { $identityConsultativeSummary.RecommendationSupport } else { 'This section supports the identity and access recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Service Accounts' -Style 'Heading2')) | Out-Null
     if ($smtpRelayHasServiceAccountEvidence) {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'Mailbox-based SMTP activity and application-related send patterns can provide useful clues about long-lived non-user access. Where service identities remain active, they should be reviewed with the same ownership and lifecycle discipline applied to privileged users.' -Style 'Normal')) | Out-Null
@@ -6585,6 +6588,8 @@ function New-CustomerAssessmentDocumentBlocks {
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '9.0 Exchange Online: Mailboxes and Storage Overview' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'A review was performed on mailbox usage and the distribution of recipient objects. The primary goals of this assessment were to evaluate current storage patterns, identify resources that are no longer active, and document where mailbox lifecycle governance is becoming difficult to manage cleanly.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommendation' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $messagingConsultativeSummary) { $messagingConsultativeSummary.RecommendationSupport } else { 'This section supports the messaging and anti-spoofing recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Storage Footprint Summary' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This table shows approximate storage in GB from the collected workload datasets. It is not a count of users, sites, mailboxes, or findings.' -Style 'Normal')) | Out-Null
     if ($dataFootprintTableRows.Count -gt 0) {
@@ -6629,7 +6634,6 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Transport Exposure Summary' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Signal', 'Current State') -Rows $transportExposureRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text (Convert-ToCustomerAssessmentNarrativeText -Text $(if ($null -ne $messagingConsultativeSummary) { $messagingConsultativeSummary.Narrative } else { $messagingObservation.WhyItMatters })) -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $messagingConsultativeSummary) { $messagingConsultativeSummary.RecommendationSupport } else { 'This section supports the messaging and anti-spoofing recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'User Mailbox Growth' -Style 'Heading3')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Metric', 'Current State') -Rows $userMailboxGrowthRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("User mailbox growth does not stand out here because of a single oversized mailbox. It stands out because the tenant has {0} user mailbox statistic row(s) in scope, with the largest mailbox currently at {1}. When the mailbox footprint is reviewed alongside archive adoption, it becomes easier to see whether storage growth is being managed intentionally or simply carried forward by default." -f $userMailboxStatsRows.Count, $(if ($largestUserMailbox.Count -gt 0) { (& $formatSizeGb (Get-ArrayaObjectValue -Object $largestUserMailbox[0] -Names @('TotalItemSizeBytes'))) + ' GB' } else { 'Not surfaced in current source' })) -Style 'Normal')) | Out-Null
@@ -6670,6 +6674,8 @@ function New-CustomerAssessmentDocumentBlocks {
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '10. Microsoft Teams Governance and Cleanup' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'An analysis of the current Microsoft Teams environment shows how collaboration governance is being carried in practice. Team ownership, dormancy, guest presence, and voice workload signals together provide a clearer picture than a raw Team count alone.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommendation' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $collaborationConsultativeSummary) { $collaborationConsultativeSummary.RecommendationSupport } else { 'This section supports the collaboration ownership, lifecycle, and external-sharing recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Key Findings' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Configuration Signal', 'Current State') -Rows $teamsGovernanceRows)) | Out-Null
     if ($teamsGroupsCleanupCandidateRows.Count -gt 0) {
@@ -6703,7 +6709,6 @@ function New-CustomerAssessmentDocumentBlocks {
     $blocks.Add((New-CustomerWordParagraphBlock -Text (Convert-ToCustomerAssessmentNarrativeText -Text $(if ($null -ne $collaborationConsultativeSummary) { $collaborationConsultativeSummary.Narrative } else { $collaborationObservation.ObservedNarrative })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Opportunities for Cleanup' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text (Convert-ToCustomerAssessmentNarrativeText -Text $collaborationObservation.WhyItMatters) -Style 'Normal')) | Out-Null
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $collaborationConsultativeSummary) { $collaborationConsultativeSummary.RecommendationSupport } else { 'This section supports the collaboration ownership, lifecycle, and external-sharing recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '11.0 SharePoint Online Storage and External Sharing' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("SharePoint and OneDrive storage were reviewed together with external-sharing posture because those signals show whether collaboration growth is still being matched by ownership, lifecycle, and sharing control. The tenant inventory includes {0} SharePoint sites and {1} OneDrive locations, which is enough to see where content has continued to accumulate." -f $sharePointRows.Count, $oneDriveRows.Count) -Style 'Normal')) | Out-Null
@@ -6800,6 +6805,8 @@ function New-CustomerAssessmentDocumentBlocks {
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '13.0 Email Authentication and Domain Configuration' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text ("The tenant review surfaced {0} verified domain(s) out of {1} domain record(s) reviewed. This section reviews email authentication posture — SPF, DKIM, and DMARC — alongside domain verification and namespace hygiene. SPF controls which servers are authorized to send on behalf of a domain. DKIM provides cryptographic proof that a message was not altered in transit. DMARC specifies what receiving servers should do with unauthenticated messages and enables aggregate reporting back to the domain owner." -f $verifiedDomains.Count, $(if ($domainRows.Count -gt 0) { $domainRows.Count } else { 'an unconfirmed number of' })) -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommendation' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $governanceConsultativeSummary) { $governanceConsultativeSummary.RecommendationSupport } else { 'This section supports the governance, domain, and security-baseline recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordTableBlock -Headers @('Domain', 'Verified', 'Authentication Type', 'Domain Type', 'Default', 'DMARC') -Rows $domainOverviewRows)) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text $(if ($null -ne $governanceConsultativeSummary) { $governanceConsultativeSummary.Narrative } else { 'The reviewed domain inventory did not surface a separate domain-registration remediation item beyond the authentication and DNS posture shown below. Where accepted domains remain active, verification state and default-domain usage should still be confirmed as part of normal namespace governance.' }) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Email Authentication Records' -Style 'Heading2')) | Out-Null
@@ -6815,10 +6822,11 @@ function New-CustomerAssessmentDocumentBlocks {
     else {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'The current source does not show a separate DNS hardening issue beyond the per-domain SPF, DKIM, and DMARC posture documented above.' -Style 'Normal')) | Out-Null
     }
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $governanceConsultativeSummary) { $governanceConsultativeSummary.RecommendationSupport } else { 'This section supports the governance, domain, and security-baseline recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '14.0 Offboarding Recommendation' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Lifecycle signals in this tenant suggest that access, content, and shared workloads are aging out of active ownership at different rates. That is a common sign that offboarding is being handled tactically across workloads rather than through one consistently governed process.' -Style 'Normal')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommendation' -Style 'Heading2')) | Out-Null
+    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $lifecycleConsultativeSummary) { $lifecycleConsultativeSummary.RecommendationSupport } else { 'This section supports the lifecycle and ownership-governance recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Key Offboarding Objectives' -Style 'Heading2')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'The current evidence suggests three objectives should remain central: remove stale access promptly, preserve business data only where ownership is clear, and reclaim licenses and shared workloads that no longer have an active sponsor.' -Style 'Normal')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'Recommended Offboarding Workflow' -Style 'Heading2')) | Out-Null
@@ -6833,7 +6841,6 @@ function New-CustomerAssessmentDocumentBlocks {
     if (-not [string]::IsNullOrWhiteSpace($lifecycleWhyItMattersText) -and $lifecycleWhyItMattersText -ne $lifecycleNarrativeText) {
         $blocks.Add((New-CustomerWordParagraphBlock -Text $lifecycleWhyItMattersText -Style 'Normal')) | Out-Null
     }
-    $blocks.Add((New-CustomerWordParagraphBlock -Text ($(if ($null -ne $lifecycleConsultativeSummary) { $lifecycleConsultativeSummary.RecommendationSupport } else { 'This section supports the lifecycle and ownership-governance recommendations in 4.0.' })) -Style 'Normal')) | Out-Null
 
     $blocks.Add((New-CustomerWordParagraphBlock -Text '15.0 Workloads Outside Assessment Scope' -Style 'Heading1')) | Out-Null
     $blocks.Add((New-CustomerWordParagraphBlock -Text 'This assessment covered the workloads and signals described in Sections 1–14. The capability areas listed below were not collected or analyzed in this engagement. They are documented explicitly so the report does not imply coverage it did not provide.' -Style 'Normal')) | Out-Null
