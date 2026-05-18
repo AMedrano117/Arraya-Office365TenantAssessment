@@ -37,7 +37,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Ensure-AssessmentServiceContext .* -ExistingConnectionsOnly:\$runUseExistingConnections'
         $script:collectorSource | Should -Match 'Existing connections ready for data collection\.'
         $script:collectorSource | Should -Match 'Run Invoke-M365TenantConnectionPreflight first or omit -UseExistingConnections'
-        $script:collectorSource | Should -Match 'Workload preflight skipped by request'
+        $script:collectorSource | Should -Match 'Permission preflight skipped'
         $script:collectorSource | Should -Not -Match 'Legend: cyan=section/progress, green=completed, yellow=warnings/skips\.'
         $script:collectorSource | Should -Not -Match 'Clear-Host'
         $script:collectorSource | Should -Not -Match 'Progress view: overall step completion is shown after each major task\.'
@@ -97,7 +97,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'function Connect-AssessmentTeams'
         $script:collectorSource | Should -Match 'function Test-AssessmentExistingSessions'
         $script:collectorSource | Should -Match 'function Initialize-AssessmentAuthentication'
-        $script:collectorSource | Should -Match 'Authentication mode:'
+        $script:collectorSource | Should -Match 'Auth mode'
         $script:collectorSource | Should -Match 'Resolve-AssessmentProfileCollectionPlan `'
         $script:collectorSource | Should -Match 'Resolve-AssessmentAuthWorkloadPlan'
         $script:collectorSource | Should -Match 'Initialize-AssessmentAuthentication'
@@ -112,7 +112,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
 
     It 'connects Exchange Online before Microsoft Graph for interactive assessment runs' {
         $script:collectorSource | Should -Match '\$connectExchangeFirst = \(\[string\]\$WorkloadPlan\.AuthenticationType -eq ''Interactive''\)'
-        $script:collectorSource | Should -Match 'Connection mode: connect/preflight; existing sessions may be reused\.'
+        $script:collectorSource | Should -Match 'preflight \(existing sessions may be reused\)'
         $script:collectorSource | Should -Match 'if \(\$connectExchangeFirst\) \{[\s\S]*Connect-AssessmentExchange[\s\S]*Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload ExchangeOnline[\s\S]*if \(\$WorkloadPlan\.Workloads\.PurviewCompliance\.Required\) \{[\s\S]*Connect-AssessmentPurview[\s\S]*Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload Purview[\s\S]*Connect-AssessmentGraph[\s\S]*Invoke-AssessmentPermissionPreflightWithStatus -ConnectionResult \(\[pscustomobject\]\$authResult\) -Workload Graph'
     }
 
@@ -223,7 +223,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'GraphTenantDetails'
         $script:collectorSource | Should -Match 'ExchangeTenantDetails'
         $script:collectorSource | Should -Match 'SharePointTenantDetails'
-        $script:collectorSource | Should -Match 'Connection mode: connect/preflight; existing sessions may be reused\.'
+        $script:collectorSource | Should -Match 'preflight \(existing sessions may be reused\)'
         $script:collectorSource | Should -Match 'Microsoft Graph already connected; reusing the current Graph session\.'
         $script:collectorSource | Should -Match 'function Confirm-AssessmentExistingGraphTenant'
         $script:collectorSource | Should -Match "Write-AssessmentGraphTenantDetails -GraphTenantDetails \`$GraphTenantDetails -Heading 'Existing Microsoft Graph tenant detected'"
@@ -411,7 +411,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Exchange auth: broker / WAM sign-in failed, retrying with -DisableWAM'
         $script:collectorSource | Should -Match 'Exchange auth: broker / WAM sign-in failed, retrying with device code'
         $script:collectorSource | Should -Match 'Exchange Online interactive sign-in hit a Windows broker / WAM token acquisition failure'
-        $script:collectorSource | Should -Match 'Checking existing SharePoint admin connection'
+        $script:collectorSource | Should -Match 'SharePoint admin\.\.\.'
         $script:collectorSource | Should -Match 'SharePoint admin already connected for this session.'
         $script:collectorSource | Should -Match 'Write-AssessmentInteractiveAuthNotice -ServiceName ''SharePoint admin'''
         $script:collectorSource | Should -Match 'SharePoint admin interactive sign-in'
@@ -422,7 +422,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Continuing with Graph-only Teams coverage'
         $script:collectorSource | Should -Match 'Write-AssessmentInteractiveAuthNotice -ServiceName ''Purview compliance PowerShell'''
         $script:collectorSource | Should -Match 'Write-AssessmentInteractiveAuthNotice -ServiceName ''Purview compliance PowerShell'' -SupportsDisableWam:\$ConnectCommandMetadata\.Parameters\.ContainsKey\(''DisableWAM''\) -SupportsDeviceCode:\$ConnectCommandMetadata\.Parameters\.ContainsKey\(''Device''\)'
-        $script:collectorSource | Should -Match 'Purview compliance: \{0\}'
+        $script:collectorSource | Should -Match "Write-WorkloadStatus -Label 'Purview'"
         $script:collectorSource | Should -Not -Match 'Invoke-PurviewComplianceDelegatedConnect -BaseParameters \$connectParams -ConnectCommandMetadata \$connectCommand -GraphAccount \$graphAccount'
     }
 
@@ -442,7 +442,7 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     }
 
     It 'uses a stable preflight progress counter and suppresses inner Graph record-count progress' {
-        $script:collectorSource | Should -Match '\{0\} access OK \(\{1\} checks\)\.'
+        $script:collectorSource | Should -Match 'access verified.*\{1\} checks'
         $script:collectorSource | Should -Match '\$preflightProgressTotal\s*=\s*\$selectedGraphChecks\.Count \+ \$selectedExchangeChecks\.Count'
         $script:collectorSource | Should -Match 'Write-ProgressHelper -Total \(\[Math\]::Max\(\$preflightProgressTotal, 1\)\) -Id \$preflightProgressId'
         $script:collectorSource | Should -Match '\$ProgressIndex\.Value\+\+'

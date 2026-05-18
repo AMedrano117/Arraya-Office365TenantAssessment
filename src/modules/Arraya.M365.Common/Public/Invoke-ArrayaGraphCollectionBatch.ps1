@@ -74,6 +74,10 @@ function Invoke-ArrayaGraphCollectionBatch {
                     $headers['ConsistencyLevel'] = 'eventual'
                 }
 
+                if (-not $headers.ContainsKey('Authorization')) {
+                    throw 'Graph batch request cannot proceed: no Authorization header is available. Ensure a Graph SDK context or global graph token is established before collection.'
+                }
+
                 $batchResponse = Invoke-RestMethod -Uri $batchEndpoint -Headers $headers -Method POST -Body $payload -ContentType 'application/json' -ErrorAction Stop
             }
         }

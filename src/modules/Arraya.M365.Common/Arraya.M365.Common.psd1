@@ -23,6 +23,7 @@
         'Get-ArrayaCollectorCacheValue',
         'Get-ArrayaObjectValue',
         'Get-ArrayaTenantSnapshotMetricSet',
+        'Get-ArrayaTenantSnapshotMetricSetFromContext',
         'Import-ArrayaOffice365CustomLocal',
         'Import-ArrayaTenantSnapshotContext',
         'Import-ArrayaTenantSnapshot',

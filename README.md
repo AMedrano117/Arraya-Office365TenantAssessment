@@ -1,291 +1,274 @@
 # Modern Workplace Tenant Assessment
 
-PowerShell automation for Microsoft 365 tenant assessments, reporting, and improvement planning.
+Microsoft 365 tenant assessment tooling for consultants and engineers who need to collect tenant data, build customer-ready reports, and turn the findings into a practical remediation plan.
 
-For operator-focused setup and execution guidance, use [RUN.md](RUN.md).
-
-## Operator References
-- [RUN.md](RUN.md)
-- [Tenant Assessment Quick Start](docs/runbooks/tenant-assessment-quick-start.md)
-- [App Registration Setup](docs/runbooks/app-registration-setup.md)
-- [Certificate Auth Setup](docs/runbooks/certificate-auth-setup.md)
-- [Improvement Plan Rule Taxonomy](docs/runbooks/improvement-plan-rule-taxonomy.md)
-
-## User Quick Start
-Run the launcher and pick an action from the menu:
+The main entry point is one PowerShell launcher. Run it without parameters when you want the guided menu:
 
 ```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1
 ```
 
-Users do not need to manually import modules. The launcher imports `Arraya.M365.AssessmentRunner`, and the tenant assessment now owns its own workload-aware login flow. `Office365Custom` remains available for shared helpers and legacy scripts, but the main assessment no longer relies on `Connect-Office365` as its startup bootstrap.
-The assessment also now validates required access as each workload connects, instead of deferring one large permission preflight block until after all authentication work is finished.
-
-## Auth Modes
-- `Delegated`: interactive sign-in for full module compatibility.
-- `Certificate`: noninteractive app auth for Graph and Exchange, with Graph-based SharePoint fallback in PowerShell 7.
-- `Client secret`: compatibility mode for Graph app auth. In this workflow it is not equivalent to certificate auth: Exchange Online falls back to delegated sign-in, Purview compliance app auth is unsupported, and certificate auth remains the recommended production path.
-
-If you do not pass `-AuthMode`, the assessment defaults to delegated interactive sign-in. For backward compatibility, supplying `-CertificateThumbprint` still switches the run to certificate auth, and supplying `-ClientSecret` still switches the run to client-secret auth.
-For safer secret handling, the launcher and runner also accept `-ClientSecretSecure` or `-ClientSecretCredential` so the secret does not need to stay as a plain string in shell history.
-The assessment now stages authentication by workload instead of trying to connect every possible Microsoft 365 surface up front. Graph and Exchange remain the baseline live-collection dependencies. Purview is only connected when the active run needs retention/DLP collection. SharePoint admin PowerShell and Teams PowerShell are treated as optional workload-specific connections with explicit fallback behavior. In interactive mode, the assessment now intentionally connects Exchange Online and Purview before Microsoft Graph so Exchange-family auth gets a clean session before Graph interactive auth runs.
-If you already connected the required workloads for the current run in the current session, you can run with `-SkipAuth` to reuse those sessions and bypass the assessment's authentication bootstrap. `-SkipAuth` now validates only the workloads the active profile actually needs.
-When the active profile includes Purview retention or DLP collection, `-SkipAuth` expects an already-usable compliance PowerShell session, not just imported cmdlet names.
-Use `-SkipPermissionPreflight` if you want to bypass the staged workload access checks during startup and let the collection continue until a later collector hits missing access.
-The launcher now also reuses the repo modules already loaded from this repository in the current PowerShell session instead of force-reimporting them on every run.
-If you want the assessment to continue without the startup permission gate, you can add `-SkipPermissionPreflight`. This skips the required-access validation at the beginning of the run and allows collection to continue on a best-effort basis, which means missing permissions may still surface later as individual workload failures.
-The permission preflight now shows the specific check in progress, then prints a short summary of how many checks succeeded and how many access gaps remain. It fast-passes core Graph permissions from the current token claims and reserves live probes for the more ambiguous endpoints, so startup validation stays more accurate without making every Graph scope wait on a network call. Non-blocking checks such as `OnPremDirectorySynchronization.Read.All` are reported as structured warnings in the preflight summary instead of only surfacing as raw Graph 403 noise.
-Progress output also now uses plain-language governance step names instead of older internal `Tier B` terminology.
-The operator docs now distinguish between the core Graph permission set used by the standard assessment and optional extended-enrichment permissions, so the app registration ask is easier to defend and keep least-privileged.
-App-based Teams collection now keeps team and channel inventory as part of the standard run, but member-count and guest-count enrichment are treated as optional. If `TeamMember.Read.All` or `TeamMember.ReadWrite.All` is not granted, the assessment logs a one-time warning and continues without that deeper Teams membership expansion.
-
-Retention and DLP policy collection uses Purview compliance PowerShell through `Connect-IPPSSession`, not the main Graph collector path. In this workflow:
-- delegated auth is supported
-- interactive delegated auth first uses a normal `Connect-IPPSSession` attempt, then retries with `-DisableWAM` when supported
-- device-code fallback for Purview is only available when the installed `ExchangeOnlineManagement` module exposes `Connect-IPPSSession -Device`
-- certificate auth is supported using `AppId + Organization + CertificateThumbprint`
-- client-secret auth is not supported for Purview compliance collection
-- `ExchangeOnlineManagement` must be available because it provides `Connect-IPPSSession`
-- when Purview compliance connection fails, the assessment now reports the auth path, tenant organization value, and next-step guidance in the preflight output so the operator can see what still needs to be corrected
-- if Microsoft Graph interactive auth has already broken later Exchange or Purview auth in the current shell, start a fresh PowerShell session before retrying the assessment
-- a certificate/app combination can succeed in one tenant and fail in another if the target tenant does not expose the Purview retention/DLP cmdlets to that app session; the preflight now calls that out explicitly when the compliance endpoint accepts auth but does not assign those cmdlets
-
-For SharePoint and OneDrive collection, certificate-based and client-secret runs now skip importing the `Microsoft.Online.SharePoint.PowerShell` module entirely. Those app-based runs rely on Microsoft Graph collection instead of `Connect-SPOService`. Interactive runs only attempt SharePoint admin PowerShell when the active assessment run can benefit from it.
-
-Examples:
+Most day-to-day runs start with the standard Microsoft 365 assessment:
 
 ```powershell
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full
+```
 
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
-  -SkipImprove
+That standard run collects the tenant snapshot, generates customer deliverables, and builds the remediation outputs used by the engineer.
 
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
-  -AuthMode Interactive
+## When To Use This
 
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
-  -SkipAuth
+Use this repo when you need to:
 
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
-  -SkipPermissionPreflight
+- Assess Microsoft 365 tenant configuration, security posture, collaboration settings, and governance signals.
+- Produce customer-facing assessment and remediation documents.
+- Save a reusable JSON snapshot for replay, comparison, or later reporting.
+- Run preflight checks before a longer collection.
+- Compare two assessment snapshots over time.
 
+For the full operator guide, see [RUN.md](RUN.md).
+
+## Quick Start
+
+1. Install PowerShell 7 or later.
+2. Install the Microsoft modules used by the assessment:
+
+```powershell
+.\tools\install-microsoft-modules.ps1
+```
+
+3. Start with a preflight check if this is a new tenant, new workstation, or new app registration:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Preflight
+```
+
+4. Run the assessment:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full
+```
+
+If you prefer the guided flow, run the launcher with no `-Action` and choose from the menu.
+
+## Common Actions
+
+| Action | Use it when you want to |
+| --- | --- |
+| `Full` | Run the standard Microsoft 365 assessment and remediation workflow. |
+| `Preflight` | Check authentication, connection, and permission readiness without collecting tenant data. |
+| `Collect` | Collect the tenant snapshot only, so reporting can happen later. |
+| `Report` | Generate reports from an existing snapshot. |
+| `Improve` | Build remediation outputs from an existing snapshot or manifest. |
+| `Compare` | Compare two saved tenant snapshots. |
+| `AD` | Run the Active Directory assessment workflow. |
+
+The older assessment-only behavior is still available:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full -SkipImprove
+```
+
+## What It Assesses
+
+A standard `Full` run collects data across six workload areas:
+
+| Workload area | What is collected |
+| --- | --- |
+| Tenant Overview | Tenant details, license SKUs, AD Connect sync state |
+| Identity | Users, admins, Entra groups, domains, authentication and SSO, federation, Conditional Access, MFA registration |
+| Exchange | Mailboxes, recipients, groups, hybrid config, mail flow rules, public folders, email activity, governance |
+| Collaboration | Unified groups, SharePoint and OneDrive sites, Teams inventory and voice |
+| Endpoint | Devices, compliance state, device management rollup |
+| Governance | Secure Score, Purview retention and DLP policies, external sharing, ownership gaps, license metadata |
+
+## What a Run Looks Like
+
+The launcher connects to each workload, then runs the collector. A typical console looks like this:
+
+```text
+  +========================================================+
+  |       Arraya M365 Tenant Assessment Launcher           |
+  +========================================================+
+
+  ----------------------------------------------------------------
+  [Connection]  Connection / Preflight
+  ----------------------------------------------------------------
+
+  Auth mode  :  Certificate
+  -> Microsoft Graph...       Connected
+  -> Exchange Online...       Connected
+  -> Purview compliance...    Connected
+
+  ----------------------------------------------------------------
+  [1/6]  Tenant Overview
+  ----------------------------------------------------------------
+
+  [ 1/35 |  3%] Tenant overview           - Completed in 00:00:00
+  [ 2/35 |  6%] License SKUs              - Completed in 00:00:00
+
+  ----------------------------------------------------------------
+  [2/6]  Identity
+  ----------------------------------------------------------------
+
+  [ 4/35 | 11%] Users                     - Completed in 00:00:05
+  [ 5/35 | 14%] Admins                    - Completed in 00:00:02
+  ...
+  [35/35 |100%] Configuration summary tables - Completed in 00:00:00
+
+  Assessment complete in 19 minute(s), 21 second(s)
+  Customer report  : Deliverables\Contoso-Best Practices Assessment-2026-05-18.docx
+  Roadmap report   : Deliverables\Contoso-Remediation Roadmap-2026-05-18.docx
+  Engineer pack    : Deliverables\Contoso-EngPack.md
+```
+
+Runtime varies by tenant size. A typical run takes 15-25 minutes. Exchange mailbox enumeration is usually the longest step.
+
+## What the Guidelines Check For
+
+The improvement plan evaluates findings across eleven categories:
+
+| Category | What gets flagged |
+| --- | --- |
+| Security posture | Secure Score gaps, unhardened baseline settings |
+| Conditional Access | Report-only policies, missing device-compliance requirements, exclusion sprawl |
+| MFA | Low registration rate, users without strong auth methods |
+| Identity governance | Inactive guest accounts, high-privilege enterprise apps |
+| Admin posture | Permanent privileged assignments, missing PIM coverage |
+| Domain hygiene | Unverified domains, missing SPF/DKIM/DMARC records |
+| Licensing | At-capacity SKUs, assignment errors |
+| Devices | Unmanaged device population, unsupported OS versions |
+| Exchange | Shared mailbox governance, external forwarding rules, growth risk |
+| SharePoint / OneDrive | External sharing exposure, anonymous link defaults |
+| Teams / Groups | Ungoverned Teams, ownership gaps, dormant groups |
+
+Findings come from two sources: assessment-derived data built from collected tenant configuration, and heuristic rules in this repo. See [improvement-plan-rule-taxonomy.md](docs/runbooks/improvement-plan-rule-taxonomy.md) for detail on how to read and explain each finding.
+
+## Authentication
+
+The launcher supports three auth modes:
+
+| Mode | Best for | Notes |
+| --- | --- | --- |
+| `Interactive` | Guided consultant runs | Default mode. Sign in when prompted. |
+| `Certificate` | Repeatable app-based runs | Recommended for unattended or production-style execution. |
+| `ClientSecret` | Compatibility cases | Graph app auth works, but some workloads fall back or are skipped. Prefer certificate auth when possible. |
+
+Certificate example:
+
+```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
+  -Action Full `
   -AuthMode Certificate `
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
   -CertificateThumbprint '<cert-thumbprint>'
+```
 
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
-  -AuthMode ClientSecret `
-  -TenantId '<tenant-guid>' `
-  -ClientId '<app-id>' `
-  -ClientSecret $env:ARRAYA_M365_CLIENT_SECRET
+Client secret example:
 
+```powershell
 $clientSecret = Read-Host 'Client secret' -AsSecureString
+
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
+  -Action Full `
   -AuthMode ClientSecret `
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
   -ClientSecretSecure $clientSecret
+```
 
+Setup references:
+
+- [App Registration Setup](docs/runbooks/app-registration-setup.md)
+- [Certificate Auth Setup](docs/runbooks/certificate-auth-setup.md)
+
+> **Automated app registration setup** -- a guided script to create and configure the Entra app registration is in development. Until it is available, follow the manual steps in the runbooks above.
+
+## Output Profiles
+
+Profiles tune how much data is collected and which deliverables are created.
+
+| Profile | Best for |
+| --- | --- |
+| `SolutionsEngineer` | Standard consultant run and the default choice for most assessments. |
+| `ExecutiveLevel` | Leadership-friendly summary depth. |
+| `Presales` | Lighter discovery and presales posture review. |
+| `TenantToTenantMigration` | Deep migration readiness and cutover planning. |
+| `Geek` | Detailed engineer troubleshooting. |
+| `Machine` | JSON-first automation, replay, and downstream processing. |
+
+You can request more than one profile in a single run:
+
+```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
-  -TenantId '<tenant-guid>' `
-  -ClientId '<app-id>' `
-  -CertificateThumbprint '<cert-thumbprint>' `
-  -ExportPath 'C:\Assessment-Outputs' `
+  -Action Full `
   -OutputProfile SolutionsEngineer,ExecutiveLevel
 ```
 
-## Customer onboarding flow
-Use the `onboarding` scripts when a customer tenant needs to authorize your multitenant Microsoft Entra app registration for app-only Exchange Online automation. Customer tenants do not create their own app registrations. Your app registration is the shared blueprint, and its client ID is the same for every customer.
+## What Gets Created
 
-1. The customer admin grants Microsoft 365 tenant-wide admin consent for your multitenant app. The app registration must already include the Office 365 Exchange Online application permission `Exchange.ManageAsApp`.
-2. Admin consent creates the Enterprise Application, also called the service principal, in the customer tenant. The app client ID stays the same across customers, but the service principal object ID is different in each customer tenant.
-3. The Exchange role bootstrap assigns `Exchange Administrator` to the customer tenant service principal by resolving the service principal from your app ID. Consent grants `Exchange.ManageAsApp`, but consent does not assign `Exchange Administrator`.
-4. The existing assessment script connects with the same client ID, the local certificate thumbprint, and the customer organization value:
+A standard `Full` run writes the main working files into two folders.
 
-```powershell
-Connect-ExchangeOnline `
-  -AppId '<your-client-id>' `
-  -CertificateThumbprint '<thumbprint>' `
-  -Organization '<customer-onmicrosoft-domain>'
+`Deliverables` contains the files you are most likely to share or review first:
+
+- `*-Best Practices Assessment-*.docx` -- 15-section Word document covering each workload area with an executive summary, per-section recommendations, and configuration evidence tables. Ready to share with the customer.
+- `*-Remediation Roadmap-*.docx` -- Phased action plan (0-30, 31-60, 61-90 days) distilled from the findings. Suitable for leadership review and project scheduling.
+- `*-EngPack.md` -- Engineer action pack with raw finding rows, evidence references, supporting PowerShell snippets, and links to the snapshot for replay.
+- `*.xlsx` when the selected profile enables workbook output
+
+`Support` contains the machine-readable and troubleshooting artifacts:
+
+- `*-AssessmentSnapshot.json` -- Full tenant data snapshot. Use with `-Action Report`, `Improve`, or `Compare` to regenerate or diff without reconnecting to the tenant.
+- `*-Plan.json` -- Structured finding rows (severity, area, current and target values, remediation guidance). Use for automation, filtering, or downstream processing.
+- `*-Snips.ps1` -- Ready-to-run PowerShell snippets for common remediation tasks surfaced by the findings.
+- `*-SolutionsEngineerEvidenceCoverage.json` -- Evidence coverage map used to verify collector completeness.
+- `*.manifest.json`
+- `Debugging\*`
+
+By default, outputs are written under:
+
+```text
+%LOCALAPPDATA%\Arraya\M365TenantAssessment\Outputs
 ```
 
-`Connect-ExchangeOnline -Organization` should use the customer's `.onmicrosoft.com` domain. For least privilege, `Exchange Administrator` can later be replaced with a narrower Exchange RBAC approach once the exact cmdlets required by the assessment are known.
-
-The local callback helper stores development consent status in `onboarding/customers.json`, which is ignored by Git. Do not store state signing secrets, private keys, or customer-specific secrets in source code.
-
-Example consent URL generation:
+Pass `-ExportPath` when you want to choose the output folder:
 
 ```powershell
-.\onboarding\Get-M365AdminConsentUrl.ps1 `
-  -ClientId "00000000-0000-0000-0000-000000000000" `
-  -RedirectUri "https://example.com/m365/consent/callback" `
-  -Tenant "organizations" `
-  -State "signed-state" `
-  -IncludeExchangeScope
-```
-
-Example Exchange role assignment:
-
-```powershell
-.\onboarding\Grant-ExchangeServicePrincipalRole.ps1 `
-  -CustomerTenantId "11111111-1111-1111-1111-111111111111" `
-  -AppId "00000000-0000-0000-0000-000000000000" `
-  -RoleName "Exchange Administrator"
-```
-
-Example Exchange test:
-
-```powershell
-.\onboarding\Test-ExchangeAppOnlyConnection.ps1 `
-  -AppId "00000000-0000-0000-0000-000000000000" `
-  -CertificateThumbprint "ABCDEF1234567890ABCDEF1234567890ABCDEF12" `
-  -CustomerOrganization "customer.onmicrosoft.com"
-```
-
-## Collection Vs Export
-The M365 workflow now supports explicit separation between data collection and artifact export:
-
-- `M365Preflight`: runs only workload connection plus permission preflight, prints readiness, and exits without collection, export, or `Improve`.
-- `M365Collect`: runs discovery/collection only and writes a JSON snapshot.
-- `M365Export`: loads a previously collected JSON snapshot and generates artifacts without re-collecting tenant data.
-- `M365`: the standard full assessment path. It now runs the assessment deliverables and the `Improve` post-processing step in one flow unless you pass `-SkipImprove`.
-- each run also writes a `*.manifest.json` artifact index next to the primary export filename.
-- JSON snapshots now use a versioned V2 contract with explicit sections: `Metadata`, `CollectionPlan`, `Data`, `Derived`, and `Diagnostics`.
-- Import is backward compatible with older V1 snapshots through an in-memory adapter.
-
-Examples:
-
-```powershell
-# Connection and permission preflight only
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365Preflight `
-  -TenantId '<tenant-guid>' `
-  -ClientId '<app-id>' `
-  -CertificateThumbprint '<cert-thumbprint>'
-
-# Collect data only (JSON snapshot)
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365Collect `
-  -TenantId '<tenant-guid>' `
-  -ClientId '<app-id>' `
-  -CertificateThumbprint '<cert-thumbprint>' `
-  -OutputProfile SolutionsEngineer `
-  -SkipPermissionPreflight
-
-# Export artifacts from an existing JSON snapshot
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365Export `
-  -OutputProfile ExecutiveLevel
+  -Action Full `
+  -ExportPath 'C:\Assessment-Outputs'
 ```
 
-## Assessment Outputs
-For a default `-Action M365` run, the top-level operator deliverables are now:
+### Sample outputs
 
-- `*-CustomerAssessmentReport.docx`: the primary customer-facing deliverable generated from `Improve`
-- `Support\*-Microsoft 365 Remediation Roadmap-<date>.docx`: the companion executive remediation roadmap generated alongside the customer report
-- `*-EngineerActionPack.md`: the primary engineer-facing remediation deliverable
+![Best Practices Assessment cover](docs/images/sample-bp-report.png)
+*Customer-facing Best Practices Assessment report*
 
-Customer-facing document conventions now follow this model:
+![Remediation Roadmap cover](docs/images/sample-roadmap.png)
+*Phased Remediation Roadmap*
 
-- the customer assessment report and remediation roadmap use a customer document revision label (`1.0`) instead of exposing the internal collector or script build version
-- `4.0 Modern Workplace Recommendations` includes `Recommendation`, `Criticality`, `Level of Effort`, and `Rough PS Hours`
-- `Rough PS Hours` is a combined engineering + project-management planning range for prep, review, presentation, implementation, QA, and finalization
-- the companion remediation roadmap uses heuristic timing buckets (`0-30 Days`, `31-60 Days`, `61-90 Days`, `Operational Model`) derived from urgency, effort, dependency, and quick-win eligibility rather than severity alone
+## Helpful Runbooks
 
-Support and machine-readable artifacts are written under `Support\...`:
-
-- `Support\*-ImprovementPlan.json`: the machine-readable remediation payload
-- `Support\*-AssessmentSnapshot.json`: the assessment snapshot used by `Improve`, replay, and export workflows
-- `Support\*.manifest.json`: artifact index for the run
-- `Support\*-RemediationSnippets.ps1`: support helper commands
-
-Logs and troubleshooting output are written under `Debugging\...`.
-
-The workflow still preserves a JSON assessment snapshot so `Improve`, `M365Export`, and later comparison/report replay can work reliably.
-
-Legacy assessment artifacts are still available, but they are now compatibility outputs rather than default deliverables:
-
-- `*-TenantSnapshot.html`
-- `*-BestPracticesSnapshot.html`
-- `*-TenantToTenantQuestionnaire.md`
-- `*.pdf`
-
-Workbook output is still a default deliverable for `SolutionsEngineer` and `TenantToTenantMigration`. Use `-IncludeLegacyAssessmentArtifacts` when you explicitly want the older HTML / questionnaire / PDF artifact family in the same run. Use `-IncludeLegacyArtifacts` when you also want the older `Improve` CSV/Markdown planning artifacts.
-
-For operator guidance on how to interpret `Improve` findings and rule IDs, see [Improvement Plan Rule Taxonomy](docs/runbooks/improvement-plan-rule-taxonomy.md).
-
-## Output Profiles
-The assessment run supports six operator-facing output profiles:
-
-- `Presales`: scope `Minimum`
-- `ExecutiveLevel`: scope `Minimum`
-- `SolutionsEngineer`: scope `Operator`
-- `Machine`: scope `Automation`; intended for JSON-focused automation and replay paths
-- `Geek`: scope `Geek`
-- `TenantToTenantMigration`: scope `All`
-
-`SolutionsEngineer` is the default profile.
-You can run multiple profiles in one command by passing a comma-separated list (for example `SolutionsEngineer,ExecutiveLevel`).
-When multiple profiles are supplied, the assessment runs once using the highest required reporting scope.
-In the default `M365` flow, profiles now influence collection/reporting depth more than artifact sprawl. The consolidated remediation outputs stay the default regardless of profile, and the legacy workbook/HTML/questionnaire family is only added when you pass `-IncludeLegacyAssessmentArtifacts`.
-
-Detail levels are intended to be read this way:
-
-- `Minimum`: fastest leadership and presales story with lighter enrichment
-- `Operator`: standard consultant/operator assessment depth without the heavy combined user/mailbox projection
-- `Automation`: structured snapshot depth for `Improve`, export replay, and automation workflows
-- `Geek`: deep engineer troubleshooting depth
-- `All`: deepest migration-oriented collection for readiness, cutover analysis, and the full combined user/mailbox projection
-
-`Combined` remains accepted as a compatibility alias for `Operator` when older wrappers or scripts still pass the legacy name.
-
-`-RunImprove` remains available for `M365Collect` when you want to collect a snapshot and immediately post-process it, but it is no longer required for the main `M365` workflow.
-When you run `Improve` separately, use `-LiveRefresh` if you want snapshot-plus-live-refresh behavior; it is a friendlier alias for `-UseGraphFallback`.
-
-Reporting scope is not prompted interactively. Scope is automatically derived from the selected output profile.
-
-## Runtime Notes
-- In `Minimum` scope profiles, the collector depth policy trims high-cardinality enrichment to reduce runtime and memory pressure.
-- Examples: Entra group deep membership/license expansion and detailed SSO app inventory are reduced in `Minimum`.
-- Full assessment profiles such as `SolutionsEngineer`, `Improve`, `Machine`, and `Geek` now derive practical governance datasets for Conditional Access optimization, MFA method posture, privileged-access cleanup, Teams/group cleanup, group-based licensing, and license optimization. The reduced `TenantToTenantMigration` scope intentionally does not add those broad best-practice collectors or worksheets.
-- The output contract is preserved: workbook tabs and report artifacts still generate with compatible values.
-- Run logs now include collector duration and memory summaries (`[CollectorMetrics]`) plus inventory row counts (`[CollectorInventory]`) for hotspot review.
-
-## HTML And PDF
-- `CustomerAssessmentReport.docx` is now the primary customer-facing deliverable and is generated from the approved Word template.
-- The best practices analysis HTML and full technical HTML are compatibility artifacts generated only when `-IncludeLegacyAssessmentArtifacts` is used.
-- PDF is also a compatibility artifact in this model and remains skippable with `-SkipPdfReport`.
-- PDF rendering uses a locally installed Chromium-based browser, preferring Google Chrome and falling back to Microsoft Edge.
-
-If a supported browser is unavailable, the remediation HTML and markdown outputs still complete.
-
-## Primary Entry Scripts
-- `src/scripts/operations/Start-M365TenantAssessment.ps1`
-- `src/scripts/assessments/tenant-wide/Invoke-M365FullTenantAssessment.ps1`
-- `src/scripts/assessments/tenant-wide/Invoke-M365TenantDataCollection.ps1`
-- `src/scripts/assessments/identity/Invoke-ActiveDirectoryTenantAssessment.ps1`
-- `src/scripts/reporting/Invoke-M365TenantAssessmentExport.ps1`
-- `src/scripts/reporting/Invoke-M365TenantImprovementPlan.ps1`
-- `src/scripts/reporting/Invoke-M365TenantAssessmentComparison.ps1`
-
-## Repo Layout
-- `docs`: user-facing templates and questionnaires. The tenant-to-tenant questionnaire template lives under `docs/templates`.
-- `src/modules/Arraya.M365.Common`: shared helpers and Office365Custom local import function.
-- `src/modules/Arraya.M365.AssessmentRunner`: user-facing commands that execute assessment/report scripts.
-- `src/scripts/migrated/legacy`: migrated legacy scripts kept for compatibility, including the core M365 assessment engine, HTML/PDF helper, and questionnaire exporter. The standalone `Invoke-EntraAppReport.ps1` file is retained as an unsupported reference script and now requires explicit opt-in to run.
-- `src/vendor/Office365Custom/1.2.0`: vendored module used as shared function source.
+- [RUN.md](RUN.md)
+- [Customer Execution Checklist](docs/runbooks/customer-execution-checklist.md)
+- [App Registration Setup](docs/runbooks/app-registration-setup.md)
+- [Certificate Auth Setup](docs/runbooks/certificate-auth-setup.md)
+- [Improvement Plan Rule Taxonomy](docs/runbooks/improvement-plan-rule-taxonomy.md)
 
 ## Development
-1. Install PowerShell 7+.
-2. Run `tools/bootstrap-dev.ps1`.
-3. Validate with `tools/invoke-scriptanalyzer.ps1` and `tools/run-pester.ps1`.
+
+Install the maintainer tooling:
+
+```powershell
+.\tools\install-microsoft-modules.ps1 -IncludeDevTools
+```
+
+Run the usual validation checks:
+
+```powershell
+.\tools\invoke-scriptanalyzer.ps1
+.\tools\run-pester.ps1
+```
+
+**Architecture direction:** The assessment is transitioning from a single large legacy script (`Get-FullTenantReportDetails.ps1`) toward a module-based structure under `src/modules/`. New collection logic is added as module functions; the legacy script remains the orchestration layer while the migration is in progress.

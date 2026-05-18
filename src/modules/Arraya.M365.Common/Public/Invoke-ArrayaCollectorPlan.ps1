@@ -61,7 +61,6 @@ function Invoke-ArrayaCollectorPlan {
             catch {
                 $status = 'Failed'
                 $message = $_.Exception.Message
-                throw
             }
             finally {
                 $elapsed = (Get-Date) - $start

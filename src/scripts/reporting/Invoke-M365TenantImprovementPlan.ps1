@@ -24,7 +24,10 @@ $runnerManifestPath = Join-Path $repoRoot 'src\modules\Arraya.M365.AssessmentRun
 Import-Module -Name $runnerManifestPath -Force -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
 
 $invokeParams = @{ AssessmentJsonPath = $AssessmentJsonPath }
-if ($PSBoundParameters.ContainsKey('OutputFolder')) { $invokeParams.OutputFolder = $OutputFolder }
+if ($PSBoundParameters.ContainsKey('OutputFolder')) {
+    $runStamp = Get-Date -Format 'yyyy-MM-dd-HHmm'
+    $invokeParams.OutputFolder = Join-Path -Path $OutputFolder -ChildPath $runStamp
+}
 if ($PSBoundParameters.ContainsKey('UseGraphFallback')) { $invokeParams.UseGraphFallback = $UseGraphFallback }
 if ($PSBoundParameters.ContainsKey('IncludeLegacyArtifacts')) { $invokeParams.IncludeLegacyArtifacts = $IncludeLegacyArtifacts }
 if ($PSBoundParameters.ContainsKey('PassThru')) { $invokeParams.PassThru = $PassThru }

@@ -148,5 +148,5 @@ Avoid saying that every rule is a Microsoft-native rule. That would be misleadin
 ## Related Operator Docs
 
 - [RUN.md](../../RUN.md)
-- [Tenant Assessment Quick Start](tenant-assessment-quick-start.md)
+- [Operator Guide](../../RUN.md)
 - [Workflow Overview](../architecture/workflow-overview.md)

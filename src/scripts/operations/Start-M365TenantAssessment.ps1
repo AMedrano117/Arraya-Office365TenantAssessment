@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [ValidateSet('M365', 'M365Preflight', 'M365Collect', 'M365Export', 'AD', 'Improve', 'Compare')]
+    [ValidateSet('Full', 'Preflight', 'Collect', 'Report', 'AD', 'Improve', 'Compare')]
     [string]$Action,
     [Parameter(Mandatory = $false)]
     [ValidateSet('Interactive', 'Certificate', 'ClientSecret')]
@@ -485,35 +485,163 @@ function Test-LauncherShouldRunImprove {
     )
 
     switch ($Action) {
-        'M365' { return (-not $SkipImprove) }
-        'M365Collect' { return ($RunImprove -and -not $SkipImprove) }
+        'Full'    { return (-not $SkipImprove) }
+        'Collect' { return ($RunImprove -and -not $SkipImprove) }
         default { return $false }
     }
 }
 
-if ([string]::IsNullOrWhiteSpace($Action)) {
+function Write-LauncherBanner {
+    [CmdletBinding()]
+    param()
+    $tl = [char]0x2554; $tr = [char]0x2557
+    $bl = [char]0x255A; $br = [char]0x255D
+    $h  = [char]0x2550; $v  = [char]0x2551
+    $top    = "  $tl$([string]::new($h, 54))$tr"
+    $middle = "  $v       Arraya M365 Tenant Assessment Launcher         $v"
+    $bottom = "  $bl$([string]::new($h, 54))$br"
     Write-Host ''
-    Write-Host 'Tenant Assessment Launcher' -ForegroundColor Cyan
-    Write-Host '1. Microsoft 365 Full Tenant Assessment + Improvement Plan'
-    Write-Host '2. Microsoft 365 Connection / Preflight Only'
-    Write-Host '3. Microsoft 365 Data Collection Only (JSON snapshot)'
-    Write-Host '4. Microsoft 365 Export from JSON Snapshot + Improvement Plan'
-    Write-Host '5. Active Directory Assessment'
-    Write-Host '6. Build Improvement Plan from Tenant JSON'
-    Write-Host '7. Compare Two Tenant JSON Snapshots'
+    Write-Host $top    -ForegroundColor Cyan
+    Write-Host $middle -ForegroundColor Cyan
+    Write-Host $bottom -ForegroundColor Cyan
+    Write-Host ("  {0}" -f (Get-Date -Format 'yyyy-MM-dd  HH:mm')) -ForegroundColor DarkGray
+    Write-Host ''
+}
+
+function Write-LauncherMenuGroup {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Label
+    )
+    Write-Host ("  {0} {1}" -f ([string]::new([char]0x2500, 3)), $Label) -ForegroundColor DarkGray
+}
+
+function Read-LauncherMenuChoice {
+    [CmdletBinding()]
+    param()
+
+    Write-LauncherBanner
+
+    function Write-MenuItem {
+        param([string]$Number, [string]$Action, [string]$Description)
+        Write-Host -NoNewline '    '
+        Write-Host -NoNewline $Number    -ForegroundColor Cyan
+        Write-Host -NoNewline ('  {0,-10}' -f $Action) -ForegroundColor DarkGray
+        Write-Host $Description
+    }
+
+    Write-LauncherMenuGroup -Label 'Live'
+    Write-MenuItem '1' 'Full'      'Microsoft 365 full assessment + improvement plan'
+    Write-MenuItem '2' 'Preflight' 'Test M365 connections and permissions only'
+    Write-MenuItem '3' 'Collect'   'Collect M365 data to a JSON snapshot'
+    Write-Host ''
+    Write-LauncherMenuGroup -Label 'From Snapshot'
+    Write-MenuItem '4' 'Report'  'Generate Excel report + improvement plan from snapshot'
+    Write-MenuItem '5' 'Improve' 'Build improvement plan docs only from snapshot'
+    Write-MenuItem '6' 'Compare' 'Compare two snapshots'
+    Write-Host ''
+    Write-LauncherMenuGroup -Label 'Other'
+    Write-MenuItem '7' 'AD' 'Active Directory assessment'
     Write-Host ''
 
-    $choice = Read-Host 'Select an option (1-7)'
-    switch ($choice) {
-        '1' { $Action = 'M365' }
-        '2' { $Action = 'M365Preflight' }
-        '3' { $Action = 'M365Collect' }
-        '4' { $Action = 'M365Export' }
-        '5' { $Action = 'AD' }
-        '6' { $Action = 'Improve' }
-        '7' { $Action = 'Compare' }
-        default { throw "Invalid selection: $choice" }
+    $actionMap = @{
+        '1' = 'Full'; '2' = 'Preflight'; '3' = 'Collect'
+        '4' = 'Report'; '5' = 'Improve'; '6' = 'Compare'; '7' = 'AD'
     }
+    while ($true) {
+        $choice = Read-Host 'Select an option (1-7)'
+        if ($actionMap.ContainsKey($choice)) {
+            return $actionMap[$choice]
+        }
+        Write-Warning "Invalid choice '$choice'. Please enter a number from 1 to 7."
+        Write-Host ''
+    }
+}
+
+function Read-LauncherExportPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DefaultPath,
+        [Parameter(Mandatory = $false)]
+        [string]$Label = 'Export path (folder or .xlsx)'
+    )
+    $value = Read-Host ("{0} [default: {1}]" -f $Label, $DefaultPath)
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        Write-Host ("  Using default: {0}" -f $DefaultPath) -ForegroundColor DarkCyan
+        return $DefaultPath
+    }
+    Write-Host ("  Export path: {0}" -f $value) -ForegroundColor DarkCyan
+    return $value
+}
+
+function Read-LauncherOutputProfile {
+    [CmdletBinding()]
+    param()
+    Write-Host '  Profiles: Presales | SolutionsEngineer | ExecutiveLevel | TenantToTenantMigration | Geek | Machine' -ForegroundColor DarkGray
+    $value = Read-Host 'Profile(s) [default: SolutionsEngineer]  comma-separated'
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        Write-Host '  Using profile: SolutionsEngineer' -ForegroundColor DarkCyan
+        return @('SolutionsEngineer')
+    }
+    $profiles = @(
+        $value -split ',' |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    Write-Host ("  Profile(s): {0}" -f ($profiles -join ', ')) -ForegroundColor DarkCyan
+    return $profiles
+}
+
+function Read-LauncherFilePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Prompt,
+        [Parameter(Mandatory = $false)]
+        [switch]$CheckExists
+    )
+    $value = Read-Host $Prompt
+    if ($CheckExists -and -not [string]::IsNullOrWhiteSpace($value) -and -not (Test-Path -Path $value)) {
+        Write-Warning "File not found: $value. Continuing - validation will occur during the run."
+    }
+    return $value
+}
+
+function Write-LauncherActionHeader {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Description
+    )
+    $line = [string]::new([char]0x2500, 58)
+    Write-Host ''
+    Write-Host ("  {0}" -f $line) -ForegroundColor DarkGray
+    Write-Host ("  Running: {0}" -f $Description) -ForegroundColor Cyan
+    Write-Host ("  {0}" -f $line) -ForegroundColor DarkGray
+    Write-Host ''
+}
+
+function Write-LauncherRunSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Fields
+    )
+    Write-Host '  Run parameters:' -ForegroundColor DarkGray
+    foreach ($key in $Fields.Keys) {
+        $value = [string]$Fields[$key]
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            Write-Host -NoNewline ("    {0,-14}: " -f $key) -ForegroundColor DarkGray
+            Write-Host $value
+        }
+    }
+    Write-Host ''
+}
+
+if ([string]::IsNullOrWhiteSpace($Action)) {
+    $Action = Read-LauncherMenuChoice
 }
 
 $clientSecretRequested = (
@@ -527,23 +655,16 @@ if ($clientSecretRequested) {
 }
 
 switch ($Action) {
-    'M365' {
+    'Full' {
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
         $exportPathInput = if (-not [string]::IsNullOrWhiteSpace($ExportPath)) {
             $ExportPath
         } else {
-            Read-Host "Export path (.xlsx or folder) - default $defaultOutputRoot"
+            Read-LauncherExportPath -DefaultPath $defaultOutputRoot
         }
         $selectedOutputProfiles = @($OutputProfile)
         if (-not $PSBoundParameters.ContainsKey('OutputProfile')) {
-            $outputProfileInput = Read-Host 'Output profile(s) (Presales, SolutionsEngineer, ExecutiveLevel, TenantToTenantMigration, Geek, Machine) - comma-separated, default SolutionsEngineer'
-            if (-not [string]::IsNullOrWhiteSpace($outputProfileInput)) {
-                $selectedOutputProfiles = @(
-                    $outputProfileInput -split ',' |
-                        ForEach-Object { $_.Trim() } |
-                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-                )
-            }
+            $selectedOutputProfiles = Read-LauncherOutputProfile
         }
 
         if (-not $selectedOutputProfiles -or $selectedOutputProfiles.Count -eq 0) {
@@ -577,9 +698,16 @@ switch ($Action) {
         if ($null -ne $ClientSecretCredential) { $invokeParams.ClientSecretCredential = $ClientSecretCredential }
         if ($null -ne $ClientSecretSecure) { $invokeParams.ClientSecretSecure = $ClientSecretSecure }
 
+        Write-LauncherActionHeader -Description 'Microsoft 365 Full Assessment + Improvement Plan'
+        Write-LauncherRunSummary -Fields ([ordered]@{
+            'Export path' = $invokeParams.ExportPath
+            'Profile(s)'  = ($invokeParams.OutputProfile -join ', ')
+            'Auth mode'   = if (-not [string]::IsNullOrWhiteSpace([string]$AuthMode)) { $AuthMode } else { 'Interactive' }
+            'Improve'     = if ($SkipImprove) { 'No (skipped)' } else { 'Yes (auto)' }
+        })
         Invoke-M365TenantAssessment @invokeParams
     }
-    'M365Preflight' {
+    'Preflight' {
         $selectedOutputProfiles = @($OutputProfile)
         if (-not $selectedOutputProfiles -or $selectedOutputProfiles.Count -eq 0) {
             $selectedOutputProfiles = @('SolutionsEngineer')
@@ -598,25 +726,19 @@ switch ($Action) {
         if ($null -ne $ClientSecretCredential) { $invokeParams.ClientSecretCredential = $ClientSecretCredential }
         if ($null -ne $ClientSecretSecure) { $invokeParams.ClientSecretSecure = $ClientSecretSecure }
 
+        Write-LauncherActionHeader -Description 'Microsoft 365 Connection / Preflight Check'
         Invoke-M365TenantConnectionPreflight @invokeParams
     }
-    'M365Collect' {
+    'Collect' {
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
         $exportPathInput = if (-not [string]::IsNullOrWhiteSpace($ExportPath)) {
             $ExportPath
         } else {
-            Read-Host "Snapshot output path (.xlsx or folder) - default $defaultOutputRoot"
+            Read-LauncherExportPath -DefaultPath $defaultOutputRoot -Label 'Snapshot output path (folder or .xlsx)'
         }
         $selectedOutputProfiles = @($OutputProfile)
         if (-not $PSBoundParameters.ContainsKey('OutputProfile')) {
-            $outputProfileInput = Read-Host 'Collection profile(s) (Presales, SolutionsEngineer, ExecutiveLevel, TenantToTenantMigration, Geek, Machine) - comma-separated, default SolutionsEngineer'
-            if (-not [string]::IsNullOrWhiteSpace($outputProfileInput)) {
-                $selectedOutputProfiles = @(
-                    $outputProfileInput -split ',' |
-                        ForEach-Object { $_.Trim() } |
-                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-                )
-            }
+            $selectedOutputProfiles = Read-LauncherOutputProfile
         }
 
         if (-not $selectedOutputProfiles -or $selectedOutputProfiles.Count -eq 0) {
@@ -642,30 +764,30 @@ switch ($Action) {
         if ($null -ne $ClientSecretCredential) { $invokeParams.ClientSecretCredential = $ClientSecretCredential }
         if ($null -ne $ClientSecretSecure) { $invokeParams.ClientSecretSecure = $ClientSecretSecure }
 
+        Write-LauncherActionHeader -Description 'Microsoft 365 Data Collection'
+        Write-LauncherRunSummary -Fields ([ordered]@{
+            'Snapshot path' = $invokeParams.ExportPath
+            'Profile(s)'    = ($invokeParams.OutputProfile -join ', ')
+            'Auth mode'     = if (-not [string]::IsNullOrWhiteSpace([string]$AuthMode)) { $AuthMode } else { 'Interactive' }
+            'Run Improve'   = if ($RunImprove) { 'Yes' } else { 'No' }
+        })
         Invoke-M365TenantDataCollection @invokeParams
     }
-    'M365Export' {
+    'Report' {
         $defaultOutputRoot = Get-ArrayaAssessmentOutputRoot -FallbackPath $repoRoot
-        $jsonPath = Read-Host 'Path to collected tenant JSON snapshot'
+        $jsonPath = Read-LauncherFilePath -Prompt 'Path to collected tenant JSON snapshot' -CheckExists
         if ([string]::IsNullOrWhiteSpace($jsonPath)) {
             throw 'A JSON snapshot path is required for export.'
         }
         $exportPathInput = if (-not [string]::IsNullOrWhiteSpace($ExportPath)) {
             $ExportPath
         } else {
-            Read-Host "Export path (.xlsx or folder) - default $defaultOutputRoot"
+            Read-LauncherExportPath -DefaultPath $defaultOutputRoot
         }
 
         $selectedOutputProfiles = @($OutputProfile)
         if (-not $PSBoundParameters.ContainsKey('OutputProfile')) {
-            $outputProfileInput = Read-Host 'Export profile(s) (Presales, SolutionsEngineer, ExecutiveLevel, TenantToTenantMigration, Geek, Machine) - comma-separated, default SolutionsEngineer'
-            if (-not [string]::IsNullOrWhiteSpace($outputProfileInput)) {
-                $selectedOutputProfiles = @(
-                    $outputProfileInput -split ',' |
-                        ForEach-Object { $_.Trim() } |
-                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-                )
-            }
+            $selectedOutputProfiles = Read-LauncherOutputProfile
         }
 
         if (-not $selectedOutputProfiles -or $selectedOutputProfiles.Count -eq 0) {
@@ -688,13 +810,21 @@ switch ($Action) {
         if (-not [string]::IsNullOrWhiteSpace($ImproveOutputFolder)) { $invokeParams.ImproveOutputFolder = $ImproveOutputFolder }
         if ($UseGraphFallback) { $invokeParams.UseGraphFallback = $true }
 
+        Write-LauncherActionHeader -Description 'Report + Improvement Plan from Existing Snapshot'
+        Write-LauncherRunSummary -Fields ([ordered]@{
+            'Snapshot'    = $jsonPath
+            'Export path' = $invokeParams.ExportPath
+            'Profile(s)'  = ($invokeParams.OutputProfile -join ', ')
+            'Improve'     = if ($SkipImprove) { 'No (skipped)' } else { 'Yes (auto)' }
+        })
         Invoke-M365TenantAssessmentExport @invokeParams
     }
     'AD' {
+        Write-LauncherActionHeader -Description 'Active Directory Assessment'
         Invoke-ADTenantAssessment
     }
     'Improve' {
-        $jsonPath = Read-Host 'Path to tenant assessment JSON or manifest JSON'
+        $jsonPath = Read-LauncherFilePath -Prompt 'Path to tenant assessment JSON or manifest JSON' -CheckExists
         $outputFolder = Read-Host 'Output folder (leave blank to use JSON folder)'
 
         $invokeParams = @{ AssessmentJsonPath = $jsonPath }
@@ -702,11 +832,12 @@ switch ($Action) {
         if ($UseGraphFallback) { $invokeParams.UseGraphFallback = $true }
         if ($IncludeLegacyArtifacts) { $invokeParams.IncludeLegacyArtifacts = $true }
 
+        Write-LauncherActionHeader -Description 'Improvement Plan Generation'
         Invoke-M365ImprovementPlan @invokeParams
     }
     'Compare' {
-        $baselinePath = Read-Host 'Path to BASELINE JSON'
-        $currentPath = Read-Host 'Path to CURRENT JSON'
+        $baselinePath = Read-LauncherFilePath -Prompt 'Path to BASELINE JSON' -CheckExists
+        $currentPath  = Read-LauncherFilePath -Prompt 'Path to CURRENT JSON'  -CheckExists
         $outputFolder = Read-Host 'Output folder (leave blank to use current JSON folder)'
 
         $invokeParams = @{
@@ -715,6 +846,7 @@ switch ($Action) {
         }
         if (-not [string]::IsNullOrWhiteSpace($outputFolder)) { $invokeParams.OutputFolder = $outputFolder }
 
+        Write-LauncherActionHeader -Description 'Snapshot Comparison'
         Invoke-M365AssessmentComparison @invokeParams
     }
 }
