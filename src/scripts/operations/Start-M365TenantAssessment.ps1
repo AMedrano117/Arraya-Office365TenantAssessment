@@ -604,7 +604,7 @@ function Read-LauncherFilePath {
     )
     $value = Read-Host $Prompt
     if ($CheckExists -and -not [string]::IsNullOrWhiteSpace($value) -and -not (Test-Path -Path $value)) {
-        Write-Warning "File not found: $value. Continuing — validation will occur during the run."
+        Write-Warning "File not found: $value. Continuing - validation will occur during the run."
     }
     return $value
 }
