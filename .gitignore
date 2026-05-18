@@ -15,3 +15,18 @@ onboarding/customers.json
 TestResults/
 coverage.xml
 TestRuns/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.pyc
