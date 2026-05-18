@@ -46,7 +46,7 @@ def resolve_snapshot_output_context(snapshot: dict, export_path: str | Path) -> 
         stem = export_path.stem
     else:
         output_dir = export_path
-        tenant = str(meta.get("TenantDisplayName", meta.get("TenantDomain", "Tenant"))).strip()
+        tenant = _resolve_tenant_name(meta)
         stem = _sanitize(tenant) if tenant else "Assessment"
 
     return {
@@ -55,6 +55,22 @@ def resolve_snapshot_output_context(snapshot: dict, export_path: str | Path) -> 
         "Profile": profile,
         "GeneratedAt": generated_at,
     }
+
+
+def _resolve_tenant_name(meta: dict) -> str:
+    # Schema v2: Metadata.Tenant.DisplayName
+    tenant_obj = meta.get("Tenant") or {}
+    if isinstance(tenant_obj, dict):
+        for key in ("DisplayName", "DefaultDomainName", "TenantId"):
+            val = tenant_obj.get(key)
+            if val and str(val).strip():
+                return str(val).strip()
+    # Flat fallback fields
+    for key in ("TenantDisplayName", "TenantDomain", "OutputProfileLabel"):
+        val = meta.get(key)
+        if val and str(val).strip():
+            return str(val).strip()
+    return ""
 
 
 def _sanitize(text: str) -> str:

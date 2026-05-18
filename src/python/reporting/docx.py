@@ -55,7 +55,13 @@ def _setup_styles(doc: Document) -> None:
 
 def _write_cover(doc: Document, snapshot: dict) -> None:
     meta = get_metadata(snapshot)
-    tenant = meta.get("TenantDisplayName") or meta.get("TenantDomain") or "Tenant"
+    tenant_obj = meta.get("Tenant") or {}
+    tenant = (
+        (tenant_obj.get("DisplayName") if isinstance(tenant_obj, dict) else None)
+        or meta.get("TenantDisplayName")
+        or meta.get("TenantDomain")
+        or "Tenant"
+    )
     generated_at = meta.get("GeneratedAt", "")
 
     p = doc.add_heading("Microsoft 365 Tenant Assessment", level=0)

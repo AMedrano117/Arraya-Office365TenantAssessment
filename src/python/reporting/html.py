@@ -80,8 +80,10 @@ def generate(snapshot: dict, output_path: str | Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     meta = get_metadata(snapshot)
+    tenant_obj = meta.get("Tenant") or {}
     tenant_name = (
-        meta.get("TenantDisplayName")
+        (tenant_obj.get("DisplayName") if isinstance(tenant_obj, dict) else None)
+        or meta.get("TenantDisplayName")
         or meta.get("TenantDomain")
         or "Unknown Tenant"
     )
