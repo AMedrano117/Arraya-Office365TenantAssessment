@@ -1,77 +1,85 @@
 # Tenant Assessment Quick Start
 
-## Menu launcher (recommended)
-Run one script and choose from the menu:
+## 1. Install prerequisites
+
+```powershell
+.\tools\install-microsoft-modules.ps1
+```
+
+## 2. Run the assessment
+
+Launch with the interactive menu:
 
 ```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1
 ```
 
-## Direct launch options
+Or pass `-Action` directly to skip the menu:
+
 ```powershell
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365
+# Standard full run
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full
+
+# Full run with a specific export path
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full -ExportPath 'C:\Assessment-Outputs'
+
+# Full run without the improvement plan step
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full -SkipImprove
+
+# Active Directory assessment
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action AD
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Improve
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Compare
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365 -SkipImprove
 ```
 
-## Script entry points
-- `src/scripts/assessments/tenant-wide/Invoke-M365FullTenantAssessment.ps1`
-- `src/scripts/assessments/identity/Invoke-ActiveDirectoryTenantAssessment.ps1`
-- `src/scripts/reporting/Invoke-M365TenantImprovementPlan.ps1`
-- `src/scripts/reporting/Invoke-M365TenantAssessmentComparison.ps1`
+## 3. Find your outputs
 
-## Module import behavior
-- `src/modules/Arraya.M365.AssessmentRunner` is imported by launcher/wrapper scripts.
-- `src/modules/Arraya.M365.Common/Public/Import-ArrayaOffice365CustomLocal.ps1` handles local `Office365Custom` import.
-- `Office365Custom` is imported only if not already loaded.
-- Required commands are validated after import.
+Outputs go to `%LOCALAPPDATA%\Arraya\M365TenantAssessment\Outputs` by default, or to the folder you passed with `-ExportPath`.
 
-## Legacy compatibility
-Migrated legacy scripts are stored in `src/scripts/migrated/legacy`.
-The legacy `Import-Office365CustomLocal.ps1` now delegates to the shared Common module loader.
-The standalone `Invoke-EntraAppReport.ps1` file in that folder is kept only as an unsupported reference script and now requires an explicit override switch to run.
+| What you want | Where to look |
+| ------------- | ------------- |
+| Customer report | `Deliverables\*-Best Practices Assessment-*.docx` |
+| Remediation roadmap | `Deliverables\*-Remediation Roadmap-*.docx` |
+| Engineer action pack | `Deliverables\*-EngPack.md` |
+| Snapshot for replay | `Support\*-AssessmentSnapshot.json` |
 
-## Operator references
-- [../../RUN.md](../../RUN.md)
-- [improvement-plan-rule-taxonomy.md](improvement-plan-rule-taxonomy.md)
-- [solutions-engineer-assessment-objectives.md](solutions-engineer-assessment-objectives.md)
+## Actions reference
 
-## Improve workflow notes
-- `M365` is now the standard full assessment path and includes `Improve` by default.
-- Use `-SkipImprove` only when you explicitly want the older assessment-only behavior.
-- `Improve` is still available as a separate post-processing workflow that consumes an assessment JSON snapshot.
-- The launcher still supports `-RunImprove` on `M365Collect` when you want to chain post-processing from a snapshot-only run.
-- The default `M365` flow now writes human-facing outputs under `Deliverables`, including the customer assessment DOCX, remediation roadmap DOCX, engineer action pack, and the workbook when the selected profile enables it.
-- Machine and replay artifacts are written under `Support`, including `*-AssessmentSnapshot.json`, `*-SolutionsEngineerEvidenceCoverage.json`, `*-Plan.json`, `*.manifest.json`, `*-Snips.ps1`, and `Debugging` logs/error exports.
-- Solutions Engineer evidence coverage is kept out of customer-facing DOCX files. Review the summary in the engineer pack and the full machine-readable coverage in `Support`.
-- `SolutionsEngineer` and `TenantToTenantMigration` include workbook output by default.
-- Use `-IncludeLegacyAssessmentArtifacts` only when you explicitly want the older assessment HTML / questionnaire / PDF family.
-- Use `-IncludeLegacyArtifacts` only when you explicitly want the older `Improve` CSV/Markdown planning artifacts.
-- `Improve` can now take either the snapshot JSON path or the `*.manifest.json` path from the same run.
-- Use `-LiveRefresh` when you want snapshot-plus-live-refresh behavior during `Improve`; it is a friendlier alias for `-UseGraphFallback`.
-- The improvement plan combines derived assessment findings with built-in remediation heuristics.
-- Rule IDs such as `ID-007`, `CA-012`, `DEV-006`, and `EX-007` are internal repo rule identifiers, not Microsoft-native control IDs.
-- Use the taxonomy guide when you need to explain where a finding came from or how to trace it back to the supporting worksheet.
+| Action | What it does |
+| ------ | ------------ |
+| `Full` | Full assessment and improvement plan (standard run) |
+| `Preflight` | Check connections and permissions only, no data collection |
+| `Collect` | Collect data to a JSON snapshot, no report yet |
+| `Report` | Generate reports from an existing snapshot |
+| `Improve` | Build the improvement plan from an existing snapshot |
+| `Compare` | Compare two snapshots side by side |
+| `AD` | Active Directory assessment |
 
-## Output profiles and detail levels
-- `Presales`: `Minimum`
-- `ExecutiveLevel`: `Minimum`
-- `SolutionsEngineer`: `Operator`
-- `Machine`: `Automation`
-- `Geek`: `Geek`
-- `TenantToTenantMigration`: `All`
+## If this is a new machine or new app registration
 
-`Combined` is still accepted as a compatibility alias for `Operator`.
+Run a preflight check first to validate connections and permissions before a long collection:
 
-## Another machine validation
-When validating on another machine, start with the safest path first:
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action Preflight `
+  -AuthMode Certificate `
+  -TenantId '<tenant-guid>' `
+  -ClientId '<app-id>' `
+  -CertificateThumbprint '<cert-thumbprint>'
+```
 
-1. Run `Improve` against an existing known-good snapshot.
-2. Run `M365Collect`.
-3. Run `Improve` against the newly collected snapshot.
+## Output profiles
 
-This separates environment/setup issues from tenant-authentication and collector issues.
+`SolutionsEngineer` is the default and covers most assessment runs. To use a different profile:
 
-For targeted live collector validation, import the assessment runner module and use `Invoke-M365TenantDataCollection` with `-CollectorSection` or `-CollectorStep`. For example, `-CollectorSection Collaboration` runs only the Collaboration collector section, and `-CollectorStep 'SharePoint/OneDrive sites'` runs only that site inventory collector. See [../../RUN.md](../../RUN.md) for the full examples and supported section names.
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action Full `
+  -OutputProfile SolutionsEngineer,ExecutiveLevel
+```
+
+Available profiles: `SolutionsEngineer`, `ExecutiveLevel`, `Presales`, `TenantToTenantMigration`, `Geek`, `Machine`
+
+## Next steps
+
+- Full execution guide: [RUN.md](../../RUN.md)
+- App-based auth setup: [App Registration Setup](app-registration-setup.md)
+- Understanding findings: [Improvement Plan Rule Taxonomy](improvement-plan-rule-taxonomy.md)

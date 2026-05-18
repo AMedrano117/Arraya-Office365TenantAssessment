@@ -29,7 +29,7 @@ Get-ChildItem Cert:\CurrentUser\My, Cert:\LocalMachine\My |
 ## Example run
 ```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
+  -Action Full `
   -AuthMode Certificate `
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
@@ -80,7 +80,7 @@ Connect-ExchangeOnline -AppId '<app-id>' -Organization '<tenant>.onmicrosoft.com
 Connect-MgGraph -TenantId '<tenant-guid>' -ClientId '<app-id>' -CertificateThumbprint '<thumbprint>'
 
 # 3. Then run the assessment with SkipAuth
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365 -SkipAuth
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full -SkipAuth
 ```
 
 `-SkipAuth` validates only the workloads the active output profile actually needs. Missing a required workload connection surfaces as a collector failure, not an auth setup error.
