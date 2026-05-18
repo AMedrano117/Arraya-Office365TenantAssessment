@@ -494,10 +494,16 @@ function Test-LauncherShouldRunImprove {
 function Write-LauncherBanner {
     [CmdletBinding()]
     param()
+    $tl = [char]0x2554; $tr = [char]0x2557
+    $bl = [char]0x255A; $br = [char]0x255D
+    $h  = [char]0x2550; $v  = [char]0x2551
+    $top    = "  $tl$([string]::new($h, 54))$tr"
+    $middle = "  $v       Arraya M365 Tenant Assessment Launcher         $v"
+    $bottom = "  $bl$([string]::new($h, 54))$br"
     Write-Host ''
-    Write-Host '  ╔══════════════════════════════════════════════════════╗' -ForegroundColor Cyan
-    Write-Host '  ║       Arraya M365 Tenant Assessment Launcher         ║' -ForegroundColor Cyan
-    Write-Host '  ╚══════════════════════════════════════════════════════╝' -ForegroundColor Cyan
+    Write-Host $top    -ForegroundColor Cyan
+    Write-Host $middle -ForegroundColor Cyan
+    Write-Host $bottom -ForegroundColor Cyan
     Write-Host ("  {0}" -f (Get-Date -Format 'yyyy-MM-dd  HH:mm')) -ForegroundColor DarkGray
     Write-Host ''
 }
@@ -508,7 +514,7 @@ function Write-LauncherMenuGroup {
         [Parameter(Mandatory = $true)]
         [string]$Label
     )
-    Write-Host ("  ─── {0}" -f $Label) -ForegroundColor DarkGray
+    Write-Host ("  {0} {1}" -f ([string]::new([char]0x2500, 3)), $Label) -ForegroundColor DarkGray
 }
 
 function Read-LauncherMenuChoice {
