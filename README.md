@@ -11,7 +11,7 @@ The main entry point is one PowerShell launcher. Run it without parameters when 
 Most day-to-day runs start with the standard Microsoft 365 assessment:
 
 ```powershell
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full
 ```
 
 That standard run collects the tenant snapshot, generates customer deliverables, and builds the remediation outputs used by the engineer.
@@ -40,13 +40,13 @@ For the full operator guide, see [RUN.md](RUN.md).
 3. Start with a preflight check if this is a new tenant, new workstation, or new app registration:
 
 ```powershell
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365Preflight
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Preflight
 ```
 
 4. Run the assessment:
 
 ```powershell
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full
 ```
 
 If you prefer the guided flow, run the launcher with no `-Action` and choose from the menu.
@@ -55,10 +55,10 @@ If you prefer the guided flow, run the launcher with no `-Action` and choose fro
 
 | Action | Use it when you want to |
 | --- | --- |
-| `M365` | Run the standard Microsoft 365 assessment and remediation workflow. |
-| `M365Preflight` | Check authentication, connection, and permission readiness without collecting tenant data. |
-| `M365Collect` | Collect the tenant snapshot only, so reporting can happen later. |
-| `M365Export` | Generate reports from an existing snapshot. |
+| `Full` | Run the standard Microsoft 365 assessment and remediation workflow. |
+| `Preflight` | Check authentication, connection, and permission readiness without collecting tenant data. |
+| `Collect` | Collect the tenant snapshot only, so reporting can happen later. |
+| `Report` | Generate reports from an existing snapshot. |
 | `Improve` | Build remediation outputs from an existing snapshot or manifest. |
 | `Compare` | Compare two saved tenant snapshots. |
 | `AD` | Run the Active Directory assessment workflow. |
@@ -66,7 +66,7 @@ If you prefer the guided flow, run the launcher with no `-Action` and choose fro
 The older assessment-only behavior is still available:
 
 ```powershell
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365 -SkipImprove
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full -SkipImprove
 ```
 
 ## Authentication
@@ -83,7 +83,7 @@ Certificate example:
 
 ```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
+  -Action Full `
   -AuthMode Certificate `
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
@@ -96,7 +96,7 @@ Client secret example:
 $clientSecret = Read-Host 'Client secret' -AsSecureString
 
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
+  -Action Full `
   -AuthMode ClientSecret `
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
@@ -125,13 +125,13 @@ You can request more than one profile in a single run:
 
 ```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
+  -Action Full `
   -OutputProfile SolutionsEngineer,ExecutiveLevel
 ```
 
 ## What Gets Created
 
-A standard `M365` run writes the main working files into two folders.
+A standard `Full` run writes the main working files into two folders.
 
 `Deliverables` contains the files you are most likely to share or review first:
 
@@ -159,14 +159,13 @@ Pass `-ExportPath` when you want to choose the output folder:
 
 ```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
+  -Action Full `
   -ExportPath 'C:\Assessment-Outputs'
 ```
 
 ## Helpful Runbooks
 
 - [RUN.md](RUN.md)
-- [Tenant Assessment Quick Start](docs/runbooks/tenant-assessment-quick-start.md)
 - [Customer Execution Checklist](docs/runbooks/customer-execution-checklist.md)
 - [App Registration Setup](docs/runbooks/app-registration-setup.md)
 - [Certificate Auth Setup](docs/runbooks/certificate-auth-setup.md)

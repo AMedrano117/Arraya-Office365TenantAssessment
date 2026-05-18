@@ -18,16 +18,16 @@ The runner module then loads the local `Office365Custom` module (latest version 
 Examples:
 
 ```powershell
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full
 
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
+  -Action Full `
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
   -CertificateThumbprint '<cert-thumbprint>'
 
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
+  -Action Full `
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
   -ClientSecret $env:ARRAYA_M365_CLIENT_SECRET
@@ -35,14 +35,14 @@ Examples:
 
 ## Direct actions (optional)
 ```powershell
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365 -SkipImprove
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full -SkipImprove
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action AD
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Improve
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Compare
 ```
 
-`M365` now includes the `Improve` step by default. Use `-SkipImprove` only when you explicitly want the older assessment-only behavior.
+`Full` includes the `Improve` step by default. Use `-SkipImprove` only when you explicitly want the older assessment-only behavior.
 If you run `Improve` separately, use `-LiveRefresh` when you want snapshot-plus-live-refresh behavior; it is a friendlier alias for `-UseGraphFallback`.
 
 ## Current Output Set
@@ -57,7 +57,7 @@ A default Microsoft 365 assessment run now produces:
 - `Support\*.manifest.json`
 - `Debugging\...`
 
-The reusable assessment snapshot JSON is still preserved because `Improve`, `M365Export`, and replay/comparison workflows depend on it.
+The reusable assessment snapshot JSON is still preserved because `Improve`, `Report`, and replay/comparison workflows depend on it.
 
 If you explicitly pass `-IncludeLegacyAssessmentArtifacts`, the older assessment artifact family is also generated:
 
