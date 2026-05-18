@@ -1,152 +1,188 @@
 # Modern Workplace Tenant Assessment
 
-PowerShell automation for Microsoft 365 tenant assessments, reporting, and improvement planning.
+Microsoft 365 tenant assessment tooling for consultants and engineers who need to collect tenant data, build customer-ready reports, and turn the findings into a practical remediation plan.
 
-## Quick Start
-
-Run the launcher and pick an action from the interactive menu:
+The main entry point is one PowerShell launcher. Run it without parameters when you want the guided menu:
 
 ```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1
 ```
 
-No module setup required. The launcher imports everything it needs automatically.
-
-For detailed setup and execution guidance see [RUN.md](RUN.md) and the [Tenant Assessment Quick Start](docs/runbooks/tenant-assessment-quick-start.md).
-
-## Actions
-
-| Action | What it does |
-| ------ | ------------ |
-| `Full` | Full assessment + improvement plan (standard run) |
-| `Preflight` | Test connections and permissions only, no collection |
-| `Collect` | Collect data to a JSON snapshot, no report yet |
-| `Report` | Generate reports from an existing JSON snapshot |
-| `Improve` | Build improvement plan documents from a snapshot |
-| `Compare` | Compare two snapshots side by side |
-| `AD` | Active Directory assessment |
-
-Pass `-Action` directly to skip the menu:
+Most day-to-day runs start with the standard Microsoft 365 assessment:
 
 ```powershell
-# Standard full run
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365
+```
 
-# Full run, skip the improvement plan step
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full -SkipImprove
+That standard run collects the tenant snapshot, generates customer deliverables, and builds the remediation outputs used by the engineer.
 
-# Preflight only — verify access before a long collection
+## When To Use This
+
+Use this repo when you need to:
+
+- Assess Microsoft 365 tenant configuration, security posture, collaboration settings, and governance signals.
+- Produce customer-facing assessment and remediation documents.
+- Save a reusable JSON snapshot for replay, comparison, or later reporting.
+- Run preflight checks before a longer collection.
+- Compare two assessment snapshots over time.
+
+For the full operator guide, see [RUN.md](RUN.md).
+
+## Quick Start
+
+1. Install PowerShell 7 or later.
+2. Install the Microsoft modules used by the assessment:
+
+```powershell
+.\tools\install-microsoft-modules.ps1
+```
+
+3. Start with a preflight check if this is a new tenant, new workstation, or new app registration:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365Preflight
+```
+
+4. Run the assessment:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365
+```
+
+If you prefer the guided flow, run the launcher with no `-Action` and choose from the menu.
+
+## Common Actions
+
+| Action | Use it when you want to |
+| --- | --- |
+| `M365` | Run the standard Microsoft 365 assessment and remediation workflow. |
+| `M365Preflight` | Check authentication, connection, and permission readiness without collecting tenant data. |
+| `M365Collect` | Collect the tenant snapshot only, so reporting can happen later. |
+| `M365Export` | Generate reports from an existing snapshot. |
+| `Improve` | Build remediation outputs from an existing snapshot or manifest. |
+| `Compare` | Compare two saved tenant snapshots. |
+| `AD` | Run the Active Directory assessment workflow. |
+
+The older assessment-only behavior is still available:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action M365 -SkipImprove
+```
+
+## Authentication
+
+The launcher supports three auth modes:
+
+| Mode | Best for | Notes |
+| --- | --- | --- |
+| `Interactive` | Guided consultant runs | Default mode. Sign in when prompted. |
+| `Certificate` | Repeatable app-based runs | Recommended for unattended or production-style execution. |
+| `ClientSecret` | Compatibility cases | Graph app auth works, but some workloads fall back or are skipped. Prefer certificate auth when possible. |
+
+Certificate example:
+
+```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action Preflight `
+  -Action M365 `
   -AuthMode Certificate `
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
   -CertificateThumbprint '<cert-thumbprint>'
-
-# Collect data to a snapshot (no report)
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action Collect `
-  -TenantId '<tenant-guid>' `
-  -ClientId '<app-id>' `
-  -CertificateThumbprint '<cert-thumbprint>' `
-  -OutputProfile SolutionsEngineer
-
-# Generate reports from an existing snapshot
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action Report `
-  -OutputProfile ExecutiveLevel
 ```
 
-## Auth Modes
-
-| Mode | When to use |
-| ---- | ----------- |
-| Interactive (default) | Day-to-day operator runs with delegated sign-in |
-| Certificate | Unattended/production runs; recommended for app-only auth |
-| Client secret | Compatibility path; Exchange falls back to delegated sign-in |
-
-If you do not pass `-AuthMode`, the assessment defaults to interactive sign-in.
-
-Certificate auth example:
-
-```powershell
-.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action Full `
-  -AuthMode Certificate `
-  -TenantId '<tenant-guid>' `
-  -ClientId '<app-id>' `
-  -CertificateThumbprint '<cert-thumbprint>' `
-  -ExportPath 'C:\Assessment-Outputs' `
-  -OutputProfile SolutionsEngineer,ExecutiveLevel
-```
-
-Client secret example (use `-ClientSecretSecure` to avoid plain-string secrets in shell history):
+Client secret example:
 
 ```powershell
 $clientSecret = Read-Host 'Client secret' -AsSecureString
+
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action Full `
+  -Action M365 `
   -AuthMode ClientSecret `
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
   -ClientSecretSecure $clientSecret
 ```
 
-Useful flags:
+Setup references:
 
-- `-SkipAuth` — reuse already-connected workload sessions in the current shell
-- `-SkipPermissionPreflight` — skip startup access validation and let collection run on a best-effort basis
-
-For app registration requirements see [App Registration Setup](docs/runbooks/app-registration-setup.md) and [Certificate Auth Setup](docs/runbooks/certificate-auth-setup.md).
+- [App Registration Setup](docs/runbooks/app-registration-setup.md)
+- [Certificate Auth Setup](docs/runbooks/certificate-auth-setup.md)
 
 ## Output Profiles
 
-| Profile | Scope | Use case |
-| ------- | ----- | -------- |
-| `SolutionsEngineer` (default) | Operator | Standard consultant depth |
-| `ExecutiveLevel` | Minimum | Leadership and presales |
-| `Presales` | Minimum | Lighter presales story |
-| `TenantToTenantMigration` | All | Migration readiness and cutover |
-| `Geek` | Geek | Deep engineer troubleshooting |
-| `Machine` | Automation | JSON-focused automation and replay |
+Profiles tune how much data is collected and which deliverables are created.
 
-Pass multiple profiles as a comma-separated list:
+| Profile | Best for |
+| --- | --- |
+| `SolutionsEngineer` | Standard consultant run and the default choice for most assessments. |
+| `ExecutiveLevel` | Leadership-friendly summary depth. |
+| `Presales` | Lighter discovery and presales posture review. |
+| `TenantToTenantMigration` | Deep migration readiness and cutover planning. |
+| `Geek` | Detailed engineer troubleshooting. |
+| `Machine` | JSON-first automation, replay, and downstream processing. |
+
+You can request more than one profile in a single run:
 
 ```powershell
--OutputProfile SolutionsEngineer,ExecutiveLevel
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365 `
+  -OutputProfile SolutionsEngineer,ExecutiveLevel
 ```
 
-## What Gets Generated
+## What Gets Created
 
-A standard `Full` run produces:
+A standard `M365` run writes the main working files into two folders.
 
-**Customer-facing deliverables** (in the run output folder):
+`Deliverables` contains the files you are most likely to share or review first:
 
-- `*-Microsoft 365 Tenant Best Practices Assessment-<date>.docx` — primary customer report
-- `*-Microsoft 365 Remediation Roadmap-<date>.docx` — companion executive roadmap
+- `*-Microsoft 365 Tenant Best Practices Assessment-<date>.docx`
+- `*-Microsoft 365 Remediation Roadmap-<date>.docx`
+- `*-EngPack.md`
+- `*.xlsx` when the selected profile enables workbook output
 
-**Engineer-facing deliverable**:
+`Support` contains the machine-readable and troubleshooting artifacts:
 
-- `*-EngPack.md` — prioritized remediation action pack
+- `*-AssessmentSnapshot.json`
+- `*-SolutionsEngineerEvidenceCoverage.json`
+- `*-Plan.json`
+- `*.manifest.json`
+- `*-Snips.ps1`
+- `Debugging\*`
 
-**Support artifacts** (under `Support\`):
+By default, outputs are written under:
 
-- `*-AssessmentSnapshot.json` — tenant data snapshot (used by `Improve`, `Report`, and `Compare`)
-- `*-ImprovementPlan.json` — machine-readable remediation payload
-- `*.manifest.json` — artifact index for the run
+```text
+%LOCALAPPDATA%\Arraya\M365TenantAssessment\Outputs
+```
 
-Legacy HTML, PDF, and workbook outputs are also available; see [RUN.md](RUN.md) for details.
+Pass `-ExportPath` when you want to choose the output folder:
 
-## Operator References
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 `
+  -Action M365 `
+  -ExportPath 'C:\Assessment-Outputs'
+```
 
-- [RUN.md](RUN.md) — full execution guide
+## Helpful Runbooks
+
+- [RUN.md](RUN.md)
 - [Tenant Assessment Quick Start](docs/runbooks/tenant-assessment-quick-start.md)
+- [Customer Execution Checklist](docs/runbooks/customer-execution-checklist.md)
 - [App Registration Setup](docs/runbooks/app-registration-setup.md)
 - [Certificate Auth Setup](docs/runbooks/certificate-auth-setup.md)
 - [Improvement Plan Rule Taxonomy](docs/runbooks/improvement-plan-rule-taxonomy.md)
 
 ## Development
 
-1. Install PowerShell 7+.
-2. Run `tools/bootstrap-dev.ps1`.
-3. Validate with `tools/invoke-scriptanalyzer.ps1` and `tools/run-pester.ps1`.
+Install the maintainer tooling:
+
+```powershell
+.\tools\install-microsoft-modules.ps1 -IncludeDevTools
+```
+
+Run the usual validation checks:
+
+```powershell
+.\tools\invoke-scriptanalyzer.ps1
+.\tools\run-pester.ps1
+```
