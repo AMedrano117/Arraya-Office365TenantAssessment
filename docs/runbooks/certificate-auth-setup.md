@@ -29,7 +29,7 @@ Get-ChildItem Cert:\CurrentUser\My, Cert:\LocalMachine\My |
 ## Example run
 ```powershell
 .\src\scripts\operations\Start-M365TenantAssessment.ps1 `
-  -Action M365 `
+  -Action Full `
   -AuthMode Certificate `
   -TenantId '<tenant-guid>' `
   -ClientId '<app-id>' `
@@ -59,3 +59,28 @@ Notes:
 - do not commit PFX files or private keys to the repo
 - avoid sharing certificates between operators unless that is part of an approved operational model
 - prefer user- or host-scoped certificate installation over loose files on disk
+
+## Using `-SkipAuth` to reuse an existing session
+
+If you have already connected all required workloads in the current PowerShell session, you can pass `-SkipAuth` to bypass the assessment's authentication bootstrap and reuse those sessions.
+
+**Required connection order before using `-SkipAuth`:**
+
+1. `ExchangeOnlineManagement` (`Connect-ExchangeOnline`) — must be loaded and connected **before** the Microsoft Graph SDK. Loading ExchangeOnlineManagement after the Graph SDK can cause MSAL assembly version conflicts that silently break Exchange collection in PowerShell 7.
+2. Microsoft Graph SDK (`Connect-MgGraph`) — connect with the required scopes for the active profile.
+3. SharePoint Online and Teams — connect these if your active output profile includes SharePoint or Teams collection.
+
+Example:
+
+```powershell
+# 1. Exchange first
+Connect-ExchangeOnline -AppId '<app-id>' -Organization '<tenant>.onmicrosoft.com' -CertificateThumbprint '<thumbprint>'
+
+# 2. Graph SDK second
+Connect-MgGraph -TenantId '<tenant-guid>' -ClientId '<app-id>' -CertificateThumbprint '<thumbprint>'
+
+# 3. Then run the assessment with SkipAuth
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full -SkipAuth
+```
+
+`-SkipAuth` validates only the workloads the active output profile actually needs. Missing a required workload connection surfaces as a collector failure, not an auth setup error.

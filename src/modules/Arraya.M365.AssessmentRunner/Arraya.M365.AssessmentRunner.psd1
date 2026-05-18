@@ -17,6 +17,6 @@
         'Invoke-M365AssessmentComparison'
     )
     CmdletsToExport   = @()
-    VariablesToExport = '*'
+    VariablesToExport = @()
     AliasesToExport   = @()
 }

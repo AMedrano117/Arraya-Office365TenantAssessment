@@ -4,7 +4,7 @@ param(
     [string]$ExportPath,
     [Parameter(Mandatory = $false)]
     [ValidateSet('Presales', 'SolutionsEngineer', 'ExecutiveLevel', 'TenantToTenantMigration', 'Geek', 'Machine')]
-    [string]$OutputProfile = 'SolutionsEngineer',
+    [string[]]$OutputProfile = @('SolutionsEngineer'),
     [Parameter(Mandatory = $false)]
     [switch]$SkipHtmlReport,
     [Parameter(Mandatory = $false)]
@@ -40,7 +40,11 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$ClientId,
     [Parameter(Mandatory = $false)]
-    [string]$ClientSecret
+    [string]$ClientSecret,
+    [Parameter(Mandatory = $false)]
+    [pscredential]$ClientSecretCredential,
+    [Parameter(Mandatory = $false)]
+    [securestring]$ClientSecretSecure
 )
 
 $resolveRepoRootHelperPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\shared\Resolve-ArrayaRepoRoot.ps1'))
@@ -75,5 +79,7 @@ if ($PSBoundParameters.ContainsKey('TenantId')) { $invokeParams.TenantId = $Tena
 if ($PSBoundParameters.ContainsKey('CertificateThumbprint')) { $invokeParams.CertificateThumbprint = $CertificateThumbprint }
 if ($PSBoundParameters.ContainsKey('ClientId')) { $invokeParams.ClientId = $ClientId }
 if ($PSBoundParameters.ContainsKey('ClientSecret')) { $invokeParams.ClientSecret = $ClientSecret }
+if ($PSBoundParameters.ContainsKey('ClientSecretCredential')) { $invokeParams.ClientSecretCredential = $ClientSecretCredential }
+if ($PSBoundParameters.ContainsKey('ClientSecretSecure')) { $invokeParams.ClientSecretSecure = $ClientSecretSecure }
 
 Invoke-M365TenantAssessment @invokeParams

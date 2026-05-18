@@ -6,30 +6,37 @@ This document explains the supported launcher actions in `src/scripts/operations
 
 | Action | Primary purpose | Input source | Primary outputs | Uses output profiles? | Notes |
 |---|---|---|---|---|---|
-| `M365` | Full Microsoft 365 assessment run | Live tenant connections | `Deliverables` human reports/workbook plus `Support` machine artifacts | Yes | Operator assessment and improvement path |
-| `M365Collect` | Collect tenant data only | Live tenant connections | `Support` JSON snapshot and manifest | Yes | Same core engine as `M365`, but collection-only |
-| `M365Export` | Rebuild artifacts from a saved snapshot | Existing tenant JSON snapshot | `Deliverables` human reports/workbook plus `Support` machine artifacts | Yes | Same core engine as `M365`, but export-only |
+| `Full` | Full Microsoft 365 assessment run | Live tenant connections | `Deliverables` human reports/workbook plus `Support` machine artifacts | Yes | Standard end-to-end operator path |
+| `Preflight` | Validate connections and permissions only | Live tenant connections | Console status output only | No | Run before a long collection to catch auth gaps early |
+| `Collect` | Collect tenant data only | Live tenant connections | `Support` JSON snapshot and manifest | Yes | Same core engine as `Full`, collection-only mode |
+| `Report` | Rebuild artifacts from a saved snapshot | Existing tenant JSON snapshot | `Deliverables` human reports/workbook plus `Support` machine artifacts | Yes | Same core engine as `Full`, export-only mode |
 | `AD` | Active Directory assessment | Live on-prem AD | AD workbook/export set | No | Separate legacy workflow for AD objects and infra |
 | `Improve` | Build an improvement plan from one snapshot | Existing tenant JSON snapshot | `Deliverables` customer/roadmap/engineer reports plus `Support` JSON/snippets | No | Snapshot post-processing workflow |
 | `Compare` | Compare two snapshots over time | Two tenant JSON snapshots | Comparison JSON, CSV, Markdown | No | Snapshot post-processing workflow |
 
 ## Workflow Details
 
-### `M365`
+### `Full`
 
-`M365` is the primary end-to-end workflow. It performs live tenant collection, builds derived reporting tables, and then runs the export pipeline that creates the human-readable and machine-readable artifacts selected by the output profile.
+`Full` is the primary end-to-end workflow. It performs live tenant collection, builds derived reporting tables, and then runs the export pipeline that creates the human-readable and machine-readable artifacts selected by the output profile.
 
 This action is profile-driven. The profile determines both collection depth and which artifacts should be generated. The merged-profile behavior is resolved once in the runner before the core assessment script is invoked.
 
-### `M365Collect`
+### `Preflight`
 
-`M365Collect` is not a separate assessment engine. It routes to the same core tenant assessment script as `M365`, but enables collection-only mode and forces JSON output on while disabling workbook, HTML, questionnaire, and PDF generation.
+`Preflight` validates tenant connections and checks that the operator (or app registration) has the permissions required for the active output profile. It does not collect data or generate reports.
 
-Use this when the goal is to capture tenant state once and defer export/report generation until later.
+Use this on a new machine or against a new app registration before committing to a full collection run.
 
-### `M365Export`
+### `Collect`
 
-`M365Export` is the export-only counterpart to `M365Collect`. It loads a previously saved tenant snapshot, validates it, converts it back into the in-memory structure expected by the legacy engine, and then runs the same export pipeline used by the full `M365` path.
+`Collect` is not a separate assessment engine. It routes to the same core tenant assessment script as `Full`, but enables collection-only mode and forces JSON output on while disabling workbook, HTML, questionnaire, and PDF generation.
+
+Use this when the goal is to capture tenant state once and defer report generation until later.
+
+### `Report`
+
+`Report` is the export-only counterpart to `Collect`. It loads a previously saved tenant snapshot, validates it, converts it back into the in-memory structure expected by the legacy engine, and then runs the same export pipeline used by the full `Full` path.
 
 Use this when collection has already been completed or when the team wants to regenerate artifacts under a different output profile without reconnecting to the tenant.
 
@@ -55,30 +62,31 @@ This is intended for trend or before/after review rather than full artifact rege
 
 ### Input model
 
-- `M365`, `M365Collect`, and `AD` use live connections.
-- `M365Export`, `Improve`, and `Compare` use saved JSON snapshots.
+- `Full`, `Collect`, `Preflight`, and `AD` use live connections.
+- `Report`, `Improve`, and `Compare` use saved JSON snapshots.
 
 ### Output model
 
-- `M365` and `M365Export` are artifact-generation workflows.
-- `M365Collect` is a capture workflow.
+- `Full` and `Report` are artifact-generation workflows.
+- `Preflight` is a validation-only workflow with no artifact output.
+- `Collect` is a capture workflow.
 - `Improve` and `Compare` are analytic workflows on top of snapshots.
 - `AD` is its own assessment/export path.
 
 ### Output profile support
 
-- Only the `M365` family uses `OutputProfile`.
-- `AD`, `Improve`, and `Compare` have fixed behavior and fixed output types.
+- Only the `Full`, `Collect`, and `Report` family uses `OutputProfile`.
+- `Preflight`, `AD`, `Improve`, and `Compare` have fixed behavior and fixed output types.
 
 ## Overlap Review
 
-### 1. The `M365` family is one workflow with three execution modes
+### 1. The `Full` family is one workflow with three execution modes
 
-`M365`, `M365Collect`, and `M365Export` all route through the same runner logic and the same core legacy script. The real differences are mode flags and export behavior:
+`Full`, `Collect`, and `Report` all route through the same runner logic and the same core legacy script. The real differences are mode flags and export behavior:
 
-- `M365`: live collect + export
-- `M365Collect`: live collect only
-- `M365Export`: snapshot export only
+- `Full`: live collect + export
+- `Collect`: live collect only
+- `Report`: snapshot export only
 
 This is the clearest overlap in the repo. From a maintainer perspective, these actions are better understood as stages or modes of one pipeline than as fully separate workflows.
 
@@ -97,7 +105,7 @@ Both snapshot workflows recalculate overlapping posture signals from the tenant 
 
 ### 3. Snapshot-based actions share similar validation and path handling needs
 
-`M365Export`, `Improve`, and `Compare` all depend on saved tenant snapshots and need:
+`Report`, `Improve`, and `Compare` all depend on saved tenant snapshots and need:
 
 - path validation
 - snapshot validation
@@ -115,14 +123,14 @@ That shared surface area is a good target for consolidation even if the business
    - Have `Improve` consume metrics plus rules.
    - Have `Compare` consume the same metrics plus comparison logic.
 
-2. Reframe the `M365` family as pipeline stages.
+2. Reframe the `Full` family as pipeline stages.
    - Keep the user-facing actions for compatibility.
-   - Internally model them as one workflow with explicit modes such as `Full`, `CollectOnly`, and `ExportOnly`.
+   - Internally model them as one workflow with explicit modes: `Full`, `CollectOnly`, and `ExportOnly`.
    - This would make the control flow easier to reason about and reduce duplicate launcher/runner handling.
 
 3. Centralize snapshot input and output conventions.
    - Shared helper for resolving snapshot paths, default output folders, and snapshot validation.
-   - Reuse it across `M365Export`, `Improve`, and `Compare`.
+   - Reuse it across `Report`, `Improve`, and `Compare`.
 
 ### Lower-risk follow-up work
 
@@ -135,6 +143,6 @@ If the team wants to improve maintainability without changing user-facing behavi
 
 1. Extract shared snapshot metric helpers from `Improve` and `Compare`.
 2. Extract shared snapshot bootstrap and output helpers for snapshot-driven actions.
-3. Normalize the `M365` family into a single internal pipeline with three modes while keeping the existing launcher actions as compatibility aliases.
+3. Normalize the `Full` family into a single internal pipeline with three modes while keeping the existing launcher actions as compatibility aliases.
 
 That order reduces duplication first, then clarifies workflow intent, without forcing a large user-facing redesign up front.

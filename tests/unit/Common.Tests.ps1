@@ -31,6 +31,7 @@ Describe 'Arraya.M365.Common' {
             'Get-ArrayaCollectorCacheValue'
             'Get-ArrayaObjectValue'
             'Get-ArrayaTenantSnapshotMetricSet'
+            'Get-ArrayaTenantSnapshotMetricSetFromContext'
             'Import-ArrayaOffice365CustomLocal'
             'Import-ArrayaTenantSnapshotContext'
             'Import-ArrayaTenantSnapshot'
@@ -1483,5 +1484,172 @@ Describe 'Arraya.M365.Common' {
         $mailFlowSource | Should -Match "Get-Command -Name 'Get-TransportRule' -ErrorAction Ignore"
         $mailFlowSource | Should -Match 'Parameters\.ContainsKey\(''IncludeTestModeConnectors''\)'
         $mailFlowSource | Should -Match "Get-Command -Name 'Get-OutboundConnector' -ErrorAction Ignore"
+    }
+
+    Context 'Invoke-ArrayaCollectorPlan - failure isolation' {
+        It 'continues executing steps after one step fails' {
+            $sections = @([pscustomobject]@{ Name = 'Core' })
+            $steps = @(
+                New-ArrayaCollectorStep -Name 'Step1' -Section 'Core' -Enabled $true `
+                    -ScriptBlock { throw 'Intentional failure' }
+                New-ArrayaCollectorStep -Name 'Step2' -Section 'Core' -Enabled $true `
+                    -ScriptBlock { 'step2-ran' }
+            )
+
+            $results = Invoke-ArrayaCollectorPlan -Sections $sections -Steps $steps
+            ($results | Where-Object Name -eq 'Step1').Status | Should -Be 'Failed'
+            ($results | Where-Object Name -eq 'Step2').Status | Should -Be 'Completed'
+        }
+
+        It 'returns all step results even when early steps fail' {
+            $sections = @([pscustomobject]@{ Name = 'Core' })
+            $steps = @(
+                New-ArrayaCollectorStep -Name 'Fail' -Section 'Core' -Enabled $true `
+                    -ScriptBlock { throw 'boom' }
+                New-ArrayaCollectorStep -Name 'Pass' -Section 'Core' -Enabled $true `
+                    -ScriptBlock { 'ok' }
+            )
+
+            $results = Invoke-ArrayaCollectorPlan -Sections $sections -Steps $steps
+            $results.Count | Should -Be 2
+        }
+
+        It 'records the failure message for a failed step' {
+            $sections = @([pscustomobject]@{ Name = 'Core' })
+            $steps = @(
+                New-ArrayaCollectorStep -Name 'FailStep' -Section 'Core' -Enabled $true `
+                    -ScriptBlock { throw 'specific error message' }
+            )
+
+            $results = Invoke-ArrayaCollectorPlan -Sections $sections -Steps $steps
+            ($results | Where-Object Name -eq 'FailStep').Message | Should -Be 'specific error message'
+        }
+    }
+
+    Describe 'Get-ArrayaTenantSnapshotMetricSetFromContext' {
+        BeforeAll {
+            Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+        }
+
+        It 'enriches the metric set with GeneratedAt and Path from the context' {
+            $ctx = [PSCustomObject]@{
+                Path        = 'C:\fake\snapshot.json'
+                GeneratedAt = '2025-01-01T00:00:00'
+                LegacyData  = @{}
+            }
+            $result = Get-ArrayaTenantSnapshotMetricSetFromContext -Context $ctx
+            $result.Path        | Should -Be 'C:\fake\snapshot.json'
+            $result.GeneratedAt | Should -Be '2025-01-01T00:00:00'
+        }
+
+        It 'computes SecureScorePercent from LegacyData SecureScore rows' {
+            $ctx = [PSCustomObject]@{
+                Path        = 'C:\fake\snapshot.json'
+                GeneratedAt = $null
+                LegacyData  = @{
+                    SecuritySecureScore = @(
+                        [PSCustomObject]@{ CreatedDateTime = '2025-01-01T00:00:00'; CurrentScore = 50; MaxScore = 100 }
+                    )
+                }
+            }
+            $result = Get-ArrayaTenantSnapshotMetricSetFromContext -Context $ctx
+            $result.SecureScorePercent | Should -Be 50
+        }
+
+        It 'handles a context with empty LegacyData without throwing and returns zero counts' {
+            $ctx = [PSCustomObject]@{
+                Path        = 'C:\fake\snapshot.json'
+                GeneratedAt = $null
+                LegacyData  = @{}
+            }
+            { Get-ArrayaTenantSnapshotMetricSetFromContext -Context $ctx } | Should -Not -Throw
+            $result = Get-ArrayaTenantSnapshotMetricSetFromContext -Context $ctx
+            $result.ConditionalAccessPolicyCount | Should -Be 0
+            $result.GlobalAdminCount             | Should -Be 0
+            $result.UnverifiedDomainCount        | Should -Be 0
+        }
+
+        It 'passes StaleDeviceDays through to the underlying stale-device calculation' {
+            $ctx = [PSCustomObject]@{
+                Path        = 'C:\fake\snapshot.json'
+                GeneratedAt = $null
+                LegacyData  = @{
+                    DeviceDetails = @(
+                        [PSCustomObject]@{ ApproximateLastSignInDateTime = (Get-Date).AddDays(-100).ToString('o') }
+                        [PSCustomObject]@{ ApproximateLastSignInDateTime = (Get-Date).AddDays(-1).ToString('o') }
+                    )
+                }
+            }
+            $result30  = Get-ArrayaTenantSnapshotMetricSetFromContext -Context $ctx -StaleDeviceDays 30
+            $result180 = Get-ArrayaTenantSnapshotMetricSetFromContext -Context $ctx -StaleDeviceDays 180
+            $result30.StaleDeviceCount  | Should -Be 1
+            $result180.StaleDeviceCount | Should -Be 0
+        }
+    }
+
+    Describe 'Test-ArrayaTenantSnapshot' {
+        BeforeAll {
+            Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+        }
+
+        It 'returns Valid=false for null input' {
+            $result = Test-ArrayaTenantSnapshot -Snapshot $null
+            $result.Valid | Should -BeFalse
+            $result.Errors | Should -Contain 'Snapshot is null.'
+        }
+
+        It 'returns Valid=true with no errors for a well-formed v2 snapshot' {
+            $snapshot = @{
+                SchemaVersion  = 2
+                Metadata       = @{}
+                CollectionPlan = @{}
+                Data           = @{
+                    Exchange      = @{}; Identity    = @{}; Collaboration = @{}
+                    Security      = @{}; Tenant      = @{}; Governance    = @{}; Other = @{}
+                }
+                Derived        = @{}
+                Diagnostics    = @{}
+            }
+            $result = Test-ArrayaTenantSnapshot -Snapshot $snapshot
+            $result.Valid         | Should -BeTrue
+            $result.Errors.Count  | Should -Be 0
+            $result.SchemaVersion | Should -Be 2
+        }
+
+        It 'returns Valid=false when a v2 snapshot is missing required root sections' {
+            $snapshot = @{
+                SchemaVersion  = 2
+                Metadata       = @{}
+                CollectionPlan = @{}
+                Data           = @{}
+                # Derived and Diagnostics absent
+            }
+            $result = Test-ArrayaTenantSnapshot -Snapshot $snapshot
+            $result.Valid         | Should -BeFalse
+            $result.Errors.Count  | Should -BeGreaterThan 0
+        }
+
+        It 'returns a SchemaVersion warning for a snapshot without a SchemaVersion key' {
+            $result = Test-ArrayaTenantSnapshot -Snapshot @{}
+            $result.Valid | Should -BeTrue
+            ($result.Warnings -join ' ') | Should -Match 'SchemaVersion'
+        }
+
+        It 'returns a Derived findings warning for ImprovementPlan purpose when Derived has no findings' {
+            $snapshot = @{
+                SchemaVersion  = 2
+                Metadata       = @{}
+                CollectionPlan = @{}
+                Data           = @{
+                    Exchange      = @{}; Identity    = @{}; Collaboration = @{}
+                    Security      = @{}; Tenant      = @{}; Governance    = @{}; Other = @{}
+                }
+                Derived        = @{}
+                Diagnostics    = @{}
+            }
+            $result = Test-ArrayaTenantSnapshot -Snapshot $snapshot -Purpose ImprovementPlan
+            $result.Valid | Should -BeTrue
+            ($result.Warnings -join ' ') | Should -Match 'Derived findings'
+        }
     }
 }

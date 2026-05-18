@@ -45,10 +45,21 @@ Describe 'Solutions Engineer evidence coverage validator' {
                 }
             }
 
-            return @{
-                SchemaVersion = 2
-                Data          = @{
+            return [ordered]@{
+                SchemaVersion  = 2
+                Metadata       = [ordered]@{ GeneratedAt = (Get-Date).ToString('o') }
+                CollectionPlan = [ordered]@{}
+                Data           = [ordered]@{
                     Tenant = $datasetTable
+                }
+                Derived        = [ordered]@{}
+                Diagnostics    = [ordered]@{
+                    WarningCount   = 0
+                    ErrorCount     = 0
+                    WarningSummary = @()
+                    ErrorSummary   = @()
+                    SourceCoverage = [ordered]@{}
+                    CollectorStats = [ordered]@{}
                 }
             }
         }
