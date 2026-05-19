@@ -5,6 +5,7 @@ Use this guide when you are ready to execute the assessment and review the resul
 ## Prerequisites
 
 - PowerShell 7 or later
+- Python 3.11 or later (required for the Python CLI — see [Python CLI](#python-cli) below)
 - A local clone of this repository
 - Access to the Microsoft 365 tenant you want to assess
 
@@ -12,6 +13,14 @@ Install the required PowerShell modules:
 
 ```powershell
 .\tools\install-microsoft-modules.ps1
+```
+
+Install Python dependencies (one-time):
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 ```
 
 ## Authentication Options
@@ -281,6 +290,109 @@ This separates environment setup issues from tenant authentication issues.
 **PDF output missing**: PDF generation requires a locally installed Chromium-based browser (Google Chrome or Microsoft Edge). The assessment still completes successfully without it.
 
 **App-only auth fails**: review [App Registration Setup](docs/runbooks/app-registration-setup.md) and [Certificate Auth Setup](docs/runbooks/certificate-auth-setup.md).
+
+## Python CLI
+
+This branch ships a Python-based CLI (`cli.py`) that replaces the PowerShell launcher for everything except data collection. The split is intentional:
+
+| Layer | Runtime | Why |
+| --- | --- | --- |
+| **Data collection** | PowerShell (unchanged) | Requires Exchange Online, Graph SDK, Purview, Teams PS modules |
+| **Report generation** | Python | openpyxl, Jinja2, python-docx — no PS module dependencies |
+| **Orchestration / comparison / improvement plan** | Python | Pure data processing, no M365 connection needed |
+
+### Setup (one-time)
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+### Python CLI equivalents
+
+| PowerShell | Python CLI | Notes |
+| --- | --- | --- |
+| `Start-M365TenantAssessment.ps1` (menu) | `python cli.py` | Same interactive menu |
+| `-Action Full` | `python cli.py full` | Collect via PS, then report via Python |
+| `-Action Preflight` | `python cli.py preflight` | Calls PS |
+| `-Action Collect` | `python cli.py collect` | Calls PS |
+| `-Action Report` | `python cli.py report <snapshot>` | Pure Python — no PS needed |
+| `-Action Improve` | `python cli.py improve <snapshot>` | Pure Python |
+| `-Action Compare` | `python cli.py compare <baseline> <current>` | Pure Python |
+| `-Action AD` | `python cli.py ad` | Calls PS |
+
+### Common Python CLI commands
+
+Run the interactive menu:
+
+```powershell
+python cli.py
+```
+
+Collect with certificate auth:
+
+```powershell
+python cli.py collect `
+  --auth-mode Certificate `
+  --tenant-id '<tenant-guid>' `
+  --client-id '<app-id>' `
+  --cert-thumbprint '<thumbprint>'
+```
+
+Generate all reports from an existing snapshot (no M365 connection required):
+
+```powershell
+python cli.py report 'output\Contoso SE\Support\Contoso-Snap.json'
+```
+
+Generate reports with a specific output folder:
+
+```powershell
+python cli.py report 'Support\Contoso-Snap.json' --export-path 'C:\Assessment-Outputs'
+```
+
+Build the improvement plan only:
+
+```powershell
+python cli.py improve 'Support\Contoso-Snap.json' --output-dir 'C:\Assessment-Outputs\ImprovementPlan'
+```
+
+Compare two snapshots:
+
+```powershell
+python cli.py compare 'Support\Contoso-Snap-Jan.json' 'Support\Contoso-Snap-May.json'
+```
+
+Run a full assessment with cert auth:
+
+```powershell
+python cli.py full `
+  --auth-mode Certificate `
+  --tenant-id '<tenant-guid>' `
+  --client-id '<app-id>' `
+  --cert-thumbprint '<thumbprint>' `
+  --profile SolutionsEngineer
+```
+
+### Python CLI output
+
+The Python pipeline writes to a `Deliverables/` subfolder under the output path:
+
+| File | Description |
+| --- | --- |
+| `<Tenant>-Tenant Details.xlsx` | Excel workbook (openpyxl) |
+| `<Tenant>-Report.html` | HTML report (Jinja2) |
+| `<Tenant>-Assessment.docx` | Word document (python-docx) |
+| `ImprovementPlan/improvement-plan.json` | Structured finding rows |
+| `ImprovementPlan/improvement-plan.md` | Markdown remediation plan |
+
+### Getting help
+
+```powershell
+python cli.py --help
+python cli.py report --help
+```
 
 ## Additional References
 

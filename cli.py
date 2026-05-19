@@ -104,8 +104,15 @@ def full(auth_mode, tenant_id, client_id, cert_thumbprint, client_secret,
     profiles = parse_profiles(list(profile))
     out = Path(export_path) if export_path else get_output_root()
 
-    console.print(f"[cyan]Export path:[/cyan] {out}")
-    console.print(f"[cyan]Profiles:[/cyan]   {', '.join(profiles)}")
+    console.print("  [dim]Phase 1 of 2[/dim]  Collect  [dim](PowerShell → M365 APIs)[/dim]")
+    console.print("  [dim]Phase 2 of 2[/dim]  Report   [dim](Python   → Excel, HTML, Word"
+                  + (", Improvement Plan" if not skip_improve else "") + ")[/dim]")
+    console.print()
+    console.print(f"  [dim]Export path :[/dim] {out}")
+    console.print(f"  [dim]Profile(s)  :[/dim] {', '.join(profiles)}")
+    console.print(f"  [dim]Auth mode   :[/dim] {auth_mode or 'Interactive'}")
+    console.print(f"  [dim]Improve     :[/dim] {'No (skipped)' if skip_improve else 'Yes (Python, after collection)'}")
+    console.print()
 
     rc = runner.run_collection(
         export_path=out, output_profiles=profiles,
