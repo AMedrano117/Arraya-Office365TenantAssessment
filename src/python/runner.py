@@ -28,6 +28,7 @@ def run_collection(
     skip_auth: bool = False,
     skip_preflight: bool = False,
     use_graph_fallback: bool = False,
+    run_improve: bool = False,
     extra_params: dict[str, Any] | None = None,
 ) -> int:
     """Call the PowerShell data collection script and return its exit code."""
@@ -61,6 +62,8 @@ def run_collection(
         cmd.append("-SkipPermissionPreflight")
     if use_graph_fallback:
         cmd.append("-UseGraphFallback")
+    if run_improve:
+        cmd.append("-RunImprove")
 
     log.info("Launching PowerShell collection: %s", " ".join(cmd))
     result = subprocess.run(cmd, check=False)

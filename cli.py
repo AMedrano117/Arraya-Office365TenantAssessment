@@ -120,6 +120,7 @@ def full(auth_mode, tenant_id, client_id, cert_thumbprint, client_secret,
         certificate_thumbprint=cert_thumbprint, client_secret=client_secret,
         skip_auth=skip_auth, skip_preflight=skip_preflight,
         use_graph_fallback=use_graph_fallback,
+        run_improve=not skip_improve,
     )
     if rc != 0:
         console.print(f"[red]Collection failed (exit {rc}).[/red]")
