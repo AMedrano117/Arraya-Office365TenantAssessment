@@ -71,7 +71,7 @@ def run(
     if not skip_html:
         html_path = deliverables / f"{stem}-Report.html"
         log.info("Generating HTML report: %s", html_path)
-        html.generate(snapshot_data, html_path)
+        html.generate(snapshot_data, html_path, plan=generated_plan)
         artifacts["html"] = html_path
         if verbose:
             _console.print(f"  [dim]HTML[/dim]      {html_path.name}")
@@ -97,8 +97,8 @@ def run(
         if verbose:
             _console.print(f"  [dim]Coverage[/dim]  {coverage_path.name}")
 
-        # EngPack.md (engineer-facing deliverable)
-        engpack_path = deliverables / f"{stem}-EngPack.md"
+        # EngPack.docx (engineer-facing deliverable)
+        engpack_path = deliverables / f"{stem}-EngPack.docx"
         log.info("Generating EngPack: %s", engpack_path)
         engpack.generate(
             generated_plan,
