@@ -762,17 +762,17 @@ def _get_workstream(area: str, category: str = "") -> str:
         return "Identity"
     if re.search(
         r"exchange|\bmail\b|\bsmtp\b|public folder|connector|spam"
-        r"|inactive mailbox|forwarding|dmarc|anti.spoof|\bdomain\b",
+        r"|inactive mailbox|forwarding|dmarc|anti.?spoof|\bdomains?\b",
         lookup,
     ):
         return "Messaging"
     if re.search(
-        r"sharepoint|onedrive|\bteams\b|\bgroup\b|ownership"
-        r"|collaboration|stewardship|\bsite\b|external exposure",
+        r"sharepoint|onedrive|\bteams\b|\bgroups?\b|ownership"
+        r"|collaboration|stewardship|\bsites?\b|external exposure",
         lookup,
     ):
         return "Collaboration"
-    if re.search(r"\bdevice\b|endpoint|intune|\bcompliance\b|\bretention\b", lookup):
+    if re.search(r"\bdevices?\b|endpoint|intune|\bcompliance\b|\bretention\b", lookup):
         return "Endpoint"
     if re.search(r"secure score|\bsecurity\b|defender|zero trust", lookup):
         return "Security"
@@ -1053,36 +1053,22 @@ def _build_consultative_summaries(findings: list[dict]) -> dict[str, Any]:
 
     summaries: dict[str, Any] = {}
     for ws, ws_findings in sorted(by_ws.items()):
-        high = [f for f in ws_findings if f.get("Severity") == "High"]
+        high   = [f for f in ws_findings if f.get("Severity") == "High"]
         medium = [f for f in ws_findings if f.get("Severity") == "Medium"]
-        areas = sorted({f.get("Area", "") for f in ws_findings if f.get("Area")})
-
-        narrative_parts: list[str] = []
-        if high:
-            top_areas = ", ".join(areas[:3])
-            narrative_parts.append(
-                f"{ws} findings include {len(high)} high-priority item(s) "
-                f"requiring immediate or near-term attention ({top_areas})."
-            )
-        if medium:
-            narrative_parts.append(
-                f"{len(medium)} medium-priority finding(s) are scheduled for planned remediation."
-            )
-        remaining = len(ws_findings) - len(high) - len(medium)
-        if remaining > 0:
-            narrative_parts.append(f"{remaining} informational finding(s) are flagged for monitoring.")
+        low    = [f for f in ws_findings if f.get("Severity") == "Low"]
+        areas  = sorted({f.get("Area", "") for f in ws_findings if f.get("Area")})
 
         snapshot_rows = []
         for f in ws_findings[:8]:
-            cat = f.get("Category", "")
+            cat      = f.get("Category", "")
             evidence = f.get("CurrentEvidence", "")
             if cat and evidence:
-                short_evidence = evidence[:120] + "..." if len(evidence) > 120 else evidence
-                snapshot_rows.append({"Signal": cat, "State": short_evidence})
+                short_ev = evidence[:120] + "..." if len(evidence) > 120 else evidence
+                snapshot_rows.append({"Signal": cat, "State": short_ev})
 
         summaries[f"{ws}ConsultativeSummary"] = {
             "Title":        f"{ws} Assessment",
-            "Narrative":    " ".join(narrative_parts) if narrative_parts else f"{ws} findings reviewed.",
+            "Narrative":    _build_ws_narrative(ws, ws_findings, high, medium, low, areas),
             "FindingCount": len(ws_findings),
             "HighCount":    len(high),
             "MediumCount":  len(medium),
@@ -1091,3 +1077,185 @@ def _build_consultative_summaries(findings: list[dict]) -> dict[str, Any]:
         }
 
     return summaries
+
+
+def _build_ws_narrative(
+    ws: str,
+    all_findings: list[dict],
+    high: list[dict],
+    medium: list[dict],
+    low: list[dict],
+    areas: list[str],
+) -> str:
+    total     = len(all_findings)
+    areas_str = ", ".join(areas[:3])
+
+    def _find_rule(prefix: str) -> dict | None:
+        return next(
+            (f for f in all_findings if str(f.get("RuleId", "")).startswith(prefix)),
+            None,
+        )
+
+    def _ev(f: dict | None, max_len: int = 160) -> str:
+        if not f:
+            return ""
+        s = str(f.get("CurrentEvidence") or f.get("Finding") or "").rstrip(". ")
+        return (s[:max_len] + "...") if len(s) > max_len else s
+
+    parts: list[str] = []
+
+    if ws == "Identity":
+        admin_f  = _find_rule("ADMIN-001") or _find_rule("IDENTITYADMINS")
+        stale_f  = _find_rule("ID-003") or _find_rule("ID-006")
+        guest_f  = _find_rule("ID-002") or _find_rule("ID-005")
+        ca_count = sum(
+            1 for f in medium
+            if "Conditional" in str(f.get("Area", "")) or str(f.get("RuleId", "")).startswith("CA")
+        )
+        if high:
+            parts.append(
+                f"The identity and access review identified {len(high)} high-priority gap(s) "
+                f"across {areas_str}."
+            )
+        ev = _ev(admin_f)
+        if ev:
+            parts.append(f"Privileged access is the top concern: {ev}.")
+        ev = _ev(stale_f)
+        if ev:
+            parts.append(f"Stale privileged account activity was also detected: {ev}.")
+        ev = _ev(guest_f)
+        if ev:
+            parts.append(f"Guest and external identity hygiene requires review: {ev}.")
+        if ca_count:
+            parts.append(
+                f"{ca_count} Conditional Access gap(s) are scheduled for planned remediation, "
+                f"including policy staging and exclusion review."
+            )
+        if not parts:
+            parts.append(f"The identity review covers {total} finding(s) across {areas_str}.")
+
+    elif ws == "Collaboration":
+        col_f     = _find_rule("COL-001") or _find_rule("OWNERSHIPSTEWARDSHIP")
+        tm_f      = _find_rule("TM-001")
+        cleanup_f = _find_rule("TM-009")
+        if high:
+            parts.append(
+                f"The collaboration review identified {len(high)} high-priority ownership and "
+                f"lifecycle governance gap(s) across Teams, SharePoint, and OneDrive."
+            )
+        ev = _ev(col_f)
+        if ev:
+            parts.append(f"Collaboration ownership gaps are the primary concern: {ev}.")
+        ev = _ev(tm_f)
+        if ev:
+            parts.append(f"Teams governance gaps were also identified: {ev}.")
+        ev = _ev(cleanup_f)
+        if ev:
+            parts.append(f"Teams and group lifecycle cleanup is recommended: {ev}.")
+        if medium or low:
+            parts.append(
+                f"An additional {len(medium) + len(low)} medium and informational finding(s) "
+                f"cover sharing policy, stale content, and external exposure review."
+            )
+        if not parts:
+            parts.append(f"The collaboration review covers {total} finding(s) across {areas_str}.")
+
+    elif ws == "Messaging":
+        fwd_f = _find_rule("EX-001")
+        pf_f  = _find_rule("EX-004")
+        smb_f = _find_rule("EX-005") or _find_rule("EX-007")
+        if high:
+            parts.append(
+                f"The messaging review identified {len(high)} high-priority mail-flow "
+                f"risk(s) that require remediation or documented approval."
+            )
+        ev = _ev(fwd_f)
+        if ev:
+            parts.append(f"Mail forwarding exposure is the primary concern: {ev}.")
+        ev = _ev(pf_f)
+        if ev:
+            parts.append(f"Public folder presence requires migration or retirement planning: {ev}.")
+        ev = _ev(smb_f)
+        if ev:
+            parts.append(f"Shared mailbox governance should also be reviewed: {ev}.")
+        if not parts:
+            parts.append(f"The messaging review covers {total} finding(s) across {areas_str}.")
+
+    elif ws == "Endpoint":
+        comp_f     = _find_rule("DEVICES") or _find_rule("DEV-002")
+        unmanaged_f = _find_rule("DEV-005")
+        os_f       = _find_rule("DEV-006")
+        if high:
+            parts.append(
+                f"The endpoint review identified {len(high)} high-priority device posture gap(s) "
+                f"that affect secure access readiness."
+            )
+        ev = _ev(comp_f)
+        if ev:
+            parts.append(f"Device compliance is the primary concern: {ev}.")
+        ev = _ev(unmanaged_f)
+        if ev:
+            parts.append(f"Unmanaged device exposure was also identified: {ev}.")
+        ev = _ev(os_f)
+        if ev:
+            parts.append(f"Unsupported operating systems require attention: {ev}.")
+        if not parts:
+            parts.append(f"The endpoint review covers {total} finding(s) across {areas_str}.")
+
+    elif ws == "Security":
+        sec_f = _find_rule("SEC-001") or next(
+            (f for f in all_findings if "Secure Score" in str(f.get("Area", ""))), None
+        )
+        consent_f = _find_rule("SEC-003")
+        if high or medium:
+            parts.append(
+                f"The security baseline review identified {len(high) + len(medium)} finding(s) "
+                f"across {areas_str}."
+            )
+        ev = _ev(sec_f)
+        if ev:
+            parts.append(f"Secure Score posture is the primary signal: {ev}.")
+        ev = _ev(consent_f)
+        if ev:
+            parts.append(f"Application consent governance also requires review: {ev}.")
+        if not parts:
+            parts.append(f"The security review covers {total} finding(s) across {areas_str}.")
+
+    elif ws == "Governance":
+        lic_f         = _find_rule("LIC-002")
+        ownerless_f   = _find_rule("LIC-004")
+        diag_f        = _find_rule("DIAG-001")
+        if high or medium:
+            parts.append(
+                f"The governance review identified {len(high) + len(medium)} finding(s) requiring "
+                f"licensing and tenant hygiene attention across {areas_str}."
+            )
+        ev = _ev(lic_f)
+        if ev:
+            parts.append(f"Inactive licensed user cleanup is the top priority: {ev}.")
+        ev = _ev(ownerless_f)
+        if ev:
+            parts.append(f"License-managing group ownership gaps were also found: {ev}.")
+        ev = _ev(diag_f)
+        if ev:
+            parts.append(
+                f"Collection diagnostics should be reviewed before treating findings as the "
+                f"remediation baseline: {ev}."
+            )
+        if not parts:
+            parts.append(f"The governance review covers {total} finding(s) across {areas_str}.")
+
+    else:
+        if high:
+            parts.append(
+                f"{ws} findings include {len(high)} high-priority item(s) requiring "
+                f"immediate or near-term attention across {areas_str}."
+            )
+        if medium:
+            parts.append(f"{len(medium)} medium-priority finding(s) are scheduled for planned remediation.")
+        if low:
+            parts.append(f"{len(low)} informational finding(s) are flagged for monitoring.")
+        if not parts:
+            parts.append(f"{ws} findings reviewed. {total} total finding(s) across {areas_str}.")
+
+    return " ".join(parts)
