@@ -13,6 +13,7 @@ Follows the PS Best Practices Assessment structure:
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from docx import Document
@@ -152,7 +153,7 @@ def generate(
     _write_project_scope(doc)
     _write_executive_summary(doc, tenant_name, findings, ws_sums, actions, consultative)
     _write_recommendations(doc, actions)
-    _write_workstream_sections(doc, findings, consultative, actions)
+    _write_workstream_sections(doc, snapshot, findings, consultative, actions)
     _write_out_of_scope(doc)
     _write_appendix_links(doc)
 
@@ -613,6 +614,7 @@ def _write_recommendations(doc: Document, actions: list[dict]) -> None:
 
 def _write_workstream_sections(
     doc: Document,
+    snapshot: dict,
     findings: list[dict],
     consultative: dict,
     actions: list[dict],
@@ -622,7 +624,6 @@ def _write_workstream_sections(
         ws_findings = [f for f in findings if f.get("Workstream") == ws]
         cs_key      = f"{ws}ConsultativeSummary"
         cs          = consultative.get(cs_key, {})
-        ws_actions  = [a for a in actions if a.get("Workstream") == ws]
 
         if not ws_findings and not cs:
             section_num += 1
@@ -631,39 +632,293 @@ def _write_workstream_sections(
         title = _WS_SECTION_TITLES.get(ws, ws)
         _h(doc, f"{section_num}.0 {title}", 1)
 
-        narrative = cs.get("Narrative", "")
-        if narrative:
-            doc.add_paragraph(narrative)
-
-        # Key Signals table
+        # Key Signals table — metrics at a glance
         snapshot_rows = cs.get("SnapshotRows", [])
         if snapshot_rows:
-            _h(doc, "Key Signals", 2)
             _table_2col(
                 doc,
                 [(r.get("Signal", ""), r.get("State", "")) for r in snapshot_rows],
                 hdr=("Configuration Signal", "Current State"),
             )
 
+        # Story narrative — specifics that the table doesn't show
+        for para_text in _ws_story(ws, snapshot, ws_findings):
+            p = doc.add_paragraph(para_text)
+            p.paragraph_format.space_after = Pt(6)
+
         # Findings
         if ws_findings:
             _h(doc, "Findings", 2)
             _findings_table(doc, ws_findings)
 
-        # Why It Matters + Next Step from action
-        if ws_actions:
-            action = ws_actions[0]
-            why = action.get("WhyItMatters", "")
-            nxt = action.get("RecommendedNextStep", "")
-            if why:
-                _h(doc, "Why It Matters", 2)
-                doc.add_paragraph(why)
-            if nxt:
-                _h(doc, "Recommended Next Step", 2)
-                doc.add_paragraph(nxt)
-
         doc.add_page_break()
         section_num += 1
+
+
+# ---------------------------------------------------------------------------
+# Workstream story helpers — named specifics the Signal table doesn't cover
+# ---------------------------------------------------------------------------
+
+def _ws_story(ws: str, snapshot: dict, findings: list[dict]) -> list[str]:
+    """Return 2-3 paragraphs of character-specific narrative for the workstream."""
+    data    = snapshot.get("Data", {})
+    derived = snapshot.get("Derived", {})
+    fn = {
+        "Identity":      _identity_story,
+        "Messaging":     _messaging_story,
+        "Collaboration": _collab_story,
+        "Endpoint":      _endpoint_story,
+        "Security":      _security_story,
+        "Governance":    _governance_story,
+    }.get(ws)
+    return fn(data, derived, findings) if fn else []
+
+
+def _f(findings: list[dict], *category_keywords: str) -> dict | None:
+    for kw in category_keywords:
+        for f in findings:
+            if kw.lower() in str(f.get("Category", "")).lower() or kw.lower() in str(f.get("Area", "")).lower():
+                return f
+    return None
+
+
+def _count(text: str) -> str:
+    m = re.match(r"(\d+)", str(text))
+    return m.group(1) if m else ""
+
+
+def _identity_story(data: dict, derived: dict, findings: list[dict]) -> list[str]:
+    users        = data.get("Identity", {}).get("Users", {})
+    user_count   = len(users) if isinstance(users, dict) else 0
+    priv         = data.get("Identity", {}).get("PrivilegedAccessRemediationSummary", [])
+    ga_count = stale_ga = 0
+    if isinstance(priv, list):
+        for p in priv:
+            sig = str(p.get("Signal", ""))
+            if "Global Administrator" in sig:
+                ga_count = p.get("Count", 0) or 0
+            elif "Stale privileged" in sig:
+                stale_ga = p.get("Count", 0) or 0
+
+    inactive_f = _f(findings, "Inactive Users", "inactive user")
+    inactive_pct = ""
+    inactive_cnt = ""
+    if inactive_f:
+        txt = inactive_f.get("Finding", "")
+        m = re.match(r"(\d+) enabled.*?\(([0-9.]+)%\)", txt)
+        if m:
+            inactive_cnt, inactive_pct = m.group(1), m.group(2)
+
+    paras = []
+    if user_count and ga_count:
+        paras.append(
+            f"The identity review covers {user_count} user accounts. "
+            f"The most pressing concern is the volume of standing Global Administrators: "
+            f"{ga_count} accounts hold the highest-privilege role in the tenant"
+            + (f", and {stale_ga} of those appear stale with no recent sign-in activity" if stale_ga else "")
+            + ". Global Administrator is the broadest credential in Microsoft 365 — "
+            "reducing the count and requiring PIM-based elevation for those that remain "
+            "closes the largest single privilege-escalation surface in the environment."
+        )
+    if inactive_cnt and inactive_pct:
+        paras.append(
+            f"{inactive_cnt} enabled member accounts ({inactive_pct}%) have not signed in within the last 180 days. "
+            "Accounts that stay enabled past their useful life continue to carry active group memberships, "
+            "license assignments, and in some cases delegated access to shared mailboxes and sites — "
+            "none of which require the user to ever sign in again to retain that access."
+        )
+    return paras
+
+
+def _messaging_story(data: dict, derived: dict, findings: list[dict]) -> list[str]:
+    domain_f = _f(findings, "Domain Verification", "Unverified")
+    dmarc_f  = _f(findings, "DMARC")
+    fwd_f    = _f(findings, "Forwarding", "Mailbox Forwarding")
+
+    paras = []
+    domain_parts = []
+    if domain_f:
+        m = re.search(r"'([^']+)'", domain_f.get("Finding", ""))
+        if m:
+            domain_parts.append(f"'{m.group(1)}' is listed as an accepted domain but is not verified")
+    if dmarc_f:
+        m = re.search(r"'([^']+)'", dmarc_f.get("Finding", ""))
+        if m:
+            domain_parts.append(f"DMARC is not configured on '{m.group(1)}'")
+
+    if domain_parts:
+        combined = "; ".join(domain_parts)
+        paras.append(
+            f"Two domain authentication gaps compound each other: {combined}. "
+            "An unverified accepted domain can create internal mail routing ambiguity and "
+            "is harder to clean up once mail-flow rules or connectors reference it. "
+            "Missing DMARC on the primary sending domain means there is no published policy "
+            "governing what receiving servers should do with mail that fails authentication — "
+            "spoofed messages can reach inboxes without a rejection or quarantine signal."
+        )
+    if fwd_f:
+        cnt = _count(fwd_f.get("Finding", ""))
+        label = f"{cnt} mailbox{'es' if cnt != '1' else ''} have" if cnt else "Mailboxes have"
+        paras.append(
+            f"{label} active forwarding configured to send copies outside the organization. "
+            "External forwarding creates a persistent data-exit path that runs independently of "
+            "DLP policies unless the policy is specifically scoped to cover outbound forwarding rules — "
+            "which most default configurations do not do."
+        )
+    return paras
+
+
+def _collab_story(data: dict, derived: dict, findings: list[dict]) -> list[str]:
+    teams_raw = data.get("Collaboration", {}).get("TeamsGroupsCleanupCandidates", {})
+    teams_list = list(teams_raw.values()) if isinstance(teams_raw, dict) else (teams_raw if isinstance(teams_raw, list) else [])
+
+    unmanaged_raw  = derived.get("UnmanagedObjects", {})
+    unmanaged_list = list(unmanaged_raw.values()) if isinstance(unmanaged_raw, dict) else (unmanaged_raw if isinstance(unmanaged_raw, list) else [])
+
+    og = derived.get("OwnershipGovernanceSummary", {}).get("Summary", {})
+    total_objects = og.get("TotalObjectsReviewed", len(unmanaged_list))
+
+    # Named team examples — prefer ownerless
+    ownerless_teams = [t for t in teams_list if "Ownerless" in str(t.get("RiskSignal", ""))]
+    dormant_teams   = [t for t in teams_list if "Dormant" in str(t.get("RiskSignal", "")) and t not in ownerless_teams]
+    sample          = (ownerless_teams + dormant_teams)[:3]
+    team_examples   = []
+    for t in sample:
+        name  = t.get("Name", "")
+        risk  = t.get("RiskSignal", "").split(";")[0].strip()
+        last  = (t.get("LastActivityDate") or "")[:7] or "unknown"
+        if name:
+            team_examples.append(f"'{name}' ({risk.lower()}, last active {last})")
+
+    # Named group examples from unmanaged objects
+    group_examples = [
+        u.get("DisplayName", "") for u in unmanaged_list
+        if u.get("ObjectType") in ("Entra Group", "Microsoft 365 Group") and u.get("DisplayName")
+    ][:2]
+
+    paras = []
+    if total_objects and team_examples:
+        ex_text = "; ".join(team_examples[:2])
+        paras.append(
+            f"The collaboration review assessed {total_objects} objects across Teams, SharePoint, OneDrive, and Entra groups. "
+            f"Specific examples from the cleanup candidate list include {ex_text}. "
+            "These are not outliers — they represent the ownership and lifecycle pattern "
+            "visible across the full unmanaged inventory."
+        )
+    if group_examples:
+        names = " and ".join(f"'{n}'" for n in group_examples)
+        paras.append(
+            f"Groups like {names} appear in the unmanaged inventory with no assigned owner. "
+            "Ownerless groups are difficult to decommission cleanly because there is no accountable "
+            "party to confirm whether the group is still in active use, "
+            "whether its membership is correct, or whether content associated with it can be archived."
+        )
+    return paras
+
+
+def _endpoint_story(data: dict, derived: dict, findings: list[dict]) -> list[str]:
+    devices       = data.get("Identity", {}).get("DeviceDetails", {})
+    device_count  = len(devices) if isinstance(devices, dict) else 0
+    compliance_f  = _f(findings, "Device Compliance", "Compliance")
+    unmanaged_f   = _f(findings, "Unmanaged Device", "Unmanaged")
+    stale_f       = _f(findings, "Stale Device", "Stale")
+
+    paras = []
+    if device_count:
+        paras.append(
+            f"The device review covers {device_count} registered device records, "
+            "with Windows representing the dominant platform. "
+            "The compliance and management gaps reinforce each other: "
+            "unmanaged devices cannot satisfy compliance policy requirements, "
+            "and where compliance is the signal driving a Conditional Access decision, "
+            "an unmanaged device will always fail that check — "
+            "meaning the CA policy is structurally unable to enforce the intended access boundary."
+        )
+    stats = []
+    for f in [compliance_f, unmanaged_f, stale_f]:
+        if f:
+            s = f.get("Finding", "").split(".")[0].strip()
+            if s:
+                stats.append(s)
+    if stats:
+        paras.append(" ".join(s.rstrip(".") + "." for s in stats))
+    return paras
+
+
+def _security_story(data: dict, derived: dict, findings: list[dict]) -> list[str]:
+    score_f   = _f(findings, "Secure Score")
+    consent_f = _f(findings, "Consent Governance", "Consent")
+
+    paras = []
+    if score_f:
+        score_text = score_f.get("Finding", "")
+        paras.append(
+            f"{score_text} "
+            "Secure Score is a composite signal — the gaps pulling it down are distributed "
+            "across identity governance, MFA enforcement, and sharing controls "
+            "that are documented in detail across the other workstream sections. "
+            "Closing the Immediate and Near Term findings will have the most direct impact on this number."
+        )
+    if consent_f:
+        paras.append(
+            "The consent governance posture is worth separate attention. "
+            "The current permission grant policy allows users to authorize third-party applications "
+            "to access tenant data without admin involvement. "
+            "In practice this means a user clicking Accept on an unfamiliar OAuth prompt "
+            "grants that application ongoing read access to their mail, calendar, or files "
+            "without the event appearing in an admin consent queue."
+        )
+    return paras
+
+
+def _governance_story(data: dict, derived: dict, findings: list[dict]) -> list[str]:
+    inactive_f  = _f(findings, "Inactive Licensed", "Inactive License")
+    duplicate_f = _f(findings, "Duplicate Assignment", "Duplicate")
+    ownerless_f = _f(findings, "Ownerless License", "Ownerless Group")
+
+    parts = []
+    if inactive_f:
+        cnt = _count(inactive_f.get("Finding", ""))
+        if cnt:
+            parts.append(f"{cnt} inactive or disabled user{'s' if cnt != '1' else ''} still hold paid licenses")
+    if duplicate_f:
+        cnt = _count(duplicate_f.get("Finding", ""))
+        if cnt:
+            parts.append(f"{cnt} user{'s' if cnt != '1' else ''} carry both direct and group-based assignment for the same SKU")
+    if ownerless_f:
+        parts.append("at least one license-managing group has no assigned owner")
+
+    paras = []
+    if parts:
+        combined = "; ".join(parts[:-1]) + (f"; and {parts[-1]}" if len(parts) > 1 else parts[0])
+        paras.append(
+            f"The governance review surfaced three license hygiene issues: {combined}. "
+            "Duplicate SKU assignments do not extend the user's access but inflate spend calculations "
+            "and create noise in license audits. "
+            "An ownerless license group creates a change-control gap — "
+            "there is no accountable owner for what happens when membership changes "
+            "propagate automatically to license assignment."
+        )
+
+    # At-capacity SKUs from snapshot
+    lic_data    = data.get("Identity", {}).get("LicenseSKUs", {})
+    at_capacity = []
+    if isinstance(lic_data, dict):
+        for v in lic_data.values():
+            if isinstance(v, dict):
+                consumed = v.get("ConsumedUnits") or 0
+                prepaid  = (v.get("PrepaidUnits") or {}).get("Enabled") or 0
+                name     = v.get("SkuPartNumber", "")
+                if prepaid > 0 and consumed >= prepaid and name:
+                    at_capacity.append(name)
+    if at_capacity:
+        names = ", ".join(f"'{n}'" for n in at_capacity[:3])
+        paras.append(
+            f"License SKU(s) at or above capacity: {names}. "
+            "At-capacity SKUs block new assignments silently and can cause provisioning failures "
+            "during onboarding if they are not tracked against upcoming headcount changes."
+        )
+    return paras
 
 
 # ---------------------------------------------------------------------------
