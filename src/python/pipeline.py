@@ -6,6 +6,7 @@ Equivalent of Invoke-M365TenantAssessmentExportPipeline.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
@@ -35,14 +36,23 @@ def run(
     if snapshot_data is None:
         raise FileNotFoundError(f"Snapshot not found: {snapshot_path}")
 
-    ctx = resolve_snapshot_output_context(
-        snapshot_data,
-        output_dir or snapshot_path.parent,
-    )
-    out_dir: Path = ctx["OutputDirectory"]
+    # If no explicit output_dir and the snapshot lives in a Support folder,
+    # step up to the assessment root so outputs land beside Support, not inside it.
+    if output_dir:
+        base_dir = Path(output_dir)
+    else:
+        snap_parent = snapshot_path.parent
+        base_dir = snap_parent.parent if snap_parent.name.lower() == "support" else snap_parent
+
+    ctx = resolve_snapshot_output_context(snapshot_data, base_dir)
     stem: str = ctx["FileStem"]
+
+    # Date-stamp each run so multiple runs are easy to distinguish
+    run_stamp = datetime.now().strftime("%Y-%m-%d-%H%M")
+    out_dir   = ctx["OutputDirectory"] / run_stamp
+
     deliverables = out_dir / "Deliverables"
-    support = out_dir / "Support"
+    support      = out_dir / "Support"
     deliverables.mkdir(parents=True, exist_ok=True)
     support.mkdir(parents=True, exist_ok=True)
 

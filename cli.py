@@ -203,19 +203,21 @@ def report(ctx, snapshot, profile, export_path, skip_improve, skip_excel, skip_h
     verbose = (ctx.obj or {}).get("verbose", False)
     _print_banner("Report Generation")
     snap_path = Path(snapshot)
-    out = Path(export_path) if export_path else snap_path.parent
+    # Pass None when no explicit path given — pipeline resolves base dir and adds date stamp
+    explicit_out = Path(export_path) if export_path else None
     profiles = parse_profiles(list(profile))
     console.print(f"  [dim]Snapshot:[/dim]  {snap_path.name}")
-    console.print(f"  [dim]Output:[/dim]    {out}")
     console.print()
     artifacts = pipeline.run(
-        snap_path, output_dir=out, profiles=profiles,
+        snap_path, output_dir=explicit_out, profiles=profiles,
         skip_excel=skip_excel, skip_html=skip_html, skip_docx=skip_docx,
         skip_improve=skip_improve,
         docx_template=Path(docx_template) if docx_template else None,
         verbose=verbose,
     )
-    console.print(f"[green]Done.[/green] {len(artifacts)} artifact(s) written to: {out}")
+    # Show the actual output location from the artifacts
+    out_dir = next(iter(artifacts.values())).parent.parent if artifacts else snap_path.parent
+    console.print(f"[green]Done.[/green] {len(artifacts)} artifact(s) written to: {out_dir}")
 
 
 @main.command()
