@@ -47,15 +47,24 @@ def get_logger(
     return logger
 
 
-def configure_root(log_file: str | Path | None = None, level: int = logging.DEBUG) -> None:
+def configure_root(
+    log_file: str | Path | None = None,
+    level: int = logging.DEBUG,
+    verbose: bool = False,
+) -> None:
     root = logging.getLogger()
     if root.handlers:
+        # Already configured — honour a verbose upgrade request.
+        if verbose:
+            for h in root.handlers:
+                if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+                    h.setLevel(logging.DEBUG)
         return
     root.setLevel(level)
     formatter = logging.Formatter(_FMT, datefmt=_DATE_FMT)
 
     console = logging.StreamHandler(sys.stdout)
-    console.setLevel(logging.INFO)
+    console.setLevel(logging.DEBUG if verbose else logging.WARNING)
     console.setFormatter(formatter)
     root.addHandler(console)
 

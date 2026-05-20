@@ -6,11 +6,13 @@ Uses Jinja2 for templating.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from jinja2 import Environment, BaseLoader
 
 from ..snapshot import get_data, get_metadata
+from ..utils.converters import to_export_friendly_value
 
 log = logging.getLogger(__name__)
 
@@ -19,23 +21,30 @@ _TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>M365 Tenant Assessment — {{ tenant_name }}</title>
+<title>M365 Tenant Assessment - {{ tenant_name }}</title>
 <style>
+  * { box-sizing: border-box; }
   body { font-family: Segoe UI, Arial, sans-serif; margin: 0; padding: 0; background: #f5f5f5; color: #222; }
   header { background: #1f3864; color: #fff; padding: 24px 32px; }
   header h1 { margin: 0 0 4px; font-size: 1.6rem; }
   header p  { margin: 0; font-size: 0.9rem; opacity: .75; }
-  main { max-width: 1200px; margin: 24px auto; padding: 0 24px; }
+  nav { background: #162d52; padding: 10px 32px; display: flex; flex-wrap: wrap; gap: 8px; }
+  nav a { color: #a8c4e8; font-size: 0.78rem; text-decoration: none; padding: 3px 8px;
+          border: 1px solid #2d4f7c; border-radius: 3px; white-space: nowrap; }
+  nav a:hover { background: #1f3864; color: #fff; }
+  main { max-width: 1400px; margin: 24px auto; padding: 0 24px; }
   section { background: #fff; border-radius: 6px; margin-bottom: 24px;
             box-shadow: 0 1px 4px rgba(0,0,0,.12); overflow: hidden; }
   section h2 { margin: 0; padding: 14px 20px; background: #1f3864;
                color: #fff; font-size: 1rem; letter-spacing: .04em; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-  thead th { background: #d9e1f2; text-align: left; padding: 8px 12px;
-             font-weight: 600; border-bottom: 2px solid #b0bfdf; }
+  h3 { padding: 10px 20px 4px; margin: 0; font-size: .88rem; color: #333; background: #f8f9fc;
+       border-top: 1px solid #e8eaf0; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  thead th { background: #d9e1f2; text-align: left; padding: 7px 12px;
+             font-weight: 600; border-bottom: 2px solid #b0bfdf; white-space: nowrap; }
   tbody tr:nth-child(even) { background: #f2f5fb; }
-  td { padding: 6px 12px; border-bottom: 1px solid #e8eaf0; word-break: break-word; }
-  .empty { padding: 16px 20px; color: #777; font-style: italic; }
+  td { padding: 5px 12px; border-bottom: 1px solid #e8eaf0; word-break: break-word; max-width: 480px; }
+  .empty { padding: 14px 20px; color: #777; font-style: italic; font-size: 0.85rem; }
   footer { text-align: center; color: #999; font-size: 0.78rem; padding: 24px; }
 </style>
 </head>
@@ -44,12 +53,17 @@ _TEMPLATE = """<!DOCTYPE html>
   <h1>Microsoft 365 Tenant Assessment</h1>
   <p>{{ tenant_name }} &nbsp;&bull;&nbsp; Generated {{ generated_at }}</p>
 </header>
+<nav>
+  {% for section_name in sections %}
+  <a href="#section-{{ loop.index }}">{{ section_name }}</a>
+  {% endfor %}
+</nav>
 <main>
 {% for section_name, tables in sections.items() %}
-<section>
+<section id="section-{{ loop.index }}">
   <h2>{{ section_name }}</h2>
   {% for table_name, rows in tables.items() %}
-  <h3 style="padding: 12px 20px 4px; margin: 0; font-size: .9rem; color: #444;">{{ table_name }}</h3>
+  <h3>{{ table_name }}</h3>
   {% if rows %}
   <table>
     <thead>
@@ -96,12 +110,9 @@ def generate(snapshot: dict, output_path: str | Path) -> None:
             continue
         section_tables: dict[str, list[dict]] = {}
         for table_name, rows in tables.items():
-            if isinstance(rows, list):
-                section_tables[table_name] = [
-                    {str(k): v for k, v in (r.items() if isinstance(r, dict) else {})} for r in rows
-                ]
-            elif isinstance(rows, dict):
-                section_tables[table_name] = [rows]
+            normalized = _normalize_table(rows)
+            if normalized:
+                section_tables[_prettify_key(table_name)] = normalized
         if section_tables:
             sections[section] = section_tables
 
@@ -115,3 +126,44 @@ def generate(snapshot: dict, output_path: str | Path) -> None:
 
     output_path.write_text(html, encoding="utf-8")
     log.info("HTML report saved: %s", output_path)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _prettify_key(key: str) -> str:
+    s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", str(key))
+    s = re.sub(r"([a-z\d])([A-Z])", r"\1 \2", s)
+    return s.replace("_", " ").strip()
+
+
+def _normalize_table(rows: object) -> list[dict]:
+    if isinstance(rows, dict):
+        vals = list(rows.values())
+        if not vals:
+            return []
+        # Flat scalar dict → single summary row
+        if all(not isinstance(v, (dict, list)) for v in vals):
+            rows = [rows]
+        # Dict-of-dicts → one row per value
+        elif all(isinstance(v, dict) for v in vals):
+            rows = vals
+        # Dict-of-lists → flatten sub-lists
+        elif all(isinstance(v, list) for v in vals):
+            rows = [r for sub in vals for r in sub if isinstance(r, dict)]
+        else:
+            rows = [rows]
+    elif not isinstance(rows, list):
+        return []
+
+    result: list[dict] = []
+    for r in rows:
+        if isinstance(r, dict):
+            result.append({
+                _prettify_key(k): to_export_friendly_value(v)
+                for k, v in r.items()
+            })
+        elif r is not None:
+            result.append({"Value": to_export_friendly_value(r)})
+    return result

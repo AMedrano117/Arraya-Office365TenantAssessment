@@ -13,7 +13,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
-from ..utils.converters import ensure_list, to_export_friendly_record
+from ..utils.converters import to_export_friendly_record, to_export_friendly_value
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +58,8 @@ _DEFAULT_EXCLUDED = {
     "OwnershipGovernanceSummary", "TenantInfoSummary", "AuthenticationConfigSummary",
     "SpamFilteringSummary", "FederationSummary", "MfaRegistrationSummary", "EmailActivitySummary",
     "PrimaryMailboxStatsCollectionSummary", "UnifiedGroupMailboxStatsCollectionSummary",
+    # Lookup-index variants of AllMailboxes — same records keyed by alternate identifiers
+    "AllMailboxes-MailIdentity", "AllMailboxes-UserPrincipalName", "AllMailboxes-PrimarySmtpAddress",
 }
 
 _WORKSHEET_ALIASES = {
@@ -143,8 +145,35 @@ def _build_sheet_order(data: dict, policy: str) -> list[str]:
 def _get_rows(logical_name: str, value: Any) -> list[dict]:
     if value is None:
         return []
-    items = ensure_list(value)
-    return [to_export_friendly_record(r) for r in items if r is not None]
+    if isinstance(value, list):
+        return [to_export_friendly_record(r) for r in value if r is not None]
+    if isinstance(value, dict):
+        vals = list(value.values())
+        if not vals:
+            return []
+        # All-scalar flat dict (MfaEnrollmentSummary, PasswordLifecycleSummary, etc.) → single row
+        if all(not isinstance(v, (dict, list)) for v in vals):
+            return [to_export_friendly_record(value)]
+        # All-dict lookup table (AllMailboxes, Users, ConditionalAccessPolicies, etc.) → one row per value
+        if all(isinstance(v, dict) for v in vals):
+            return [to_export_friendly_record(v) for v in vals]
+        # All-list dict (PublicFolderPerms) → flatten sub-lists into individual rows
+        if all(isinstance(v, list) for v in vals):
+            rows: list[dict] = []
+            for sub in vals:
+                rows.extend(to_export_friendly_record(r) for r in sub if isinstance(r, dict))
+            return rows
+        # Container with a Summary key (AdConnectConfiguration) → Summary row + scalar siblings
+        summary = value.get("Summary")
+        if isinstance(summary, dict):
+            record = dict(to_export_friendly_record(summary))
+            for k, v in value.items():
+                if k != "Summary" and not isinstance(v, (dict, list)):
+                    record[str(k)] = to_export_friendly_value(v)
+            return [record]
+        # Mixed container — render as single flat row
+        return [to_export_friendly_record(value)]
+    return [{"Value": to_export_friendly_value(value)}]
 
 
 def _write_rows(ws: Any, rows: list[dict]) -> None:

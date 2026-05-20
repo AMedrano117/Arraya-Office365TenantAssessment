@@ -8,11 +8,15 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from rich.console import Console
+
 from . import snapshot as snap
-from .reporting import excel, html, docx, markdown, improvement_plan
+from .analysis import plan as plan_module
+from .reporting import excel, html, docx, markdown, improvement_plan, engpack
 from .utils.paths import resolve_snapshot_output_context
 
 log = logging.getLogger(__name__)
+_console = Console()
 
 
 def run(
@@ -24,6 +28,7 @@ def run(
     skip_docx: bool = False,
     skip_improve: bool = False,
     docx_template: str | Path | None = None,
+    verbose: bool = False,
 ) -> dict[str, Path]:
     snapshot_path = Path(snapshot_path)
     snapshot_data = snap.load(snapshot_path)
@@ -37,33 +42,70 @@ def run(
     out_dir: Path = ctx["OutputDirectory"]
     stem: str = ctx["FileStem"]
     deliverables = out_dir / "Deliverables"
+    support = out_dir / "Support"
     deliverables.mkdir(parents=True, exist_ok=True)
+    support.mkdir(parents=True, exist_ok=True)
 
     artifacts: dict[str, Path] = {}
 
+    # -----------------------------------------------------------------------
+    # Analysis: generate enriched Plan.json (always — other steps depend on it)
+    # -----------------------------------------------------------------------
+    log.info("Generating plan: %s", support)
+    generated_plan = plan_module.generate(snapshot_data, support, tenant_name=stem)
+    artifacts["plan"] = support / f"{stem}-Plan.json"
+    if verbose:
+        _console.print(f"  [dim]Plan[/dim]      {artifacts['plan'].name}")
+
+    # -----------------------------------------------------------------------
+    # Reports
+    # -----------------------------------------------------------------------
     if not skip_excel:
         xlsx_path = deliverables / f"{stem}-Tenant Details.xlsx"
         log.info("Generating Excel workbook: %s", xlsx_path)
         _flatten_and_export_excel(snapshot_data, xlsx_path)
         artifacts["excel"] = xlsx_path
+        if verbose:
+            _console.print(f"  [dim]Excel[/dim]     {xlsx_path.name}")
 
     if not skip_html:
         html_path = deliverables / f"{stem}-Report.html"
         log.info("Generating HTML report: %s", html_path)
         html.generate(snapshot_data, html_path)
         artifacts["html"] = html_path
+        if verbose:
+            _console.print(f"  [dim]HTML[/dim]      {html_path.name}")
 
     if not skip_docx:
         docx_path = deliverables / f"{stem}-Assessment.docx"
         log.info("Generating Word document: %s", docx_path)
-        docx.generate(snapshot_data, docx_path, template_path=docx_template)
+        docx.generate(snapshot_data, docx_path, template_path=docx_template, plan=generated_plan)
         artifacts["docx"] = docx_path
+        if verbose:
+            _console.print(f"  [dim]Word[/dim]      {docx_path.name}")
 
     if not skip_improve:
+        # EngPack.md (engineer-facing deliverable)
+        engpack_path = deliverables / f"{stem}-EngPack.md"
+        log.info("Generating EngPack: %s", engpack_path)
+        engpack.generate(
+            generated_plan,
+            snapshot_data,
+            engpack_path,
+            snapshot_path=str(snapshot_path),
+            support_dir=support,
+        )
+        artifacts["engpack"] = engpack_path
+        if verbose:
+            _console.print(f"  [dim]EngPack[/dim]   {engpack_path.name}")
+
+        # Basic improvement plan markdown (lightweight summary)
         improve_dir = out_dir / "ImprovementPlan"
         log.info("Generating improvement plan: %s", improve_dir)
         improvement_plan.generate(snapshot_data, improve_dir)
         artifacts["improve_dir"] = improve_dir
+        if verbose:
+            _console.print(f"  [dim]Improve[/dim]   {improve_dir.name}/")
 
     log.info("Pipeline complete. Artifacts: %s", list(artifacts.values()))
     return artifacts

@@ -1,0 +1,869 @@
+"""
+Plan generation — Python equivalent of New-M365TenantImprovementPlan.ps1.
+
+Takes a snapshot, enriches BestPracticeFindings with Phase, Workstream, and
+narrative fields, then generates hybrid findings from Summary datasets.
+Builds a Plan.json that powers the EngPack.md and Word reports.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from ..snapshot import get_metadata
+from ..utils.converters import ensure_list
+
+log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Severity / Phase mappings (mirrors PS Convert-ToPriorityBand)
+# ---------------------------------------------------------------------------
+
+_SEVERITY_DISPLAY: dict[str, str] = {
+    "Risk": "High",
+    "Warning": "Medium",
+    "Info": "Low",
+}
+
+_SEV_ORDER: dict[str, int] = {"High": 0, "Medium": 1, "Low": 2}
+_PHASE_ORDER: dict[str, int] = {"Immediate": 0, "Near Term": 1, "Planned": 2, "Monitor": 3}
+
+# (snap_severity, priority_int) -> RoadmapPhase
+_PHASE_MAP: dict[tuple[str, int], str] = {
+    ("Risk",    1): "Immediate",
+    ("Risk",    2): "Near Term",
+    ("Risk",    3): "Planned",
+    ("Warning", 1): "Near Term",
+    ("Warning", 2): "Planned",
+    ("Warning", 3): "Planned",
+    ("Info",    1): "Monitor",
+    ("Info",    2): "Monitor",
+    ("Info",    3): "Monitor",
+}
+
+# WorkstreamSummary severity label (aggregated highest)
+_DISPLAY_SEV_LABEL: dict[str, str] = {
+    "High": "Critical",
+    "Medium": "Medium",
+    "Low": "Info",
+}
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def generate(
+    snapshot: dict,
+    support_dir: Path,
+    tenant_name: str = "",
+) -> dict:
+    """Enrich findings, generate hybrid findings, build Plan.json, and return the plan dict."""
+    support_dir = Path(support_dir)
+    support_dir.mkdir(parents=True, exist_ok=True)
+
+    if not tenant_name:
+        meta = get_metadata(snapshot)
+        tenant_obj = meta.get("Tenant") or {}
+        tenant_name = (
+            (tenant_obj.get("DisplayName") if isinstance(tenant_obj, dict) else None)
+            or meta.get("TenantDisplayName")
+            or meta.get("TenantDomain")
+            or "Tenant"
+        )
+
+    raw = _extract_raw_findings(snapshot)
+    findings = [_enrich(f) for f in raw]
+    bpf_categories = {f.get("Category", "") for f in findings}
+    findings += _generate_hybrid_findings(snapshot, bpf_categories)
+    findings.sort(key=lambda f: (
+        _SEV_ORDER.get(f.get("Severity", "Low"), 99),
+        _PHASE_ORDER.get(f.get("RoadmapPhase", "Monitor"), 99),
+    ))
+
+    ws_summaries = _build_workstream_summaries(findings)
+    consultative = _build_consultative_summaries(findings)
+
+    plan: dict[str, Any] = {
+        "GeneratedAt": datetime.now(timezone.utc).isoformat(),
+        "TenantName": tenant_name,
+        "FindingCount": len(findings),
+        "WorkstreamSummaries": ws_summaries,
+        "Findings": findings,
+        "ConsultativeSummaries": consultative,
+    }
+
+    plan_path = support_dir / f"{tenant_name}-Plan.json"
+    plan_path.write_text(json.dumps(plan, indent=2, default=str), encoding="utf-8")
+    log.info("Plan.json written: %s (%d findings)", plan_path, len(findings))
+    return plan
+
+
+# ---------------------------------------------------------------------------
+# BestPracticeFindings extraction + enrichment
+# ---------------------------------------------------------------------------
+
+def _extract_raw_findings(snapshot: dict) -> list[dict]:
+    derived = snapshot.get("Derived") or {}
+    src = derived.get("BestPracticeFindings") or derived.get("Findings") or {}
+    if isinstance(src, dict):
+        return [{"_key": k, **v} for k, v in src.items() if isinstance(v, dict)]
+    return [f for f in ensure_list(src) if isinstance(f, dict)]
+
+
+def _enrich(f: dict) -> dict:
+    key       = f.get("_key", "")
+    area      = str(f.get("Area", ""))
+    category  = str(f.get("Category", ""))
+    severity  = str(f.get("Severity", "Info"))
+    priority  = int(f.get("Priority", 2) or 2)
+    message   = str(f.get("Message") or f.get("Description") or "")
+    rec       = str(f.get("RecommendedAction") or f.get("Remediation") or "")
+    worksheet = str(f.get("RelatedWorksheet") or "")
+    section   = str(f.get("RelatedSection") or "")
+    src_type  = str(f.get("SourceType") or "")
+
+    display_sev = _SEVERITY_DISPLAY.get(severity, severity)
+    phase       = _PHASE_MAP.get((severity, priority), "Monitor")
+    workstream  = _get_workstream(area, category)
+
+    evidence_parts = []
+    if worksheet:
+        evidence_parts.append(f"Worksheet: {worksheet}")
+    if section:
+        evidence_parts.append(f"Section: {section}")
+    if src_type:
+        evidence_parts.append(f"Source: {src_type}")
+    evidence_location = "; ".join(evidence_parts)
+
+    return {
+        "RuleId":               key,
+        "Area":                 area,
+        "Category":             category,
+        "Severity":             display_sev,
+        "RoadmapPhase":         phase,
+        "Workstream":           workstream,
+        "Finding":              message,
+        "Recommendation":       rec,
+        "WhyFlagged":           f"Flagged because the assessment observed: {message}" if message else "",
+        "TechnicalRemediation": rec,
+        "CurrentEvidence":      message,
+        "EvidenceLocation":     evidence_location,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Hybrid findings — generated from Summary datasets
+# ---------------------------------------------------------------------------
+
+def _generate_hybrid_findings(snapshot: dict, bpf_categories: set[str] | None = None) -> list[dict]:
+    """Generate findings from Summary and raw datasets not covered by BestPracticeFindings."""
+    bpf_categories = bpf_categories or set()
+    data    = snapshot.get("Data") or {}
+    derived = snapshot.get("Derived") or {}
+    diag    = snapshot.get("Diagnostics") or {}
+    findings: list[dict] = []
+
+    def _rows(section: str, table: str) -> list[dict]:
+        tbl = (data.get(section) or {}).get(table) or {}
+        if isinstance(tbl, list):
+            return [r for r in tbl if isinstance(r, dict)]
+        if isinstance(tbl, dict):
+            return [v for v in tbl.values() if isinstance(v, dict)]
+        return []
+
+    def _first(section: str, table: str) -> dict:
+        rows = _rows(section, table)
+        return rows[0] if rows else {}
+
+    def _derived_first(key: str) -> dict:
+        val = derived.get(key) or {}
+        if isinstance(val, list):
+            return val[0] if val else {}
+        if isinstance(val, dict):
+            vals = list(val.values())
+            first = vals[0] if vals else {}
+            return first if isinstance(first, dict) else {}
+        return {}
+
+    def _hf(
+        rule_id: str,
+        area: str,
+        category: str,
+        severity: str,
+        phase: str,
+        workstream: str,
+        finding: str,
+        remediation: str,
+        worksheet: str,
+        section: str = "",
+        source: str = "",
+    ) -> dict:
+        ev_parts = [f"Worksheet: {worksheet}"]
+        if section:
+            ev_parts.append(f"Section: {section}")
+        if source:
+            ev_parts.append(f"Source: {source}")
+        return {
+            "RuleId":               rule_id,
+            "Area":                 area,
+            "Category":             category,
+            "Severity":             severity,
+            "RoadmapPhase":         phase,
+            "Workstream":           workstream,
+            "Finding":              finding,
+            "Recommendation":       remediation,
+            "WhyFlagged":           f"Flagged because the assessment observed: {finding}",
+            "TechnicalRemediation": remediation,
+            "CurrentEvidence":      finding,
+            "EvidenceLocation":     "; ".join(ev_parts),
+        }
+
+    # -----------------------------------------------------------------------
+    # COLLABORATION — Ownership & Stewardship
+    # -----------------------------------------------------------------------
+    og = _derived_first("OwnershipGovernanceSummary")
+    unmanaged = int(og.get("UnmanagedObjectCount", 0) or 0)
+    missing_owners = int(og.get("MissingOwnerCount", 0) or 0)
+    owner_health = int(og.get("OwnerHealthRiskCount", 0) or 0)
+    od_mismatch = int(og.get("OneDriveOwnerMismatchCount", 0) or 0)
+
+    if unmanaged > 0:
+        findings.append(_hf(
+            "COL-001",
+            "Ownership & Stewardship", "Unmanaged Objects",
+            "High", "Near Term", "Collaboration",
+            f"{unmanaged} unmanaged collaboration object(s) identified (missing owners, stale owners, or unknown state).",
+            "Assign an active accountable owner or documented steward to each flagged asset, confirm the business "
+            "purpose, and retire spaces that no longer have a sponsor.",
+            "OwnershipGovernanceSummary", "Ownership Governance", "Derived/OwnershipGovernance",
+        ))
+
+    if owner_health > 0 and "Owner Health" not in bpf_categories:
+        findings.append(_hf(
+            "COL-002",
+            "Ownership & Stewardship", "Owner Health",
+            "Medium", "Planned", "Collaboration",
+            f"{owner_health} collaboration object(s) are owned by disabled or stale owner accounts.",
+            "Reassign ownership from disabled or stale accounts to active custodians and formalize backup ownership coverage.",
+            "UnmanagedObjects", "ownership-governance", "Derived/OwnershipGovernance",
+        ))
+
+    if od_mismatch > 0 and "OneDrive Ownership Mismatch" not in bpf_categories:
+        findings.append(_hf(
+            "COL-003",
+            "Ownership & Stewardship", "OneDrive Ownership Mismatch",
+            "Medium", "Planned", "Collaboration",
+            f"{od_mismatch} OneDrive site(s) have a current owner different from the URL-derived default owner.",
+            "Review OneDrive sites where the current owner differs from the URL-derived default user and confirm documented stewardship.",
+            "UnmanagedObjects", "ownership-governance", "Derived/OwnershipGovernance",
+        ))
+
+    # -----------------------------------------------------------------------
+    # COLLABORATION — Teams Governance
+    # -----------------------------------------------------------------------
+    teams = _rows("Collaboration", "AllTeams")
+    ownerless_teams = [t for t in teams if _iget(t, "OwnerCount", 1) == 0 and not t.get("IsArchived")]
+    if ownerless_teams and "Teams Ownership" not in bpf_categories:
+        findings.append(_hf(
+            "TM-001",
+            "Teams Collaboration", "Teams Ownership",
+            "High", "Near Term", "Collaboration",
+            f"{len(ownerless_teams)} team(s) do not have any owners.",
+            "Assign at least one active owner to every flagged Team, confirm the business purpose, "
+            "and archive Teams that no longer need to remain active.",
+            "AllTeams", "Teams Governance", "Hybrid/Teams",
+        ))
+
+    today = datetime.now(timezone.utc).date()
+    dormant_teams = []
+    for t in teams:
+        lad = t.get("LastActivityDate")
+        if lad:
+            try:
+                d = datetime.strptime(str(lad)[:10], "%Y-%m-%d").date()
+                if (today - d).days > 90 and not t.get("IsArchived"):
+                    dormant_teams.append(t)
+            except ValueError:
+                pass
+    if dormant_teams:
+        findings.append(_hf(
+            "TM-006",
+            "Teams Collaboration", "Teams Activity",
+            "Low", "Monitor", "Collaboration",
+            f"{len(dormant_teams)} team(s) with activity older than 90 days detected.",
+            "Review Teams, Microsoft 365 groups, SharePoint, and OneDrive locations for accountable ownership, "
+            "lifecycle state, guest exposure, and storage growth.",
+            "AllTeams", "Teams Governance", "Hybrid/Teams",
+        ))
+
+    # TeamsGroupsCleanupCandidates
+    tgcc = _rows("Collaboration", "TeamsGroupsCleanupCandidates")
+    ownerless_c = sum(1 for t in tgcc if _iget(t, "OwnerCount", 1) == 0)
+    no_members_c = sum(1 for t in tgcc if _iget(t, "MemberCount", 1) == 0)
+    dormant_c = sum(1 for t in tgcc if _is_stale(t.get("LastActivityDate"), 90))
+    if tgcc:
+        findings.append(_hf(
+            "TM-009",
+            "Teams Collaboration", "Teams Cleanup",
+            "Medium", "Planned", "Collaboration",
+            f"{len(tgcc)} cleanup candidate(s) identified; "
+            f"ownerless={ownerless_c}; no members={no_members_c}; dormant={dormant_c}.",
+            "Review Teams and Microsoft 365 groups for accountable ownership, lifecycle state, and guest exposure. "
+            "Use ownership assignment, archive or expiration decisions, and documented exceptions.",
+            "TeamsGroupsCleanupCandidates", "Teams Governance", "Summary/TeamsGroupsCleanup",
+        ))
+
+    # ExternalExposureFindings — collaboration angle (guest-enabled ownerless groups)
+    eef = _rows("Tenant", "ExternalExposureFindings")
+    collab_eef = [r for r in eef if "Group" in str(r.get("AssetType", "")) or "Team" in str(r.get("Workload", ""))]
+    if collab_eef:
+        findings.append(_hf(
+            "TM-008",
+            "Teams Collaboration", "External Exposure",
+            "Medium", "Planned", "Collaboration",
+            f"{len(collab_eef)} externally relevant Teams or groups show guest-heavy, dormant, or ownerless patterns.",
+            "Assign an active accountable owner or documented steward to each flagged asset, confirm the business "
+            "purpose, and retire spaces that no longer have a sponsor.",
+            "ExternalExposureFindings", "External Exposure Review", "Summary/ExternalExposure",
+        ))
+
+    # SharePoint stale sites
+    sp_sites = _rows("Collaboration", "SharePoint")
+    stale_sp = [s for s in sp_sites if _is_stale(s.get("LastContentModifiedDate"), 180)]
+    od_sites = _rows("Collaboration", "OneDrive")
+    stale_od = [s for s in od_sites if _is_stale(s.get("LastContentModifiedDate"), 180)]
+    if stale_sp or stale_od:
+        findings.append(_hf(
+            "COL-004",
+            "SharePoint & OneDrive", "Inactive Sites",
+            "Low", "Monitor", "Collaboration",
+            f"{len(stale_sp)} stale SharePoint site(s); {len(stale_od)} stale OneDrive site(s) "
+            f"(no activity in 180+ days).",
+            "Review Teams, Microsoft 365 groups, SharePoint, and OneDrive locations for lifecycle state "
+            "and storage growth. Use archive or expiration decisions for inactive locations.",
+            "SharePoint", "Storage and Activity", "Hybrid/Collaboration",
+        ))
+
+    # -----------------------------------------------------------------------
+    # ENDPOINT — Device Management
+    # -----------------------------------------------------------------------
+    dms = _first("Identity", "DeviceManagementSummary")
+    total_devices = int(dms.get("TotalDevices", 0) or 0)
+    managed = int(dms.get("ManagedDevices", 0) or 0)
+    unmanaged_d = int(dms.get("UnmanagedDevices", 0) or 0)
+    non_compliant = int(dms.get("NonCompliantDevices", 0) or 0)
+    unsupported_os = int(dms.get("UnsupportedOsDevices", 0) or 0)
+
+    if non_compliant > 0 and total_devices > 0 and "Device Compliance" not in bpf_categories:
+        findings.append(_hf(
+            "DEV-002",
+            "Devices", "Device Compliance",
+            "Medium", "Planned", "Endpoint",
+            f"{non_compliant} non-compliant device(s) identified in the assessment snapshot.",
+            "Review each non-compliant device with endpoint operations, validate whether it should be remediated, "
+            "excluded, or removed from access, and resolve undocumented exceptions.",
+            "DeviceDetails", "Devices", "Hybrid/Devices",
+        ))
+
+    if total_devices > 0 and managed / total_devices < 0.5:
+        pct = round(managed / total_devices * 100, 1)
+        findings.append(_hf(
+            "DEV-004",
+            "Devices", "Intune Enrollment",
+            "Low", "Monitor", "Endpoint",
+            f"{pct}% of discovered devices show Intune management ({managed}/{total_devices}).",
+            "Review endpoint-management scope, close enrollment gaps for devices expected to access protected "
+            "resources, and document approved unmanaged exceptions.",
+            "DeviceDetails", "Devices", "Hybrid/Devices",
+        ))
+
+    if total_devices > 0 and unmanaged_d > 0:
+        pct = round(unmanaged_d / total_devices * 100, 1)
+        findings.append(_hf(
+            "DEV-005",
+            "Devices", "Unmanaged Devices",
+            "Medium", "Planned", "Endpoint",
+            f"{pct}% unmanaged ({unmanaged_d}/{total_devices}); device-management summary shows "
+            f"a meaningful unmanaged-device population.",
+            "Confirm the intended managed-device scope, review the unmanaged-device population, "
+            "and close enrollment gaps for devices that should access protected resources.",
+            "DeviceManagementSummary", "Devices", "Summary/DeviceManagement",
+        ))
+
+    if unsupported_os > 0:
+        findings.append(_hf(
+            "DEV-006",
+            "Devices", "Unsupported OS",
+            "Medium", "Planned", "Endpoint",
+            f"{unsupported_os} unsupported or older operating-system version device(s) detected.",
+            "Review endpoint-management scope, stale devices, and unsupported operating systems. "
+            "Document approved exceptions before enforcing stricter access controls.",
+            "DeviceManagementSummary", "Devices", "Summary/DeviceManagement",
+        ))
+
+    # -----------------------------------------------------------------------
+    # GOVERNANCE — Licensing
+    # -----------------------------------------------------------------------
+    loc = _rows("Identity", "LicenseOptimizationCandidates")
+    inactive_lic = [r for r in loc if "inactive" in str(r.get("Issue", "")).lower()
+                    or "disabled" in str(r.get("Issue", "")).lower()]
+    duplicate_lic = [r for r in loc if "same sku" in str(r.get("Issue", "")).lower()]
+    duplicate_suite = [r for r in loc if "suite" in str(r.get("SkuFamily", "")).lower()
+                       or "duplicate suite" in str(r.get("Issue", "")).lower()]
+
+    if inactive_lic:
+        findings.append(_hf(
+            "LIC-002",
+            "Licensing", "Inactive Licensed Users",
+            "Medium", "Near Term", "Governance",
+            f"{len(inactive_lic)} inactive or disabled user(s) still appear to hold paid licenses.",
+            "Review paid license assignments for capacity-constrained SKUs, reclaim licenses from inactive "
+            "or ineligible accounts, and review duplicate direct-plus-group assignments.",
+            "LicenseOptimizationCandidates", "Licensing", "Summary/LicenseOptimization",
+        ))
+
+    gls = _rows("Identity", "GroupLicensingSummary")
+    group_lic_in_use = [g for g in gls if "group-based licensing in use" in str(g.get("RiskSignal", "")).lower()]
+    ownerless_lic_groups = [g for g in gls if _iget(g, "OwnerCount", 1) == 0]
+
+    if ownerless_lic_groups:
+        findings.append(_hf(
+            "LIC-004",
+            "Licensing", "Ownerless License Groups",
+            "Medium", "Near Term", "Governance",
+            f"{len(ownerless_lic_groups)} license-managing group(s) without owners detected.",
+            "Confirm that group-based licensing groups have accountable owners and a documented "
+            "assignment-error review cadence.",
+            "GroupLicensingSummary", "Licensing", "Summary/GroupLicensing",
+        ))
+
+    if group_lic_in_use:
+        findings.append(_hf(
+            "LIC-003",
+            "Licensing", "Group-Based Licensing",
+            "Low", "Planned", "Governance",
+            f"{len(group_lic_in_use)} group-based licensing group(s) in use and should have documented ownership.",
+            "Review paid license assignments for capacity-constrained SKUs, confirm licensing groups have "
+            "accountable owners and a documented assignment-error review cadence.",
+            "GroupLicensingSummary", "Licensing", "Summary/GroupLicensing",
+        ))
+
+    if duplicate_lic:
+        findings.append(_hf(
+            "LIC-005",
+            "Licensing", "Duplicate Assignments",
+            "Medium", "Near Term", "Governance",
+            f"{len(duplicate_lic)} user(s) with both direct and group-based assignment for the same SKU detected.",
+            "Remove duplicate direct assignments after confirming the group-based assignment is intentional and healthy.",
+            "LicenseOptimizationCandidates", "Licensing", "Summary/LicenseOptimization",
+        ))
+
+    if duplicate_suite:
+        findings.append(_hf(
+            "LIC-006",
+            "Licensing", "Duplicate Suite Assignments",
+            "Low", "Planned", "Governance",
+            f"{len(duplicate_suite)} likely duplicate Microsoft 365 or Office 365 suite assignment(s) detected.",
+            "Review paid license assignments and align suite assignments to user role without unnecessary overlap.",
+            "LicenseOptimizationCandidates", "Licensing", "Summary/LicenseOptimization",
+        ))
+
+    # Diagnostics
+    warn_count = int(diag.get("WarningCount", 0) or 0)
+    err_count = int(diag.get("ErrorCount", 0) or 0)
+    findings.append(_hf(
+        "DIAG-001",
+        "Collection Diagnostics", "Diagnostics",
+        "Low", "Monitor", "Governance",
+        f"Snapshot contains collection diagnostics that should be reviewed before using "
+        f"the assessment as a remediation baseline. Warnings={warn_count}; Errors={err_count}",
+        "Review collector warnings and errors, then re-run collection if any important workload data was incomplete.",
+        "Diagnostics", "Collection Diagnostics", "Summary/Diagnostics",
+    ))
+
+    # -----------------------------------------------------------------------
+    # IDENTITY — Conditional Access
+    # -----------------------------------------------------------------------
+    ca_summary = _first("Identity", "ConditionalAccessPolicySummary")
+    report_only = int(ca_summary.get("ReportOnlyPolicies", 0) or 0)
+    with_exclusions = int(ca_summary.get("PoliciesWithExclusions", 0) or 0)
+
+    if report_only > 0:
+        findings.append(_hf(
+            "CA-002",
+            "Conditional Access & MFA", "Report-Only Policies",
+            "Medium", "Planned", "Identity",
+            f"{report_only} Conditional Access policy/policies remain in report-only mode.",
+            "Validate impact in report-only or pilot scope, protect privileged users, guests, MFA registration, "
+            "and legacy-authentication scenarios, then move approved policies into enforcement.",
+            "ConditionalAccessPolicies", "Conditional Access", "Hybrid/ConditionalAccessPolicies",
+        ))
+
+    if with_exclusions > 0:
+        findings.append(_hf(
+            "CA-007",
+            "Conditional Access & MFA", "Policies With Exclusions",
+            "Medium", "Planned", "Identity",
+            f"{with_exclusions} Conditional Access policy/policies appear to use exclusions.",
+            "Review Conditional Access exclusions as part of staged deployment: minimize and document all "
+            "exclusions and avoid using Security Defaults and Conditional Access as overlapping baseline models.",
+            "ConditionalAccessPolicies", "Conditional Access", "Hybrid/ConditionalAccessPolicies",
+        ))
+
+    # CA optimization overlap candidates
+    cao = _rows("Identity", "ConditionalAccessOptimization")
+    overlap = [r for r in cao if "overlap" in str(r.get("Signal", "")).lower()
+               or "duplicate" in str(r.get("Signal", "")).lower()]
+    if not overlap:
+        # Fall back to rows with Review status and policy count > 1
+        overlap = [r for r in cao if r.get("Status") == "Review" and int(r.get("PolicyCount", 0) or 0) > 1]
+    if overlap:
+        overlap_count = sum(int(r.get("PolicyCount", 1) or 1) for r in overlap)
+        findings.append(_hf(
+            "CA-019",
+            "Conditional Access & MFA", "Policy Overlap",
+            "Low", "Monitor", "Identity",
+            f"{overlap_count} Conditional Access policy/policies share a similar target, "
+            f"condition, grant, and session-control signature.",
+            "Review the Conditional Access baseline and consolidate or intentionally retain overlapping policies "
+            "with documented rationale.",
+            "ConditionalAccessOptimization", "Conditional Access", "Summary/ConditionalAccessOptimization",
+        ))
+
+    # MFA weak methods
+    mfa_posture = _rows("Identity", "MfaMethodPostureSummary")
+    weak_row = next((r for r in mfa_posture if "weak" in str(r.get("Signal", "")).lower()), None)
+    if weak_row and int(weak_row.get("UserCount", 0) or 0) > 0:
+        findings.append(_hf(
+            "MFA-002",
+            "Conditional Access & MFA", "Weak MFA Methods",
+            "Medium", "Planned", "Identity",
+            f"MFA enrollment still relies on weaker methods for part of the tenant. "
+            f"{weak_row.get('CurrentState', '')}",
+            "Reduce SMS, voice, and email OTP reliance; encourage Microsoft Authenticator, passwordless, "
+            "FIDO2/passkeys, or other phishing-resistant methods for privileged and sensitive access.",
+            "MfaEnrollmentSummary", "MFA Enrollment", "Heuristic",
+        ))
+
+    # Guest lifecycle
+    guest_summary = _first("Identity", "GuestSignInSummary")
+    total_guests = int(guest_summary.get("TotalGuests", 0) or 0)
+    inactive_guests_90 = int(guest_summary.get("InactiveGuests90Days", 0) or 0)
+
+    if inactive_guests_90 > 0:
+        findings.append(_hf(
+            "ID-002",
+            "Identity & Admins", "Guest Lifecycle",
+            "Medium", "Planned", "Identity",
+            f"Guest lifecycle hygiene needs review. "
+            f"{total_guests} guests; {inactive_guests_90} inactive/stale (90+ days).",
+            "Review inactive guests with the business sponsor, confirm whether each guest still needs access, "
+            "and remove or disable accounts that no longer support an approved collaboration scenario.",
+            "Users", "Guests", "Hybrid/Users",
+        ))
+
+        findings.append(_hf(
+            "ID-005",
+            "Identity & Admins", "Inactive Guests",
+            "Medium", "Near Term", "Identity",
+            f"Inactive guest accounts identified by the guest sign-in governance summary. "
+            f"{inactive_guests_90} inactive guest account(s) over 90 days.",
+            "Review inactive guests with the business sponsor, confirm whether each guest still needs access, "
+            "and remove or disable accounts that no longer support an approved collaboration scenario.",
+            "GuestSignInSummary", "Guest Access", "Summary/GuestSignIn",
+        ))
+
+    # Privileged access stale accounts
+    priv_summary = _first("Identity", "PrivilegedAccessSummary")
+    stale_priv = int(priv_summary.get("StalePrivilegedAccounts90Days", 0) or 0)
+
+    if stale_priv > 0:
+        findings.append(_hf(
+            "ID-003",
+            "Identity & Admins", "Stale Privileged Accounts",
+            "Medium", "Near Term", "Identity",
+            f"Enabled privileged accounts appear stale based on sign-in recency. "
+            f"{stale_priv} stale privileged account(s).",
+            "Validate whether stale privileged accounts are still needed and remove or downgrade "
+            "unused standing admin roles.",
+            "Admins", "Privileged Access", "Hybrid/Admins",
+        ))
+
+        findings.append(_hf(
+            "ID-006",
+            "Identity & Admins", "Stale Privileged Summary",
+            "Medium", "Near Term", "Identity",
+            f"Privileged identities with stale sign-in activity identified by the "
+            f"privileged-access governance summary. {stale_priv} stale privileged account(s) over 90 days.",
+            "Review stale privileged accounts, remove unused role assignments, and validate "
+            "emergency access documentation.",
+            "PrivilegedAccessSummary", "Privileged Access", "Summary/PrivilegedAccess",
+        ))
+
+    # External identity / cross-tenant trust posture
+    ext_eef = [r for r in eef
+               if "external identity" in str(r.get("Workload", "")).lower()
+               or "cross-tenant" in str(r.get("Workload", "")).lower()
+               or "cross-tenant" in str(r.get("ExposureCategory", "")).lower()]
+    if ext_eef:
+        obs = "; ".join(r.get("ObservedSetting", "") for r in ext_eef if r.get("ObservedSetting"))
+        findings.append(_hf(
+            "ID-008",
+            "Identity & Admins", "External Trust Posture",
+            "Medium", "Planned", "Identity",
+            f"External invitation or cross-tenant trust posture should be reviewed. "
+            f"{len(ext_eef)} external identity / trust review row(s); {obs}",
+            "Review cross-tenant access settings, B2B collaboration policies, and external identity trust "
+            "configuration. Confirm that inbound MFA trust, cross-tenant partner trust, and guest invitation "
+            "scope are explicitly configured to match the approved external-access baseline.",
+            "ExternalExposureFindings", "External Exposure Review", "Summary/ExternalExposure",
+        ))
+
+    # -----------------------------------------------------------------------
+    # MESSAGING — Exchange
+    # -----------------------------------------------------------------------
+    mailboxes = _rows("Exchange", "AllMailboxes")
+    fwd_mailboxes = [
+        m for m in mailboxes
+        if m.get("ForwardingSmtpAddress") or m.get("ForwardingAddress")
+    ]
+    fps = _first("Exchange", "ForwardingPolicySummary")
+    remote_fwd = int(fps.get("RemoteDomainsAllowingAutoForwarding", 0) or 0)
+    policies_allow = int(fps.get("PoliciesExplicitlyAllowingAutoForwarding", 0) or 0)
+
+    if fwd_mailboxes or policies_allow > 0:
+        fwd_detail = (
+            f"{len(fwd_mailboxes)} mailbox(es) with forwarding configured; "
+            f"{policies_allow} hosted outbound policy/policies explicitly allow auto-forwarding; "
+            f"{remote_fwd} remote domain(s) have AutoForwardEnabled; "
+            f"Policy modes: {fps.get('PolicyAutoForwardingModes', '')}"
+        )
+        findings.append(_hf(
+            "EX-001",
+            "Exchange", "Mailbox Forwarding",
+            "High", "Near Term", "Messaging",
+            f"Mailbox forwarding is enabled for one or more mailboxes. {fwd_detail}",
+            "Review Exchange mail-flow dependencies across accepted domains, SPF, DKIM, DMARC, connectors, "
+            "remote domains, SMTP relay paths, mailbox forwarding, inbox-rule forwarding, and public folders. "
+            "Remove unsupported paths, tighten relay and auto-forwarding exceptions, and document approved "
+            "mail-routing dependencies.",
+            "AllMailboxes", "Mailbox Forwarding", "Hybrid/Exchange",
+        ))
+
+    # Public folders
+    pf = _rows("Exchange", "PublicFolderDetails")
+    if pf:
+        findings.append(_hf(
+            "EX-004",
+            "Exchange", "Public Folders",
+            "Medium", "Planned", "Messaging",
+            f"Public folders are still present in the tenant. {len(pf)} public folder object(s).",
+            "Review Exchange mail-flow dependencies. Remove unsupported paths and document approved "
+            "mail-routing dependencies.",
+            "PublicFolderDetails", "Public Folders", "Hybrid/Exchange",
+        ))
+
+    # Shared mailbox governance
+    smg = _first("Exchange", "SharedMailboxGovernanceSummary")
+    smb_total = int(smg.get("SharedMailboxCount", 0) or 0)
+    smb_no_owner = int(smg.get("SharedMailboxesWithoutOwnerSignal", 0) or 0)
+    smb_oversized = int(smg.get("OversizedSharedMailboxes", 0) or 0)
+
+    if smb_no_owner > 0 or smb_oversized > 0:
+        findings.append(_hf(
+            "EX-005",
+            "Exchange", "Shared Mailbox Governance",
+            "Low", "Monitor", "Messaging",
+            f"Shared mailbox governance requires review. "
+            f"Ownerless={smb_no_owner}; oversized={smb_oversized} (of {smb_total} total).",
+            "Review shared mailbox ownership and oversized growth. Remove unsupported mail-routing paths "
+            "and document approved dependencies.",
+            "AllMailboxes", "Shared Mailboxes", "Hybrid/Exchange",
+        ))
+
+        findings.append(_hf(
+            "EX-007",
+            "Exchange", "Shared Mailbox Summary",
+            "Low", "Monitor", "Messaging",
+            f"Shared mailbox governance summary shows ownership or growth gaps. "
+            f"Oversized={smb_oversized}; lacking owner signal={smb_no_owner}.",
+            "Review shared mailbox ownership and oversized growth. Remove unsupported mail-routing paths "
+            "and document approved dependencies.",
+            "SharedMailboxGovernanceSummary", "Shared Mailboxes", "Summary/SharedMailboxGovernance",
+        ))
+
+    # -----------------------------------------------------------------------
+    # SECURITY — Consent governance
+    # -----------------------------------------------------------------------
+    auth_cfg = _first("Identity", "AuthenticationConfig")
+    pgp = auth_cfg.get("PermissionGrantPoliciesAssigned") or []
+    if isinstance(pgp, str):
+        pgp = [p.strip() for p in pgp.split(";") if p.strip()]
+    # Flag if broad user-consent policies are present
+    broad_consent = [p for p in pgp if "user-default-allow" in p.lower() or "user-default-recommended" in p.lower()]
+    if broad_consent:
+        findings.append(_hf(
+            "SEC-003",
+            "Security", "Consent Governance",
+            "Low", "Planned", "Security",
+            f"Permission grant policy settings may allow broader user consent than desired. "
+            f"{'; '.join(pgp)}",
+            "Review enterprise applications for accountable owners, business purpose, granted delegated and "
+            "application permissions. Remove unused applications, reduce broad consent where possible, and "
+            "avoid long-lived client secrets for production integrations.",
+            "AuthenticationConfig", "Consent Governance", "Hybrid/AuthenticationConfig",
+        ))
+
+    return findings
+
+
+def _is_stale(date_str: object, threshold_days: int) -> bool:
+    """Return True if date_str is older than threshold_days from today."""
+    if not date_str:
+        return False
+    try:
+        d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date()
+        return (datetime.now(timezone.utc).date() - d).days > threshold_days
+    except ValueError:
+        return False
+
+
+def _iget(obj: dict, key: str, default: int) -> int:
+    """Get integer field from dict, using default only when value is None (not when 0)."""
+    val = obj.get(key)
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default
+
+
+# ---------------------------------------------------------------------------
+# Area -> Workstream (mirrors PS Get-OwnerTeam regex logic)
+# ---------------------------------------------------------------------------
+
+def _get_workstream(area: str, category: str = "") -> str:
+    lookup = f"{area} {category}".lower()
+    if re.search(
+        r"\bidentity\b|conditional access|\bmfa\b|admin|privileged|entra"
+        r"|authentication|\bguest\b|password",
+        lookup,
+    ):
+        return "Identity"
+    if re.search(
+        r"exchange|\bmail\b|\bsmtp\b|public folder|connector|spam"
+        r"|inactive mailbox|forwarding|dmarc|anti.spoof|\bdomain\b",
+        lookup,
+    ):
+        return "Messaging"
+    if re.search(
+        r"sharepoint|onedrive|\bteams\b|\bgroup\b|ownership"
+        r"|collaboration|stewardship|\bsite\b|external exposure",
+        lookup,
+    ):
+        return "Collaboration"
+    if re.search(r"\bdevice\b|endpoint|intune|\bcompliance\b|\bretention\b", lookup):
+        return "Endpoint"
+    if re.search(r"secure score|\bsecurity\b|defender|zero trust", lookup):
+        return "Security"
+    return "Governance"
+
+
+# ---------------------------------------------------------------------------
+# WorkstreamSummaries
+# ---------------------------------------------------------------------------
+
+def _build_workstream_summaries(findings: list[dict]) -> list[dict]:
+    groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for f in findings:
+        groups[(f.get("Workstream", "Governance"), f.get("Area", ""))].append(f)
+
+    summaries: list[dict] = []
+    for (workstream, area), group in sorted(groups.items()):
+        top_sev = min(group, key=lambda x: _SEV_ORDER.get(x.get("Severity", "Low"), 99))
+        sev_label = _DISPLAY_SEV_LABEL.get(top_sev.get("Severity", "Low"), "Info")
+
+        cat_counts: dict[str, int] = {}
+        for f in group:
+            cat = f.get("Category", "")
+            if cat:
+                cat_counts[cat] = cat_counts.get(cat, 0) + 1
+        top_signals = "; ".join(
+            f"{c}: {n}" for c, n in sorted(cat_counts.items(), key=lambda x: -x[1])[:5]
+        )
+
+        summaries.append({
+            "Workstream":    workstream,
+            "Area":          area,
+            "Severity":      sev_label,
+            "OpenFindings":  len(group),
+            "CriticalCount": sum(1 for f in group if f.get("Severity") == "High"),
+            "WarningCount":  sum(1 for f in group if f.get("Severity") == "Medium"),
+            "InfoCount":     sum(1 for f in group if f.get("Severity") == "Low"),
+            "TopSignals":    top_signals,
+        })
+
+    summaries.sort(key=lambda s: (
+        _SEV_ORDER.get({"Critical": "High", "Medium": "Medium", "Info": "Low"}.get(s["Severity"], "Low"), 99),
+        s["Workstream"],
+    ))
+    return summaries
+
+
+# ---------------------------------------------------------------------------
+# ConsultativeSummaries
+# ---------------------------------------------------------------------------
+
+def _build_consultative_summaries(findings: list[dict]) -> dict[str, Any]:
+    by_ws: dict[str, list[dict]] = defaultdict(list)
+    for f in findings:
+        by_ws[f.get("Workstream", "Governance")].append(f)
+
+    summaries: dict[str, Any] = {}
+    for ws, ws_findings in sorted(by_ws.items()):
+        high = [f for f in ws_findings if f.get("Severity") == "High"]
+        medium = [f for f in ws_findings if f.get("Severity") == "Medium"]
+        areas = sorted({f.get("Area", "") for f in ws_findings if f.get("Area")})
+
+        narrative_parts: list[str] = []
+        if high:
+            top_areas = ", ".join(areas[:3])
+            narrative_parts.append(
+                f"{ws} findings include {len(high)} high-priority item(s) "
+                f"requiring immediate or near-term attention ({top_areas})."
+            )
+        if medium:
+            narrative_parts.append(
+                f"{len(medium)} medium-priority finding(s) are scheduled for planned remediation."
+            )
+        remaining = len(ws_findings) - len(high) - len(medium)
+        if remaining > 0:
+            narrative_parts.append(f"{remaining} informational finding(s) are flagged for monitoring.")
+
+        snapshot_rows = []
+        for f in ws_findings[:8]:
+            cat = f.get("Category", "")
+            evidence = f.get("CurrentEvidence", "")
+            if cat and evidence:
+                short_evidence = evidence[:120] + "..." if len(evidence) > 120 else evidence
+                snapshot_rows.append({"Signal": cat, "State": short_evidence})
+
+        summaries[f"{ws}ConsultativeSummary"] = {
+            "Title":        f"{ws} Assessment",
+            "Narrative":    " ".join(narrative_parts) if narrative_parts else f"{ws} findings reviewed.",
+            "FindingCount": len(ws_findings),
+            "HighCount":    len(high),
+            "MediumCount":  len(medium),
+            "Areas":        areas,
+            "SnapshotRows": snapshot_rows,
+        }
+
+    return summaries

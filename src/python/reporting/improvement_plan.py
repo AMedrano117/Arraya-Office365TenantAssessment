@@ -14,7 +14,7 @@ from ..utils.converters import ensure_list
 
 log = logging.getLogger(__name__)
 
-_SEVERITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+_SEVERITY_ORDER = {"Risk": 0, "Warning": 1, "Info": 2}
 
 
 def generate(snapshot: dict, output_dir: str | Path) -> None:
@@ -37,22 +37,39 @@ def generate(snapshot: dict, output_dir: str | Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _extract_findings(snapshot: dict) -> list[dict]:
-    data = get_data(snapshot)
     findings: list[dict] = []
+    seen_keys: set[str] = set()
 
+    def _add(collection) -> None:
+        if isinstance(collection, dict):
+            # Keyed findings dict — e.g. {"032-Hybrid": {Area:..., Severity:..., ...}}
+            for key, val in collection.items():
+                if isinstance(val, dict) and key not in seen_keys:
+                    seen_keys.add(key)
+                    findings.append(val)
+        else:
+            for item in ensure_list(collection):
+                if isinstance(item, dict):
+                    findings.append(item)
+
+    # Individual findings live in Derived.BestPracticeFindings (preferred) or Derived.Findings.
+    # Both are identical dicts in the current schema — only consume one to avoid duplicates.
+    derived = snapshot.get("Derived") or {}
+    primary = derived.get("BestPracticeFindings") or derived.get("Findings")
+    if primary:
+        _add(primary)
+
+    # Also check per-section findings in Data (for future schema extensions).
+    data = get_data(snapshot)
     for section in data.values():
         if not isinstance(section, dict):
             continue
-        for key in ("BestPracticeFindings", "BestPractices", "Findings"):
+        # Skip BestPractices — it is an area-level rollup, not individual findings.
+        for key in ("BestPracticeFindings", "Findings"):
             if key in section:
-                findings.extend(ensure_list(section[key]))
+                _add(section[key])
 
-    derived = snapshot.get("Derived") or {}
-    for key in ("BestPracticeFindings", "Findings"):
-        if key in derived:
-            findings.extend(ensure_list(derived[key]))
-
-    return [f for f in findings if isinstance(f, dict)]
+    return findings
 
 
 # ---------------------------------------------------------------------------
@@ -71,9 +88,15 @@ def _write_json_plan(findings: list[dict], path: Path) -> None:
 
 def _write_markdown_plan(findings: list[dict], snapshot: dict, path: Path) -> None:
     meta = get_metadata(snapshot)
-    tenant = meta.get("TenantDisplayName") or meta.get("TenantDomain") or "Tenant"
+    tenant_obj = meta.get("Tenant") or {}
+    tenant = (
+        (tenant_obj.get("DisplayName") if isinstance(tenant_obj, dict) else None)
+        or meta.get("TenantDisplayName")
+        or meta.get("TenantDomain")
+        or "Tenant"
+    )
     lines: list[str] = [
-        f"# Improvement Plan — {tenant}",
+        f"# Improvement Plan - {tenant}",
         "",
         f"> Generated: {meta.get('GeneratedAt', '')}  |  Findings: {len(findings)}",
         "",
@@ -90,17 +113,19 @@ def _write_markdown_plan(findings: list[dict], snapshot: dict, path: Path) -> No
             continue
         lines += [f"## {sev} ({len(group)})", ""]
         for finding in group:
-            title = finding.get("Title") or finding.get("Name") or "Untitled Finding"
-            description = finding.get("Description") or finding.get("Details") or ""
-            remediation = finding.get("Remediation") or finding.get("RecommendedAction") or ""
+            area = finding.get("Area", "")
+            category = finding.get("Category", "")
+            title = f"{area} - {category}" if area and category else (area or category or "Untitled Finding")
+            message = finding.get("Message") or finding.get("Description") or finding.get("Details") or ""
+            remediation = finding.get("RecommendedAction") or finding.get("Remediation") or ""
             lines += [
                 f"### {title}",
                 "",
-                description,
+                message,
                 "",
             ]
             if remediation:
-                lines += ["**Remediation:**", "", remediation, ""]
+                lines += ["**Recommended Action:**", "", remediation, ""]
             lines.append("---")
             lines.append("")
 
