@@ -22,6 +22,7 @@ def generate(
     output_path: Path,
     snapshot_path: str | None = None,
     support_dir: Path | None = None,
+    coverage: dict | None = None,
 ) -> None:
     """Write EngPack.md to output_path."""
     output_path = Path(output_path)
@@ -142,6 +143,47 @@ def generate(
         "- Re-run `M365Collect` and `Improve` after remediation milestones to measure delta and retire closed findings.",
         "",
     ]
+
+    # Assessment Evidence Coverage (from coverage report if available)
+    if coverage:
+        covered = coverage.get("CoveredObjectiveCount", 0)
+        review = coverage.get("ReviewObjectiveCount", 0)
+        total = coverage.get("ObjectiveCount", 0)
+        lines += [
+            "## Assessment Evidence Coverage",
+            "",
+            f"**{covered} of {total} objectives fully covered** | {review} objective(s) require review",
+            "",
+            "| Objective | Area | Status | Confidence | Datasets |",
+            "|---|---|---|---|---|",
+        ]
+        for obj in coverage.get("Objectives", []):
+            present = obj.get("PresentDatasetCount", 0)
+            expected = obj.get("ExpectedDatasetCount", 0)
+            lines.append(
+                f"| {_md(obj.get('ObjectiveId', ''))} "
+                f"| {_md(obj.get('Area', ''))} "
+                f"| {_md(obj.get('Status', ''))} "
+                f"| {_md(obj.get('Confidence', ''))} "
+                f"| {present} of {expected} |"
+            )
+
+        gaps = coverage.get("CoverageGaps", [])
+        if gaps:
+            lines += [
+                "",
+                "### Coverage Gaps",
+                "",
+                "| Gap | Area | Limitation |",
+                "|---|---|---|",
+            ]
+            for gap in gaps:
+                lines.append(
+                    f"| {_md(gap.get('GapId', ''))} "
+                    f"| {_md(gap.get('Area', ''))} "
+                    f"| {_md(gap.get('CurrentLimitation', ''))} |"
+                )
+        lines.append("")
 
     if support_dir:
         stem = output_path.stem.replace("-EngPack", "")

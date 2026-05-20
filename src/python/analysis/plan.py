@@ -89,12 +89,14 @@ def generate(
 
     ws_summaries = _build_workstream_summaries(findings)
     consultative = _build_consultative_summaries(findings)
+    roadmap_actions = _build_roadmap_actions(findings)
 
     plan: dict[str, Any] = {
         "GeneratedAt": datetime.now(timezone.utc).isoformat(),
         "TenantName": tenant_name,
         "FindingCount": len(findings),
         "WorkstreamSummaries": ws_summaries,
+        "RoadmapActions": roadmap_actions,
         "Findings": findings,
         "ConsultativeSummaries": consultative,
     }
@@ -775,6 +777,228 @@ def _get_workstream(area: str, category: str = "") -> str:
     if re.search(r"secure score|\bsecurity\b|defender|zero trust", lookup):
         return "Security"
     return "Governance"
+
+
+# ---------------------------------------------------------------------------
+# RoadmapActions — one consolidated action bundle per workstream
+# ---------------------------------------------------------------------------
+
+_ACTION_TEMPLATES: dict[str, dict] = {
+    "Collaboration": {
+        "ActionTitle":        "Establish accountable ownership for collaboration spaces",
+        "Theme":              "Ownership and collaboration lifecycle",
+        "ExecutionPattern":   "Collaboration lifecycle governance",
+        "DependencyTier":     "Moderate",
+        "PrimaryOwner":       "Collaboration service owner / workspace sponsor",
+        "FirstValidationStep":
+            "Confirm which collaboration spaces need an owner, steward, transfer, or retirement decision first.",
+        "SuccessCheck":
+            "Each in-scope collaboration space has an accountable owner or a documented lifecycle decision.",
+        "RelatedSection":     "Ownership Governance",
+        "BusinessValue":
+            "Addressing this helps improve ownership, governance, and lifecycle control for collaboration spaces and business content.",
+        "WhyItMatters":
+            "This matters because the assessment found collaboration assets without a clear accountable owner, "
+            "which creates gaps in stewardship, lifecycle handling, and access governance.",
+        "RecommendedNextStep":
+            "Assign an active accountable owner or documented steward to each flagged asset, confirm the "
+            "business purpose, and retire spaces that no longer have a sponsor.",
+    },
+    "Identity": {
+        "ActionTitle":        "Reduce privileged access and strengthen identity controls",
+        "Theme":              "Identity and privileged access governance",
+        "ExecutionPattern":   "Privileged access and identity hygiene",
+        "DependencyTier":     "Moderate",
+        "PrimaryOwner":       "Identity and access administration",
+        "FirstValidationStep":
+            "Confirm the target identity protection baseline and decide which privileged, guest, and core "
+            "user populations should be brought under it first.",
+        "SuccessCheck":
+            "Privileged and external access follow one approved protection model, with only documented exceptions remaining.",
+        "RelatedSection":     "identity-admins",
+        "BusinessValue":
+            "Addressing this helps reduce identity compromise risk, strengthens access control, and improves the tenant security baseline.",
+        "WhyItMatters":
+            "This matters because the tenant has more standing Global Administrator assignments than the "
+            "recommended operating threshold, increasing privileged access exposure.",
+        "RecommendedNextStep":
+            "Review each standing Global Administrator assignment using a least-privilege model, remove "
+            "the role entirely from inactive or stale administrators, move infrequent admins to lower-privilege "
+            "roles such as Global Reader where possible, and retain only the minimum approved permanent admins "
+            "plus documented break-glass emergency access accounts.",
+    },
+    "Endpoint": {
+        "ActionTitle":        "Improve device compliance and managed endpoint coverage",
+        "Theme":              "Endpoint compliance and device control",
+        "ExecutionPattern":   "Endpoint remediation",
+        "DependencyTier":     "High",
+        "PrimaryOwner":       "Endpoint engineering / device administration",
+        "FirstValidationStep":
+            "Confirm which devices are expected to retain access and which endpoint exceptions are still justified.",
+        "SuccessCheck":
+            "Protected access is limited to approved device states, with documented exceptions only.",
+        "RelatedSection":     "devices",
+        "BusinessValue":
+            "Addressing this helps improve policy enforcement, reduces unmanaged access risk, and strengthens endpoint visibility.",
+        "WhyItMatters":
+            "This matters because the device posture output shows compliance results below the expected baseline, "
+            "leaving managed access policies less effective.",
+        "RecommendedNextStep":
+            "Review why the compliance baseline is being missed, remediate the highest-volume failure "
+            "conditions, and tighten exception handling for devices that should not remain non-compliant.",
+    },
+    "Messaging": {
+        "ActionTitle":        "Review external forwarding and mail flow exposure",
+        "Theme":              "Mail flow risk and anti-spoofing posture",
+        "ExecutionPattern":   "Mail flow and forwarding review",
+        "DependencyTier":     "Moderate",
+        "PrimaryOwner":       "Messaging and email administration",
+        "FirstValidationStep":
+            "Confirm the approved domain trust and mail-authentication baseline before cleanup begins.",
+        "SuccessCheck":
+            "Required domains and mail-authentication controls align to the approved baseline.",
+        "RelatedSection":     "domains",
+        "BusinessValue":
+            "Addressing this helps reduce data-loss and mail-flow risk while improving operational control over messaging.",
+        "WhyItMatters":
+            "This matters because the tenant mail-flow configuration shows forwarding exposure or domain "
+            "hygiene gaps that could lead to data leakage or delivery failures.",
+        "RecommendedNextStep":
+            "Review Exchange mail-flow dependencies across accepted domains, SPF, DKIM, DMARC, connectors, "
+            "remote domains, SMTP relay paths, mailbox forwarding, inbox-rule forwarding, and public folders. "
+            "Remove unsupported paths, tighten relay and auto-forwarding exceptions, and document approved "
+            "mail-routing dependencies.",
+    },
+    "Security": {
+        "ActionTitle":        "Strengthen baseline security and access protections",
+        "Theme":              "Security baseline and zero-trust readiness",
+        "ExecutionPattern":   "Security baseline enforcement",
+        "DependencyTier":     "High",
+        "PrimaryOwner":       "Security operations / control owner",
+        "FirstValidationStep":
+            "Confirm the target protection baseline and sequence the first rollout wave around the highest-value control gaps.",
+        "SuccessCheck":
+            "The agreed protection baseline is active for the intended population and no longer relies on broad temporary exceptions.",
+        "RelatedSection":     "secure-score",
+        "BusinessValue":
+            "Addressing this helps reduce identity compromise risk, strengthens access control, and improves the tenant security baseline.",
+        "WhyItMatters":
+            "This matters because the tenant currently shows a Microsoft Secure Score below the target range "
+            "for a mature tenant baseline.",
+        "RecommendedNextStep":
+            "Use Microsoft Secure Score as a prioritization signal for high-value security improvements, then "
+            "validate each recommended action against tenant risk, licensing, user impact, and operational "
+            "ownership before implementation.",
+    },
+    "Governance": {
+        "ActionTitle":        "Reconcile license capacity and tenant governance gaps",
+        "Theme":              "Licensing, capacity, and tenant governance",
+        "ExecutionPattern":   "Governance and licensing reconciliation",
+        "DependencyTier":     "Moderate",
+        "PrimaryOwner":       "Tenant governance and platform ownership",
+        "FirstValidationStep":
+            "Confirm the target licensing, governance, and external-access baseline before cleanup work begins.",
+        "SuccessCheck":
+            "Capacity, ownership, and governance decisions are aligned to the approved operating baseline.",
+        "RelatedSection":     "Licensing",
+        "BusinessValue":
+            "Addressing this helps improve cost control, avoids licensing blockers, and makes future growth easier to plan.",
+        "WhyItMatters":
+            "This matters because the tenant shows inactive licensed users and group-based licensing "
+            "governance gaps that create cost and accountability risk.",
+        "RecommendedNextStep":
+            "Review paid license assignments for capacity-constrained SKUs, reclaim licenses from inactive "
+            "or ineligible accounts, review duplicate direct-plus-group assignments, and confirm that "
+            "group-based licensing groups have accountable owners and a documented assignment-error review cadence.",
+    },
+}
+
+_EFFORT_HOURS: dict[str, str] = {
+    "Quick":   "12-22 hours",
+    "Standard":"18-32 hours",
+    "Complex": "28-48 hours",
+}
+
+
+def _build_roadmap_actions(findings: list[dict]) -> list[dict]:
+    """Generate one consolidated RoadmapAction per workstream from findings."""
+    by_ws: dict[str, list[dict]] = defaultdict(list)
+    for f in findings:
+        ws = f.get("Workstream", "Governance")
+        by_ws[ws].append(f)
+
+    actions: list[dict] = []
+    for ws, ws_findings in sorted(by_ws.items()):
+        tmpl = _ACTION_TEMPLATES.get(ws, _ACTION_TEMPLATES["Governance"])
+
+        high_findings = [f for f in ws_findings if f.get("Severity") == "High"]
+        top_f = high_findings[0] if high_findings else ws_findings[0]
+
+        areas = sorted({f.get("Area", "") for f in ws_findings if f.get("Area")})
+        areas_str = ", ".join(areas[:4])
+        n = len(ws_findings)
+
+        # EffortTier by finding count
+        if n <= 3:
+            effort = "Quick"
+        elif n <= 10:
+            effort = "Standard"
+        else:
+            effort = "Complex"
+
+        # Phase = earliest (most urgent) phase in the group
+        best_phase = min(
+            ws_findings,
+            key=lambda f: _PHASE_ORDER.get(f.get("RoadmapPhase", "Monitor"), 99),
+        ).get("RoadmapPhase", "Monitor")
+
+        highest_sev = min(
+            ws_findings,
+            key=lambda f: _SEV_ORDER.get(f.get("Severity", "Low"), 99),
+        ).get("Severity", "Low")
+
+        quick_win = effort == "Quick" or best_phase == "Immediate"
+
+        example_text = str(top_f.get("CurrentEvidence") or top_f.get("Finding") or "")
+        if len(example_text) > 120:
+            example_text = example_text[:117] + "..."
+
+        actions.append({
+            "PriorityBand":         best_phase,
+            "Priority":             best_phase,
+            "RoadmapPhase":         best_phase,
+            "ExecutionPattern":     tmpl["ExecutionPattern"],
+            "EffortTier":           effort,
+            "DependencyTier":       tmpl["DependencyTier"],
+            "QuickWinEligible":     quick_win,
+            "EstimatedPsHours":     _EFFORT_HOURS[effort],
+            "ActionTitle":          tmpl["ActionTitle"],
+            "Theme":                tmpl["Theme"],
+            "Workstream":           ws,
+            "HighestSeverity":      highest_sev,
+            "FindingCount":         n,
+            "WhatThisAddresses":    f"This work item addresses {n} related findings across {areas_str}.",
+            "StandoutReason":       (
+                f"This pattern stood out during review because the current source shows "
+                f"{example_text} across {areas_str}, which is a visible concentration rather than "
+                f"a one-off exception."
+            ),
+            "ExampleText":          example_text,
+            "WhyItMatters":         tmpl["WhyItMatters"],
+            "RecommendedNextStep":  tmpl["RecommendedNextStep"],
+            "BusinessValue":        tmpl["BusinessValue"],
+            "PrimaryOwner":         tmpl["PrimaryOwner"],
+            "FirstValidationStep":  tmpl["FirstValidationStep"],
+            "SuccessCheck":         tmpl["SuccessCheck"],
+            "RelatedSection":       tmpl["RelatedSection"],
+        })
+
+    # Sort by phase then workstream
+    actions.sort(key=lambda a: (
+        _PHASE_ORDER.get(a["RoadmapPhase"], 99),
+        a["Workstream"],
+    ))
+    return actions
 
 
 # ---------------------------------------------------------------------------
