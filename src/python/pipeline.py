@@ -61,6 +61,7 @@ def run(
     # -----------------------------------------------------------------------
     # Analysis: generate enriched Plan.json (always — other steps depend on it)
     # -----------------------------------------------------------------------
+    _console.print("  [dim]Analyzing snapshot...[/dim]")
     log.info("Generating plan: %s", support)
     generated_plan = plan_module.generate(snapshot_data, support, tenant_name=stem)
     artifacts["plan"] = support / f"{stem}-Plan.json"
@@ -70,8 +71,9 @@ def run(
     # -----------------------------------------------------------------------
     # Reports
     # -----------------------------------------------------------------------
+    _console.print("  [dim]Generating reports...[/dim]")
     if not skip_excel:
-        xlsx_path = deliverables / f"{stem}-Tenant Details.xlsx"
+        xlsx_path = deliverables / f"{stem}-{run_stamp}-Tenant Details.xlsx"
         log.info("Generating Excel workbook: %s", xlsx_path)
         _flatten_and_export_excel(snapshot_data, xlsx_path)
         artifacts["excel"] = xlsx_path
@@ -79,7 +81,7 @@ def run(
             _console.print(f"  [dim]Excel[/dim]     {xlsx_path.name}")
 
     if not skip_html:
-        html_path = deliverables / f"{stem}-Report.html"
+        html_path = deliverables / f"{stem}-{run_stamp}-Report.html"
         log.info("Generating HTML report: %s", html_path)
         html.generate(snapshot_data, html_path, plan=generated_plan)
         artifacts["html"] = html_path
@@ -87,7 +89,7 @@ def run(
             _console.print(f"  [dim]HTML[/dim]      {html_path.name}")
 
     if not skip_docx:
-        docx_path = deliverables / f"{stem}-Assessment.docx"
+        docx_path = deliverables / f"{stem}-{run_stamp}-Best Practices Assessment.docx"
         log.info("Generating Word document: %s", docx_path)
         docx.generate(snapshot_data, docx_path, template_path=docx_template, plan=generated_plan)
         artifacts["docx"] = docx_path
@@ -108,7 +110,7 @@ def run(
             _console.print(f"  [dim]Coverage[/dim]  {coverage_path.name}")
 
         # EngPack.docx (engineer-facing deliverable)
-        engpack_path = deliverables / f"{stem}-EngPack.docx"
+        engpack_path = deliverables / f"{stem}-{run_stamp}-EngPack.docx"
         log.info("Generating EngPack: %s", engpack_path)
         engpack.generate(
             generated_plan,
@@ -123,9 +125,7 @@ def run(
             _console.print(f"  [dim]EngPack[/dim]   {engpack_path.name}")
 
         # Remediation Roadmap Word doc
-        from datetime import date as _date
-        roadmap_date = _date.today().strftime("%Y-%m-%d")
-        roadmap_path = deliverables / f"{stem}-Microsoft 365 Remediation Roadmap-{roadmap_date}.docx"
+        roadmap_path = deliverables / f"{stem}-{run_stamp}-Microsoft 365 Remediation Roadmap.docx"
         log.info("Generating roadmap: %s", roadmap_path)
         roadmap.generate(generated_plan, snapshot_data, roadmap_path)
         artifacts["roadmap"] = roadmap_path
@@ -153,4 +153,108 @@ def _flatten_and_export_excel(snapshot_data: dict, xlsx_path: Path) -> None:
     derived = snapshot_data.get("Derived") or {}
     flat.update(derived)
 
+    _enrich_teams(flat)
+    _build_mailbox_summary(flat)
+
     excel.export(flat, xlsx_path)
+
+
+def _enrich_teams(flat: dict) -> None:
+    """Merge TeamOwners, TeamMemberCounts, PrivateChannels into each AllTeams entry."""
+    all_teams = flat.get("AllTeams")
+    if not isinstance(all_teams, dict) or not all_teams:
+        return
+    owners_by_team   = flat.get("TeamOwners") or {}
+    counts_by_team   = flat.get("TeamMemberCounts") or {}
+    channels_by_team = flat.get("PrivateChannels") or {}
+
+    enriched: dict = {}
+    for tid, team in all_teams.items():
+        owners = owners_by_team.get(tid) or []
+        entry  = dict(team)
+        entry["MemberCount"]         = counts_by_team.get(tid)
+        entry["OwnerCount"]          = len(owners)
+        entry["OwnerNames"]          = "; ".join(
+            o.get("displayName", "") for o in owners if isinstance(o, dict)
+        )
+        entry["PrivateChannelCount"] = len(channels_by_team.get(tid) or [])
+        enriched[tid] = entry
+    flat["AllTeams"] = enriched
+
+
+def _build_mailbox_summary(flat: dict) -> None:
+    """
+    1. Enrich SharedMailboxes (bare UPN list) with display names and storage data.
+    2. Build SharedMailboxGovernanceSummary — mailbox type counts.
+    3. Build NonUserMailboxes — combined enriched list (shared + equipment + room).
+    """
+    shared_upns   = flat.get("SharedMailboxes") or []
+    equipment_upns = flat.get("EquipmentMailboxes") or []
+    room_mbx      = flat.get("RoomMailboxes") or []
+    mbx_details   = flat.get("MailboxUsageDetails") or []
+    users         = flat.get("Users") or {}
+
+    # Already enriched (re-entrant guard)
+    if shared_upns and isinstance(shared_upns[0], dict):
+        return
+
+    # Build UPN -> mailbox usage lookup (lowercase for case-insensitive match)
+    mbx_by_upn: dict = {
+        r.get("UserPrincipalName", "").lower(): r
+        for r in mbx_details if r.get("UserPrincipalName")
+    }
+
+    def _enrich(upn: str, mailbox_type: str) -> dict:
+        user_obj = users.get(upn) or {}
+        mbx      = mbx_by_upn.get(upn.lower()) or {}
+        return {
+            "UserPrincipalName": upn,
+            "DisplayName":       user_obj.get("displayName") or mbx.get("DisplayName", ""),
+            "Department":        user_obj.get("department", ""),
+            "AccountEnabled":    user_obj.get("accountEnabled"),
+            "MailboxType":       mailbox_type,
+            "StorageUsedGB":     mbx.get("StorageUsedGB"),
+            "StorageQuotaGB":    mbx.get("StorageQuotaGB"),
+            "ItemCount":         mbx.get("ItemCount"),
+            "HasArchive":        mbx.get("HasArchive"),
+            "LastActivityDate":  mbx.get("LastActivityDate"),
+        }
+
+    enriched_shared    = [_enrich(upn, "Shared")    for upn in shared_upns    if isinstance(upn, str)]
+    enriched_equipment = [_enrich(upn, "Equipment") for upn in equipment_upns if isinstance(upn, str)]
+
+    enriched_rooms = [
+        {
+            "UserPrincipalName": r.get("emailAddress", ""),
+            "DisplayName":       r.get("displayName", ""),
+            "Department":        r.get("building", ""),
+            "AccountEnabled":    None,
+            "MailboxType":       "Room",
+            "StorageUsedGB":     None,
+            "StorageQuotaGB":    None,
+            "ItemCount":         None,
+            "HasArchive":        None,
+            "LastActivityDate":  None,
+        }
+        for r in room_mbx if isinstance(r, dict)
+    ]
+
+    flat["SharedMailboxes"]   = enriched_shared
+    flat["EquipmentMailboxes"] = enriched_equipment
+
+    # NonUserMailboxes — combined list for the existing Excel slot
+    flat["NonUserMailboxes"] = enriched_shared + enriched_equipment + enriched_rooms
+
+    # Mailbox type summary
+    total_reported = flat.get("PrimaryMailboxStats", {}).get("MailboxCount") or 0
+    n_shared    = len(enriched_shared)
+    n_equipment = len(enriched_equipment)
+    n_room      = len(enriched_rooms)
+    flat["SharedMailboxGovernanceSummary"] = {
+        "TotalMailboxesReported": total_reported,
+        "UserMailboxes":          max(total_reported - n_shared - n_equipment, 0),
+        "SharedMailboxes":        n_shared,
+        "EquipmentMailboxes":     n_equipment,
+        "RoomMailboxes":          n_room,
+        "TotalNonUserMailboxes":  n_shared + n_equipment + n_room,
+    }

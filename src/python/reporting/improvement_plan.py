@@ -23,7 +23,7 @@ def generate(snapshot: dict, output_dir: str | Path) -> None:
 
     findings = _extract_findings(snapshot)
     if not findings:
-        log.warning("No findings in snapshot — improvement plan will be empty.")
+        log.debug("No findings in snapshot — improvement plan will be empty.")
 
     findings.sort(key=lambda f: _SEVERITY_ORDER.get(str(f.get("Severity", "Info")), 99))
 

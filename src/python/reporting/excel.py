@@ -33,8 +33,9 @@ _DEFAULT_ORDER = [
     "ExternalIdentityRestrictions", "PrivilegedAccessSummary", "PrivilegedAccessRemediationSummary",
     # Exchange
     "HybridConfiguration",
-    "AllRecipients", "AllMailboxes", "PrimaryMailboxStats", "MailboxFullDetails",
-    "MailboxCalendarDelegatePermissions", "NonUserMailboxes", "ArchiveMailboxes", "ArchiveMailboxStats",
+    "AllRecipients", "AllMailboxes", "PrimaryMailboxStats", "MailboxUsageDetails", "MailboxFullDetails",
+    "MailboxCalendarDelegatePermissions", "NonUserMailboxes", "SharedMailboxes", "EquipmentMailboxes",
+    "RoomMailboxes", "ArchiveMailboxes", "ArchiveMailboxStats",
     "LitigationHoldMailboxes", "InactiveMailboxes", "InactiveMailboxDetails", "AllExchangeGroups",
     "PublicFolderDetails", "PublicFolderPerms", "MailFlowRules", "MailFlowConnectors", "RemoteDomains",
     "EmailActivityTopSenders", "EmailActivityTopReceivers", "SMTPRelayConfig", "SMTPRelayServiceAccounts",
@@ -42,10 +43,11 @@ _DEFAULT_ORDER = [
     "InboxRuleForwardingSummary", "InboxRulesExternalForwarding",
     # Collaboration
     "UnifiedGroups", "AllTeams", "TeamsGroupsCleanupCandidates", "TeamsVoiceSummary", "SharePoint",
-    "OneDrive", "SharePointSharingSummary", "TeamsActivityTopUsers", "Office365GroupsActivityTopGroups",
+    "SharePointSharingSummary", "SharePointSiteUsage", "OneDrive", "OneDriveUsageDetails",
+    "TeamsActivityTopUsers", "Office365GroupsActivityTopGroups",
     "EmployeeExperienceInsightsSummary", "CollaborationActivitySummary",
     # Endpoint
-    "DeviceDetails", "DeviceManagementSummary",
+    "DeviceDetails", "IntuneDevices", "DeviceManagementSummary",
     # Governance
     "SecuritySecureScore", "SecureScoreActions", "SMTPRelaySummary", "RetentionPolicies", "DlpPolicies",
     "PasswordLifecycleSummary", "ExternalSharingSummary", "ExternalSharingSiteOverrides",
@@ -60,6 +62,14 @@ _DEFAULT_EXCLUDED = {
     "PrimaryMailboxStatsCollectionSummary", "UnifiedGroupMailboxStatsCollectionSummary",
     # Lookup-index variants of AllMailboxes — same records keyed by alternate identifiers
     "AllMailboxes-MailIdentity", "AllMailboxes-UserPrincipalName", "AllMailboxes-PrimarySmtpAddress",
+    # Per-team enrichment raw dicts — consumed and merged into AllTeams by pipeline; not separate sheets
+    "TeamOwners", "TeamMemberCounts", "PrivateChannels",
+    # Raw mailbox purpose index — data surfaced through SharedMailboxes/NonUserMailboxes instead
+    "MailboxPurposes",
+    # HybridSyncDetails is a nested object that doesn't flatten well; key signals are in HybridConfiguration
+    "HybridSyncDetails",
+    # ReportSettings is a single-record tenant config; not useful as a standalone sheet
+    "ReportSettings",
 }
 
 _WORKSHEET_ALIASES = {
@@ -77,6 +87,9 @@ _OPTIONAL_EMPTY = {
     "MfaEnforcementGapUsers", "MfaEnforcementScopeReview", "ConditionalAccessOptimization",
     "MfaMethodPostureSummary", "PrivilegedAccessRemediationSummary", "TeamsGroupsCleanupCandidates",
     "GroupLicensingSummary", "LicenseOptimizationCandidates",
+    "MailboxUsageDetails", "SharedMailboxes", "EquipmentMailboxes", "RoomMailboxes",
+    "NonUserMailboxes", "IntuneDevices",
+    "SharePointSiteUsage", "OneDriveUsageDetails",
 }
 
 _HEADER_FILL = PatternFill(start_color="1F3864", end_color="1F3864", fill_type="solid")
@@ -102,6 +115,11 @@ def export(
     for logical_name in ordered:
         ws_name = _WORKSHEET_ALIASES.get(logical_name, logical_name)[:31]
         table_value = data.get(logical_name)
+
+        # None means explicitly not collected (e.g. EXO-only datasets) — skip silently
+        if table_value is None:
+            continue
+
         rows = _get_rows(logical_name, table_value)
 
         if not rows:

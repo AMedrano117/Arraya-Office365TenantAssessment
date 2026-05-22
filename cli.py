@@ -40,6 +40,35 @@ _AUTH_MODES = ["Interactive", "Certificate", "ClientSecret"]
 
 
 # ---------------------------------------------------------------------------
+# Env file helpers
+# ---------------------------------------------------------------------------
+
+def _load_env_file(name: str | None) -> dict:
+    """Parse envs/{name}.env and return a key->value dict. Empty dict if name is None."""
+    if not name:
+        return {}
+    env_path = Path(__file__).parent / "envs" / f"{name}.env"
+    if not env_path.exists():
+        raise click.UsageError(f"Env file not found: {env_path}")
+    result: dict = {}
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            k, _, v = line.partition("=")
+            result[k.strip()] = v.strip()
+    return result
+
+
+def _env_pick(ctx: click.Context, env_dict: dict, param: str, cli_val: str) -> str:
+    """Return the env file value when the CLI param was not explicitly set by the user."""
+    if ctx.get_parameter_source(param) == click.core.ParameterSource.DEFAULT:
+        return env_dict.get(param.upper(), cli_val)
+    return cli_val
+
+
+# ---------------------------------------------------------------------------
 # Root group
 # ---------------------------------------------------------------------------
 
@@ -67,6 +96,7 @@ def _auth_options(f):
     f = click.option("--cert-thumbprint", default="", help="Certificate thumbprint (Certificate auth mode).")(f)
     f = click.option("--client-id", default="", help="App registration client ID.")(f)
     f = click.option("--tenant-id", default="", help="Entra tenant ID (GUID).")(f)
+    f = click.option("--env", default=None, metavar="NAME", help="Load auth params from envs/NAME.env. CLI flags override.")(f)
     f = click.option(
         "--auth-mode",
         type=click.Choice(_AUTH_MODES, case_sensitive=False),
@@ -108,33 +138,57 @@ def _export_option(f):
 @_profile_option
 @_export_option
 @click.option("--skip-improve", is_flag=True, help="Skip improvement plan generation.")
-@click.option("--use-graph-fallback", is_flag=True, help="Use Graph API fallback instead of live connections.")
+@click.option(
+    "--mode",
+    type=click.Choice(["python", "powershell"], case_sensitive=False),
+    default="python",
+    show_default=True,
+    help="Collection engine: python (Graph API, faster) or powershell (full EXO coverage).",
+)
 @click.pass_context
-def full(ctx, auth_mode, tenant_id, client_id, cert_thumbprint, client_secret,
-         skip_auth, skip_preflight, profile, export_path, skip_improve, use_graph_fallback):
-    """Full assessment: collect via PowerShell + report via Python."""
+def full(ctx, auth_mode, env, tenant_id, client_id, cert_thumbprint, client_secret,
+         skip_auth, skip_preflight, profile, export_path, skip_improve, mode):
+    """Full assessment: collect (Python/Graph or PowerShell) + report via Python."""
     verbose = (ctx.obj or {}).get("verbose", False)
     _print_banner("Full Assessment")
+    _env = _load_env_file(env)
+    auth_mode       = _env_pick(ctx, _env, "auth_mode", auth_mode)
+    tenant_id       = _env_pick(ctx, _env, "tenant_id", tenant_id)
+    client_id       = _env_pick(ctx, _env, "client_id", client_id)
+    cert_thumbprint = _env_pick(ctx, _env, "cert_thumbprint", cert_thumbprint)
+    client_secret   = _env_pick(ctx, _env, "client_secret", client_secret)
+    mode            = _env_pick(ctx, _env, "mode", mode)
     profiles = parse_profiles(list(profile))
     out = Path(export_path) if export_path else get_output_root()
 
-    console.print("  [dim]Phase 1 of 2[/dim]  Collect  [dim](PowerShell → M365 APIs)[/dim]")
-    console.print("  [dim]Phase 2 of 2[/dim]  Report   [dim](Python   → Excel, HTML, Word"
+    collect_label = "Python Graph API" if mode == "python" else "PowerShell M365 APIs"
+    console.print(f"  [dim]Phase 1 of 2[/dim]  Collect  [dim]({collect_label})[/dim]")
+    console.print("  [dim]Phase 2 of 2[/dim]  Report   [dim](Python   -> Excel, HTML, Word"
                   + (", Improvement Plan" if not skip_improve else "") + ")[/dim]")
     console.print()
+    if env:
+        console.print(f"  [dim]Env         :[/dim] {env}")
     console.print(f"  [dim]Export path :[/dim] {out}")
     console.print(f"  [dim]Profile(s)  :[/dim] {', '.join(profiles)}")
     console.print(f"  [dim]Auth mode   :[/dim] {auth_mode or 'Interactive'}")
+    console.print(f"  [dim]Engine      :[/dim] {mode}")
     console.print(f"  [dim]Improve     :[/dim] {'No (skipped)' if skip_improve else 'Yes'}")
     console.print()
 
-    rc = runner.run_collection(
-        export_path=out, output_profiles=profiles,
-        auth_mode=auth_mode, tenant_id=tenant_id, client_id=client_id,
-        certificate_thumbprint=cert_thumbprint, client_secret=client_secret,
-        skip_auth=skip_auth, skip_preflight=skip_preflight,
-        use_graph_fallback=use_graph_fallback,
-    )
+    if mode == "python":
+        rc = runner.run_python_collection(
+            export_path=out,
+            auth_mode=auth_mode, tenant_id=tenant_id, client_id=client_id,
+            cert_thumbprint=cert_thumbprint, client_secret=client_secret,
+            skip_auth=skip_auth,
+        )
+    else:
+        rc = runner.run_collection(
+            export_path=out, output_profiles=profiles,
+            auth_mode=auth_mode, tenant_id=tenant_id, client_id=client_id,
+            certificate_thumbprint=cert_thumbprint, client_secret=client_secret,
+            skip_auth=skip_auth, skip_preflight=skip_preflight,
+        )
     if rc != 0:
         console.print(f"[red]Collection failed (exit {rc}).[/red]")
         sys.exit(rc)
@@ -154,10 +208,17 @@ def full(ctx, auth_mode, tenant_id, client_id, cert_thumbprint, client_secret,
 @_auth_options
 @_profile_option
 @_export_option
-def preflight(auth_mode, tenant_id, client_id, cert_thumbprint, client_secret,
+@click.pass_context
+def preflight(ctx, auth_mode, env, tenant_id, client_id, cert_thumbprint, client_secret,
               skip_auth, skip_preflight, profile, export_path):
     """Test M365 connections and permissions (PowerShell)."""
     _print_banner("Preflight")
+    _env = _load_env_file(env)
+    auth_mode       = _env_pick(ctx, _env, "auth_mode", auth_mode)
+    tenant_id       = _env_pick(ctx, _env, "tenant_id", tenant_id)
+    client_id       = _env_pick(ctx, _env, "client_id", client_id)
+    cert_thumbprint = _env_pick(ctx, _env, "cert_thumbprint", cert_thumbprint)
+    client_secret   = _env_pick(ctx, _env, "client_secret", client_secret)
     profiles = parse_profiles(list(profile))
     rc = runner.run_preflight(
         output_profiles=profiles, auth_mode=auth_mode, tenant_id=tenant_id,
@@ -171,20 +232,42 @@ def preflight(auth_mode, tenant_id, client_id, cert_thumbprint, client_secret,
 @_auth_options
 @_profile_option
 @_export_option
-@click.option("--use-graph-fallback", is_flag=True, help="Use Graph API fallback instead of live module connections.")
-def collect(auth_mode, tenant_id, client_id, cert_thumbprint, client_secret,
-            skip_auth, skip_preflight, profile, export_path, use_graph_fallback):
-    """Collect M365 data to a JSON snapshot (PowerShell)."""
+@click.option(
+    "--mode",
+    type=click.Choice(["python", "powershell"], case_sensitive=False),
+    default="python",
+    show_default=True,
+    help="Collection engine: python (Graph API, faster) or powershell (full EXO coverage).",
+)
+@click.pass_context
+def collect(ctx, auth_mode, env, tenant_id, client_id, cert_thumbprint, client_secret,
+            skip_auth, skip_preflight, profile, export_path, mode):
+    """Collect M365 data to a JSON snapshot (Python/Graph API or PowerShell)."""
     _print_banner("Data Collection")
+    _env = _load_env_file(env)
+    auth_mode       = _env_pick(ctx, _env, "auth_mode", auth_mode)
+    tenant_id       = _env_pick(ctx, _env, "tenant_id", tenant_id)
+    client_id       = _env_pick(ctx, _env, "client_id", client_id)
+    cert_thumbprint = _env_pick(ctx, _env, "cert_thumbprint", cert_thumbprint)
+    client_secret   = _env_pick(ctx, _env, "client_secret", client_secret)
+    mode            = _env_pick(ctx, _env, "mode", mode)
     profiles = parse_profiles(list(profile))
     out = Path(export_path) if export_path else get_output_root()
-    rc = runner.run_collection(
-        export_path=out, output_profiles=profiles,
-        auth_mode=auth_mode, tenant_id=tenant_id, client_id=client_id,
-        certificate_thumbprint=cert_thumbprint, client_secret=client_secret,
-        skip_auth=skip_auth, skip_preflight=skip_preflight,
-        use_graph_fallback=use_graph_fallback,
-    )
+
+    if mode == "python":
+        rc = runner.run_python_collection(
+            export_path=out,
+            auth_mode=auth_mode, tenant_id=tenant_id, client_id=client_id,
+            cert_thumbprint=cert_thumbprint, client_secret=client_secret,
+            skip_auth=skip_auth,
+        )
+    else:
+        rc = runner.run_collection(
+            export_path=out, output_profiles=profiles,
+            auth_mode=auth_mode, tenant_id=tenant_id, client_id=client_id,
+            certificate_thumbprint=cert_thumbprint, client_secret=client_secret,
+            skip_auth=skip_auth, skip_preflight=skip_preflight,
+        )
     sys.exit(rc)
 
 

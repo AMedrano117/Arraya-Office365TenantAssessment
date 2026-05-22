@@ -356,7 +356,8 @@ def _generate_hybrid_findings(snapshot: dict, bpf_categories: set[str] | None = 
     # -----------------------------------------------------------------------
     # ENDPOINT — Device Management
     # -----------------------------------------------------------------------
-    dms = _first("Identity", "DeviceManagementSummary")
+    # DeviceManagementSummary is a flat scalar dict — _first() doesn't work; access directly
+    dms = (data.get("Identity") or {}).get("DeviceManagementSummary") or {}
     total_devices = int(dms.get("TotalDevices", 0) or 0)
     managed = int(dms.get("ManagedDevices", 0) or 0)
     unmanaged_d = int(dms.get("UnmanagedDevices", 0) or 0)
@@ -411,7 +412,159 @@ def _generate_hybrid_findings(snapshot: dict, bpf_categories: set[str] | None = 
         ))
 
     # -----------------------------------------------------------------------
-    # GOVERNANCE — Licensing
+    # IDENTITY — Inactive Users / Admins / Guests
+    # -----------------------------------------------------------------------
+    all_users = (data.get("Identity") or {}).get("Users") or {}
+    if isinstance(all_users, dict):
+        all_user_list = list(all_users.values())
+    else:
+        all_user_list = all_users if isinstance(all_users, list) else []
+
+    _now_date = datetime.now(timezone.utc)
+
+    def _days_since(u: dict, threshold: int) -> bool:
+        sia  = u.get("signInActivity") or {}
+        last = sia.get("lastSignInDateTime") or sia.get("lastNonInteractiveSignInDateTime")
+        if not last:
+            return True  # no sign-in data counts as inactive
+        try:
+            dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+            return (_now_date - dt).days >= threshold
+        except (ValueError, AttributeError):
+            return True
+
+    enabled_members = [u for u in all_user_list
+                       if u.get("accountEnabled") and (u.get("userType") or "").lower() == "member"]
+    enabled_guests  = [u for u in all_user_list
+                       if u.get("accountEnabled") and (u.get("userType") or "").lower() == "guest"]
+
+    inactive_members_180 = [u for u in enabled_members if _days_since(u, 180)]
+    inactive_members_90  = [u for u in enabled_members if _days_since(u, 90)]
+    inactive_guests_90   = [u for u in enabled_guests  if _days_since(u, 90)]
+
+    if inactive_members_180 and "Inactive Users" not in bpf_categories:
+        pct = round(len(inactive_members_180) / len(enabled_members) * 100) if enabled_members else 0
+        findings.append(_hf(
+            "ID-010",
+            "Identity & Admins", "Inactive Users",
+            "High", "Immediate", "Identity",
+            f"{len(inactive_members_180)} enabled member account(s) ({pct}%) have no recorded sign-in within "
+            "the last 180 days. These accounts retain active credentials and access rights "
+            "despite showing no evidence of use.",
+            "Review enabled member accounts with no recent sign-in activity. Disable or delete accounts "
+            "that are no longer in use, remove license assignments from inactive accounts, and document "
+            "any legitimate service accounts that authenticate non-interactively.",
+            "Users", "Identity Hygiene", "Hybrid/Users",
+        ))
+    elif inactive_members_90 and "Inactive Users" not in bpf_categories:
+        pct = round(len(inactive_members_90) / len(enabled_members) * 100) if enabled_members else 0
+        findings.append(_hf(
+            "ID-010",
+            "Identity & Admins", "Inactive Users",
+            "Medium", "Near Term", "Identity",
+            f"{len(inactive_members_90)} enabled member account(s) ({pct}%) have no recorded sign-in "
+            "within the last 90 days.",
+            "Review enabled member accounts with no recent sign-in activity and disable or delete "
+            "accounts that are no longer in use.",
+            "Users", "Identity Hygiene", "Hybrid/Users",
+        ))
+
+    # Inactive admins — cross-reference Admins list with Users signInActivity
+    admins_raw_list = (data.get("Identity") or {}).get("Admins") or []
+    if isinstance(admins_raw_list, dict):
+        admins_raw_list = list(admins_raw_list.values())
+    priv_admin_list = [a for a in admins_raw_list if a.get("accountEnabled", True)]
+    inactive_admins = []
+    for admin in priv_admin_list:
+        upn = (admin.get("userPrincipalName") or "").lower()
+        user_obj = all_users.get(upn) if isinstance(all_users, dict) else {}
+        user_obj = user_obj or {}
+        if _days_since(user_obj, 180):
+            inactive_admins.append(admin)
+    if inactive_admins and "Inactive Admin Accounts" not in bpf_categories:
+        findings.append(_hf(
+            "ADMIN-003",
+            "Identity & Admins", "Inactive Admin Accounts",
+            "High", "Immediate", "Identity",
+            f"{len(inactive_admins)} privileged account(s) have no recorded sign-in within 180 days. "
+            "Stale privileged accounts with active credentials represent the highest-risk dormant exposure in the tenant.",
+            "Review privileged accounts with no recent sign-in. Remove or downscope role assignments from "
+            "accounts that are no longer in use. Validate break-glass account procedures separately from "
+            "routine privileged account hygiene.",
+            "Admins", "Privileged Access", "Hybrid/Admins",
+        ))
+
+    if inactive_guests_90 and "Inactive Guest Users" not in bpf_categories:
+        pct = round(len(inactive_guests_90) / len(enabled_guests) * 100) if enabled_guests else 0
+        findings.append(_hf(
+            "ID-002",
+            "Identity & Admins", "Inactive Guest Users",
+            "Medium", "Planned", "Identity",
+            f"{len(inactive_guests_90)} enabled guest account(s) ({pct}% of all guests) have no recorded "
+            "sign-in within the last 90 days. Guest accounts retain access to SharePoint sites, Teams, "
+            "and shared resources regardless of activity state.",
+            "Review inactive guest accounts with the business sponsor for each collaboration relationship. "
+            "Disable or remove guests whose collaboration need has ended and consider a guest access review "
+            "cadence in Entra Identity Governance.",
+            "Users", "Guest Access", "Hybrid/Users",
+        ))
+
+    # -----------------------------------------------------------------------
+    # GOVERNANCE — Licensing at capacity
+    # -----------------------------------------------------------------------
+    lic_skus = (data.get("Identity") or {}).get("LicenseSKUs") or {}
+    if isinstance(lic_skus, dict):
+        at_capacity_skus = [
+            (name, sku)
+            for name, sku in lic_skus.items()
+            if (sku.get("prepaidUnits") or {}).get("enabled", 0) > 0
+            and sku.get("consumedUnits", 0) >= (sku.get("prepaidUnits") or {}).get("enabled", 0)
+        ]
+    else:
+        at_capacity_skus = []
+
+    if at_capacity_skus and "At Capacity" not in bpf_categories:
+        sku_names = ", ".join(f"'{n}'" for n, _ in at_capacity_skus[:6])
+        findings.append(_hf(
+            "LIC-001",
+            "Licensing", "At Capacity",
+            "Medium", "Near Term", "Governance",
+            f"{len(at_capacity_skus)} license SKU(s) are fully allocated with no remaining seats: {sku_names}. "
+            "At-capacity SKUs block new assignments silently and can cause onboarding failures.",
+            "Review at-capacity SKUs against upcoming headcount changes. Reclaim licenses from inactive "
+            "or disabled accounts before purchasing additional seats. Prioritize reclamation from SKUs "
+            "identified in the License Optimization Candidates table.",
+            "LicenseSKUs", "Licensing", "Data/LicenseSKUs",
+        ))
+
+    # -----------------------------------------------------------------------
+    # MESSAGING — Unverified Domains
+    # -----------------------------------------------------------------------
+    tenant_domains = (data.get("Tenant") or {}).get("Domains") or {}
+    if isinstance(tenant_domains, dict):
+        unverified_domains = [
+            name for name, d in tenant_domains.items()
+            if not d.get("isVerified") and not d.get("isInitial")
+        ]
+    else:
+        unverified_domains = []
+
+    if unverified_domains and "Domain Verification" not in bpf_categories:
+        names = ", ".join(f"'{n}'" for n in unverified_domains[:5])
+        findings.append(_hf(
+            "DOM-001",
+            "Domains", "Domain Verification",
+            "High", "Near Term", "Messaging",
+            f"{len(unverified_domains)} accepted domain(s) are not verified: {names}. "
+            "Unverified domains cannot be used for mail flow and may indicate abandoned or misconfigured domain relationships.",
+            "Verify or remove unverified accepted domains. Unverified domains cannot send or receive mail and "
+            "create ambiguity in mail routing. Remove domains that are no longer needed and complete "
+            "verification for any domain that should remain active.",
+            "Domains", "DNS Configuration", "Data/Tenant/Domains",
+        ))
+
+    # -----------------------------------------------------------------------
+    # GOVERNANCE — Licensing (optimization candidates)
     # -----------------------------------------------------------------------
     loc = _rows("Identity", "LicenseOptimizationCandidates")
     inactive_lic = [r for r in loc if "inactive" in str(r.get("Issue", "")).lower()
@@ -539,6 +692,98 @@ def _generate_hybrid_findings(snapshot: dict, bpf_categories: set[str] | None = 
             "ConditionalAccessOptimization", "Conditional Access", "Summary/ConditionalAccessOptimization",
         ))
 
+    # -----------------------------------------------------------------------
+    # IDENTITY — Global Administrator standing access
+    # -----------------------------------------------------------------------
+    priv_rem = (data.get("Identity") or {}).get("PrivilegedAccessRemediationSummary") or []
+    stale_row = next((r for r in priv_rem if "Stale privileged" in str(r.get("Signal", ""))), {})
+    stale_ga  = int(stale_row.get("Count", 0) or 0)
+    # Count enabled GAs directly from Admins list for consistency with exec summary
+    admins_all = (data.get("Identity") or {}).get("Admins") or []
+    admins_all = admins_all if isinstance(admins_all, list) else list(admins_all.values())
+    ga_count   = sum(1 for a in admins_all if a.get("RoleName") == "Global Administrator" and a.get("accountEnabled", True) is not False)
+
+    if ga_count > 4 and "Global Administrator" not in bpf_categories:
+        findings.append(_hf(
+            "ADMIN-001",
+            "Identity & Admins", "Global Administrator Count",
+            "High", "Immediate", "Identity",
+            f"{ga_count} standing Global Administrator accounts detected. "
+            "Microsoft recommends 2-4 for most organizations, limited to emergency break-glass scenarios.",
+            "Reduce standing Global Administrator accounts. Use Privileged Identity Management (PIM) for "
+            "just-in-time elevation, assign least-privilege roles for routine administrative tasks, "
+            "and restrict permanent Global Admin to 2-4 break-glass accounts with documented procedures.",
+            "Admins", "Privileged Access", "Hybrid/Admins",
+        ))
+
+    # Compute stale enabled GAs directly from admins list (signInActivity may be missing on older snapshots)
+    _now_plan = datetime.now(timezone.utc)
+    def _ga_is_stale(a: dict) -> bool:
+        sia = a.get("signInActivity") or {}
+        last = sia.get("lastSignInDateTime") or sia.get("lastNonInteractiveSignInDateTime")
+        if not last:
+            return True  # no sign-in data → count as stale
+        try:
+            return (_now_plan - datetime.fromisoformat(last.replace("Z", "+00:00"))).days >= 180
+        except (ValueError, AttributeError):
+            return True
+    enabled_gas = [a for a in admins_all if a.get("RoleName") == "Global Administrator" and a.get("accountEnabled", True) is not False]
+    stale_enabled_ga = sum(1 for a in enabled_gas if _ga_is_stale(a))
+
+    if stale_enabled_ga > 0 and stale_enabled_ga < ga_count and "Stale Privileged" not in bpf_categories:
+        findings.append(_hf(
+            "ADMIN-002",
+            "Identity & Admins", "Stale Global Administrators",
+            "High", "Near Term", "Identity",
+            f"{stale_enabled_ga} of {ga_count} enabled Global Administrator account(s) show no recent interactive sign-in. "
+            "Stale privileged accounts that are not actively monitored represent persistent credential risk.",
+            "Review stale Global Administrator accounts. Remove unnecessary role assignments, "
+            "validate emergency-access account procedures, and confirm break-glass credentials are tested.",
+            "Admins", "Privileged Access", "Hybrid/Admins",
+        ))
+
+    # -----------------------------------------------------------------------
+    # IDENTITY — MFA enforcement gap
+    # -----------------------------------------------------------------------
+    gap_users = (data.get("Identity") or {}).get("MfaEnforcementGapUsers") or []
+    gap_count = len(gap_users) if isinstance(gap_users, list) else 0
+    if gap_count > 0 and "MFA Enforcement Gap" not in bpf_categories:
+        findings.append(_hf(
+            "MFA-001",
+            "Conditional Access & MFA", "MFA Enforcement Gap",
+            "High", "Immediate", "Identity",
+            f"{gap_count} member account(s) have no MFA registration and can authenticate with only a password.",
+            "Create or update a Conditional Access policy to require MFA for all users. "
+            "Run report-only mode to validate scope, then enforce. "
+            "Address unregistered accounts with a targeted self-service MFA registration campaign.",
+            "MfaEnforcementGapUsers", "MFA Enrollment", "Summary/MfaEnforcementGap",
+        ))
+
+    # -----------------------------------------------------------------------
+    # SECURITY — Secure Score
+    # -----------------------------------------------------------------------
+    score_data = (data.get("Security") or {}).get("SecuritySecureScore") or {}
+    current_sc = float(score_data.get("currentScore") or 0)
+    max_sc     = float(score_data.get("maxScore") or 0)
+    if current_sc and max_sc and "Secure Score" not in bpf_categories:
+        pct_sc   = round(current_sc / max_sc * 100)
+        comp_sc  = score_data.get("averageComparativeScores") or []
+        avg_sc   = next((float(s.get("averageScore", 0)) for s in comp_sc if s.get("basis") == "AllTenants"), None)
+        sev_sc   = "High" if pct_sc < 30 else "Medium"
+        phase_sc = "Immediate" if pct_sc < 30 else "Planned"
+        avg_str  = f" Cross-tenant average is {avg_sc:.0f} points ({current_sc - avg_sc:+.0f} vs. this tenant)." if avg_sc else ""
+        findings.append(_hf(
+            "SEC-001",
+            "Security", "Secure Score",
+            sev_sc, phase_sc, "Security",
+            f"Microsoft Secure Score is {current_sc:.0f} of {max_sc:.0f} points ({pct_sc}%).{avg_str} "
+            "The top unimplemented controls and their point values are documented in the Security workstream section.",
+            "Address the highest-impact unimplemented Secure Score controls. "
+            "Prioritize controls that overlap with the Identity and MFA remediation items already in this plan -- "
+            "closing those gaps will improve Secure Score as a side effect.",
+            "SecuritySecureScore", "Secure Score", "Data/Security",
+        ))
+
     # MFA weak methods
     mfa_posture = _rows("Identity", "MfaMethodPostureSummary")
     weak_row = next((r for r in mfa_posture if "weak" in str(r.get("Signal", "")).lower()), None)
@@ -554,9 +799,9 @@ def _generate_hybrid_findings(snapshot: dict, bpf_categories: set[str] | None = 
             "MfaEnrollmentSummary", "MFA Enrollment", "Heuristic",
         ))
 
-    # Guest lifecycle
-    guest_summary = _first("Identity", "GuestSignInSummary")
-    total_guests = int(guest_summary.get("TotalGuests", 0) or 0)
+    # Guest lifecycle (GuestSignInSummary is a flat scalar dict — access directly)
+    guest_summary = (data.get("Identity") or {}).get("GuestSignInSummary") or {}
+    total_guests = int(guest_summary.get("GuestCount", 0) or 0)
     inactive_guests_90 = int(guest_summary.get("InactiveGuests90Days", 0) or 0)
 
     if inactive_guests_90 > 0:
@@ -582,8 +827,8 @@ def _generate_hybrid_findings(snapshot: dict, bpf_categories: set[str] | None = 
             "GuestSignInSummary", "Guest Access", "Summary/GuestSignIn",
         ))
 
-    # Privileged access stale accounts
-    priv_summary = _first("Identity", "PrivilegedAccessSummary")
+    # Privileged access stale accounts (PrivilegedAccessSummary is a mixed dict — access directly)
+    priv_summary = (data.get("Identity") or {}).get("PrivilegedAccessSummary") or {}
     stale_priv = int(priv_summary.get("StalePrivilegedAccounts90Days", 0) or 0)
 
     if stale_priv > 0:
@@ -627,6 +872,54 @@ def _generate_hybrid_findings(snapshot: dict, bpf_categories: set[str] | None = 
             "scope are explicitly configured to match the approved external-access baseline.",
             "ExternalExposureFindings", "External Exposure Review", "Summary/ExternalExposure",
         ))
+
+    # -----------------------------------------------------------------------
+    # IDENTITY — Guest invite policy
+    # -----------------------------------------------------------------------
+    gac = (data.get("Identity") or {}).get("GuestAccessConfiguration") or {}
+    invite_from = gac.get("allowInvitesFrom", "")
+    if invite_from == "everyone" and "Guest Invite Policy" not in bpf_categories:
+        findings.append(_hf(
+            "GUEST-001",
+            "Identity & Admins", "Guest Invite Policy",
+            "Medium", "Near Term", "Identity",
+            "Guest invitations are permitted from 'everyone', meaning any user in the tenant can invite "
+            "external guests without admin approval. This creates unmanaged external access surface.",
+            "Restrict guest invitation permissions to admins and designated guest inviters. "
+            "Set allowInvitesFrom to 'adminsAndGuestInviters' in the authorization policy and "
+            "designate a controlled set of approved inviters.",
+            "GuestAccessConfiguration", "Guest Access", "Identity/GuestAccess",
+        ))
+
+    # -----------------------------------------------------------------------
+    # IDENTITY — AD Connect / Hybrid sync staleness
+    # -----------------------------------------------------------------------
+    adc = (data.get("Tenant") or {}).get("AdConnectConfiguration") or {}
+    adc_summary = adc.get("Summary") or {}
+    sync_enabled  = adc_summary.get("OnPremisesSyncEnabled", False)
+    last_sync_raw = adc_summary.get("LastSyncDateTime") or ""
+    if sync_enabled and last_sync_raw:
+        try:
+            sync_dt   = datetime.fromisoformat(last_sync_raw.replace("Z", "+00:00"))
+            sync_days = (datetime.now(timezone.utc) - sync_dt).days
+            if sync_days > 3 and "AD Connect Sync" not in bpf_categories:
+                sev_sync   = "High" if sync_days > 30 else "Medium"
+                phase_sync = "Immediate" if sync_days > 30 else "Near Term"
+                findings.append(_hf(
+                    "HYBRID-001",
+                    "Identity & Admins", "AD Connect Sync Staleness",
+                    sev_sync, phase_sync, "Identity",
+                    f"Azure AD Connect last sync was {sync_days} days ago ({last_sync_raw[:10]}). "
+                    "A stale sync means on-premises user changes (disable, password reset, role removal) "
+                    "are not reflected in Entra ID, leaving access controls out of date.",
+                    "Investigate the AD Connect sync health. Check the synchronization service manager "
+                    "on the AD Connect server for errors, validate that the sync account has required "
+                    "permissions, and restore the sync cycle. Consider upgrading to Entra Cloud Sync "
+                    "if the on-premises AD Connect server is out of date.",
+                    "AdConnectConfiguration", "Hybrid Sync", "Tenant/HybridConfig",
+                ))
+        except (ValueError, AttributeError):
+            pass
 
     # -----------------------------------------------------------------------
     # MESSAGING — Exchange

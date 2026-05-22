@@ -2714,13 +2714,9 @@ function Write-ConsoleSection {
         [string]$Title
     )
 
-    $line = [string]::new([char]0x2500, 68)
     Write-Host ''
-    Write-Host ("  {0}" -f $line) -ForegroundColor DarkGray
     Write-Host -NoNewline ("  [{0}]  " -f $Step) -ForegroundColor DarkGray
     Write-Host $Title -ForegroundColor White
-    Write-Host ("  {0}" -f $line) -ForegroundColor DarkGray
-    Write-Host ''
 }
 
 function Write-AssessmentCollectorCompletionBanner {
@@ -16931,8 +16927,8 @@ function Update-TierBOperationalSummaries {
 
     $tierBProgressId = 91
     $tierBProgressTotal = 4
-    Write-ProgressHelper -Total $tierBProgressTotal -Id $tierBProgressId -Index 1 -Activity 'Tier B operational summaries' -Operation 'Normalizing device management summary'
-    Write-AssessmentConsoleSubstep -Message 'Tier B operational summaries: device and SharePoint/OneDrive rollups'
+    Write-ProgressHelper -Total $tierBProgressTotal -Id $tierBProgressId -Index 1 -Activity 'Governance summaries' -Operation 'Normalizing device management summary'
+    Write-AssessmentConsoleSubstep -Message 'Governance summaries: device and SharePoint/OneDrive rollups'
     if (-not $TenantStatsHash.ContainsKey('SharePointSharingSummary')) { $TenantStatsHash['SharePointSharingSummary'] = @{} }
     $deviceRows = if ($TenantStatsHash.ContainsKey('DeviceDetails') -and $TenantStatsHash['DeviceDetails'] -is [System.Collections.IDictionary]) { @($TenantStatsHash['DeviceDetails'].Values) } else { @() }
     if ($deviceRows.Count -gt 0) {
@@ -17118,8 +17114,8 @@ function Update-TierBOperationalSummaries {
     }
 
     if ($sharePointConnected) {
-        Write-ProgressHelper -Total $tierBProgressTotal -Id $tierBProgressId -Index 2 -Activity 'Tier B operational summaries' -Operation 'Reviewing SharePoint tenant settings from the admin session'
-        Write-AssessmentConsoleSubstep -Message 'Tier B operational summaries: reviewing SharePoint tenant settings from SharePoint Online'
+        Write-ProgressHelper -Total $tierBProgressTotal -Id $tierBProgressId -Index 2 -Activity 'Governance summaries' -Operation 'Reviewing SharePoint tenant settings from the admin session'
+        Write-AssessmentConsoleSubstep -Message 'Governance summaries: reviewing SharePoint tenant settings from SharePoint Online'
         $spoTenantCommand = Get-Command -Name 'Get-SPOTenant' -ErrorAction SilentlyContinue
         if ($spoTenantCommand) {
             try {
@@ -17138,8 +17134,8 @@ function Update-TierBOperationalSummaries {
     )
 
     if ($requiresGraphSharePointSettings.Count -gt 0) {
-        Write-ProgressHelper -Total $tierBProgressTotal -Id $tierBProgressId -Index 3 -Activity 'Tier B operational summaries' -Operation 'Reviewing SharePoint tenant settings from Microsoft Graph'
-        Write-AssessmentConsoleSubstep -Message 'Tier B operational summaries: reviewing SharePoint tenant settings from Microsoft Graph'
+        Write-ProgressHelper -Total $tierBProgressTotal -Id $tierBProgressId -Index 3 -Activity 'Governance summaries' -Operation 'Reviewing SharePoint tenant settings from Microsoft Graph'
+        Write-AssessmentConsoleSubstep -Message 'Governance summaries: reviewing SharePoint tenant settings from Microsoft Graph'
         try {
             $sharePointSettingsResponse = Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/v1.0/admin/sharepoint/settings' -Activity 'Fetching SharePoint tenant settings'
             $sharePointSettings = @($sharePointSettingsResponse | Select-Object -First 1)
@@ -17162,7 +17158,7 @@ function Update-TierBOperationalSummaries {
     ) | Where-Object { [string]$sharePointSummary[$_] -eq 'Not collected' }
 
     if ($requiresGraphBetaSharePointSettings.Count -gt 0) {
-        Write-AssessmentConsoleSubstep -Message 'Tier B operational summaries: attempting beta SharePoint settings fallback for remaining fields' -ForegroundColor Yellow
+        Write-AssessmentConsoleSubstep -Message 'Governance summaries: attempting beta SharePoint settings fallback for remaining fields' -ForegroundColor Yellow
         try {
             Write-Log -Type WARNING -Message "[Update-TierBOperationalSummaries] Some SharePoint tenant settings are not available from Graph v1.0 in this run. Attempting a best-effort beta fallback for the remaining fields." -ExportFileLocation $ExportDetails
             $sharePointBetaSettingsResponse = Get-ArrayaGraphResource -Uri 'https://graph.microsoft.com/beta/admin/sharepoint/settings' -Activity 'Fetching SharePoint tenant settings (beta best-effort fallback)'
@@ -17179,8 +17175,8 @@ function Update-TierBOperationalSummaries {
 
     $sharePointInventoryRows = @($sharePointRows) + @($oneDriveRows)
     if ($sharePointInventoryRows.Count -gt 0) {
-        Write-ProgressHelper -Total $tierBProgressTotal -Id $tierBProgressId -Index 4 -Activity 'Tier B operational summaries' -Operation ("Deriving sharing rollups from {0} site inventory row(s)" -f $sharePointInventoryRows.Count)
-        Write-AssessmentConsoleSubstep -Message ("Tier B operational summaries: deriving sharing rollups from {0} SharePoint/OneDrive inventory row(s)" -f $sharePointInventoryRows.Count)
+        Write-ProgressHelper -Total $tierBProgressTotal -Id $tierBProgressId -Index 4 -Activity 'Governance summaries' -Operation ("Deriving sharing rollups from {0} site inventory row(s)" -f $sharePointInventoryRows.Count)
+        Write-AssessmentConsoleSubstep -Message ("Governance summaries: deriving sharing rollups from {0} SharePoint/OneDrive inventory row(s)" -f $sharePointInventoryRows.Count)
         $oneDriveSharingCapabilities = @(
             $oneDriveRows |
                 ForEach-Object {
@@ -17375,8 +17371,8 @@ function Update-TierBOperationalSummaries {
     }
 
     $TenantStatsHash['SharePointSharingSummary']['Summary'] = [pscustomobject]$sharePointSummary
-    Write-AssessmentConsoleSubstep -Message ("Tier B operational summaries: completed (SharePoint collection state {0}; {1} SharePoint site(s); {2} OneDrive site(s))" -f $sharePointSummary['CollectionState'], $sharePointRows.Count, $oneDriveRows.Count)
-    Write-ProgressHelper -Total ([Math]::Max($tierBProgressTotal, 1)) -Id $tierBProgressId -Activity 'Tier B operational summaries' -Completed
+    Write-AssessmentConsoleSubstep -Message ("Governance summaries: completed (SharePoint collection state {0}; {1} SharePoint site(s); {2} OneDrive site(s))" -f $sharePointSummary['CollectionState'], $sharePointRows.Count, $oneDriveRows.Count)
+    Write-ProgressHelper -Total ([Math]::Max($tierBProgressTotal, 1)) -Id $tierBProgressId -Activity 'Governance summaries' -Completed
 }
 
 function Update-ExternalExposureSummaries {

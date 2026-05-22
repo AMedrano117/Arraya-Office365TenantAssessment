@@ -115,6 +115,38 @@ def run_ad_assessment() -> int:
     return subprocess.run(cmd, check=False).returncode
 
 
+def run_python_collection(
+    export_path: Path,
+    auth_mode: str = "Interactive",
+    tenant_id: str = "",
+    client_id: str = "",
+    cert_thumbprint: str = "",
+    client_secret: str = "",
+    skip_auth: bool = False,
+) -> int:
+    """Run Python-native Graph API collection. Returns 0 on success, 1 on failure."""
+    from .collection.auth import GraphAuthProvider
+    from .collection import runner as col_runner
+
+    if skip_auth:
+        log.warning("--skip-auth is not supported for Python collection mode; auth will still run.")
+
+    try:
+        auth = GraphAuthProvider(
+            auth_mode=auth_mode,
+            tenant_id=tenant_id,
+            client_id=client_id,
+            cert_thumbprint=cert_thumbprint,
+            client_secret=client_secret,
+        )
+        snap_path = col_runner.collect(auth, export_path)
+        log.info("Python collection complete: %s", snap_path)
+        return 0
+    except Exception as exc:
+        log.error("Python collection failed: %s", exc, exc_info=True)
+        return 1
+
+
 def _find_pwsh() -> str:
     for candidate in ("pwsh", "powershell"):
         found = shutil.which(candidate)
