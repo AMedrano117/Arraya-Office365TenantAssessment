@@ -308,8 +308,8 @@ def _build_collab_activity_summary(groups: dict, groups_activity: list, teams_ac
         "TotalUnifiedGroups": len(groups),
         "GroupsWithActivityInPeriod": sum(
             1 for r in groups_activity
-            if _int(r.get("Exchange Emails Received Count", "0")) > 0
-            or _int(r.get("SharePoint Active Files Count", "0")) > 0
+            if _int(r.get("Exchange Received Email Count", "0")) > 0
+            or _int(r.get("SharePoint Active File Count", "0")) > 0
         ),
         "ActiveTeamsUsersInPeriod": sum(
             1 for r in teams_activity
