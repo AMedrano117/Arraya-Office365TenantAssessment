@@ -75,12 +75,12 @@ def _collect_email_activity_summary(client: GraphClient) -> dict:
         rows = client.get_report_csv(f"reports/getEmailActivityCounts(period='{_PERIOD}')")
         if not rows:
             return {}
-        latest = rows[-1] if rows else {}
+        # Report returns one row per day; sum across all rows for the period total
         return {
             "ReportPeriod":  _PERIOD,
-            "SendCount":     _int(latest.get("Send", "")),
-            "ReceiveCount":  _int(latest.get("Receive", "")),
-            "ReadCount":     _int(latest.get("Read", "")),
+            "SendCount":     sum(_int(r.get("Send", "")) for r in rows),
+            "ReceiveCount":  sum(_int(r.get("Receive", "")) for r in rows),
+            "ReadCount":     sum(_int(r.get("Read", "")) for r in rows),
         }
     except Exception as exc:
         log.debug("Email activity summary unavailable: %s", exc)
@@ -268,11 +268,10 @@ def _build_primary_mailbox_stats(rows: list[dict]) -> dict:
 
 
 def _build_archive_stats(rows: list[dict]) -> dict:
+    # getMailboxUsageDetail does not include archive mailbox size; count only
     archive_rows = [r for r in rows if r.get("Has Archive") == "True"]
-    total_gb = sum(_float(r.get("Archive Mailbox Size (Byte)", "0")) for r in archive_rows) / (1024 ** 3)
     return {
         "ArchiveMailboxCount": len(archive_rows),
-        "TotalArchiveStorageGB": round(total_gb, 2),
     }
 
 
