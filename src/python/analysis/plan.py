@@ -636,18 +636,20 @@ def _generate_hybrid_findings(snapshot: dict, bpf_categories: set[str] | None = 
             "LicenseOptimizationCandidates", "Licensing", "Summary/LicenseOptimization",
         ))
 
-    # Diagnostics
+    # Diagnostics — only surface this finding when there are actual warnings or errors
     warn_count = int(diag.get("WarningCount", 0) or 0)
     err_count = int(diag.get("ErrorCount", 0) or 0)
-    findings.append(_hf(
-        "DIAG-001",
-        "Collection Diagnostics", "Diagnostics",
-        "Low", "Monitor", "Governance",
-        f"Snapshot contains collection diagnostics that should be reviewed before using "
-        f"the assessment as a remediation baseline. Warnings={warn_count}; Errors={err_count}",
-        "Review collector warnings and errors, then re-run collection if any important workload data was incomplete.",
-        "Diagnostics", "Collection Diagnostics", "Summary/Diagnostics",
-    ))
+    if warn_count > 0 or err_count > 0:
+        findings.append(_hf(
+            "DIAG-001",
+            "Collection Diagnostics", "Diagnostics",
+            "Low", "Monitor", "Governance",
+            f"Snapshot collection completed with {warn_count} warning(s) and {err_count} error(s). "
+            f"Findings may be incomplete for workloads that reported errors.",
+            "Review collector warnings and errors in the Support folder, then re-run collection "
+            "if any important workload data was incomplete.",
+            "Diagnostics", "Collection Diagnostics", "Summary/Diagnostics",
+        ))
 
     # -----------------------------------------------------------------------
     # IDENTITY — Conditional Access
@@ -777,7 +779,18 @@ def _generate_hybrid_findings(snapshot: dict, bpf_categories: set[str] | None = 
         avg_sc   = next((float(s.get("averageScore", 0)) for s in comp_sc if s.get("basis") == "AllTenants"), None)
         sev_sc   = "High" if pct_sc < 30 else "Medium"
         phase_sc = "Immediate" if pct_sc < 30 else "Planned"
-        avg_str  = f" Cross-tenant average is {avg_sc:.0f} points ({current_sc - avg_sc:+.0f} vs. this tenant)." if avg_sc else ""
+        if avg_sc:
+            # averageComparativeScores.averageScore is on a 0-100 percentage scale;
+            # convert tenant raw score to percentage before comparing
+            gap_pct = round(avg_sc - pct_sc)
+            if gap_pct > 0:
+                avg_str = (f" The cross-tenant average is {avg_sc:.0f}% -- "
+                           f"this tenant is {gap_pct} percentage point{'s' if gap_pct != 1 else ''} below average.")
+            else:
+                avg_str = (f" The cross-tenant average is {avg_sc:.0f}% -- "
+                           f"this tenant is {abs(gap_pct)} percentage point{'s' if abs(gap_pct) != 1 else ''} above average.")
+        else:
+            avg_str = ""
         findings.append(_hf(
             "SEC-001",
             "Security", "Secure Score",
@@ -960,14 +973,22 @@ def _generate_hybrid_findings(snapshot: dict, bpf_categories: set[str] | None = 
 
     # Public folders
     pf = _rows("Exchange", "PublicFolderDetails")
-    if pf:
+    # Filter out the root IPM_SUBTREE container — it's always present, not a content folder
+    content_pf = [f for f in pf if f.get("Identity", "") not in ("\\", "/") and f.get("Name") != "IPM_SUBTREE"]
+    if content_pf:
+        mail_enabled_pf = sum(1 for f in content_pf if f.get("MailEnabled"))
+        pf_detail = f"{len(content_pf)} public folder(s)"
+        if mail_enabled_pf:
+            pf_detail += f", {mail_enabled_pf} mail-enabled"
         findings.append(_hf(
             "EX-004",
             "Exchange", "Public Folders",
             "Medium", "Planned", "Messaging",
-            f"Public folders are still present in the tenant. {len(pf)} public folder object(s).",
-            "Review Exchange mail-flow dependencies. Remove unsupported paths and document approved "
-            "mail-routing dependencies.",
+            f"Public folders are still present in the tenant. {pf_detail}.",
+            "Identify owners and active users for each public folder. Migrate active content to "
+            "SharePoint, shared mailboxes, or Teams channels as appropriate. Mail-enabled public "
+            "folders require an inbound connector or alias migration before decommission. "
+            "Document a retirement timeline and remove the public folder hierarchy once migrated.",
             "PublicFolderDetails", "Public Folders", "Hybrid/Exchange",
         ))
 

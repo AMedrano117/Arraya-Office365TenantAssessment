@@ -485,7 +485,15 @@ def _write_executive_summary(
 
         score_str = ""
         if current_s and max_s:
-            delta_str = f" -- {current_s - avg_all:+.0f} vs. cross-tenant average" if avg_all else ""
+            if avg_all:
+                # avg_all is a percentage (0-100 scale); score_pct is already a percentage
+                gap_pct = round(avg_all - score_pct)
+                if gap_pct > 0:
+                    delta_str = f", {gap_pct}pp below cross-tenant average of {avg_all:.0f}%"
+                else:
+                    delta_str = f", {abs(gap_pct)}pp above cross-tenant average of {avg_all:.0f}%"
+            else:
+                delta_str = ""
             score_str = (
                 f" The Microsoft Secure Score stands at {current_s:.0f} of {max_s:.0f} points "
                 f"({score_pct}%{delta_str})."
@@ -1119,7 +1127,17 @@ def _security_story(data: dict, derived: dict, findings: list[dict]) -> list[str
     # Para 1: actual score numbers
     if current and max_s:
         pct = round(current / max_s * 100)
-        avg_str = (f" The cross-tenant average is {avg_all:.0f} points." if avg_all else "")
+        if avg_all:
+            # avg_all is on a 0-100 percentage scale
+            gap_pct = round(avg_all - pct)
+            if gap_pct > 0:
+                avg_str = (f" The cross-tenant average is {avg_all:.0f}% -- "
+                           f"this tenant is {gap_pct} percentage point{'s' if gap_pct != 1 else ''} below average.")
+            else:
+                avg_str = (f" The cross-tenant average is {avg_all:.0f}% -- "
+                           f"this tenant is {abs(gap_pct)} percentage point{'s' if abs(gap_pct) != 1 else ''} above average.")
+        else:
+            avg_str = ""
         paras.append(
             f"The Microsoft Secure Score for this tenant is {current:.0f} out of {max_s:.0f} points ({pct}%).{avg_str} "
             "Each point represents a specific control Microsoft rates as reducing risk for this tenant profile. "
