@@ -184,6 +184,12 @@ def _generate_hybrid_findings(snapshot: dict, bpf_categories: set[str] | None = 
         rows = _rows(section, table)
         return rows[0] if rows else {}
 
+    def _flat_dict(section: str, table: str) -> dict:
+        """Direct access for flat single-record summary dicts (all-scalar values).
+        _rows//_first filter out non-dict values, so flat summary objects must use this."""
+        val = (data.get(section) or {}).get(table)
+        return val if isinstance(val, dict) else {}
+
     def _derived_first(key: str) -> dict:
         val = derived.get(key) or {}
         if isinstance(val, list):
@@ -929,7 +935,7 @@ def _generate_hybrid_findings(snapshot: dict, bpf_categories: set[str] | None = 
         m for m in mailboxes
         if m.get("ForwardingSmtpAddress") or m.get("ForwardingAddress")
     ]
-    fps = _first("Exchange", "ForwardingPolicySummary")
+    fps = _flat_dict("Exchange", "ForwardingPolicySummary")
     remote_fwd = int(fps.get("RemoteDomainsAllowingAutoForwarding", 0) or 0)
     policies_allow = int(fps.get("PoliciesExplicitlyAllowingAutoForwarding", 0) or 0)
 
@@ -968,7 +974,7 @@ def _generate_hybrid_findings(snapshot: dict, bpf_categories: set[str] | None = 
     # Shared mailbox governance
     # PS snapshot keys: SharedMailboxCount, SharedMailboxesWithoutOwnerSignal, OversizedSharedMailboxes
     # Python snapshot keys (pipeline.py): SharedMailboxes (count), TotalNonUserMailboxes
-    smg = _first("Exchange", "SharedMailboxGovernanceSummary")
+    smg = _flat_dict("Exchange", "SharedMailboxGovernanceSummary")
     smb_total = int(
         smg.get("SharedMailboxCount") or smg.get("SharedMailboxes") or 0
     )
@@ -1001,7 +1007,7 @@ def _generate_hybrid_findings(snapshot: dict, bpf_categories: set[str] | None = 
     # -----------------------------------------------------------------------
     # SECURITY — Consent governance
     # -----------------------------------------------------------------------
-    auth_cfg = _first("Identity", "AuthenticationConfig")
+    auth_cfg = _flat_dict("Identity", "AuthenticationConfig")
     pgp = auth_cfg.get("PermissionGrantPoliciesAssigned") or []
     if isinstance(pgp, str):
         pgp = [p.strip() for p in pgp.split(";") if p.strip()]
