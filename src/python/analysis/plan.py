@@ -966,8 +966,12 @@ def _generate_hybrid_findings(snapshot: dict, bpf_categories: set[str] | None = 
         ))
 
     # Shared mailbox governance
+    # PS snapshot keys: SharedMailboxCount, SharedMailboxesWithoutOwnerSignal, OversizedSharedMailboxes
+    # Python snapshot keys (pipeline.py): SharedMailboxes (count), TotalNonUserMailboxes
     smg = _first("Exchange", "SharedMailboxGovernanceSummary")
-    smb_total = int(smg.get("SharedMailboxCount", 0) or 0)
+    smb_total = int(
+        smg.get("SharedMailboxCount") or smg.get("SharedMailboxes") or 0
+    )
     smb_no_owner = int(smg.get("SharedMailboxesWithoutOwnerSignal", 0) or 0)
     smb_oversized = int(smg.get("OversizedSharedMailboxes", 0) or 0)
 

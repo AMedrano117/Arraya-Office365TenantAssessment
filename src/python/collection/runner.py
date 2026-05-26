@@ -24,6 +24,7 @@ from .graph_client import GraphClient
 from .collectors import tenant as col_tenant
 from .collectors import identity as col_identity
 from .collectors import exchange as col_exchange
+from .collectors import exchange_exo as col_exchange_exo
 from .collectors import collaboration as col_collab
 from .collectors import security as col_security
 from .collectors import governance as col_governance
@@ -117,6 +118,38 @@ def collect(
         log.warning("DNS auth collection failed: %s", exc)
         section_data["Governance"]["DomainAuthenticationRecords"] = {}
         _con.print("  [yellow]![/yellow] DNS auth      [dim]skipped[/dim]")
+
+    # EXO PS subprocess (optional: ExchangeOnlineManagement module + Exchange.ManageAsApp)
+    # Collects AllMailboxes, MailFlowRules, MailFlowConnectors, SpamFilteringConfig,
+    # RemoteDomains, PublicFolderDetails, InactiveMailboxDetails, ForwardingPolicySummary.
+    _con.print("  [dim]Exchange Online PS enrichment (optional -- EXO module required)...[/dim]")
+    org_domain = next(
+        (d for d in (tenant_data.get("Domains") or {}) if d.lower().endswith(".onmicrosoft.com")),
+        (tenant_data.get("TenantInfo") or {}).get("DefaultDomain", ""),
+    )
+    t_exa = time.monotonic()
+    try:
+        exa_data = col_exchange_exo.collect(auth, org_domain)
+        if exa_data:
+            for k, v in exa_data.items():
+                section_data["Exchange"][k] = v
+            all_mbx   = exa_data.get("AllMailboxes") or {}
+            mbx_vals  = list(all_mbx.values()) if isinstance(all_mbx, dict) else (all_mbx or [])
+            fwd_count = sum(
+                1 for m in mbx_vals if isinstance(m, dict) and
+                (m.get("ForwardingSmtpAddress") or m.get("ForwardingAddress"))
+            )
+            _con.print(
+                f"  [green]v[/green] EXO PS        "
+                f"[dim]{len(exa_data)} dataset(s), {len(mbx_vals)} mailbox(es), "
+                f"{fwd_count} with forwarding[/dim]  "
+                f"[dim]({time.monotonic()-t_exa:.1f}s)[/dim]"
+            )
+        else:
+            _con.print("  [dim]-[/dim] EXO PS        [dim]skipped[/dim]")
+    except Exception as exc:
+        log.warning("EXO PS subprocess failed: %s", exc)
+        _con.print("  [yellow]![/yellow] EXO PS        [dim]failed[/dim]")
 
     # Per-user Exchange enrichment (optional: MailboxSettings.Read)
     # Runs after parallel phase so Identity user IDs are available

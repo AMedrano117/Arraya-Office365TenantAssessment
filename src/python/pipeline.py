@@ -253,6 +253,8 @@ def _build_mailbox_summary(flat: dict) -> None:
     flat["SharedMailboxGovernanceSummary"] = {
         "TotalMailboxesReported": total_reported,
         "UserMailboxes":          max(total_reported - n_shared - n_equipment, 0),
+        # SharedMailboxCount mirrors the PS snapshot key name used by plan.py
+        "SharedMailboxCount":     n_shared,
         "SharedMailboxes":        n_shared,
         "EquipmentMailboxes":     n_equipment,
         "RoomMailboxes":          n_room,
