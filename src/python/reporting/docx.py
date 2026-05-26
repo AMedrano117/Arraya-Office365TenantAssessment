@@ -1098,7 +1098,8 @@ def _endpoint_story(data: dict, derived: dict, findings: list[dict]) -> list[str
     stats = []
     for f in [compliance_f, unmanaged_f, stale_f]:
         if f:
-            s = f.get("Finding", "").split(".")[0].strip()
+            # Split only at sentence boundaries (". " before capital), not decimal points
+            s = re.split(r'\.\s+(?=[A-Z])', f.get("Finding", ""), maxsplit=1)[0].strip()
             if s:
                 stats.append(s)
     if stats:
@@ -2333,9 +2334,13 @@ def _security_data_tables(doc: Document, snapshot: dict) -> None:
             ("Current Secure Score", f"{current:.0f} / {max_s:.0f} ({pct})"),
         ]
         if avg_all:
-            rows.append(("Cross-tenant average (all tenants)", f"{avg_all:.0f}"))
-            delta = current - avg_all
-            rows.append(("Vs. average", f"{delta:+.0f} points"))
+            # avg_all is a percentage (0-100); current/max_s are raw points
+            pct_num = round(current / max_s * 100)
+            # Positive delta = above average; negative = below average (tenant perspective)
+            gap_pct = pct_num - round(avg_all)
+            rows.append(("Cross-tenant average (all tenants)", f"{avg_all:.0f}%"))
+            vs_str = f"{gap_pct:+d} pp" if gap_pct != 0 else "At average"
+            rows.append(("Vs. average", vs_str))
         _tbl_label(doc, "Microsoft Secure Score")
         _table_2col(doc, rows, hdr=("Metric", "Value"), col_widths=(3.0, 2.0))
 
