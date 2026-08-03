@@ -38,7 +38,10 @@
  
 .PARAMETER outpath
  Specified the output path of the report file.
- 
+
+.PARAMETER TenantId
+ Optional tenant ID to connect to. When omitted, the script connects using the default tenant for the signed-in account.
+
 .EXAMPLE
 PS> Invoke-EntraAuthReport -outpath "C:\Reports\EntraAuthReport.html"
 #>
@@ -48,6 +51,8 @@ param(
     [Parameter()]
     [ValidateNotNullOrEmpty()]
     [string]$outpath,
+    [Parameter()]
+    [string]$TenantId,
     [Parameter()]
     [switch]$AllowUnsupportedLegacyExecution
 )
@@ -102,11 +107,13 @@ else {
 }
 
 # Connect if we need to
-if (-not $hasAllPerms -or ($state -and $state.TenantId -ne 'REDACTED-TENANT-ID')) {
+if (-not $hasAllPerms -or ($TenantId -and $state -and $state.TenantId -ne $TenantId)) {
     try {
         if ($state) { Disconnect-MgGraph -ErrorAction SilentlyContinue }
-        Write-Host "Connecting to Microsoft Graph (Test Tenant)..." -ForegroundColor Yellow
-        Connect-MgGraph -TenantId 'REDACTED-TENANT-ID' -Scopes $requiredPerms -ErrorAction Stop -NoWelcome
+        Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
+        $connectParams = @{ Scopes = $requiredPerms; ErrorAction = 'Stop'; NoWelcome = $true }
+        if ($TenantId) { $connectParams['TenantId'] = $TenantId }
+        Connect-MgGraph @connectParams
         Write-output "Successfully connected to Microsoft Graph"
     }
     catch {
