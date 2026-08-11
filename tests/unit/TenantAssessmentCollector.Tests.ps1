@@ -87,6 +87,50 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Not -Match "getOneDriveUsageAccountDetail\(period='D7'\)"
     }
 
+    It 'joins the usage reports on the SharePoint Online fallback path instead of discarding them' {
+        # The SPO stage previously called ConvertTo-NormalizedSiteData with no
+        # -UsageReport, so the reports downloaded in stage 1 went unused whenever the
+        # fallback won.
+        $script:collectorSource | Should -Match 'ConvertTo-NormalizedSiteData -Site \$site -IsOneDrive:\$isOneDrive -Source SPO -UsageReport \$usageReport'
+        $script:collectorSource | Should -Not -Match 'ConvertTo-NormalizedSiteData -Site \$site -IsOneDrive:\$isOneDrive -Source SPO\r?\n'
+        $script:collectorSource | Should -Match '\$usageReport = if \(\$isOneDrive\) \{ \$oneDriveUsageByUrl\[\$siteUrlKey\] \} else \{ \$sharePointUsageByUrl\[\$siteUrlKey\] \}'
+
+        # Coverage reporting must no longer be suppressed when the fallback is used.
+        $script:collectorSource | Should -Not -Match 'if \(\$ServiceName -in @\(''MGGraph'', ''API''\) -and -not \$sharePointUsedSpoFallback\)'
+    }
+
+    It 'treats the usage report as authoritative and records where each owner came from' {
+        $script:collectorSource | Should -Match 'function Get-UsageReportValue'
+        $script:collectorSource | Should -Match "\`$ownerSource = 'UsageReport'"
+
+        # Usage-report signals that describe how a site is actually used.
+        foreach ($field in @('OwnerDisplayName', 'FileCount', 'ActiveFileCount', 'ActiveFilePercent',
+                             'PageViewCount', 'VisitedPageCount', 'LastActivityDate',
+                             'DaysSinceLastActivity', 'ActivityState', 'GeoLocation',
+                             'SensitivityLabelId', 'PercentStorageUsed', 'StorageQuotaGB',
+                             'UsageReportMatched', 'InventorySource', 'OwnerSource', 'MigrationNotes')) {
+            $script:collectorSource | Should -Match ("{0}\s+=" -f [regex]::Escape($field))
+        }
+
+        # Conditions an operator needs to plan around.
+        $script:collectorSource | Should -Match 'candidate for archive rather than migration'
+        $script:collectorSource | Should -Match 'confirm label availability in the target tenant'
+        $script:collectorSource | Should -Match 'confirm target geo placement'
+        $script:collectorSource | Should -Match 'migrates with its parent team, not independently'
+    }
+
+    It 'backfills group-connected site owners from the Microsoft 365 group inventory' {
+        $script:collectorSource | Should -Match 'function Set-AssessmentSiteOwnerBackfill'
+        $script:collectorSource | Should -Match 'Get-ArrayaObjectValue -Object \$group -Names @\(''SharePointSiteUrl''\)'
+        $script:collectorSource | Should -Match "Get-ArrayaObjectValue -Object \`$group -Names @\('ManagedByDetails', 'ManagedBy'\)"
+        $script:collectorSource | Should -Match "\`$siteRow\.OwnerSource = 'M365GroupOwner'"
+        $script:collectorSource | Should -Match 'Site owner backfill from Microsoft 365 groups'
+
+        # Only runs once inventory exists, and never overwrites an owner already resolved.
+        $script:collectorSource | Should -Match 'if \(\$sharePointInventoryCollected\) \{\r?\n\s*Set-AssessmentSiteOwnerBackfill'
+        $script:collectorSource | Should -Match 'if \(-not \[string\]::IsNullOrWhiteSpace\(\[string\]\$siteRow\.Owner\)\) \{ continue \}'
+    }
+
     It 'cascades SharePoint inventory from Graph SDK through getAllSites to the SharePoint Online module' {
         # Every stage reports success or failure so the cascade can advance.
         $script:collectorSource | Should -Match '\$sharePointInventoryCollected = \[bool\]\(Get-SharePointAndOneDriveSitesFromGraphSdk\)'
