@@ -1456,6 +1456,48 @@ function Assert-AssessmentGraphContextMatchesTenant {
     return $graphDetails
 }
 
+function Assert-AssessmentWorkloadTenantsMatch {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $GraphTenantDetails,
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $ExchangeTenantDetails
+    )
+
+    $graphTenantId = [string](Get-ArrayaObjectValue -Object $GraphTenantDetails -Names @('TenantId', 'TenantID', 'TenantGuid'))
+    $exchangeTenantId = [string](Get-ArrayaObjectValue -Object $ExchangeTenantDetails -Names @('TenantId', 'TenantID', 'TenantGuid'))
+
+    # Either side can legitimately be unavailable (app-only Exchange, cmdlet gaps). Only
+    # a confirmed difference is actionable.
+    if ([string]::IsNullOrWhiteSpace($graphTenantId) -or [string]::IsNullOrWhiteSpace($exchangeTenantId)) {
+        Write-Log -Type DEBUG -Message "[Assert-AssessmentWorkloadTenantsMatch] Skipped cross-workload tenant validation (Graph='$graphTenantId'; Exchange='$exchangeTenantId')." -ExportFileLocation $ExportDetails
+        return
+    }
+
+    if ([string]::Equals($graphTenantId, $exchangeTenantId, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-Log -Type INFO -Message "[Assert-AssessmentWorkloadTenantsMatch] Graph and Exchange Online are both connected to tenant $graphTenantId." -ExportFileLocation $ExportDetails
+        return
+    }
+
+    $graphLabel = [string](Get-ArrayaObjectValue -Object $GraphTenantDetails -Names @('TenantName', 'DisplayName'))
+    $exchangeLabel = [string](Get-ArrayaObjectValue -Object $ExchangeTenantDetails -Names @('TenantName', 'DisplayName'))
+    $graphDescription = if ([string]::IsNullOrWhiteSpace($graphLabel)) { $graphTenantId } else { "$graphLabel ($graphTenantId)" }
+    $exchangeDescription = if ([string]::IsNullOrWhiteSpace($exchangeLabel)) { $exchangeTenantId } else { "$exchangeLabel ($exchangeTenantId)" }
+
+    $message = (
+        "Microsoft Graph and Exchange Online are connected to different tenants. " +
+        "Graph: $graphDescription. Exchange Online: $exchangeDescription. " +
+        "Every Graph-derived dataset would belong to a different tenant than the Exchange data, producing a mixed-tenant assessment. " +
+        "Run Disconnect-MgGraph (and Disconnect-ExchangeOnline), start a fresh PowerShell session, and reconnect both workloads to the intended tenant."
+    )
+
+    Write-Log -Type ERROR -Message "[Assert-AssessmentWorkloadTenantsMatch] $message" -ExportFileLocation $ExportDetails
+    throw $message
+}
+
 function Disconnect-AssessmentExistingSessions {
     [CmdletBinding()]
     param()
@@ -8076,6 +8118,11 @@ function Get-SharePointAndOneDriveSites {
     $oneDriveUsageByUrl = @{}
     $siteReportPeriod = 'D180'
     if ($ServiceName -in @('MGGraph', 'API')) {
+        # These reports are independent of site inventory: they come from the Graph
+        # reporting endpoints, so they still populate when getAllSites is denied and the
+        # SharePoint Online module is unavailable.
+        Write-AssessmentConsoleSubstep -Message "SharePoint/OneDrive usage and activity reports ($siteReportPeriod): downloading 4 Graph report(s)..."
+
         # Site-keyed usage reports enrich the site inventory rows below.
         $sharePointUsageBySiteId = Get-GraphCsvReportLookup -ReportServiceName 'SharePointSites' -Uri "https://graph.microsoft.com/v1.0/reports/getSharePointSiteUsageDetail(period='$siteReportPeriod')" -LookupName 'SharePointSiteUsageDetail' -UrlLookup $sharePointUsageByUrl -PeriodDuration $siteReportPeriod
         $oneDriveUsageBySiteId = Get-GraphCsvReportLookup -ReportServiceName 'OneDriveUsage' -Uri "https://graph.microsoft.com/v1.0/reports/getOneDriveUsageAccountDetail(period='$siteReportPeriod')" -LookupName 'OneDriveUsageAccountDetail' -UrlLookup $oneDriveUsageByUrl -PeriodDuration $siteReportPeriod
@@ -8084,6 +8131,12 @@ function Get-SharePointAndOneDriveSites {
         # worksheets and roll up into CollaborationActivitySummary.
         Set-AssessmentSiteActivityReport -ReportServiceName 'SharePointUser' -Uri "https://graph.microsoft.com/v1.0/reports/getSharePointActivityUserDetail(period='$siteReportPeriod')" -LookupName 'SharePointActivityUserDetail' -TableName 'SharePointActivityUserDetail' -Workload 'SharePoint' -PeriodDuration $siteReportPeriod
         Set-AssessmentSiteActivityReport -ReportServiceName 'OneDriveActivity' -Uri "https://graph.microsoft.com/v1.0/reports/getOneDriveActivityUserDetail(period='$siteReportPeriod')" -LookupName 'OneDriveActivityUserDetail' -TableName 'OneDriveActivityUserDetail' -Workload 'OneDrive' -PeriodDuration $siteReportPeriod
+
+        Write-AssessmentConsoleSubstep -Message ("SharePoint/OneDrive reports: usage rows SharePoint={0}, OneDrive={1}; activity rows SharePoint={2}, OneDrive={3}." -f `
+            $sharePointUsageBySiteId.Count, `
+            $oneDriveUsageBySiteId.Count, `
+            @($script:tenantStatsHash['SharePointActivityUserDetail']).Count, `
+            @($script:tenantStatsHash['OneDriveActivityUserDetail']).Count)
     }
 
     # Option 1: Use Microsoft Graph PowerShell SDK
@@ -16648,6 +16701,17 @@ else {
         -NeedsSharePointData ([bool]$script:ProfileCollectionPlan.CollectSharePointAndOneDriveSites)
     $script:AssessmentAuthWorkloadPlan = $assessmentAuthWorkloadPlan
 
+    # Interactive runs reuse any cached Connect-MgGraph context. Without an explicit
+    # TenantId there is nothing to validate that context against, which is how a Graph
+    # session belonging to a different customer can end up feeding the assessment.
+    if ($resolvedAuthMode -eq 'Interactive' -and [string]::IsNullOrWhiteSpace($TenantId)) {
+        throw (
+            'Interactive runs require -TenantId so the Microsoft Graph context can be validated against the intended tenant. ' +
+            'Without it a cached Connect-MgGraph session from another tenant is reused silently and the assessment mixes tenants. ' +
+            'Rerun with -TenantId <guid> for the tenant being assessed.'
+        )
+    }
+
     if ($runUseExistingConnections) {
         Write-ConsoleSection -Step 'Connection' -Title 'Existing Connection Check'
         Write-Host 'Using existing Microsoft 365 connections for data collection. Authentication and permission preflight are skipped.' -ForegroundColor Cyan
@@ -16673,6 +16737,12 @@ else {
     ) {
         throw "Authentication bootstrap did not complete successfully. Graph=$($connectionResult.Graph); ExchangeOnline=$($connectionResult.ExchangeOnline)"
     }
+
+    # Both the fresh-connect and existing-session paths populate these, so validating here
+    # covers both. A mixed-tenant run is never valid output, so fail before collecting.
+    Assert-AssessmentWorkloadTenantsMatch `
+        -GraphTenantDetails $connectionResult.GraphTenantDetails `
+        -ExchangeTenantDetails $connectionResult.ExchangeTenantDetails
 
     # Get default tenant display name from live connection
     $defaultOrganization = $null
