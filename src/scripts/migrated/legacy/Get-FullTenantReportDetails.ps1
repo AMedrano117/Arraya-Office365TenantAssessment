@@ -17038,15 +17038,26 @@ else {
         -NeedsSharePointData ([bool]$script:ProfileCollectionPlan.CollectSharePointAndOneDriveSites)
     $script:AssessmentAuthWorkloadPlan = $assessmentAuthWorkloadPlan
 
-    # Interactive runs reuse any cached Connect-MgGraph context. Without an explicit
-    # TenantId there is nothing to validate that context against, which is how a Graph
-    # session belonging to a different customer can end up feeding the assessment.
+    # Interactive runs reuse any cached Connect-MgGraph context. Without a TenantId there
+    # is nothing to validate that context against, which is how a Graph session belonging
+    # to a different customer can end up feeding the assessment. Prompt rather than fail,
+    # so the zero-argument menu flow still works, but never proceed without a value.
     if ($resolvedAuthMode -eq 'Interactive' -and [string]::IsNullOrWhiteSpace($TenantId)) {
-        throw (
-            'Interactive runs require -TenantId so the Microsoft Graph context can be validated against the intended tenant. ' +
-            'Without it a cached Connect-MgGraph session from another tenant is reused silently and the assessment mixes tenants. ' +
-            'Rerun with -TenantId <guid> for the tenant being assessed.'
-        )
+        $tenantPromptReason = 'The Microsoft Graph context is validated against the tenant being assessed, so a tenant id is required. Without it a cached Connect-MgGraph session from another tenant is reused silently and the assessment mixes tenants.'
+
+        if (-not (Test-AssessmentInteractiveHost)) {
+            throw ($tenantPromptReason + ' This host is non-interactive, so rerun with -TenantId <guid> for the tenant being assessed.')
+        }
+
+        Write-AssessmentConsoleSubstep -Message $tenantPromptReason -ForegroundColor Yellow
+        $TenantId = (Read-Host -Prompt '  Tenant id (guid) or primary domain of the tenant being assessed')
+        if ($null -ne $TenantId) { $TenantId = $TenantId.Trim() }
+
+        if ([string]::IsNullOrWhiteSpace($TenantId)) {
+            throw ($tenantPromptReason + ' No tenant id was supplied. Rerun with -TenantId <guid> for the tenant being assessed.')
+        }
+
+        Write-Log -Type INFO -Message "[Get-FullTenantReportDetails] Tenant id supplied at the prompt for an interactive run: $TenantId" -ExportFileLocation $ExportDetails
     }
 
     if ($runUseExistingConnections) {
