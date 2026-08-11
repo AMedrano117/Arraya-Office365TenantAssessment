@@ -886,17 +886,22 @@ function Export-HashTableToExcel {
         # Export-Excel derives its columns from the first record only, so any property a
         # later record adds is silently dropped. Build the union and pad only when the
         # records are actually ragged, to avoid copying large uniform sheets.
+        # Single pass over each record's properties: large worksheets run this for every
+        # row, so the per-record property count is tallied inline rather than by
+        # re-enumerating PSObject.Properties.
         $union = [ordered]@{}
         $ragged = $false
         foreach ($record in $Records) {
             if ($null -eq $record) { continue }
+            $propertyCount = 0
             foreach ($property in $record.PSObject.Properties) {
+                $propertyCount++
                 if (-not $union.Contains($property.Name)) {
                     if ($union.Count -gt 0) { $ragged = $true }
                     $union[$property.Name] = $true
                 }
             }
-            if (@($record.PSObject.Properties).Count -ne $union.Count) {
+            if ($propertyCount -ne $union.Count) {
                 $ragged = $true
             }
         }
