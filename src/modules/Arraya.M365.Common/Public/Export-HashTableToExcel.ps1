@@ -791,6 +791,51 @@ function Export-HashTableToExcel {
         return @()
     }
 
+    # Curated columns for the default workbook. Reflecting a Graph SDK user object yields
+    # ~145 columns in alphabetical order, which buries DisplayName around column AJ behind
+    # AboutMe, AgeGroup, Birthday and friends. These lists define both what is worth
+    # exporting and the order an assessor reads it in. Columns that end up empty for a
+    # given tenant are still dropped afterwards.
+    function Get-AssessmentDefaultWorksheetColumns {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$LogicalName
+        )
+
+        $userIdentityColumns = @(
+            'DisplayName', 'UserPrincipalName', 'Mail', 'GivenName', 'Surname'
+            'AccountEnabled', 'UserType', 'CreationType', 'ExternalUserState', 'CreatedDateTime'
+            'JobTitle', 'Department', 'CompanyName', 'OfficeLocation'
+            'City', 'State', 'Country', 'UsageLocation', 'EmployeeId'
+            'AssignedLicensesFriendly', 'DirectAssignedLicenses', 'GroupAssignedLicenses'
+            'EnabledServicePlans', 'LicenseAssignmentStateSummary', 'LicenseAssignmentErrors'
+            'OnPremisesSyncEnabled', 'OnPremisesSamAccountName', 'OnPremisesImmutableId', 'OnPremisesLastSyncDateTime'
+            'LastPasswordChangeDateTime', 'LastSignInDateTime', 'LastNonInteractiveSignInDateTime'
+            'ProxyAddresses', 'MailNickname', 'Id'
+        )
+
+        $columnMap = @{
+            'Users' = $userIdentityColumns
+            # UserFullDetails is the wider view: the same identity picture plus the mailbox
+            # and OneDrive rollups the export projection adds.
+            'UserFullDetails' = @(
+                $userIdentityColumns +
+                @(
+                    'OnPremisesDistinguishedName', 'License-DisabledArray'
+                    'MBXSizeGB', 'MBXItemCount', 'ArchiveSizeGB', 'ArchiveItemCount'
+                    'DriveURL', 'DriveStorageGB'
+                )
+            )
+        }
+
+        if ($columnMap.ContainsKey($LogicalName)) {
+            return @($columnMap[$LogicalName])
+        }
+
+        return @()
+    }
+
     function Get-TenantToTenantWorksheetSourceName {
         [CmdletBinding()]
         param(
@@ -1120,6 +1165,7 @@ function Export-HashTableToExcel {
                 $sourceCount = [int]$sourceInfo.Count
                 $exportSource = $sourceInfo.Source
                 $explicitColumns = if ($WorkbookExportPolicy -eq 'TenantToTenantCutover') { @(Get-TenantToTenantWorksheetColumns -LogicalName $table) } else { @() }
+                $curatedColumns = if ($WorkbookExportPolicy -ne 'TenantToTenantCutover') { @(Get-AssessmentDefaultWorksheetColumns -LogicalName $table) } else { @() }
 
                 if ($sourceCount -gt 0) {
                     $autoSizeSheet = ($sourceCount -le $autoSizeRowLimit -and $WorkbookExportPolicy -ne 'TenantToTenantCutover')
@@ -1139,6 +1185,13 @@ function Export-HashTableToExcel {
 
                     $rowsToExport = if ($explicitColumns.Count -gt 0) {
                         @($exportSource | Select-Object $explicitColumns)
+                    }
+                    elseif ($curatedColumns.Count -gt 0) {
+                        # Curated sheets keep only assessment-relevant columns, in reading
+                        # order. Unlike the tenant-to-tenant contract these still go through
+                        # the empty-column drop below, so a column no tenant populates is
+                        # not carried along just because it is on the list.
+                        @($exportSource | Select-Object $curatedColumns)
                     }
                     else {
                         @($exportSource)
