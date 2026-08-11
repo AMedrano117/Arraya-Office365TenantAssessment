@@ -8020,24 +8020,74 @@ function Get-SharePointAndOneDriveSites {
             }
         }
 
+        # Graph usage report column names vary by tenant and API revision, so read
+        # defensively and treat a blank cell as absent.
+        function Get-UsageReportValue {
+            param(
+                [AllowNull()]$Report,
+                [string[]]$Names
+            )
+
+            if ($null -eq $Report) { return $null }
+            foreach ($name in $Names) {
+                $property = $Report.PSObject.Properties[$name]
+                if ($property -and -not [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+                    return $property.Value
+                }
+            }
+            return $null
+        }
+
+        $ownerSource = if ($owner) { $Source } else { $null }
+        $usageMatched = [bool]$UsageReport
+        $ownerDisplayName = $null
+        $fileCount = $null
+        $activeFileCount = $null
+        $pageViewCount = $null
+        $visitedPageCount = $null
+        $lastActivityDate = $null
+        $geoLocation = $null
+        $sensitivityLabelId = $null
+        $reportExternalSharing = $null
+        $isDeleted = $null
+
         if ($UsageReport) {
-            if ($UsageReport.'Storage Used (Byte)') {
-                $storageUsageCurrent = [int64]$UsageReport.'Storage Used (Byte)'
+            # Usage report wins for the fields it owns: it is the authoritative
+            # tenant-wide measurement and is consistent across collection paths.
+            $reportStorageUsed = Get-UsageReportValue -Report $UsageReport -Names @('Storage Used (Byte)')
+            if ($reportStorageUsed) {
+                $storageUsageCurrent = [int64]$reportStorageUsed
             }
-            if ($UsageReport.'Storage Allocated (Byte)') {
-                $storageQuota = [int64]$UsageReport.'Storage Allocated (Byte)'
+            $reportStorageAllocated = Get-UsageReportValue -Report $UsageReport -Names @('Storage Allocated (Byte)')
+            if ($reportStorageAllocated) {
+                $storageQuota = [int64]$reportStorageAllocated
             }
-            if ($UsageReport.'Owner Principal Name') {
-                $owner = $UsageReport.'Owner Principal Name'
+            $reportOwner = Get-UsageReportValue -Report $UsageReport -Names @('Owner Principal Name')
+            if ($reportOwner) {
+                $owner = $reportOwner
+                $ownerSource = 'UsageReport'
             }
-            if (-not $lastContentModifiedDate -and $UsageReport.'Last Activity Date') {
-                $lastContentModifiedDate = $UsageReport.'Last Activity Date'
+
+            $ownerDisplayName = Get-UsageReportValue -Report $UsageReport -Names @('Owner Display Name')
+            $fileCount = Get-UsageReportValue -Report $UsageReport -Names @('File Count')
+            $activeFileCount = Get-UsageReportValue -Report $UsageReport -Names @('Active File Count')
+            $pageViewCount = Get-UsageReportValue -Report $UsageReport -Names @('Page View Count')
+            $visitedPageCount = Get-UsageReportValue -Report $UsageReport -Names @('Visited Page Count')
+            $lastActivityDate = Get-UsageReportValue -Report $UsageReport -Names @('Last Activity Date')
+            $geoLocation = Get-UsageReportValue -Report $UsageReport -Names @('Geo Location', 'GeoLocation')
+            $sensitivityLabelId = Get-UsageReportValue -Report $UsageReport -Names @('Site Sensitivity Label Id', 'Sensitivity Label Id')
+            $reportExternalSharing = Get-UsageReportValue -Report $UsageReport -Names @('External Sharing')
+            $isDeleted = Get-UsageReportValue -Report $UsageReport -Names @('Is Deleted')
+
+            if (-not $lastContentModifiedDate -and $lastActivityDate) {
+                $lastContentModifiedDate = $lastActivityDate
             }
-            if (-not $template -and $UsageReport.'Root Web Template') {
-                $template = switch ($UsageReport.'Root Web Template') {
+            $reportTemplate = Get-UsageReportValue -Report $UsageReport -Names @('Root Web Template')
+            if (-not $template -and $reportTemplate) {
+                $template = switch ($reportTemplate) {
                     'Group' { 'GROUP#0' }
                     'TeamChannel' { 'TEAMCHANNEL#0' }
-                    default { $UsageReport.'Root Web Template' }
+                    default { $reportTemplate }
                 }
             }
         }
@@ -8080,7 +8130,64 @@ function Get-SharePointAndOneDriveSites {
 
         if (-not $owner -and $IsOneDrive -and $url) {
             $owner = Get-LikelyOneDriveOwnerFromUrl -Url $url
+            if ($owner) { $ownerSource = 'DerivedFromUrl' }
         }
+
+        # Derived migration/assessment signals.
+        $storageQuotaGB = $null
+        if ($storageQuota) {
+            $storageQuotaGB = if ($usageMatched) {
+                [double]$storageQuota / 1GB
+            }
+            elseif ($Source -eq 'SPO') {
+                [double]$storageQuota / 1024
+            }
+            else {
+                [double]$storageQuota / 1GB
+            }
+        }
+
+        $percentStorageUsed = $null
+        if ($storageQuotaGB -and $storageQuotaGB -gt 0) {
+            $percentStorageUsed = [math]::Round(($storageUsageCurrentGB / $storageQuotaGB) * 100, 1)
+        }
+
+        $daysSinceLastActivity = $null
+        $activityReference = if ($lastActivityDate) { $lastActivityDate } else { $lastContentModifiedDate }
+        if ($activityReference) {
+            try {
+                $daysSinceLastActivity = [int]((Get-Date) - [datetime]$activityReference).TotalDays
+            }
+            catch {}
+        }
+
+        $activityState = if ($null -eq $daysSinceLastActivity) {
+            'Unknown'
+        }
+        elseif ($daysSinceLastActivity -le 30) { 'Active' }
+        elseif ($daysSinceLastActivity -le 90) { 'Low' }
+        elseif ($daysSinceLastActivity -le 180) { 'Stale' }
+        else { 'Dormant' }
+
+        $activeFileRatio = $null
+        try {
+            if ($fileCount -and [double]$fileCount -gt 0 -and $null -ne $activeFileCount) {
+                $activeFileRatio = [math]::Round(([double]$activeFileCount / [double]$fileCount) * 100, 1)
+            }
+        }
+        catch {}
+
+        # Conditions worth calling out before a migration or in an assessment.
+        $migrationNotes = @()
+        if ($activityState -eq 'Dormant') { $migrationNotes += 'No recorded activity in the report window; candidate for archive rather than migration.' }
+        if ($null -eq $owner) { $migrationNotes += 'No owner resolved; migration contact and post-move accountability unclear.' }
+        if ($sensitivityLabelId) { $migrationNotes += 'Sensitivity label applied; confirm label availability in the target tenant.' }
+        if ($geoLocation) { $migrationNotes += "Multi-geo site located in '$geoLocation'; confirm target geo placement." }
+        if ($lockState -and [string]$lockState -notin @('Unlock', 'Unlocked', '')) { $migrationNotes += "Site lock state is '$lockState'; unlock before migration." }
+        if ($archiveStatus -and [string]$archiveStatus -notin @('NotArchived', '')) { $migrationNotes += "Archive status is '$archiveStatus'; archived content may not migrate." }
+        if ($percentStorageUsed -and $percentStorageUsed -ge 90) { $migrationNotes += 'Storage above 90 percent of quota; raise quota before migration.' }
+        if ($isTeamsChannelConnected) { $migrationNotes += 'Private or shared Teams channel site; migrates with its parent team, not independently.' }
+        if ([string]$isDeleted -match '^(?i)true$') { $migrationNotes += 'Reported as deleted in the usage report; verify retention state.' }
 
         return [PSCustomObject]@{
             SiteId                    = $(if ($Site.PSObject.Properties['Id']) { [string]$Site.Id } elseif ($Site.PSObject.Properties['id']) { [string]$Site.id } else { $null })
@@ -8105,6 +8212,25 @@ function Get-SharePointAndOneDriveSites {
             SharingCapability         = $sharingCapability
             DefaultLinkPermission     = $defaultLinkPermission
             DefaultSharingLinkType    = $defaultSharingLinkType
+            OwnerDisplayName          = $ownerDisplayName
+            OwnerSource               = $ownerSource
+            StorageQuotaGB            = $(if ($null -ne $storageQuotaGB) { [math]::Round($storageQuotaGB, 3) } else { $null })
+            PercentStorageUsed        = $percentStorageUsed
+            FileCount                 = $fileCount
+            ActiveFileCount           = $activeFileCount
+            ActiveFilePercent         = $activeFileRatio
+            PageViewCount             = $pageViewCount
+            VisitedPageCount          = $visitedPageCount
+            LastActivityDate          = $lastActivityDate
+            DaysSinceLastActivity     = $daysSinceLastActivity
+            ActivityState             = $activityState
+            GeoLocation               = $geoLocation
+            SensitivityLabelId        = $sensitivityLabelId
+            ReportedExternalSharing   = $reportExternalSharing
+            IsDeletedInReport         = $isDeleted
+            UsageReportMatched        = $usageMatched
+            InventorySource           = $Source
+            MigrationNotes            = $(if ($migrationNotes.Count -gt 0) { $migrationNotes -join ' ' } else { $null })
         }
     }
 
@@ -8281,7 +8407,17 @@ function Get-SharePointAndOneDriveSites {
                 Write-ProgressHelper -Total $totalCount -Id $siteDetailsProgressId -Activity "Gather Additional Site Details" -Operation "Gathering Site Details for $($site.Title)"
                 # Determine if the site is a OneDrive or a standard SharePoint site
                 $isOneDrive = ($site.Url -like "*-my.sharepoint.com*")
-                $siteData = ConvertTo-NormalizedSiteData -Site $site -IsOneDrive:$isOneDrive -Source SPO
+
+                # Join the usage reports collected in stage 1. They are keyed by site id
+                # and URL; Get-SPOSite exposes the URL, so match on that first.
+                $siteUrlKey = if ($site.Url) { $site.Url.TrimEnd('/').ToLowerInvariant() } else { $null }
+                $usageReport = $null
+                if ($siteUrlKey) {
+                    $usageReport = if ($isOneDrive) { $oneDriveUsageByUrl[$siteUrlKey] } else { $sharePointUsageByUrl[$siteUrlKey] }
+                }
+                Update-SiteUsageCoverage -IsOneDrive:$isOneDrive -UsageReport $usageReport
+
+                $siteData = ConvertTo-NormalizedSiteData -Site $site -IsOneDrive:$isOneDrive -Source SPO -UsageReport $usageReport
 
                 # Store data in appropriate hashtable
                 if ($isOneDrive) {
@@ -8417,6 +8553,63 @@ function Get-SharePointAndOneDriveSites {
         return ($restSiteCount -gt 0)
     }
 
+    # Group-connected sites (GROUP#0, Teams) carry no Owner in Get-SPOSite or getAllSites:
+    # the owner lives on the Microsoft 365 group. Backfill from the unified group
+    # inventory, matched on SharePointSiteUrl, so migration contacts are resolvable.
+    function Set-AssessmentSiteOwnerBackfill {
+        [CmdletBinding()]
+        param()
+
+        $groupOwnersByUrl = @{}
+        if ($script:tenantStatsHash.ContainsKey('UnifiedGroups') -and $script:tenantStatsHash['UnifiedGroups'] -is [System.Collections.IDictionary]) {
+            foreach ($group in @($script:tenantStatsHash['UnifiedGroups'].Values)) {
+                if ($null -eq $group) { continue }
+                $groupSiteUrl = [string](Get-ArrayaObjectValue -Object $group -Names @('SharePointSiteUrl'))
+                if ([string]::IsNullOrWhiteSpace($groupSiteUrl)) { continue }
+
+                $groupOwners = [string](Get-ArrayaObjectValue -Object $group -Names @('ManagedByDetails', 'ManagedBy'))
+                if ([string]::IsNullOrWhiteSpace($groupOwners)) { continue }
+
+                $groupOwnersByUrl[$groupSiteUrl.Trim().TrimEnd('/').ToLowerInvariant()] = $groupOwners
+            }
+        }
+
+        if ($groupOwnersByUrl.Count -eq 0) {
+            Write-Log -Type DEBUG -Message '[Get-SharePointAndOneDriveSites] No unified group owner data available for site owner backfill.' -ExportFileLocation $ExportDetails
+            return
+        }
+
+        $backfilled = 0
+        $stillMissing = 0
+        foreach ($tableName in @('SharePoint', 'OneDrive')) {
+            if (-not $script:tenantStatsHash.ContainsKey($tableName)) { continue }
+            $table = $script:tenantStatsHash[$tableName]
+            if (-not ($table -is [System.Collections.IDictionary])) { continue }
+
+            foreach ($siteKey in @($table.Keys)) {
+                $siteRow = $table[$siteKey]
+                if ($null -eq $siteRow) { continue }
+                if (-not [string]::IsNullOrWhiteSpace([string]$siteRow.Owner)) { continue }
+
+                $siteUrl = [string]$siteRow.Url
+                if ([string]::IsNullOrWhiteSpace($siteUrl)) { $stillMissing++; continue }
+
+                $lookupKey = $siteUrl.Trim().TrimEnd('/').ToLowerInvariant()
+                if ($groupOwnersByUrl.ContainsKey($lookupKey)) {
+                    $siteRow.Owner = $groupOwnersByUrl[$lookupKey]
+                    $siteRow.OwnerSource = 'M365GroupOwner'
+                    $backfilled++
+                }
+                else {
+                    $stillMissing++
+                }
+            }
+        }
+
+        Write-AssessmentConsoleSubstep -Message ("Site owner backfill from Microsoft 365 groups: {0} resolved, {1} still unresolved." -f $backfilled, $stillMissing)
+        Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSites] Site owner backfill from unified groups: resolved=$backfilled; unresolved=$stillMissing; groupOwnerSources=$($groupOwnersByUrl.Count)." -ExportFileLocation $ExportDetails
+    }
+
     # Ordered cascade: Graph site inventory first, then SharePoint Online PowerShell.
     # Stage 1 (the usage/activity reports) already ran above.
     $sharePointUsedSpoFallback = $false
@@ -8463,7 +8656,14 @@ function Get-SharePointAndOneDriveSites {
         }
         Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSites] Inventory collected via $inventorySource." -ExportFileLocation $ExportDetails
     }
-    if ($ServiceName -in @('MGGraph', 'API') -and -not $sharePointUsedSpoFallback) {
+
+    if ($sharePointInventoryCollected) {
+        Set-AssessmentSiteOwnerBackfill
+    }
+
+    # Coverage now applies to every inventory source, because the SharePoint Online
+    # fallback joins the same usage reports as the Graph paths.
+    if ($ServiceName -in @('MGGraph', 'API')) {
         $sharePointUsageRows = if ($sharePointUsageBySiteId) { $sharePointUsageBySiteId.Count } else { 0 }
         $oneDriveUsageRows = if ($oneDriveUsageBySiteId) { $oneDriveUsageBySiteId.Count } else { 0 }
         if (($siteUsageCoverage.SharePointTotal + $siteUsageCoverage.OneDriveTotal) -gt 0) {
