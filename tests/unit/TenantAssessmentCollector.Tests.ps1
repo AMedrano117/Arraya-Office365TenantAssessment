@@ -47,6 +47,48 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Not -Match 'Connect-Office365 @connectOffice365Params'
     }
 
+    It 'collects all four SharePoint and OneDrive Graph reports at D180 through Get-GraphAPIActivityReport' {
+        $script:collectorSource | Should -Match 'function Get-AssessmentSiteReportRows'
+        $script:collectorSource | Should -Match 'Office365Custom\\Get-GraphAPIActivityReport -ServiceName \$ReportServiceName -PeriodDuration \$PeriodDuration -ErrorAction Stop'
+        $script:collectorSource | Should -Match '\$siteReportPeriod = ''D180'''
+
+        # Both usage reports (site-keyed) and both activity reports (user-keyed).
+        $script:collectorSource | Should -Match "Get-GraphCsvReportLookup -ReportServiceName 'SharePointSites'"
+        $script:collectorSource | Should -Match "Get-GraphCsvReportLookup -ReportServiceName 'OneDriveUsage'"
+        $script:collectorSource | Should -Match "Set-AssessmentSiteActivityReport -ReportServiceName 'SharePointUser'"
+        $script:collectorSource | Should -Match "Set-AssessmentSiteActivityReport -ReportServiceName 'OneDriveActivity'"
+
+        # Activity rows land in their own worksheets and roll up into the shared summary.
+        $script:collectorSource | Should -Match "-TableName 'SharePointActivityUserDetail'"
+        $script:collectorSource | Should -Match "-TableName 'OneDriveActivityUserDetail'"
+        $script:collectorSource | Should -Match "CollaborationActivitySummary"
+        $script:collectorSource | Should -Not -Match "getSharePointSiteUsageDetail\(period='D7'\)"
+        $script:collectorSource | Should -Not -Match "getOneDriveUsageAccountDetail\(period='D7'\)"
+    }
+
+    It 'cascades SharePoint inventory from Graph SDK through getAllSites to the SharePoint Online module' {
+        # Every stage reports success or failure so the cascade can advance.
+        $script:collectorSource | Should -Match '\$sharePointInventoryCollected = \[bool\]\(Get-SharePointAndOneDriveSitesFromGraphSdk\)'
+        $script:collectorSource | Should -Match '\$sharePointInventoryCollected = \[bool\]\(Get-SharePointAndOneDriveSitesFromRESTAPI\)'
+        $script:collectorSource | Should -Match 'if \(-not \$sharePointInventoryCollected -and \$ServiceName -eq ''MGGraph''\)'
+        $script:collectorSource | Should -Match 'if \(-not \$sharePointInventoryCollected -and \$ServiceName -in @\(''MGGraph'', ''API''\)\)'
+
+        # The SPO stage connects on its own rather than requiring a pre-existing session.
+        $script:collectorSource | Should -Match 'function Connect-AssessmentSharePointFallbackSession'
+        $script:collectorSource | Should -Match 'if \(Connect-AssessmentSharePointFallbackSession\)'
+        $script:collectorSource | Should -Match 'Get-AssessmentGraphOrganizationDetails'
+        $script:collectorSource | Should -Match 'Enter the SharePoint admin URL'
+        $script:collectorSource | Should -Match 'function Test-AssessmentInteractiveHost'
+        $script:collectorSource | Should -Match 'if \(-not \(Test-AssessmentInteractiveHost\)\)'
+
+        # Terminal guidance when every stage fails.
+        $script:collectorSource | Should -Match 'Quit the script, connect first with Connect-MgGraph'
+        $script:collectorSource | Should -Match '\$script:tenantStatsHash\[''SharePointCollectionSummary''\]'
+
+        # The old 403-only, already-connected-only fallback must be gone.
+        $script:collectorSource | Should -Not -Match '\$usedSpoFallback'
+    }
+
     It 'requires the assessment snapshot JSON before allowing the export stage to finish' {
         $script:collectorSource | Should -Match '\$requiresAssessmentSnapshotArtifact = \(-not \$effectiveSkipJsonReport\)'
         $script:collectorSource | Should -Match "'Assessment Snapshot JSON', 'JSON'"
@@ -352,8 +394,10 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     It 'handles SharePoint getAllSites access denied with operator guidance and SPO fallback when available' {
         $script:collectorSource | Should -Match 'Microsoft Graph getAllSites requires application permissions'
         $script:collectorSource | Should -Match 'Confirm the app has Sites.Read.All application permission with admin consent'
-        $script:collectorSource | Should -Match 'Write-Verbose \$guidance'
-        $script:collectorSource | Should -Match 'SharePoint/OneDrive inventory using connected SharePoint Online PowerShell fallback'
+        # The denial guidance is now surfaced by the caller-owned cascade, which falls
+        # through on any failure rather than only on 401/403 with a live SPO session.
+        $script:collectorSource | Should -Match 'Falling back to the Graph getAllSites REST endpoint for SharePoint/OneDrive inventory'
+        $script:collectorSource | Should -Match 'Falling back to the SharePoint Online PowerShell module for SharePoint/OneDrive inventory'
         $script:collectorSource | Should -Not -Match 'SharePoint/OneDrive API inventory denied; falling back to connected SharePoint Online PowerShell session'
         $script:collectorSource | Should -Match "'Graph/SPO'"
         $script:collectorSource | Should -Match 'SharePointDiscoveryLabel'

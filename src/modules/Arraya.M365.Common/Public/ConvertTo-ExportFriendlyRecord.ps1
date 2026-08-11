@@ -13,6 +13,15 @@ function ConvertTo-ExportFriendlyRecord {
         return [pscustomobject]$result
     }
 
+    # Collections must be collapsed before the property branch below. Reflecting over an
+    # array surfaces its own .NET members (Length, LongLength, Rank, SyncRoot, IsReadOnly,
+    # IsFixedSize, IsSynchronized, Count) and those become the worksheet columns.
+    if (($InputObject -is [System.Collections.IEnumerable]) -and
+        -not ($InputObject -is [string]) -and
+        -not ($InputObject -is [System.Collections.IDictionary])) {
+        return [pscustomobject]@{ Value = ConvertTo-ExportFriendlyValue -Value $InputObject }
+    }
+
     $properties = @(
         $InputObject.PSObject.Properties |
             Where-Object { $_.MemberType -in @('NoteProperty', 'AliasProperty', 'Property') }

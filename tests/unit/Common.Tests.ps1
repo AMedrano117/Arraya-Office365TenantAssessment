@@ -1095,6 +1095,156 @@ Describe 'Arraya.M365.Common' {
         $script:exportExcelSource | Should -Match "'PrivilegedAccessRemediationSummary' = @\('PrivilegedAccessRemediationSummary', 'PrivilegedAccessRemediationSumm', 'PrivilegedAccessRemediation'\)"
     }
 
+    It 'collapses collections instead of reflecting their .NET members into columns' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        $arrayRecord = ConvertTo-ExportFriendlyRecord -InputObject @('alpha', 'beta')
+        $columns = @($arrayRecord.PSObject.Properties.Name)
+
+        $columns | Should -Be @('Value')
+        $arrayRecord.Value | Should -Be 'alpha; beta'
+        foreach ($leaked in @('Length', 'LongLength', 'Rank', 'SyncRoot', 'IsReadOnly', 'IsFixedSize', 'IsSynchronized')) {
+            $columns | Should -Not -Contain $leaked
+        }
+
+        # Records and dictionaries keep their existing per-property behaviour.
+        @((ConvertTo-ExportFriendlyRecord -InputObject ([pscustomobject]@{ A = 1; B = 2 })).PSObject.Properties.Name) | Should -Be @('A', 'B')
+        @((ConvertTo-ExportFriendlyRecord -InputObject @{ A = 1 }).PSObject.Properties.Name) | Should -Be @('A')
+    }
+
+    It 'flattens container worksheets into per-row configuration records' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        if (-not (Get-Command -Name Get-ExcelSheetInfo -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because 'ImportExcel worksheet inspection is not available in this environment.'
+            return
+        }
+
+        function global:Write-Log { param() }
+        function global:Write-ProgressHelper { param() }
+
+        $exportPath = Join-Path $TestDrive 'container-shaping.xlsx'
+        $tenantStats = @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Contoso' }
+            AdConnectConfiguration = @{
+                Summary      = [pscustomobject]@{ OnPremisesSyncEnabled = $true; PasswordSyncEnabled = $true }
+                SyncServices = @([pscustomobject]@{ ServiceName = 'contoso.onmicrosoft.com'; ServerName = 'AADC01' })
+                RecentErrors = @([pscustomobject]@{ ErrorType = 'DuplicateAttribute'; ErrorCode = 'ATTR-001' })
+                ErrorCount   = 1
+            }
+            TeamsVoice = @{
+                Summary         = [pscustomobject]@{ VoiceUserCount = 3; DataSource = 'TeamsPowerShell' }
+                CallingPolicies = @(
+                    [pscustomobject]@{ Identity = 'Global' }
+                    [pscustomobject]@{ Identity = 'Tag:NoPSTN' }
+                )
+                PhoneNumbers    = @([pscustomobject]@{ TelephoneNumber = '+15555550100' })
+            }
+            AuthenticationConfig = @{
+                Configuration = [pscustomobject]@{
+                    MFAEnabled      = $true
+                    MFAMethods      = @('Sms', 'MicrosoftAuthenticator')
+                    SSOApplications = @(
+                        [pscustomobject]@{ DisplayName = 'Contoso CRM' }
+                        [pscustomobject]@{ DisplayName = 'Contoso HR' }
+                        [pscustomobject]@{ DisplayName = 'Contoso Wiki' }
+                    )
+                }
+            }
+            # Regression guard: a single-Summary container must stay a one-row worksheet.
+            CollaborationActivitySummary = @{
+                Summary = [pscustomobject]@{ PeriodDuration = 'D180'; TeamsActiveUsers = 7 }
+            }
+        }
+
+        Export-HashTableToExcel -hashtable $tenantStats -ExportDetails $exportPath
+
+        $adConnectRows = @(Import-Excel -Path $exportPath -WorksheetName 'AdConnectConfiguration')
+        @($adConnectRows[0].PSObject.Properties.Name) | Should -Be @('Section', 'Item', 'Value', 'Notes')
+        @($adConnectRows | Where-Object { $_.Section -eq 'Directory Sync' }).Count | Should -BeGreaterThan 0
+        @($adConnectRows | Where-Object { $_.Item -eq 'DuplicateAttribute' }).Count | Should -Be 1
+
+        $teamsVoiceRows = @(Import-Excel -Path $exportPath -WorksheetName 'TeamsVoice')
+        @($teamsVoiceRows[0].PSObject.Properties.Name) | Should -Be @('Section', 'Item', 'Value', 'Notes')
+        @($teamsVoiceRows | Where-Object { $_.Section -eq 'Calling Policies' }).Count | Should -Be 2
+        # A leading '+' must survive: Excel would otherwise coerce it to a number.
+        @($teamsVoiceRows | Where-Object { $_.Item -eq '+15555550100' }).Count | Should -Be 1
+
+        $authRows = @(Import-Excel -Path $exportPath -WorksheetName 'AuthenticationConfig')
+        @($authRows | Where-Object { $_.Section -eq 'SSO Applications' }).Count | Should -Be 3
+        @($authRows | Where-Object { $_.Section -eq 'MFA Methods' }).Count | Should -Be 2
+
+        $collabRows = @(Import-Excel -Path $exportPath -WorksheetName 'CollaborationActivitySummary')
+        $collabRows.Count | Should -Be 1
+        $collabRows[0].PeriodDuration | Should -Be 'D180'
+    }
+
+    It 'expands MfaEnrollmentSummary to one row per authentication method' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        if (-not (Get-Command -Name Get-ExcelSheetInfo -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because 'ImportExcel worksheet inspection is not available in this environment.'
+            return
+        }
+
+        function global:Write-Log { param() }
+        function global:Write-ProgressHelper { param() }
+
+        $exportPath = Join-Path $TestDrive 'mfa-methods.xlsx'
+        Export-HashTableToExcel -ExportDetails $exportPath -hashtable @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Contoso' }
+            MfaEnrollmentSummary = [pscustomobject]@{
+                TotalUsers                = 10
+                RegisteredUsers           = 8
+                RegisteredMethodBreakdown = 'microsoftAuthenticator (6); sms (3)'
+            }
+            MfaRegistrationSummary = [pscustomobject]@{
+                TotalUsers                    = 10
+                MethodCounts                  = @{ microsoftAuthenticator = 6; sms = 3; fido2 = 1 }
+                WeakMethodCounts              = @{ sms = 3 }
+                PhishingResistantMethodCounts = @{ fido2 = 1 }
+            }
+        }
+
+        $rows = @(Import-Excel -Path $exportPath -WorksheetName 'MfaEnrollmentSummary')
+        @($rows[0].PSObject.Properties.Name) | Should -Be @('Category', 'Method', 'UserCount', 'PercentOfUsers', 'Notes')
+
+        $registered = @($rows | Where-Object { $_.Category -eq 'Registered' })
+        $registered.Count | Should -Be 3
+        # Graph enum values stay verbatim so they match what operators see in Entra.
+        @($registered | Where-Object { $_.Method -eq 'microsoftAuthenticator' }).Count | Should -Be 1
+        [double](@($registered | Where-Object { $_.Method -eq 'sms' })[0].PercentOfUsers) | Should -Be 30
+
+        @($rows | Where-Object { $_.Category -eq 'Weak' }).Count | Should -Be 1
+        @($rows | Where-Object { $_.Category -eq 'PhishingResistant' }).Count | Should -Be 1
+        @($rows | Where-Object { $_.Category -eq 'Totals' }).Count | Should -BeGreaterThan 0
+    }
+
+    It 'pads ragged records so later columns are not dropped by Export-Excel' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        if (-not (Get-Command -Name Get-ExcelSheetInfo -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because 'ImportExcel worksheet inspection is not available in this environment.'
+            return
+        }
+
+        function global:Write-Log { param() }
+        function global:Write-ProgressHelper { param() }
+
+        $exportPath = Join-Path $TestDrive 'ragged-rows.xlsx'
+        Export-HashTableToExcel -ExportDetails $exportPath -hashtable @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Contoso' }
+            BestPracticeFindings = @(
+                [pscustomobject]@{ RuleId = 'ID-001'; Severity = 'High' }
+                [pscustomobject]@{ RuleId = 'ID-002'; Severity = 'Low'; Recommendation = 'Enable CA policy' }
+            )
+        }
+
+        $rows = @(Import-Excel -Path $exportPath -WorksheetName 'BestPracticeFindings')
+        @($rows[0].PSObject.Properties.Name) | Should -Contain 'Recommendation'
+        @($rows | Where-Object { $_.RuleId -eq 'ID-002' })[0].Recommendation | Should -Be 'Enable CA policy'
+    }
+
     It 'adds full-assessment governance datasets to workbook export while excluding them from T2T output' {
         $script:htmlHelperSource | Should -Match '\$isFullAssessmentGovernanceScope = \('
         $script:htmlHelperSource | Should -Match "\$collectionDepthMode -in @\('Operator', 'Automation', 'Geek', 'All'\)"
