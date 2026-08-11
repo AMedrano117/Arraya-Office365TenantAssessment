@@ -341,6 +341,8 @@ pip install -r requirements.txt
 | `-Action Compare` | `python cli.py compare <baseline> <current>` | Pure Python |
 | `-Action AD` | `python cli.py ad` | Calls PS |
 
+The commands that call PowerShell inherit its tenant validation: an interactive run asks for the tenant when `--tenant-id` is not supplied, and stops if Microsoft Graph and Exchange Online turn out to be on different tenants. See [Tenant validation](#tenant-validation). The pure-Python commands read an existing snapshot and do not connect, so they are unaffected.
+
 ### Common Python CLI commands
 
 Run the interactive menu:
