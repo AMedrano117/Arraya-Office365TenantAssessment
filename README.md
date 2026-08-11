@@ -16,6 +16,12 @@ Most day-to-day runs start with the standard Microsoft 365 assessment:
 
 That standard run collects the tenant snapshot, generates customer deliverables, and builds the remediation outputs used by the engineer.
 
+Interactive runs ask for the tenant being assessed if you do not pass `-TenantId`. Microsoft Graph reuses whatever `Connect-MgGraph` session is already cached, so the assessment validates that session against the tenant you name and stops if Graph and Exchange Online turn out to be connected to different tenants. Pass `-TenantId` up front to skip the prompt:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -Action Full -TenantId '<tenant-guid>'
+```
+
 ## When To Use This
 
 Use this repo when you need to:

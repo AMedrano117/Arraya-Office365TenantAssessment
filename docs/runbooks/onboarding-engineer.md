@@ -44,6 +44,14 @@ All Pester tests should pass before working on any changes.
 
 The menu should open without errors.
 
+When you pick an action, an interactive run asks for the tenant being assessed unless you started the launcher with `-TenantId`. That value is used to validate the cached Microsoft Graph session, so supply the tenant you actually intend to assess:
+
+```powershell
+.\src\scripts\operations\Start-M365TenantAssessment.ps1 -TenantId '<tenant-guid>'
+```
+
+If the run stops reporting that Graph and Exchange Online are on different tenants, run `Disconnect-MgGraph`, open a fresh PowerShell session, and reconnect to the intended tenant.
+
 ## Next steps
 
 - [Tenant Assessment Quick Start](tenant-assessment-quick-start.md) — how to run your first assessment

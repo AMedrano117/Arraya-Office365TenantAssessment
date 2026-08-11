@@ -47,6 +47,15 @@ If you are setting up app-based auth for the first time, complete these runbooks
 
 The assessment connects workloads in this order: `Exchange Online → Purview → Microsoft Graph`. If a previous Graph session has already been established in the same shell, close that session and start fresh before retrying.
 
+### Tenant validation
+
+Microsoft Graph reuses whatever `Connect-MgGraph` session is already cached in the shell, and that session can belong to a different tenant than the one you are assessing. Two checks guard against a mixed-tenant report:
+
+- Interactive runs prompt for the tenant when `-TenantId` is not supplied, then validate the Graph context against it. Pass `-TenantId '<tenant-guid>'` to skip the prompt. Non-interactive hosts cannot be prompted, so they require the flag.
+- After both workloads connect, Graph and Exchange Online tenant ids are compared. A mismatch stops the run before any collection, because every Graph-derived dataset would otherwise belong to a different tenant than the Exchange data.
+
+If a mismatch is reported, run `Disconnect-MgGraph`, start a fresh PowerShell session, and reconnect to the intended tenant.
+
 ## Required Access and Permissions
 
 ### Operator roles (Interactive mode)
@@ -108,7 +117,7 @@ Optional extended enrichment (add only when explicitly needed):
 
 - **Exchange Online**: requires Exchange app-only access configured on the app registration for certificate auth
 - **Purview**: uses `Connect-IPPSSession` from `ExchangeOnlineManagement`; supports delegated and certificate auth; client-secret auth is not supported
-- **SharePoint**: certificate and client-secret runs use Microsoft Graph for SharePoint and OneDrive collection; SPO admin PowerShell is only used in interactive runs
+- **SharePoint**: certificate and client-secret runs use Microsoft Graph for SharePoint and OneDrive collection; SPO admin PowerShell is only used in interactive runs. Site inventory comes from Graph `getAllSites`, which Microsoft supports with **application permissions only**; delegated access is not supported at any scope. An interactive run therefore always sees a 403 from that endpoint and falls back to the SharePoint Online PowerShell module by design; this is expected and no Graph scope changes it. The SharePoint and OneDrive usage and activity reports are collected from the Graph reporting endpoints either way, so they populate even when site inventory falls back
 - **Teams**: Teams PowerShell is delegated-only; member and guest count enrichment requires `TeamMember.Read.All`
 
 ## Common Commands
@@ -244,6 +253,16 @@ A standard `Full` run writes files into two folders.
 - `Debugging\*`
 
 To include older HTML, PDF, and questionnaire artifacts, add `-IncludeLegacyAssessmentArtifacts`.
+
+### Workbook worksheets
+
+The workbook only exports columns that carry data. Columns empty for every row in the tenant are dropped, and the removals are listed in the run log, so the same worksheet can be narrower for one tenant than another.
+
+- `Users` carries a fixed, assessment-focused column set in reading order: identity, account state, org placement, licensing, hybrid sync, then sign-in activity. `UserFullDetails` adds mailbox size and item counts, archive totals, and the OneDrive URL and storage. Other Microsoft Graph attributes are intentionally not exported.
+- `SharePoint` and `OneDrive` merge the Graph usage reports into the site inventory. Alongside storage they carry `FileCount`, `ActiveFileCount`, `PageViewCount`, `LastActivityDate`, `ActivityState` (Active, Low, Stale, Dormant), `GeoLocation`, `SensitivityLabelId`, `OwnerSource`, and a `MigrationNotes` column flagging dormant content, unresolved owners, sensitivity labels, multi-geo placement, locked or archived sites, quota pressure, and Teams channel sites that cannot migrate independently.
+- `SharePointActivityUserDetail` and `OneDriveActivityUserDetail` hold the per-user Graph activity reports. They come from the reporting endpoints, so they populate even when site inventory falls back to the SharePoint Online module.
+- `AdConnectConfiguration`, `TeamsVoice`, and `AuthenticationConfig` are flattened to `Section`, `Item`, `Value`, `Notes` with one row per underlying record, so SSO applications, calling policies, and sync services are readable instead of collapsed into a single cell.
+- `MfaEnrollmentSummary` reports one row per authentication method with a user count and percentage, rather than a single joined breakdown string.
 
 ## How To Read the Results
 
