@@ -47,6 +47,27 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Not -Match 'Connect-Office365 @connectOffice365Params'
     }
 
+    It 'fails fast when Graph and Exchange Online are connected to different tenants' {
+        $script:collectorSource | Should -Match 'function Assert-AssessmentWorkloadTenantsMatch'
+        $script:collectorSource | Should -Match 'Microsoft Graph and Exchange Online are connected to different tenants'
+
+        # Wired after the bootstrap check so it covers both the fresh-connect and the
+        # existing-session paths, which each populate these fields.
+        $script:collectorSource | Should -Match 'Assert-AssessmentWorkloadTenantsMatch `\r?\n\s*-GraphTenantDetails \$connectionResult\.GraphTenantDetails'
+        $script:collectorSource | Should -Match '-ExchangeTenantDetails \$connectionResult\.ExchangeTenantDetails'
+
+        # Only a confirmed difference is fatal; an unavailable tenant id on either side
+        # must not block app-only runs.
+        $script:collectorSource | Should -Match 'if \(\[string\]::IsNullOrWhiteSpace\(\$graphTenantId\) -or \[string\]::IsNullOrWhiteSpace\(\$exchangeTenantId\)\)'
+        $script:collectorSource | Should -Match '\[System\.StringComparison\]::OrdinalIgnoreCase'
+    }
+
+    It 'requires an explicit TenantId for interactive runs so the Graph context can be validated' {
+        $script:collectorSource | Should -Match 'if \(\$resolvedAuthMode -eq ''Interactive'' -and \[string\]::IsNullOrWhiteSpace\(\$TenantId\)\)'
+        $script:collectorSource | Should -Match 'Interactive runs require -TenantId'
+        $script:collectorSource | Should -Match 'cached Connect-MgGraph session from another tenant is reused silently'
+    }
+
     It 'collects all four SharePoint and OneDrive Graph reports at D180 through Get-GraphAPIActivityReport' {
         $script:collectorSource | Should -Match 'function Get-AssessmentSiteReportRows'
         $script:collectorSource | Should -Match 'Office365Custom\\Get-GraphAPIActivityReport -ServiceName \$ReportServiceName -PeriodDuration \$PeriodDuration -ErrorAction Stop'
