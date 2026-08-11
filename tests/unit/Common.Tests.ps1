@@ -1129,6 +1129,64 @@ Describe 'Arraya.M365.Common' {
         ConvertTo-ExportFriendlyValue -Value ([guid]'11111111-1111-1111-1111-111111111111') | Should -Be '11111111-1111-1111-1111-111111111111'
     }
 
+    It 'exports a curated, ordered column set for the user worksheets' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        if (-not (Get-Command -Name Get-ExcelSheetInfo -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because 'ImportExcel worksheet inspection is not available in this environment.'
+            return
+        }
+
+        function global:Write-Log { param() }
+        function global:Write-ProgressHelper { param() }
+
+        # Shaped like a reflected Graph SDK user: alphabetical navigation noise first, the
+        # useful attributes scattered after, and one curated column no user populates.
+        $userRecord = [pscustomobject][ordered]@{
+            AboutMe = $null; AgeGroup = $null; Birthday = $null; CloudClipboard = 'junk'
+            DirectReports = $null; DisplayName = 'Ana'; Drive = 'obj'; EmployeeExperience = 'obj'
+            Interests = $null; MySite = $null; Schools = $null; Skills = $null
+            UserPrincipalName = 'ana@contoso.com'; Mail = 'ana@contoso.com'
+            AccountEnabled = $true; UserType = 'Member'; Department = 'IT'; UsageLocation = 'US'
+            EmployeeId = $null
+            AssignedLicensesFriendly = 'Microsoft 365 E3'; OnPremisesSyncEnabled = $true
+            LastSignInDateTime = '2026-08-01'; Id = 'id-ana'
+            MBXSizeGB = 1.5; MBXItemCount = 200; DriveURL = 'https://contoso-my/personal/ana'; DriveStorageGB = 0.4
+        }
+
+        $exportPath = Join-Path $TestDrive 'curated-users.xlsx'
+        Export-HashTableToExcel -ExportDetails $exportPath -hashtable @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Contoso' }
+            Users = @{ 'ana@contoso.com' = $userRecord }
+            UserFullDetails = @{ 'ana@contoso.com' = $userRecord }
+        }
+
+        $userColumns = @((Import-Excel -Path $exportPath -WorksheetName 'Users')[0].PSObject.Properties.Name)
+
+        # Identity leads: previously DisplayName landed around column AJ.
+        $userColumns[0] | Should -Be 'DisplayName'
+        $userColumns[1] | Should -Be 'UserPrincipalName'
+
+        foreach ($keep in @('AccountEnabled', 'UserType', 'UsageLocation', 'AssignedLicensesFriendly', 'OnPremisesSyncEnabled', 'LastSignInDateTime')) {
+            $userColumns | Should -Contain $keep
+        }
+
+        # Off-list columns never reach the workbook, even when populated.
+        foreach ($drop in @('AboutMe', 'Birthday', 'CloudClipboard', 'Drive', 'EmployeeExperience', 'Interests', 'Schools', 'Skills', 'MySite', 'DirectReports')) {
+            $userColumns | Should -Not -Contain $drop
+        }
+
+        # On the list but empty for this tenant, so still dropped.
+        $userColumns | Should -Not -Contain 'EmployeeId'
+
+        # Users stays lean; UserFullDetails adds the mailbox and OneDrive rollups.
+        $fullColumns = @((Import-Excel -Path $exportPath -WorksheetName 'UserFullDetails')[0].PSObject.Properties.Name)
+        foreach ($wide in @('MBXSizeGB', 'MBXItemCount', 'DriveURL', 'DriveStorageGB')) {
+            $fullColumns | Should -Contain $wide
+            $userColumns | Should -Not -Contain $wide
+        }
+    }
+
     It 'drops worksheet columns that are empty across every row' {
         Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
 
