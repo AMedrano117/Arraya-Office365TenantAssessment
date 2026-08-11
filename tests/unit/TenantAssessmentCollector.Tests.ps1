@@ -693,8 +693,11 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Export preparation: inactive mailbox detail projection'
         $script:collectorSource | Should -Match 'Users: tenant license lookup unavailable, continuing without license and sign-in activity enrichment'
         $script:collectorSource | Should -Match 'Device management summaries: building compliance and supportability rollup'
-        $script:collectorSource | Should -Match 'Tier B operational summaries: reviewing SharePoint tenant settings from Microsoft Graph'
-        $script:collectorSource | Should -Match 'Tier B operational summaries: completed'
+        # Renamed from 'Tier B operational summaries' on this branch: the operator-facing
+        # console output should not leak internal tier jargon.
+        $script:collectorSource | Should -Match 'Governance summaries: reviewing SharePoint tenant settings from Microsoft Graph'
+        $script:collectorSource | Should -Match 'Governance summaries: completed'
+        $script:collectorSource | Should -Not -Match 'Tier B operational summaries'
         $script:collectorSource | Should -Match 'External exposure summaries: reviewing sharing baseline and site override signals'
         $script:collectorSource | Should -Match 'External exposure summaries: completed'
     }
