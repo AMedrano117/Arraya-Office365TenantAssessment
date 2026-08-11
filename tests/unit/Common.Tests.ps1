@@ -1112,6 +1112,56 @@ Describe 'Arraya.M365.Common' {
         @((ConvertTo-ExportFriendlyRecord -InputObject @{ A = 1 }).PSObject.Properties.Name) | Should -Be @('A')
     }
 
+    It 'suppresses values that are only a .NET type name' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        # Graph SDK models expose members as 'Property', so the NoteProperty filter finds
+        # none and ToString() would otherwise emit the class name into the cell.
+        Add-Type -TypeDefinition 'namespace Microsoft.Graph.PowerShell.Models { public class MicrosoftGraphTestModel { public override string ToString() { return "Microsoft.Graph.PowerShell.Models.MicrosoftGraphTestModel"; } } }' -ErrorAction SilentlyContinue
+        $model = New-Object Microsoft.Graph.PowerShell.Models.MicrosoftGraphTestModel
+
+        ConvertTo-ExportFriendlyValue -Value $model | Should -BeNullOrEmpty
+
+        # Ordinary values must be untouched.
+        ConvertTo-ExportFriendlyValue -Value 'contoso' | Should -Be 'contoso'
+        ConvertTo-ExportFriendlyValue -Value 42 | Should -Be 42
+        ConvertTo-ExportFriendlyValue -Value @('a', 'b') | Should -Be 'a; b'
+        ConvertTo-ExportFriendlyValue -Value ([guid]'11111111-1111-1111-1111-111111111111') | Should -Be '11111111-1111-1111-1111-111111111111'
+    }
+
+    It 'drops worksheet columns that are empty across every row' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        if (-not (Get-Command -Name Get-ExcelSheetInfo -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because 'ImportExcel worksheet inspection is not available in this environment.'
+            return
+        }
+
+        function global:Write-Log { param() }
+        function global:Write-ProgressHelper { param() }
+
+        $exportPath = Join-Path $TestDrive 'empty-columns.xlsx'
+        Export-HashTableToExcel -ExportDetails $exportPath -hashtable @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Contoso' }
+            Users = @{
+                'a@contoso.com' = [pscustomobject]@{ DisplayName = 'Ana'; UserPrincipalName = 'a@contoso.com'; AccountEnabled = $true; AboutMe = $null; Birthday = ''; Interests = $null }
+                'b@contoso.com' = [pscustomobject]@{ DisplayName = 'Bo'; UserPrincipalName = 'b@contoso.com'; AccountEnabled = $false; AboutMe = $null; Birthday = ''; Interests = $null }
+            }
+            # A worksheet with no populated column at all keeps its header row.
+            AllEmptySheet = @([pscustomobject]@{ ColA = $null; ColB = '' })
+        }
+
+        $userRows = @(Import-Excel -Path $exportPath -WorksheetName 'Users')
+        $userColumns = @($userRows[0].PSObject.Properties.Name)
+        $userColumns | Should -Contain 'DisplayName'
+        $userColumns | Should -Contain 'AccountEnabled'
+        foreach ($dropped in @('AboutMe', 'Birthday', 'Interests')) {
+            $userColumns | Should -Not -Contain $dropped
+        }
+
+        @(Get-ExcelSheetInfo -Path $exportPath | Select-Object -ExpandProperty Name) | Should -Contain 'AllEmptySheet'
+    }
+
     It 'flattens container worksheets into per-row configuration records' {
         Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
 

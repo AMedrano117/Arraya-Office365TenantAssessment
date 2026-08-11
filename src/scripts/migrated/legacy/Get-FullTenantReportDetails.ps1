@@ -7535,6 +7535,98 @@ function Get-SharePointAndOneDriveSites {
         OneDriveMissing   = 0
     }
 
+    # One normalization used by both sides of the usage-report join, so the key can never
+    # drift between where it is stored and where it is looked up.
+    function ConvertTo-AssessmentSiteUrlKey {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $false)]
+            [AllowNull()]
+            [string]$Url,
+            [Parameter(Mandatory = $false)]
+            [switch]$HostAndPathOnly
+        )
+
+        if ([string]::IsNullOrWhiteSpace($Url)) {
+            return $null
+        }
+
+        $text = $Url.Trim().TrimEnd('/').ToLowerInvariant()
+        if (-not $HostAndPathOnly) {
+            return $text
+        }
+
+        # Second-chance key: drop the scheme so 'https://host/path' and 'host/path' agree.
+        return ([regex]::Replace($text, '^[a-z][a-z0-9+.-]*://', ''))
+    }
+
+    # Resolve a site's usage-report row, exact key first then host+path.
+    function Get-AssessmentSiteUsageReport {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $false)]
+            [AllowNull()]
+            [string]$Url,
+            [Parameter(Mandatory = $true)]
+            [bool]$IsOneDrive
+        )
+
+        $lookup = if ($IsOneDrive) { $oneDriveUsageByUrl } else { $sharePointUsageByUrl }
+        if (-not $lookup -or $lookup.Count -eq 0) {
+            return $null
+        }
+
+        $strictKey = ConvertTo-AssessmentSiteUrlKey -Url $Url
+        if ($strictKey -and $lookup.ContainsKey($strictKey)) {
+            return $lookup[$strictKey]
+        }
+
+        $looseKey = ConvertTo-AssessmentSiteUrlKey -Url $Url -HostAndPathOnly
+        if ($looseKey -and $lookup.ContainsKey($looseKey)) {
+            return $lookup[$looseKey]
+        }
+
+        return $null
+    }
+
+    # A report with rows that matches nothing means the two sides disagree on the key.
+    # Print samples from both so a single run identifies which side is wrong.
+    function Write-AssessmentSiteUsageJoinDiagnostics {
+        [CmdletBinding()]
+        param()
+
+        foreach ($workload in @('SharePoint', 'OneDrive')) {
+            $isOneDrive = ($workload -eq 'OneDrive')
+            $lookup = if ($isOneDrive) { $oneDriveUsageByUrl } else { $sharePointUsageByUrl }
+            $matched = if ($isOneDrive) { $siteUsageCoverage.OneDriveMatched } else { $siteUsageCoverage.SharePointMatched }
+            $total = if ($isOneDrive) { $siteUsageCoverage.OneDriveTotal } else { $siteUsageCoverage.SharePointTotal }
+            $reportRows = if ($isOneDrive) { $oneDriveUsageBySiteId } else { $sharePointUsageBySiteId }
+            $reportRowCount = if ($reportRows) { $reportRows.Count } else { 0 }
+            $lookupCount = if ($lookup) { $lookup.Count } else { 0 }
+
+            if ($total -le 0 -or $matched -gt 0 -or $reportRowCount -le 0) {
+                continue
+            }
+
+            $siteTable = $script:tenantStatsHash[$workload]
+            $siteKeys = @()
+            if ($siteTable -is [System.Collections.IDictionary]) {
+                $siteKeys = @(@($siteTable.Values) |
+                    ForEach-Object { ConvertTo-AssessmentSiteUrlKey -Url ([string]$_.Url) } |
+                    Where-Object { $_ } |
+                    Select-Object -First 3)
+            }
+            $reportKeys = @()
+            if ($lookup) {
+                $reportKeys = @(@($lookup.Keys) | Select-Object -First 3)
+            }
+
+            Write-Log -Type WARNING -Message ("[Get-SharePointAndOneDriveSites] {0} usage report matched 0 of {1} site(s) despite {2} report row(s). UrlLookupEntries={3}. Sample inventory keys: {4}. Sample report keys: {5}." -f `
+                $workload, $total, $reportRowCount, $lookupCount, ($siteKeys -join ' | '), ($reportKeys -join ' | ')) -ExportFileLocation $ExportDetails
+            Write-AssessmentConsoleSubstep -Message ("{0} usage report matched 0 of {1} site(s); see the run log for sample join keys." -f $workload, $total) -ForegroundColor Yellow
+        }
+    }
+
     # Stage 1 of the SharePoint/OneDrive cascade: pull the Graph report first through
     # Office365Custom\Get-GraphAPIActivityReport, falling back to the direct report URI.
     function Get-AssessmentSiteReportRows {
@@ -7616,9 +7708,14 @@ function Get-SharePointAndOneDriveSites {
                     }
 
                     if (-not [string]::IsNullOrWhiteSpace($siteUrl)) {
-                        $normalizedSiteUrl = $siteUrl.Trim().TrimEnd('/').ToLowerInvariant()
-                        if (-not $UrlLookup.ContainsKey($normalizedSiteUrl)) {
-                            $UrlLookup[$normalizedSiteUrl] = $row
+                        # Index under both key forms so a scheme difference cannot break the join.
+                        foreach ($key in @(
+                                (ConvertTo-AssessmentSiteUrlKey -Url $siteUrl),
+                                (ConvertTo-AssessmentSiteUrlKey -Url $siteUrl -HostAndPathOnly)
+                            )) {
+                            if ($key -and -not $UrlLookup.ContainsKey($key)) {
+                                $UrlLookup[$key] = $row
+                            }
                         }
                     }
                 }
@@ -8275,10 +8372,9 @@ function Get-SharePointAndOneDriveSites {
                     $totalCount++
                     $isOneDrive = ($site.WebUrl -like "*-my.sharepoint.com*")
                     $reportSiteId = Get-GraphSiteReportId -CompositeSiteId $site.Id
-                    $siteUrlKey = if ($site.WebUrl) { $site.WebUrl.TrimEnd('/').ToLowerInvariant() } else { $null }
                     $usageReport = if ($isOneDrive) { $oneDriveUsageBySiteId[$reportSiteId] } else { $sharePointUsageBySiteId[$reportSiteId] }
-                    if (-not $usageReport -and $siteUrlKey) {
-                        $usageReport = if ($isOneDrive) { $oneDriveUsageByUrl[$siteUrlKey] } else { $sharePointUsageByUrl[$siteUrlKey] }
+                    if (-not $usageReport) {
+                        $usageReport = Get-AssessmentSiteUsageReport -Url ([string]$site.WebUrl) -IsOneDrive $isOneDrive
                     }
                     Update-SiteUsageCoverage -IsOneDrive:$isOneDrive -UsageReport $usageReport
 
@@ -8410,11 +8506,7 @@ function Get-SharePointAndOneDriveSites {
 
                 # Join the usage reports collected in stage 1. They are keyed by site id
                 # and URL; Get-SPOSite exposes the URL, so match on that first.
-                $siteUrlKey = if ($site.Url) { $site.Url.TrimEnd('/').ToLowerInvariant() } else { $null }
-                $usageReport = $null
-                if ($siteUrlKey) {
-                    $usageReport = if ($isOneDrive) { $oneDriveUsageByUrl[$siteUrlKey] } else { $sharePointUsageByUrl[$siteUrlKey] }
-                }
+                $usageReport = Get-AssessmentSiteUsageReport -Url ([string]$site.Url) -IsOneDrive $isOneDrive
                 Update-SiteUsageCoverage -IsOneDrive:$isOneDrive -UsageReport $usageReport
 
                 $siteData = ConvertTo-NormalizedSiteData -Site $site -IsOneDrive:$isOneDrive -Source SPO -UsageReport $usageReport
@@ -8484,10 +8576,9 @@ function Get-SharePointAndOneDriveSites {
                 foreach ($site in @($response.value)) {
                     $isOneDrive = ($site.webUrl -like "*-my.sharepoint.com*")
                     $reportSiteId = if ($site.id) { Get-GraphSiteReportId -CompositeSiteId $site.id } else { $null }
-                    $siteUrlKey = if ($site.webUrl) { $site.webUrl.TrimEnd('/').ToLowerInvariant() } else { $null }
                     $usageReport = if ($isOneDrive) { $oneDriveUsageBySiteId[$reportSiteId] } else { $sharePointUsageBySiteId[$reportSiteId] }
-                    if (-not $usageReport -and $siteUrlKey) {
-                        $usageReport = if ($isOneDrive) { $oneDriveUsageByUrl[$siteUrlKey] } else { $sharePointUsageByUrl[$siteUrlKey] }
+                    if (-not $usageReport) {
+                        $usageReport = Get-AssessmentSiteUsageReport -Url ([string]$site.webUrl) -IsOneDrive $isOneDrive
                     }
                     Update-SiteUsageCoverage -IsOneDrive:$isOneDrive -UsageReport $usageReport
 
@@ -8524,17 +8615,24 @@ function Get-SharePointAndOneDriveSites {
                 Write-Host "Throttling detected. Please try again later." -ForegroundColor Yellow
             }
             elseif ($statusCodeValue -in @(401, 403) -or $statusCodeText -in @('Unauthorized', 'Forbidden')) {
-                $guidance = if (
+                # /sites/getAllSites supports application permissions only; Microsoft lists
+                # delegated as "Not supported". On an interactive run the 403 is expected and
+                # not a fixable scope problem, so do not report it as a warning.
+                $isInteractiveRun = (
                     $script:AssessmentAuthWorkloadPlan -and
                     [string]::Equals([string]$script:AssessmentAuthWorkloadPlan.AuthenticationType, 'Interactive', [System.StringComparison]::OrdinalIgnoreCase)
-                ) {
-                    'SharePoint/OneDrive Graph getAllSites inventory was denied. Microsoft Graph getAllSites requires application permissions; interactive runs should use the connected SharePoint Online PowerShell fallback when available.'
+                )
+
+                if ($isInteractiveRun) {
+                    $guidance = 'Graph getAllSites is application-permission only and is never available to an interactive sign-in, so this run uses the SharePoint Online PowerShell module for site inventory. No Graph scope change will alter this.'
+                    Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSitesFromRESTAPI] $guidance Underlying error: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+                    Write-AssessmentConsoleSubstep -Message $guidance -ForegroundColor DarkGray
                 }
                 else {
-                    'SharePoint/OneDrive Graph site inventory was denied by /sites/getAllSites. Confirm the app has Sites.Read.All application permission with admin consent, then rerun preflight.'
+                    $guidance = 'SharePoint/OneDrive Graph site inventory was denied by /sites/getAllSites. Confirm the app has Sites.Read.All application permission with admin consent, then rerun preflight.'
+                    Write-Log -Type WARNING -Message "[Get-SharePointAndOneDriveSitesFromRESTAPI] $guidance Underlying error: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+                    Write-AssessmentConsoleSubstep -Message $guidance -ForegroundColor Yellow
                 }
-                Write-Log -Type WARNING -Message "[Get-SharePointAndOneDriveSitesFromRESTAPI] $guidance Underlying error: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
-                Write-AssessmentConsoleSubstep -Message $guidance -ForegroundColor Yellow
             }
             else {
                 Write-Host "Error fetching sites via REST API: $($_.Exception.Message)" -ForegroundColor Red
@@ -8667,12 +8765,14 @@ function Get-SharePointAndOneDriveSites {
         $sharePointUsageRows = if ($sharePointUsageBySiteId) { $sharePointUsageBySiteId.Count } else { 0 }
         $oneDriveUsageRows = if ($oneDriveUsageBySiteId) { $oneDriveUsageBySiteId.Count } else { 0 }
         if (($siteUsageCoverage.SharePointTotal + $siteUsageCoverage.OneDriveTotal) -gt 0) {
-            Write-Host ("  Site usage report coverage: SharePoint {0}/{1}, OneDrive {2}/{3}" -f $siteUsageCoverage.SharePointMatched, $siteUsageCoverage.SharePointTotal, $siteUsageCoverage.OneDriveMatched, $siteUsageCoverage.OneDriveTotal) -ForegroundColor DarkGray
+            Write-AssessmentConsoleSubstep -Message ("Site usage report match rate: SharePoint {0}/{1}, OneDrive {2}/{3}" -f $siteUsageCoverage.SharePointMatched, $siteUsageCoverage.SharePointTotal, $siteUsageCoverage.OneDriveMatched, $siteUsageCoverage.OneDriveTotal)
         }
         else {
             Write-AssessmentConsoleSubstep -Message 'Site usage report coverage unavailable because no SharePoint/OneDrive site inventory rows were collected.' -ForegroundColor DarkGray
         }
         Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSites] Site usage report coverage: SharePointMatched=$($siteUsageCoverage.SharePointMatched); SharePointMissing=$($siteUsageCoverage.SharePointMissing); SharePointTotal=$($siteUsageCoverage.SharePointTotal); OneDriveMatched=$($siteUsageCoverage.OneDriveMatched); OneDriveMissing=$($siteUsageCoverage.OneDriveMissing); OneDriveTotal=$($siteUsageCoverage.OneDriveTotal); SharePointReportRows=$sharePointUsageRows; OneDriveReportRows=$oneDriveUsageRows." -ExportFileLocation $ExportDetails
+
+        Write-AssessmentSiteUsageJoinDiagnostics
     }
     if ($sharePointUsageBySiteId) { $sharePointUsageBySiteId.Clear() }
     if ($oneDriveUsageBySiteId) { $oneDriveUsageBySiteId.Clear() }
@@ -9682,15 +9782,23 @@ function Get-AllUserDetails {
     $start = Get-Date
     $graphUsersProgressId = 71
     $userDetailsProgressId = 72
+    # Microsoft Graph returns only 11 default properties when no $select is supplied
+    # (businessPhones, displayName, givenName, id, jobTitle, mail, mobilePhone,
+    # officeLocation, preferredLanguage, surname, userPrincipalName). Everything the
+    # assessment needs has to be requested explicitly, on every collection path.
     $DesiredProperties = @(
-        "DisplayName", "AssignedLicenses", "LicenseAssignmentStates", "UserPrincipalName"
+        "DisplayName", "AssignedLicenses", "AssignedPlans", "LicenseAssignmentStates", "UserPrincipalName"
         "UserType", "Id", "AccountEnabled"
-        "CreatedDateTime", "Mail", "JobTitle"
+        "CreatedDateTime", "Mail", "MailNickname", "JobTitle"
         "Department", "CompanyName", "OfficeLocation"
         "City", "State", "Country"
         "OnPremisesSyncEnabled", "OnPremisesDistinguishedName", "OnPremisesLastSyncDateTime"
+        "OnPremisesImmutableId", "OnPremisesSamAccountName"
+        "EmployeeId", "CreationType", "ExternalUserState", "LastPasswordChangeDateTime"
         "UsageLocation", "SignInActivity", "ProxyAddresses"
     )
+    # Graph caps the page size at 500 whenever signInActivity is selected or filtered.
+    $userPageSize = 500
     $minimumModeMessage = 'NotCollected (minimum mode)'
     $progressStatusInterval = 25
     $isGeekDetail = ($detailLevel -in @('geek', 'all'))
@@ -9995,20 +10103,38 @@ function Get-AllUserDetails {
         )
 
         if ($BasicMode) {
+            # Deliberately degraded last-resort path: accept Graph's default property set.
+            Write-Log -Type WARNING -Message '[Get-allUserDetails] Basic mode active. Graph returns only its 11 default user properties, so licensing, hybrid, and sign-in attributes will be blank.' -ExportFileLocation $ExportDetails
             Invoke-QuietCommand -ScriptBlock { Get-MgUser -All -ErrorAction Stop } |
                 Where-Object { $null -ne $_.ID } |
                 ForEach-Object { Process-TenantUserRecord -UserRecord $_ }
             return
         }
 
-        if ($detailLevel -in @('geek', 'all')) {
-            Invoke-QuietCommand -ScriptBlock { Get-MgUser -All -ErrorAction Stop } |
-                Where-Object { $null -ne $_.ID } |
-                ForEach-Object { Process-TenantUserRecord -UserRecord $_ }
-            return
+        # Every non-basic path selects explicitly. The geek/all levels previously omitted
+        # -Property intending to fetch everything, which instead returned only Graph's 11
+        # default properties and left licensing, hybrid, and sign-in columns empty.
+        $selectedProperties = @($DesiredProperties)
+
+        # signInActivity requires Microsoft Entra ID P1/P2 plus AuditLog.Read.All. Probe
+        # once so a missing licence or scope costs the sign-in columns, not the whole
+        # user inventory.
+        if ($selectedProperties -contains 'SignInActivity') {
+            try {
+                Invoke-QuietCommand -ScriptBlock { Get-MgUser -Top 1 -Property 'Id', 'SignInActivity' -ErrorAction Stop } | Out-Null
+            }
+            catch {
+                $selectedProperties = @($selectedProperties | Where-Object { $_ -ne 'SignInActivity' })
+                Write-Log -Type WARNING -Message "[Get-allUserDetails] signInActivity is unavailable (needs Microsoft Entra ID P1/P2 and AuditLog.Read.All): $($_.Exception.Message). Continuing without sign-in activity; all other user attributes are still collected." -ExportFileLocation $ExportDetails
+                Write-AssessmentConsoleSubstep -Message 'Users: sign-in activity unavailable (needs Entra ID P1/P2 and AuditLog.Read.All); continuing without it.' -ForegroundColor Yellow
+            }
         }
 
-        Invoke-QuietCommand -ScriptBlock { Get-MgUser -All -Property $DesiredProperties -ErrorAction Stop } |
+        $queryProperties = $selectedProperties
+        $queryPageSize = $userPageSize
+        Write-Log -Type INFO -Message "[Get-allUserDetails] Requesting $($queryProperties.Count) Graph user properties (PageSize=$queryPageSize; SignInActivity=$($queryProperties -contains 'SignInActivity'))." -ExportFileLocation $ExportDetails
+
+        Invoke-QuietCommand -ScriptBlock { Get-MgUser -All -Property $queryProperties -PageSize $queryPageSize -ErrorAction Stop } |
             Where-Object { $null -ne $_.ID } |
             ForEach-Object { Process-TenantUserRecord -UserRecord $_ }
     }
@@ -10087,6 +10213,17 @@ function Get-AllUserDetails {
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
         Write-AssessmentCollectorCompletionBanner -Message "Completed in $($CompletedTime)"
         Write-Log -Type INFO -Message "[Get-allUserDetails] Licensing summary: LicensedUsers=$($userCollectionState.LicensedUserCount) UnlicensedUsers=$($userCollectionState.UnlicensedUserCount) LicenseLookupUsers=$($userCollectionState.LicenseFallbackUserCount) UnresolvedSkuReferences=$($userCollectionState.UnresolvedSkuCount)" -ExportFileLocation $ExportDetails
+
+        # Zero licensed users in a tenant that has any processed users means the property
+        # selection or the SKU lookup failed, which previously went unnoticed because it
+        # was only visible in the log.
+        if ($userCollectionState.ProcessedUserCount -gt 0 -and $userCollectionState.LicensedUserCount -eq 0) {
+            Write-AssessmentConsoleSubstep -Message ("Users: no licensed users resolved across {0} user(s). Check that AssignedLicenses was returned by Graph and that LicenseSKUs collected." -f $userCollectionState.ProcessedUserCount) -ForegroundColor Yellow
+            Write-Log -Type WARNING -Message "[Get-allUserDetails] No licensed users resolved across $($userCollectionState.ProcessedUserCount) processed user(s). This usually means AssignedLicenses was not selected from Graph or the SKU lookup was empty." -ExportFileLocation $ExportDetails
+        }
+        else {
+            Write-AssessmentConsoleSubstep -Message ("Users: {0} licensed, {1} unlicensed of {2} processed." -f $userCollectionState.LicensedUserCount, $userCollectionState.UnlicensedUserCount, $userCollectionState.ProcessedUserCount)
+        }
         Write-Log -Type Info -Message "[Get-allUserDetails] COMPLETED: Gathering all  User Details in $($CompletedTime)" -ExportFileLocation $ExportDetails
     }     
     catch {

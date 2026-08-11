@@ -87,13 +87,68 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Not -Match "getOneDriveUsageAccountDetail\(period='D7'\)"
     }
 
+    It 'selects user properties explicitly on every non-basic Graph query path' {
+        # Graph returns only 11 default properties when no $select is supplied, so the
+        # geek/all branch that omitted -Property produced the least data, not the most.
+        $script:collectorSource | Should -Not -Match 'if \(\$detailLevel -in @\(''geek'', ''all''\)\) \{\r?\n\s*Invoke-QuietCommand -ScriptBlock \{ Get-MgUser -All -ErrorAction Stop \}'
+        $script:collectorSource | Should -Match 'Get-MgUser -All -Property \$queryProperties -PageSize \$queryPageSize -ErrorAction Stop'
+
+        # Graph caps the page size at 500 when signInActivity is selected.
+        $script:collectorSource | Should -Match '\$userPageSize = 500'
+
+        # Attributes Graph only returns on request.
+        foreach ($property in @('AccountEnabled', 'UserType', 'UsageLocation', 'AssignedLicenses',
+                                'OnPremisesSyncEnabled', 'OnPremisesImmutableId', 'OnPremisesSamAccountName',
+                                'LastPasswordChangeDateTime', 'EmployeeId', 'CreationType',
+                                'ExternalUserState', 'MailNickname', 'ProxyAddresses', 'SignInActivity')) {
+            $script:collectorSource | Should -Match ('"{0}"' -f $property)
+        }
+
+        # A missing Entra ID P1/P2 licence or AuditLog.Read.All must cost only the
+        # sign-in columns, not the whole user inventory.
+        $script:collectorSource | Should -Match "Get-MgUser -Top 1 -Property 'Id', 'SignInActivity' -ErrorAction Stop"
+        $script:collectorSource | Should -Match 'needs Microsoft Entra ID P1/P2 and AuditLog\.Read\.All'
+        $script:collectorSource | Should -Match 'no licensed users resolved across'
+    }
+
+    It 'explains that getAllSites is application-permission only on interactive runs' {
+        $script:collectorSource | Should -Match 'Graph getAllSites is application-permission only and is never available to an interactive sign-in'
+        $script:collectorSource | Should -Match 'No Graph scope change will alter this'
+        # Expected behaviour on an interactive run, so it must not be logged as a warning.
+        $script:collectorSource | Should -Match '\$isInteractiveRun = \('
+        # App-only runs keep the actionable consent guidance.
+        $script:collectorSource | Should -Match 'Confirm the app has Sites\.Read\.All application permission with admin consent'
+    }
+
+    It 'normalizes usage-report join keys through one helper and reports a zero match rate' {
+        $script:collectorSource | Should -Match 'function ConvertTo-AssessmentSiteUrlKey'
+        $script:collectorSource | Should -Match 'function Get-AssessmentSiteUsageReport'
+        $script:collectorSource | Should -Match 'function Write-AssessmentSiteUsageJoinDiagnostics'
+
+        # Both key forms indexed, and both tried on lookup.
+        $script:collectorSource | Should -Match 'ConvertTo-AssessmentSiteUrlKey -Url \$siteUrl -HostAndPathOnly'
+        $script:collectorSource | Should -Match 'ConvertTo-AssessmentSiteUrlKey -Url \$Url -HostAndPathOnly'
+
+        # Every join site routes through the helper rather than hand-rolling the key.
+        $script:collectorSource | Should -Not -Match '\$siteUrlKey = if \('
+        @('\$site\.Url', '\$site\.WebUrl', '\$site\.webUrl') | ForEach-Object {
+            $script:collectorSource | Should -Match ('Get-AssessmentSiteUsageReport -Url \(\[string\]{0}\) -IsOneDrive \$isOneDrive' -f $_)
+        }
+
+        $script:collectorSource | Should -Match 'usage report matched 0 of'
+        $script:collectorSource | Should -Match 'Sample inventory keys'
+        $script:collectorSource | Should -Match 'Site usage report match rate'
+    }
+
     It 'joins the usage reports on the SharePoint Online fallback path instead of discarding them' {
         # The SPO stage previously called ConvertTo-NormalizedSiteData with no
         # -UsageReport, so the reports downloaded in stage 1 went unused whenever the
         # fallback won.
         $script:collectorSource | Should -Match 'ConvertTo-NormalizedSiteData -Site \$site -IsOneDrive:\$isOneDrive -Source SPO -UsageReport \$usageReport'
         $script:collectorSource | Should -Not -Match 'ConvertTo-NormalizedSiteData -Site \$site -IsOneDrive:\$isOneDrive -Source SPO\r?\n'
-        $script:collectorSource | Should -Match '\$usageReport = if \(\$isOneDrive\) \{ \$oneDriveUsageByUrl\[\$siteUrlKey\] \} else \{ \$sharePointUsageByUrl\[\$siteUrlKey\] \}'
+        # The lookup now goes through the shared helper so the key normalization cannot
+        # drift between where it is stored and where it is read.
+        $script:collectorSource | Should -Match 'Get-AssessmentSiteUsageReport -Url \(\[string\]\$site\.Url\) -IsOneDrive \$isOneDrive'
 
         # Coverage reporting must no longer be suppressed when the fallback is used.
         $script:collectorSource | Should -Not -Match 'if \(\$ServiceName -in @\(''MGGraph'', ''API''\) -and -not \$sharePointUsedSpoFallback\)'
@@ -271,7 +326,8 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     }
 
     It 'collects practical licensing signals for full assessment governance analysis' {
-        $script:collectorSource | Should -Match '"DisplayName", "AssignedLicenses", "LicenseAssignmentStates", "UserPrincipalName"'
+        # AssignedPlans joined this line so per-service-plan state is available too.
+        $script:collectorSource | Should -Match '"DisplayName", "AssignedLicenses", "AssignedPlans", "LicenseAssignmentStates", "UserPrincipalName"'
         $script:collectorSource | Should -Match 'DirectAssignedLicenses'
         $script:collectorSource | Should -Match 'GroupAssignedLicenses'
         $script:collectorSource | Should -Match 'LicenseAssignmentErrors'
@@ -457,7 +513,9 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
     }
 
     It 'handles SharePoint getAllSites access denied with operator guidance and SPO fallback when available' {
-        $script:collectorSource | Should -Match 'Microsoft Graph getAllSites requires application permissions'
+        # Interactive runs get a factual explanation: getAllSites is delegated-unsupported
+        # by design, so the 403 is expected and no scope change helps.
+        $script:collectorSource | Should -Match 'Graph getAllSites is application-permission only and is never available to an interactive sign-in'
         $script:collectorSource | Should -Match 'Confirm the app has Sites.Read.All application permission with admin consent'
         # The denial guidance is now surfaced by the caller-owned cascade, which falls
         # through on any failure rather than only on 401/403 with a live SPO session.
