@@ -33,6 +33,8 @@ All notable changes to this repository are tracked here. The detailed commit led
 - Added app-auth/certificate-aware Graph permission reuse validation so app-only permissions such as `Directory.Read.All` can satisfy equivalent live probes.
 - Verified certificate-based auth for separate preflight, targeted collect, existing-session collect, and export-only flows.
 - Documented certificate auth behavior and app-based workload limitations in operator docs.
+- Added a cross-workload tenant guard that stops the run when Microsoft Graph and Exchange Online are connected to different tenants, which previously produced a workbook mixing two tenants' data without warning.
+- Interactive runs now obtain a tenant id before collection, prompting when `-TenantId` is not supplied and failing fast on non-interactive hosts, so the cached `Connect-MgGraph` session is always validated against the intended tenant.
 
 ### Reporting, Export, And Deliverables
 - Added DOCX customer reporting, remediation roadmap output, and engineer action pack improvements.
@@ -42,6 +44,15 @@ All notable changes to this repository are tracked here. The detailed commit led
 - Normalized output layout into `Deliverables` and `Support` paths, including manifests, snapshots, evidence coverage, debugging logs, and optional legacy artifacts.
 - Improved workbook/export memory behavior and reused cached mailbox/group data during export.
 - Added snapshot replay/export improvements and hardened JSON snapshot compatibility.
+- Fixed worksheets that reflected .NET collections into columns, which surfaced array members such as `Length`, `Rank`, and `SyncRoot` as headers instead of data.
+- Flattened container worksheets (`AdConnectConfiguration`, `TeamsVoice`, `AuthenticationConfig`) to `Section`/`Item`/`Value`/`Notes` with one row per record, so SSO applications, calling policies, phone numbers, and sync services are no longer collapsed into a single cell or dropped.
+- Expanded `MfaEnrollmentSummary` to one row per authentication method with user counts and percentages, replacing the pre-joined breakdown string.
+- Registered `TeamsVoice` in the worksheet ordering instead of letting it fall through to the append-remaining branch.
+- Padded ragged records to the union of their keys, since `Export-Excel` derives columns from the first record only and silently dropped columns a later record added.
+- Suppressed cells that contained only a .NET type name, which filled roughly 50 user columns with `Microsoft.Graph.PowerShell.Models.*` and no data.
+- Dropped worksheet columns that are empty for every row, logging the removals per sheet. Skipped for the tenant-to-tenant explicit column contract and the flattened configuration sheets.
+- Added a curated, ordered column set for `Users` and `UserFullDetails`, replacing roughly 145 reflected columns that buried `DisplayName` behind alphabetical navigation properties.
+- Preserved leading `+` on phone numbers in flattened configuration sheets by opting those columns out of Excel number coercion.
 
 ### Tenant-To-Tenant And Migration Outputs
 - Added and refined tenant-to-tenant migration readiness outputs, cutover checklist data, mailbox migration columns, and reduced-scope T2T reporting.
@@ -52,6 +63,17 @@ All notable changes to this repository are tracked here. The detailed commit led
 - Improved authentication/SSO, enterprise application inventory, application sign-in enrichment, redirect-risk analysis, and app ownership reporting.
 - Added compliance retention/DLP insights and hardened Purview compliance collection.
 - Improved Secure Score, device, SharePoint/OneDrive, external sharing, guest access, ownership, forwarding, inbox rule, and public folder review outputs.
+- Fixed user collection requesting no `$select` at the `geek` and `all` detail levels, which returned only Microsoft Graph's 11 default properties and left account state, licensing, hybrid sync, and sign-in columns empty. The most detailed profiles were producing the least data.
+- Added `-PageSize 500` to user collection, which Microsoft requires whenever `signInActivity` is selected.
+- Made `signInActivity` degrade gracefully: a missing Entra ID P1/P2 licence or `AuditLog.Read.All` now costs the sign-in columns instead of the whole user inventory.
+- Surfaced the licensed/unlicensed split on the console, including an explicit warning when no licensed users resolve.
+- Restructured SharePoint/OneDrive site collection into an ordered cascade (Graph SDK, then Graph `getAllSites`, then the SharePoint Online module), where each stage reports success and any failure falls through rather than only 401/403.
+- Made the SharePoint Online fallback establish its own session, resolving the admin URL from Graph and prompting when unavailable, instead of requiring a session to already exist.
+- Collected all four SharePoint and OneDrive usage and activity reports at D180 through `Get-GraphAPIActivityReport`, replacing two reports pulled at D7 through direct URIs.
+- Added `SharePointActivityUserDetail` and `OneDriveActivityUserDetail` worksheets and rolled their aggregates into `CollaborationActivitySummary`.
+- Joined the usage reports on the SharePoint Online fallback path, which previously downloaded them and then discarded them, and enriched site rows with file counts, page views, activity state, geo location, sensitivity label, and migration notes.
+- Backfilled site owners for group-connected sites from the Microsoft 365 group inventory, recording provenance in `OwnerSource`.
+- Clarified that Graph `getAllSites` is application-permission only, so the 403 on interactive runs is expected and logged as informational rather than a warning.
 
 ### Test And Maintenance
 - Added focused routing tests for preflight-only, collect-only, export-only, existing-connection mode, and targeted collector filters.

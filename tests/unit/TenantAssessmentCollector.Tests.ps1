@@ -62,10 +62,16 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match '\[System\.StringComparison\]::OrdinalIgnoreCase'
     }
 
-    It 'requires an explicit TenantId for interactive runs so the Graph context can be validated' {
+    It 'obtains a TenantId for interactive runs so the Graph context can be validated' {
         $script:collectorSource | Should -Match 'if \(\$resolvedAuthMode -eq ''Interactive'' -and \[string\]::IsNullOrWhiteSpace\(\$TenantId\)\)'
-        $script:collectorSource | Should -Match 'Interactive runs require -TenantId'
         $script:collectorSource | Should -Match 'cached Connect-MgGraph session from another tenant is reused silently'
+
+        # Prompt rather than fail, so the documented zero-argument menu flow still works.
+        $script:collectorSource | Should -Match 'Tenant id \(guid\) or primary domain of the tenant being assessed'
+        # Non-interactive hosts cannot be prompted, so they still fail fast.
+        $script:collectorSource | Should -Match 'This host is non-interactive, so rerun with -TenantId'
+        # An empty answer must not be accepted as consent to run unvalidated.
+        $script:collectorSource | Should -Match 'No tenant id was supplied\. Rerun with -TenantId'
     }
 
     It 'collects all four SharePoint and OneDrive Graph reports at D180 through Get-GraphAPIActivityReport' {
