@@ -923,6 +923,54 @@ function Export-HashTableToExcel {
         )
     }
 
+    function Remove-WorkbookExportEmptyColumns {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $false)]
+            [AllowNull()]
+            [object[]]$Records,
+            [Parameter(Mandatory = $false)]
+            [ref]$DroppedColumns
+        )
+
+        if ($null -eq $Records -or $Records.Count -eq 0) {
+            return $Records
+        }
+
+        $columns = @($Records[0].PSObject.Properties.Name)
+        if ($columns.Count -eq 0) {
+            return $Records
+        }
+
+        $populated = [ordered]@{}
+        foreach ($record in $Records) {
+            if ($null -eq $record) { continue }
+            foreach ($property in $record.PSObject.Properties) {
+                if ($populated.Contains($property.Name)) { continue }
+                if ($null -ne $property.Value -and -not [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+                    $populated[$property.Name] = $true
+                }
+            }
+            # Every column already proven non-empty; no need to scan the remaining rows.
+            if ($populated.Count -eq $columns.Count) { break }
+        }
+
+        $keep = @($columns | Where-Object { $populated.Contains($_) })
+        $dropped = @($columns | Where-Object { -not $populated.Contains($_) })
+
+        if ($DroppedColumns) {
+            $DroppedColumns.Value = $dropped
+        }
+
+        # Never return a worksheet with no columns at all: an all-empty table is still
+        # worth showing with its original header row.
+        if ($dropped.Count -eq 0 -or $keep.Count -eq 0) {
+            return $Records
+        }
+
+        return @($Records | Select-Object -Property $keep)
+    }
+
     # === Sheet ordering ===
     $defaultDesiredOrder = @(
         # Tenant Overview
@@ -1099,10 +1147,31 @@ function Export-HashTableToExcel {
                     $friendlyRows = @($rowsToExport | ForEach-Object { ConvertTo-ExportFriendlyRecord -InputObject $_ })
                     $friendlyRows = @(ConvertTo-WorkbookExportUniformRecords -Records $friendlyRows)
 
+                    $isConfigurationSheet = (
+                        $friendlyRows.Count -gt 0 -and
+                        (@($friendlyRows[0].PSObject.Properties.Name) -join ',') -eq 'Section,Item,Value,Notes'
+                    )
+
+                    # Reflected source objects (notably Graph SDK models) contribute columns
+                    # that are empty for every row. Drop them so the columns that carry data
+                    # are not pushed off-screen.
+                    #
+                    # Skipped for the two worksheet shapes that are a fixed contract: the
+                    # tenant-to-tenant explicit columns (which deliberately allow empty-schema
+                    # sheets) and the flattened Section/Item/Value/Notes configuration sheets,
+                    # where an empty Notes column for one tenant must not change the schema.
+                    if ($explicitColumns.Count -eq 0 -and -not $isConfigurationSheet) {
+                        $droppedColumns = @()
+                        $friendlyRows = @(Remove-WorkbookExportEmptyColumns -Records $friendlyRows -DroppedColumns ([ref]$droppedColumns))
+                        if ($droppedColumns.Count -gt 0) {
+                            Write-Log -Type INFO -Message ("Worksheet '{0}': dropped {1} empty column(s): {2}" -f $worksheetName, $droppedColumns.Count, ($droppedColumns -join ', ')) -ExportFileLocation $ExportDetails
+                        }
+                    }
+
                     # On a flattened configuration sheet the Item column holds labels such as
                     # phone numbers ('+15555550100'). Excel would otherwise coerce those to
                     # numbers and drop the leading '+'.
-                    if ($friendlyRows.Count -gt 0 -and @($friendlyRows[0].PSObject.Properties.Name) -join ',' -eq 'Section,Item,Value,Notes') {
+                    if ($isConfigurationSheet) {
                         $excelSplat.NoNumberConversion = @('Item')
                     }
 
