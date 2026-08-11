@@ -91,5 +91,24 @@ function ConvertTo-ExportFriendlyValue {
         return ($pairs -join '; ')
     }
 
-    return $Value.ToString()
+    # Graph SDK model objects expose their members as 'Property' rather than
+    # 'NoteProperty', so the filter above finds nothing and ToString() falls back to the
+    # class name. Emitting that would fill a worksheet column with
+    # 'Microsoft.Graph.PowerShell.Models.MicrosoftGraphAuthentication' and no data.
+    $text = $Value.ToString()
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $null
+    }
+
+    $typeName = $null
+    try { $typeName = $Value.GetType().FullName } catch {}
+    if ($typeName -and [string]::Equals($text, $typeName, [System.StringComparison]::Ordinal)) {
+        return $null
+    }
+
+    if ($text -match '^(Microsoft\.Graph|Microsoft\.Online|System)\.[A-Za-z0-9_.`\[\]+]+$') {
+        return $null
+    }
+
+    return $text
 }
