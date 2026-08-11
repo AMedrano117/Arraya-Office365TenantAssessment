@@ -1350,6 +1350,34 @@ function Get-AssessmentSharePointAdminUrl {
     return ('https://{0}-admin.sharepoint.com' -f $tenantName)
 }
 
+function Test-AssessmentInteractiveHost {
+    [CmdletBinding()]
+    param()
+
+    # App-only runs must never block on a console prompt, and neither must a host
+    # started with -NonInteractive or without a user-attached console.
+    if ($script:AssessmentAuthWorkloadPlan -and $script:AssessmentAuthWorkloadPlan.PSObject.Properties['AuthenticationType']) {
+        if ([string]$script:AssessmentAuthWorkloadPlan.AuthenticationType -in @('Certificate', 'ClientSecret')) {
+            return $false
+        }
+    }
+
+    if (-not [Environment]::UserInteractive) {
+        return $false
+    }
+
+    try {
+        if ($null -eq $Host.UI -or $null -eq $Host.UI.RawUI) {
+            return $false
+        }
+    }
+    catch {
+        return $false
+    }
+
+    return $true
+}
+
 function Get-AssessmentGraphOrganizationDetails {
     [CmdletBinding()]
     param()
@@ -7465,19 +7493,70 @@ function Get-SharePointAndOneDriveSites {
         OneDriveMissing   = 0
     }
 
-    function Get-GraphCsvReportLookup {
+    # Stage 1 of the SharePoint/OneDrive cascade: pull the Graph report first through
+    # Office365Custom\Get-GraphAPIActivityReport, falling back to the direct report URI.
+    function Get-AssessmentSiteReportRows {
         [CmdletBinding()]
         param(
+            [Parameter(Mandatory = $true)]
+            [string]$ReportServiceName,
             [Parameter(Mandatory = $true)]
             [string]$Uri,
             [Parameter(Mandatory = $true)]
             [string]$LookupName,
             [Parameter(Mandatory = $false)]
-            [hashtable]$UrlLookup
+            [string]$PeriodDuration = 'D180'
+        )
+
+        $activityCommand = Get-Command -Name 'Office365Custom\Get-GraphAPIActivityReport' -ErrorAction SilentlyContinue
+        if ($activityCommand) {
+            try {
+                $savedProgressPreference = $ProgressPreference
+                try {
+                    $ProgressPreference = 'SilentlyContinue'
+                    $activityRows = @(
+                        Office365Custom\Get-GraphAPIActivityReport -ServiceName $ReportServiceName -PeriodDuration $PeriodDuration -ErrorAction Stop
+                    )
+                }
+                finally {
+                    $ProgressPreference = $savedProgressPreference
+                }
+
+                if ($activityRows.Count -gt 0) {
+                    Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSites] $LookupName collected via Get-GraphAPIActivityReport (ServiceName=$ReportServiceName; Period=$PeriodDuration; Rows=$($activityRows.Count))." -ExportFileLocation $ExportDetails
+                    return $activityRows
+                }
+
+                Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSites] Get-GraphAPIActivityReport returned no rows for '$ReportServiceName'. Falling back to the direct report URI." -ExportFileLocation $ExportDetails
+            }
+            catch {
+                Write-Log -Type WARNING -Message "[Get-SharePointAndOneDriveSites] Get-GraphAPIActivityReport failed for '$ReportServiceName': $($_.Exception.Message). Falling back to the direct report URI." -ExportFileLocation $ExportDetails
+            }
+        }
+        else {
+            Write-Log -Type DEBUG -Message "[Get-SharePointAndOneDriveSites] Office365Custom\Get-GraphAPIActivityReport is not available. Using the direct report URI for $LookupName." -ExportFileLocation $ExportDetails
+        }
+
+        return @(Export-ArrayaGraphReportCsv -Uri $Uri -Activity "$LookupName report" -Headers $global:GraphHeaders)
+    }
+
+    function Get-GraphCsvReportLookup {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$ReportServiceName,
+            [Parameter(Mandatory = $true)]
+            [string]$Uri,
+            [Parameter(Mandatory = $true)]
+            [string]$LookupName,
+            [Parameter(Mandatory = $false)]
+            [hashtable]$UrlLookup,
+            [Parameter(Mandatory = $false)]
+            [string]$PeriodDuration = 'D180'
         )
 
         try {
-            $rows = @(Export-ArrayaGraphReportCsv -Uri $Uri -Activity "$LookupName report" -Headers $global:GraphHeaders)
+            $rows = @(Get-AssessmentSiteReportRows -ReportServiceName $ReportServiceName -Uri $Uri -LookupName $LookupName -PeriodDuration $PeriodDuration)
             $lookup = @{}
             foreach ($row in $rows) {
                 $siteId = $row.'Site Id'
@@ -7507,6 +7586,101 @@ function Get-SharePointAndOneDriveSites {
             Write-Log -Type WARNING -Message "[Get-SharePointAndOneDriveSites] Unable to download $LookupName report: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
             return @{}
         }
+    }
+
+    # Store a user-keyed activity report as its own worksheet and roll the aggregate
+    # counts into CollaborationActivitySummary alongside the Teams/Groups signals.
+    function Set-AssessmentSiteActivityReport {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$ReportServiceName,
+            [Parameter(Mandatory = $true)]
+            [string]$Uri,
+            [Parameter(Mandatory = $true)]
+            [string]$LookupName,
+            [Parameter(Mandatory = $true)]
+            [string]$TableName,
+            [Parameter(Mandatory = $true)]
+            [ValidateSet('SharePoint', 'OneDrive')]
+            [string]$Workload,
+            [Parameter(Mandatory = $false)]
+            [string]$PeriodDuration = 'D180'
+        )
+
+        $rows = @()
+        try {
+            $rows = @(Get-AssessmentSiteReportRows -ReportServiceName $ReportServiceName -Uri $Uri -LookupName $LookupName -PeriodDuration $PeriodDuration)
+        }
+        catch {
+            Write-Log -Type WARNING -Message "[Get-SharePointAndOneDriveSites] Unable to download $LookupName report: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+            return
+        }
+
+        if ($rows.Count -eq 0) {
+            Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSites] $LookupName returned no rows; worksheet '$TableName' will be omitted." -ExportFileLocation $ExportDetails
+            return
+        }
+
+        $script:tenantStatsHash[$TableName] = @($rows)
+
+        $sumColumn = {
+            param([string[]]$Names)
+            $total = 0
+            foreach ($row in $rows) {
+                foreach ($name in $Names) {
+                    $property = $row.PSObject.Properties[$name]
+                    if ($property -and -not [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+                        $parsed = 0
+                        if ([int]::TryParse(([string]$property.Value).Trim(), [ref]$parsed)) { $total += $parsed }
+                        break
+                    }
+                }
+            }
+            return $total
+        }
+
+        $viewedEdited = & $sumColumn @('Viewed Or Edited File Count')
+        $synced = & $sumColumn @('Synced File Count')
+        $sharedInternally = & $sumColumn @('Shared Internally File Count')
+        $sharedExternally = & $sumColumn @('Shared Externally File Count')
+        $activeUsers = @(
+            $rows | Where-Object {
+                $lastActivity = $_.PSObject.Properties['Last Activity Date']
+                $lastActivity -and -not [string]::IsNullOrWhiteSpace([string]$lastActivity.Value)
+            }
+        ).Count
+
+        if (-not $script:tenantStatsHash.ContainsKey('CollaborationActivitySummary') -or $null -eq $script:tenantStatsHash['CollaborationActivitySummary']) {
+            $script:tenantStatsHash['CollaborationActivitySummary'] = @{}
+        }
+
+        $summaryRecord = $script:tenantStatsHash['CollaborationActivitySummary']['Summary']
+        if ($null -eq $summaryRecord) {
+            $summaryRecord = [pscustomobject]@{ PeriodDuration = $PeriodDuration }
+            $script:tenantStatsHash['CollaborationActivitySummary']['Summary'] = $summaryRecord
+        }
+
+        $addMember = {
+            param([string]$Name, $Value)
+            if ($summaryRecord.PSObject.Properties[$Name]) {
+                $summaryRecord.$Name = $Value
+            }
+            else {
+                Add-Member -InputObject $summaryRecord -MemberType NoteProperty -Name $Name -Value $Value
+            }
+        }
+
+        & $addMember "${Workload}ReportRows" $rows.Count
+        & $addMember "${Workload}ActiveUsers" $activeUsers
+        & $addMember "${Workload}FilesViewedOrEdited" $viewedEdited
+        & $addMember "${Workload}FilesSharedInternally" $sharedInternally
+        & $addMember "${Workload}FilesSharedExternally" $sharedExternally
+        if ($Workload -eq 'OneDrive') {
+            & $addMember 'OneDriveFilesSynced' $synced
+        }
+
+        Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSites] $LookupName stored as worksheet '$TableName' (Rows=$($rows.Count); ActiveUsers=$activeUsers; ViewedOrEdited=$viewedEdited; SharedInternally=$sharedInternally; SharedExternally=$sharedExternally)." -ExportFileLocation $ExportDetails
     }
 
     function Get-GraphSiteReportId {
@@ -7896,9 +8070,16 @@ function Get-SharePointAndOneDriveSites {
     $oneDriveUsageBySiteId = @{}
     $sharePointUsageByUrl = @{}
     $oneDriveUsageByUrl = @{}
+    $siteReportPeriod = 'D180'
     if ($ServiceName -in @('MGGraph', 'API')) {
-        $sharePointUsageBySiteId = Get-GraphCsvReportLookup -Uri "https://graph.microsoft.com/v1.0/reports/getSharePointSiteUsageDetail(period='D7')" -LookupName 'SharePointSiteUsageDetail' -UrlLookup $sharePointUsageByUrl
-        $oneDriveUsageBySiteId = Get-GraphCsvReportLookup -Uri "https://graph.microsoft.com/v1.0/reports/getOneDriveUsageAccountDetail(period='D7')" -LookupName 'OneDriveUsageAccountDetail' -UrlLookup $oneDriveUsageByUrl
+        # Site-keyed usage reports enrich the site inventory rows below.
+        $sharePointUsageBySiteId = Get-GraphCsvReportLookup -ReportServiceName 'SharePointSites' -Uri "https://graph.microsoft.com/v1.0/reports/getSharePointSiteUsageDetail(period='$siteReportPeriod')" -LookupName 'SharePointSiteUsageDetail' -UrlLookup $sharePointUsageByUrl -PeriodDuration $siteReportPeriod
+        $oneDriveUsageBySiteId = Get-GraphCsvReportLookup -ReportServiceName 'OneDriveUsage' -Uri "https://graph.microsoft.com/v1.0/reports/getOneDriveUsageAccountDetail(period='$siteReportPeriod')" -LookupName 'OneDriveUsageAccountDetail' -UrlLookup $oneDriveUsageByUrl -PeriodDuration $siteReportPeriod
+
+        # User-keyed activity reports cannot key off Site Id, so they become their own
+        # worksheets and roll up into CollaborationActivitySummary.
+        Set-AssessmentSiteActivityReport -ReportServiceName 'SharePointUser' -Uri "https://graph.microsoft.com/v1.0/reports/getSharePointActivityUserDetail(period='$siteReportPeriod')" -LookupName 'SharePointActivityUserDetail' -TableName 'SharePointActivityUserDetail' -Workload 'SharePoint' -PeriodDuration $siteReportPeriod
+        Set-AssessmentSiteActivityReport -ReportServiceName 'OneDriveActivity' -Uri "https://graph.microsoft.com/v1.0/reports/getOneDriveActivityUserDetail(period='$siteReportPeriod')" -LookupName 'OneDriveActivityUserDetail' -TableName 'OneDriveActivityUserDetail' -Workload 'OneDrive' -PeriodDuration $siteReportPeriod
     }
 
     # Option 1: Use Microsoft Graph PowerShell SDK
@@ -7941,10 +8122,83 @@ function Get-SharePointAndOneDriveSites {
                 $ProgressPreference = $savedProgressPreference
             }
         } catch {
-            Write-Error "Error fetching SharePoint and OneDrive sites with Graph SDK: $($_.Exception.Message)"
+            # Report failure to the caller so the cascade can fall through to the REST and
+            # SharePoint Online PowerShell stages instead of silently collecting nothing.
+            Write-Log -Type WARNING -Message "[Get-SharePointAndOneDriveSites] Stage 'Graph SDK' failed after $totalCount site(s): $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+            Write-AssessmentConsoleSubstep -Message "SharePoint/OneDrive inventory via Graph SDK failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            return $false
         } finally {
             Write-Progress -Id $siteDetailsProgressId -Activity "Gather Additional Site Details" -Completed
             Write-Progress -Id $graphSitesProgressId -Activity "Gather all SharePoint Online Sites with OneDrives" -Completed
+        }
+
+        if ($totalCount -eq 0) {
+            Write-Log -Type WARNING -Message "[Get-SharePointAndOneDriveSites] Stage 'Graph SDK' returned no sites." -ExportFileLocation $ExportDetails
+            return $false
+        }
+
+        Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSites] Stage 'Graph SDK' collected $totalCount site(s)." -ExportFileLocation $ExportDetails
+        return $true
+    }
+
+    # Resolve the SharePoint admin URL Graph-first, then prompt the operator. Returns
+    # $true once Get-SPOSite is usable in this session.
+    function Connect-AssessmentSharePointFallbackSession {
+        [CmdletBinding()]
+        param()
+
+        if (Test-AssessmentSharePointSessionReady) {
+            Write-Log -Type INFO -Message '[Get-SharePointAndOneDriveSites] Reusing the existing SharePoint Online PowerShell session.' -ExportFileLocation $ExportDetails
+            return $true
+        }
+
+        if (-not (Ensure-AssessmentSharePointModuleAvailable)) {
+            Write-AssessmentConsoleSubstep -Message "Microsoft.Online.SharePoint.PowerShell is not installed. Install it with: Install-Module Microsoft.Online.SharePoint.PowerShell" -ForegroundColor Yellow
+            Write-Log -Type WARNING -Message '[Get-SharePointAndOneDriveSites] Stage 3 unavailable: Microsoft.Online.SharePoint.PowerShell is not installed.' -ExportFileLocation $ExportDetails
+            return $false
+        }
+
+        # 1. Graph-derived initial domain, 2. the bootstrap connection result, 3. the operator.
+        $initialDomain = $null
+        $graphOrganization = Get-AssessmentGraphOrganizationDetails
+        if ($graphOrganization -and $graphOrganization.PSObject.Properties['InitialDomain']) {
+            $initialDomain = [string]$graphOrganization.InitialDomain
+        }
+        if ([string]::IsNullOrWhiteSpace($initialDomain)) {
+            $scriptConnectionResult = Get-Variable -Name connectionResult -Scope Script -ErrorAction SilentlyContinue
+            if ($scriptConnectionResult -and $scriptConnectionResult.Value -and $scriptConnectionResult.Value.PSObject.Properties['InitialDomain']) {
+                $initialDomain = [string]$scriptConnectionResult.Value.InitialDomain
+            }
+        }
+
+        $spoAdminUrl = Get-AssessmentSharePointAdminUrl -InitialDomain $initialDomain
+
+        if ([string]::IsNullOrWhiteSpace($spoAdminUrl)) {
+            if (-not (Test-AssessmentInteractiveHost)) {
+                Write-Log -Type WARNING -Message '[Get-SharePointAndOneDriveSites] Unable to resolve the SharePoint admin URL from Graph, and the host is non-interactive so it cannot be prompted for.' -ExportFileLocation $ExportDetails
+                return $false
+            }
+
+            Write-AssessmentConsoleSubstep -Message 'Microsoft Graph could not supply the SharePoint admin URL.' -ForegroundColor Yellow
+            $spoAdminUrl = (Read-Host -Prompt '  Enter the SharePoint admin URL (for example https://contoso-admin.sharepoint.com), or press Enter to skip')
+            if ($null -ne $spoAdminUrl) { $spoAdminUrl = $spoAdminUrl.Trim() }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($spoAdminUrl)) {
+            Write-Log -Type WARNING -Message '[Get-SharePointAndOneDriveSites] No SharePoint admin URL available; stage 3 skipped.' -ExportFileLocation $ExportDetails
+            return $false
+        }
+
+        try {
+            Write-AssessmentConsoleSubstep -Message "Connecting to SharePoint Online PowerShell at $spoAdminUrl ..."
+            Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
+            Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSites] Connected to SharePoint Online PowerShell at $spoAdminUrl." -ExportFileLocation $ExportDetails
+            return $true
+        }
+        catch {
+            Write-Log -Type WARNING -Message "[Get-SharePointAndOneDriveSites] Connect-SPOService failed for '$spoAdminUrl': $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+            Write-AssessmentConsoleSubstep -Message "Connect-SPOService failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            return $false
         }
     }
 
@@ -7988,10 +8242,14 @@ function Get-SharePointAndOneDriveSites {
             }
         } catch {
             Write-Log -Type ERROR -Message "[Get-SharePointAndOneDriveSitesFromSPO] An error occurred in running Get-SharePointAndOneDriveSitesFromSPO function. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
+            return $false
         } finally {
             Write-ProgressHelper -Total ([Math]::Max($totalCount, 1)) -Id $siteDetailsProgressId -Activity "Gather Additional Site Details" -Completed
             Write-Progress -Id $spoSitesProgressId -Activity "Gather all SharePoint Online Sites with OneDrives" -Completed
         }
+
+        Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSitesFromSPO] Stage 'SharePoint Online PowerShell' collected $totalCount site(s)." -ExportFileLocation $ExportDetails
+        return ($totalCount -gt 0)
     }
 
     # Option 3: Use REST API
@@ -7999,7 +8257,6 @@ function Get-SharePointAndOneDriveSites {
         $allSitesUri = "https://graph.microsoft.com/v1.0/sites/getAllSites?`$top=200"
         $pageCount = 0
         $useSdkForPaging = (-not $global:GraphHeaders) -and (Get-Command Invoke-MgGraphRequest -ErrorAction SilentlyContinue) -and (Get-MgContext -ErrorAction SilentlyContinue)
-        $usedSpoFallback = $false
 
         function Get-SitePageResponse {
             [CmdletBinding()]
@@ -8088,40 +8345,70 @@ function Get-SharePointAndOneDriveSites {
                     'SharePoint/OneDrive Graph site inventory was denied by /sites/getAllSites. Confirm the app has Sites.Read.All application permission with admin consent, then rerun preflight.'
                 }
                 Write-Log -Type WARNING -Message "[Get-SharePointAndOneDriveSitesFromRESTAPI] $guidance Underlying error: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
-
-                if ($connectionResult -and $connectionResult.SharePointOnline) {
-                    Write-Verbose $guidance
-                    Write-AssessmentConsoleSubstep -Message 'SharePoint/OneDrive inventory using connected SharePoint Online PowerShell fallback.'
-                    $usedSpoFallback = $true
-                    Get-SharePointAndOneDriveSitesFromSPO -detailLevel $detailLevel
-                }
-                else {
-                    Write-AssessmentConsoleSubstep -Message $guidance -ForegroundColor Yellow
-                    $script:tenantStatsHash['SharePointCollectionSummary'] = [pscustomobject][ordered]@{
-                        Status      = 'Skipped'
-                        Source      = 'Graph getAllSites'
-                        Reason      = 'Forbidden'
-                        Remediation = 'For app-only runs, grant/admin-consent Sites.Read.All application permission for the assessment app. For interactive runs, connect a SharePoint admin session so the SPO fallback can collect site inventory.'
-                    }
-                }
+                Write-AssessmentConsoleSubstep -Message $guidance -ForegroundColor Yellow
             }
             else {
                 Write-Host "Error fetching sites via REST API: $($_.Exception.Message)" -ForegroundColor Red
                 Write-Log -Type WARNING -Message "[Get-SharePointAndOneDriveSitesFromRESTAPI] Error fetching sites via REST API: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
             }
+
+            # The caller owns the cascade, so every failure here falls through to the
+            # SharePoint Online PowerShell stage rather than only 401/403 did before.
+            return $false
         } finally {
             Write-Progress -Activity "Fetching Sites" -Id $restSitesProgressId -Completed
         }
 
-        return $usedSpoFallback
+        $restSiteCount = @($script:tenantStatsHash['SharePoint'].Keys).Count + @($script:tenantStatsHash['OneDrive'].Keys).Count
+        Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSitesFromRESTAPI] Stage 'Graph getAllSites' collected $restSiteCount site(s) across $pageCount page(s)." -ExportFileLocation $ExportDetails
+        return ($restSiteCount -gt 0)
     }
 
-# Determine which method to use based on ServiceName
+    # Ordered cascade: Graph site inventory first, then SharePoint Online PowerShell.
+    # Stage 1 (the usage/activity reports) already ran above.
     $sharePointUsedSpoFallback = $false
+    $sharePointInventoryCollected = $false
     switch ($ServiceName) {
-        'MGGraph' { Get-SharePointAndOneDriveSitesFromGraphSdk }
-        'SPO'     { Get-SharePointAndOneDriveSitesFromSPO -detailLevel $detailLevel }
-        'API'     { $sharePointUsedSpoFallback = [bool](Get-SharePointAndOneDriveSitesFromRESTAPI) }
+        'MGGraph' { $sharePointInventoryCollected = [bool](Get-SharePointAndOneDriveSitesFromGraphSdk) }
+        'SPO'     { $sharePointInventoryCollected = [bool](Get-SharePointAndOneDriveSitesFromSPO -detailLevel $detailLevel) }
+        'API'     { $sharePointInventoryCollected = [bool](Get-SharePointAndOneDriveSitesFromRESTAPI) }
+    }
+
+    # Graph SDK falls through to the REST getAllSites stage before leaving Graph behind.
+    if (-not $sharePointInventoryCollected -and $ServiceName -eq 'MGGraph') {
+        Write-AssessmentConsoleSubstep -Message 'Falling back to the Graph getAllSites REST endpoint for SharePoint/OneDrive inventory.'
+        $sharePointInventoryCollected = [bool](Get-SharePointAndOneDriveSitesFromRESTAPI)
+    }
+
+    if (-not $sharePointInventoryCollected -and $ServiceName -in @('MGGraph', 'API')) {
+        Write-AssessmentConsoleSubstep -Message 'Falling back to the SharePoint Online PowerShell module for SharePoint/OneDrive inventory.'
+        if (Connect-AssessmentSharePointFallbackSession) {
+            $sharePointUsedSpoFallback = $true
+            $sharePointInventoryCollected = [bool](Get-SharePointAndOneDriveSitesFromSPO -detailLevel $detailLevel)
+        }
+    }
+
+    if (-not $sharePointInventoryCollected) {
+        $operatorGuidance = 'Quit the script, connect first with Connect-MgGraph (Sites.Read.All) or Connect-SPOService -Url https://<tenant>-admin.sharepoint.com, then rerun the assessment.'
+        Write-AssessmentConsoleSubstep -Message 'SharePoint/OneDrive inventory could not be collected by any method.' -ForegroundColor Yellow
+        Write-AssessmentConsoleSubstep -Message $operatorGuidance -ForegroundColor Yellow
+        Write-Log -Type WARNING -Message "[Get-SharePointAndOneDriveSites] All inventory stages failed (Graph SDK, Graph getAllSites, SharePoint Online PowerShell). $operatorGuidance" -ExportFileLocation $ExportDetails
+        $script:tenantStatsHash['SharePointCollectionSummary'] = [pscustomobject][ordered]@{
+            Status      = 'Skipped'
+            Source      = 'All stages failed'
+            Reason      = 'No SharePoint or OneDrive site inventory could be collected via Graph SDK, Graph getAllSites, or the SharePoint Online PowerShell module.'
+            Remediation = $operatorGuidance
+        }
+    }
+    else {
+        $inventorySource = if ($sharePointUsedSpoFallback) { 'SharePoint Online PowerShell' } else { "Microsoft Graph ($ServiceName)" }
+        $script:tenantStatsHash['SharePointCollectionSummary'] = [pscustomobject][ordered]@{
+            Status      = 'Collected'
+            Source      = $inventorySource
+            Reason      = $null
+            Remediation = $null
+        }
+        Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSites] Inventory collected via $inventorySource." -ExportFileLocation $ExportDetails
     }
     if ($ServiceName -in @('MGGraph', 'API') -and -not $sharePointUsedSpoFallback) {
         $sharePointUsageRows = if ($sharePointUsageBySiteId) { $sharePointUsageBySiteId.Count } else { 0 }
