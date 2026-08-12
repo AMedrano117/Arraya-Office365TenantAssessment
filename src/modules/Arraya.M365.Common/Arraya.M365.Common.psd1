@@ -20,6 +20,8 @@
         'Filter-TenantStatsHash',
         'Get-ArrayaAssessmentOutputProfilePolicy',
         'Get-ArrayaAssessmentOutputRoot',
+        'Get-ArrayaBitTitanLicenseEstimate',
+        'Get-ArrayaBitTitanLicenseModel',
         'Get-ArrayaCollectorCacheValue',
         'Get-ArrayaObjectValue',
         'Get-ArrayaTenantSnapshotMetricSet',

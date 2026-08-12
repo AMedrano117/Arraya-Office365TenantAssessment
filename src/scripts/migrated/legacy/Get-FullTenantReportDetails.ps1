@@ -148,15 +148,15 @@ param(
     [Parameter(Mandatory = $false)]
     [bool]$GeneratePdfOverride,
     [Parameter(Mandatory = $false)]
-    [ValidateSet('Default', 'TenantToTenantCutover')]
+    [ValidateSet('Default', 'TenantToTenantCutover', 'Presales')]
     [string]$WorkbookExportPolicyOverride,
     [Parameter(Mandatory = $false)]
-    [ValidateSet('Default', 'TenantToTenantCutover')]
+    [ValidateSet('Default', 'TenantToTenantCutover', 'Presales')]
     [string]$TechnicalHtmlPolicyOverride,
     [Parameter(Mandatory = $false)]
     [bool]$GenerateMigrationPackOverride,
     [Parameter(Mandatory = $false)]
-    [ValidateSet('Default', 'TenantToTenantCutover')]
+    [ValidateSet('Default', 'TenantToTenantCutover', 'Presales')]
     [string]$CollectionScopePolicyOverride,
     [Parameter(Mandatory = $false)]
     [switch]$DataCollectionOnly,
@@ -556,7 +556,7 @@ function Resolve-AssessmentProfileCollectionPlan {
         [Parameter(Mandatory = $true)]
         [string]$ReportingMode,
         [Parameter(Mandatory = $false)]
-        [ValidateSet('Default', 'TenantToTenantCutover')]
+        [ValidateSet('Default', 'TenantToTenantCutover', 'Presales')]
         [string]$CollectionScopePolicy = 'Default'
     )
 
@@ -587,6 +587,7 @@ function Resolve-AssessmentProfileCollectionPlan {
         CollectSharePointAndOneDriveSites = $true
         CollectDevices                   = $true
         CollectSecuritySecureScore       = $true
+        BuildExchangeGovernanceTables    = $true
         BuildOperationalGovernanceSummaries = $true
         BuildExternalExposureSummaries   = $true
         BuildOwnershipGovernanceTables   = ($GenerateTechnicalHtml -or $GenerateBestPracticesHtml -or $GenerateWorkbook -or $GenerateJson)
@@ -612,6 +613,32 @@ function Resolve-AssessmentProfileCollectionPlan {
                 $plan.CollectThirdPartySpamFiltering = $false
                 $plan.CollectSmtpRelayConfiguration = $false
                 $plan.CollectUnifiedGroups = $false
+            }
+            'Presales' {
+                # Keep everything a migration scope estimate is built from: mailboxes and
+                # recipients, unified groups (the reconciliation joins on them), collaboration
+                # sites, domains, hybrid and AD Connect posture, and authentication
+                # configuration - the last of which is what produces the SSO application and
+                # enterprise application inventories two complexity drivers depend on.
+                $plan.CollectAuthenticationConfiguration = $true
+                $plan.CollectUnifiedGroups = $true
+                $plan.CollectTeamsDetails = $true
+                $plan.CollectSharePointAndOneDriveSites = $true
+                $plan.BuildMigrationReadinessTables = $true
+
+                # Security and device posture is an assessment concern, not a scoping one.
+                $plan.CollectAdmins = $false
+                $plan.CollectConditionalAccessPolicies = $false
+                $plan.CollectMfaRegistrationDetails = $false
+                $plan.CollectSecuritySecureScore = $false
+                $plan.CollectDevices = $false
+                $plan.CollectGovernanceCompliancePolicies = $false
+                $plan.CollectEmailActivityDetails = $false
+                $plan.CollectTeamsVoiceDetails = $false
+                $plan.BuildExchangeGovernanceTables = $false
+                $plan.BuildExternalExposureSummaries = $false
+                $plan.BuildOwnershipGovernanceTables = $false
+                $plan.BuildCombinedUserMailboxProjection = $false
             }
         }
     }
@@ -3078,7 +3105,7 @@ function Get-ArrayaCollectionDepthPolicy {
         [ValidateSet('Minimum', 'Operator', 'Combined', 'Automation', 'All', 'Geek')]
         [string]$ReportingMode = 'Minimum',
         [Parameter(Mandatory = $false)]
-        [ValidateSet('Default', 'TenantToTenantCutover')]
+        [ValidateSet('Default', 'TenantToTenantCutover', 'Presales')]
         [string]$CollectionScopePolicy = 'Default'
     )
 
@@ -3125,6 +3152,18 @@ function Get-ArrayaCollectionDepthPolicy {
         $policy | Add-Member -MemberType NoteProperty -Name CollectUnifiedGroupMailboxStats -Value $false -Force
         $policy | Add-Member -MemberType NoteProperty -Name CollectFullSharePointDetail -Value $false -Force
         $policy | Add-Member -MemberType NoteProperty -Name CollectExtendedGraphEnrichment -Value $false -Force
+    }
+
+    if ($CollectionScopePolicy -eq 'Presales') {
+        # Sizing is the whole point of a pre-sales run: group mailbox statistics and full
+        # SharePoint detail are non-negotiable. Per-mailbox delegate enumeration is not - it
+        # is expensive and nothing in a scope estimate depends on it.
+        $policy | Add-Member -MemberType NoteProperty -Name CollectUnifiedGroupMailboxStats -Value $true -Force
+        $policy | Add-Member -MemberType NoteProperty -Name CollectFullSharePointDetail -Value $true -Force
+        $policy | Add-Member -MemberType NoteProperty -Name CollectMailboxDelegatePermissions -Value $false -Force
+        $policy | Add-Member -MemberType NoteProperty -Name CollectMailboxCalendarDelegatePermissions -Value $false -Force
+        $policy | Add-Member -MemberType NoteProperty -Name CollectSecureScoreMappings -Value $false -Force
+        $policy | Add-Member -MemberType NoteProperty -Name CollectEntraGroupDeepDetails -Value $false -Force
     }
 
     return $policy
@@ -6298,7 +6337,7 @@ function New-AssessmentLiveCollectorPlan {
     $steps.Add((New-ArrayaCollectorStep -Name 'Email activity insights' -Section 'Exchange' -Workload 'Reports' -Enabled ([bool]$script:ProfileCollectionPlan.CollectEmailActivityDetails) -SkipReason 'Not required for this profile output.' -Produces @('EmailActivityTopSenders', 'EmailActivityTopReceivers') -ScriptBlock { Get-EmailActivityInsights -detailLevel $reportingMode })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name 'Third-party spam filtering configuration' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectThirdPartySpamFiltering) -SkipReason 'Requires mail flow connector/rule collection, which is disabled for this profile.' -Produces @('ThirdPartySpamFiltering') -ScriptBlock { Get-ThirdPartySpamFilteringConfig -Context $script:AssessmentContext })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name 'SMTP relay configuration' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectSmtpRelayConfiguration) -SkipReason 'Requires mail flow connector collection, which is disabled for this profile.' -Produces @('SMTPRelayConfiguration', 'SMTPRelayServiceAccounts') -ScriptBlock { Get-SMTPRelayConfiguration -Context $script:AssessmentContext })) | Out-Null
-    $steps.Add((New-ArrayaCollectorStep -Name 'Exchange governance summaries' -Section 'Exchange' -Workload 'ExchangeOnline' -Produces @('ExchangeGovernanceSummary') -ScriptBlock { Update-ExchangeGovernanceTables -TenantStatsHash $script:tenantStatsHash -DetailLevel $reportingMode })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Exchange governance summaries' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.BuildExchangeGovernanceTables) -SkipReason 'Exchange governance enrichment is disabled for this profile; per-mailbox inbox-rule inspection is not required for migration sizing.' -Produces @('ExchangeGovernanceSummary') -ScriptBlock { Update-ExchangeGovernanceTables -TenantStatsHash $script:tenantStatsHash -DetailLevel $reportingMode })) | Out-Null
 
     $steps.Add((New-ArrayaCollectorStep -Name 'Unified groups' -Section 'Collaboration' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectUnifiedGroups) -SkipReason 'Not required for this profile output.' -Produces @('UnifiedGroups') -ScriptBlock { Get-AllUnifiedGroups -detailLevel $reportingMode })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name "SharePoint/OneDrive sites ($SharePointDiscoveryLabel)" -Section 'Collaboration' -Workload 'SharePointOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectSharePointAndOneDriveSites) -SkipReason 'SharePoint and OneDrive collection is disabled for this profile.' -Produces @('SharePoint', 'OneDrive') -ScriptBlock { Get-SharePointAndOneDriveSites -detailLevel $reportingMode -ServiceName $SharePointDiscoveryService })) | Out-Null
@@ -8923,8 +8962,10 @@ function Get-TeamsDetails {
                 $publicChannels = @()
                 $privateChannels = @()
                 $sharedChannels = @()
+                $channelInventoryStatus = 'Needs Data'
                 $memberCount = $null
                 $guestCount = $null
+                $memberInventoryStatus = 'Needs Data'
                 $lastActivityDate = if ($spoSiteDetails -and $spoSiteDetails.PSObject.Properties['LastContentModifiedDate']) { $spoSiteDetails.LastContentModifiedDate } else { $null }
                 if (-not $lastActivityDate -and -not [string]::IsNullOrWhiteSpace($teamId) -and $groupsActivityById.ContainsKey($teamId)) {
                     $lastActivityDate = $groupsActivityById[$teamId].LastActivityDate
@@ -8934,6 +8975,7 @@ function Get-TeamsDetails {
                     $channels = @()
                     $channelErrorCountBeforeFetch = $global:Error.Count
                     $channelFetchMessage = $null
+                    $channelFetchSucceeded = $false
                     if ($teamsChannelExpansionAllowed) {
                         try {
                             if ($selectedSource -eq 'MGGraph-SDK') {
@@ -8949,8 +8991,9 @@ function Get-TeamsDetails {
                                 $channels = @(Get-ArrayaGraphResource -Uri ("https://graph.microsoft.com/v1.0/teams/{0}/allChannels?`$select=displayName,membershipType" -f $teamId) -Activity "Teams channels [$displayName]" -PreferRest -Headers $global:GraphHeaders)
                             }
                             elseif ($selectedSource -eq 'TeamsPowerShell') {
-                                $channels = @(Get-TeamChannel -GroupId $teamId -ErrorAction SilentlyContinue)
+                                $channels = @(Get-TeamChannel -GroupId $teamId -ErrorAction Stop)
                             }
+                            $channelFetchSucceeded = $true
                         }
                         catch {
                             $channelFetchMessage = $_.Exception.Message
@@ -8976,6 +9019,7 @@ function Get-TeamsDetails {
                         }
 
                         $channels = @()
+                        $channelFetchSucceeded = $false
                     }
 
                     foreach ($channel in $channels) {
@@ -8994,10 +9038,15 @@ function Get-TeamsDetails {
                         }
                     }
 
+                    if ($channelFetchSucceeded) {
+                        $channelInventoryStatus = if ($channels.Count -gt 0) { 'Measured data' } else { 'Measured empty' }
+                    }
+
                 }
 
                 if ($detailLevel -ne 'minimum' -and -not [string]::IsNullOrWhiteSpace($teamId)) {
                     $memberObjects = @()
+                    $memberFetchSucceeded = $false
                     if ($teamsMemberExpansionAllowed) {
                         $memberFetchError = @()
                         $memberErrorCountBeforeFetch = $global:Error.Count
@@ -9013,6 +9062,7 @@ function Get-TeamsDetails {
                                         -ErrorAction SilentlyContinue `
                                         -ErrorVariable memberFetchError
                                 )
+                                $memberFetchSucceeded = $true
                             }
                             elseif ($selectedSource -eq 'MGGraph-REST') {
                                 $memberObjects = @(
@@ -9023,9 +9073,11 @@ function Get-TeamsDetails {
                                         -Headers $global:GraphHeaders `
                                         -SuppressAccessDeniedWarning
                                 )
+                                $memberFetchSucceeded = $true
                             }
                             elseif ($selectedSource -eq 'TeamsPowerShell' -and (Get-Command -Name 'Get-TeamUser' -ErrorAction SilentlyContinue)) {
-                                $memberObjects = @(Get-TeamUser -GroupId $teamId -ErrorAction SilentlyContinue -ErrorVariable memberFetchError)
+                                $memberObjects = @(Get-TeamUser -GroupId $teamId -ErrorAction Stop -ErrorVariable memberFetchError)
+                                $memberFetchSucceeded = $true
                             }
                         }
                         catch {
@@ -9055,10 +9107,11 @@ function Get-TeamsDetails {
                             }
 
                             $memberObjects = @()
+                            $memberFetchSucceeded = $false
                         }
                     }
 
-                    if ($memberObjects.Count -gt 0) {
+                    if ($memberFetchSucceeded) {
                         $memberCount = $memberObjects.Count
                         $guestCount = @(
                             $memberObjects | Where-Object {
@@ -9069,6 +9122,7 @@ function Get-TeamsDetails {
                                 ($odataType -match 'aadUserConversationMember') -and (($emailValue -like '*#EXT#*') -or ($userValue -like '*#EXT#*') -or ($upnValue -like '*#EXT#*'))
                             }
                         ).Count
+                        $memberInventoryStatus = if ($memberObjects.Count -gt 0) { 'Measured data' } else { 'Measured empty' }
                     }
                 }
 
@@ -9095,17 +9149,19 @@ function Get-TeamsDetails {
                     SharePointSiteUrl   = if ($spoSiteDetails -and $spoSiteDetails.PSObject.Properties['Url']) { [string]$spoSiteDetails.Url } else { $null }
                     'SiteSize-GB'       = $siteSizeGB
                     SiteSize            = $siteSizeMb
-                    TotalChannels       = $publicChannels.Count + $privateChannels.Count + $sharedChannels.Count
-                    PublicChannels      = ($publicChannels -join ',')
-                    PrivateChannels     = ($privateChannels -join ',')
-                    SharedChannels      = ($sharedChannels -join ',')
-                    PublicChannelCount  = [int]$publicChannels.Count
-                    PrivateChannelCount = [int]$privateChannels.Count
-                    SharedChannelCount  = [int]$sharedChannels.Count
+                    TotalChannels       = $(if ($channelInventoryStatus -eq 'Needs Data') { $null } else { $publicChannels.Count + $privateChannels.Count + $sharedChannels.Count })
+                    PublicChannels      = $(if ($channelInventoryStatus -eq 'Needs Data') { $null } else { $publicChannels -join ',' })
+                    PrivateChannels     = $(if ($channelInventoryStatus -eq 'Needs Data') { $null } else { $privateChannels -join ',' })
+                    SharedChannels      = $(if ($channelInventoryStatus -eq 'Needs Data') { $null } else { $sharedChannels -join ',' })
+                    PublicChannelCount  = $(if ($channelInventoryStatus -eq 'Needs Data') { $null } else { [int]$publicChannels.Count })
+                    PrivateChannelCount = $(if ($channelInventoryStatus -eq 'Needs Data') { $null } else { [int]$privateChannels.Count })
+                    SharedChannelCount  = $(if ($channelInventoryStatus -eq 'Needs Data') { $null } else { [int]$sharedChannels.Count })
+                    ChannelInventoryStatus = $channelInventoryStatus
                     OwnerCount          = $ownerCount
                     OwnershipState      = if ($null -eq $ownerCount) { 'Unknown' } elseif ($ownerCount -eq 0) { 'Unowned' } else { 'Owned' }
                     MemberCount         = $memberCount
                     GuestCount          = $guestCount
+                    MemberInventoryStatus = $memberInventoryStatus
                     LastActivityDate    = $lastActivityDate
                     DataSource          = $selectedSource
                 }
@@ -9127,7 +9183,10 @@ function Get-TeamsDetails {
             }
         }
 
-        Write-Log -Type INFO -Message "[Get-TeamsDetails] Teams inventory collected: source=$selectedSource; discovered=$($allTeams.Count); stored=$collectedCount; channelDetailsCollected=$collectChannelDetails." -ExportFileLocation $ExportDetails
+        $storedTeamRows = @($script:tenantStatsHash['AllTeams'].Values)
+        $channelNeedsDataCount = @($storedTeamRows | Where-Object { [string]$_.ChannelInventoryStatus -eq 'Needs Data' }).Count
+        $memberNeedsDataCount = @($storedTeamRows | Where-Object { [string]$_.MemberInventoryStatus -eq 'Needs Data' }).Count
+        Write-Log -Type INFO -Message "[Get-TeamsDetails] Teams inventory collected: source=$selectedSource; discovered=$($allTeams.Count); stored=$collectedCount; channelDetailsRequested=$collectChannelDetails; channelNeedsData=$channelNeedsDataCount; memberNeedsData=$memberNeedsDataCount." -ExportFileLocation $ExportDetails
     }
     catch {
         Write-Log -Type WARNING -Message "[Get-TeamsDetails] Teams collection failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
@@ -9767,7 +9826,7 @@ function Get-AllLicenseSKUs {
         $skuDetails | Add-Member -MemberType NoteProperty -Name LicenseClass -Value $skuClassification.LicenseClass -Force
         $skuDetails | Add-Member -MemberType NoteProperty -Name LicenseClassificationReason -Value $skuClassification.Reason -Force
 
-        Write-Log -Type DEBUG -Message "[Get-AllLicenseSKUs] Gathering License details for $($AccountSkuId)" -ExportFileLocation $ExportDetails
+        Write-Log -Type DEBUG -Message "[Get-AllLicenseSKUs] Gathering License details for $($sku.SkuId.tostring())" -ExportFileLocation $ExportDetails
 
         #Create Hash Table for License SKUs
         $script:tenantStatsHash["LicenseSKUs"][$sku.SkuId.tostring()] = $skuDetails
@@ -11165,9 +11224,17 @@ function Prepare-AssessmentExportData {
         [string]$script:ProfileCollectionPlan.OutputProfile -eq 'TenantToTenantMigration'
     )
 
+    # Pre-sales scoping needs the same sizing and licensing model as the cutover profile; it
+    # just skips the wave and target-side shaping that only matters once a project is sold.
+    $isPresalesScope = (
+        $script:ProfileCollectionPlan -and
+        [string]$script:ProfileCollectionPlan.CollectionScopePolicy -eq 'Presales'
+    )
+
     if (
         (-not $BuildCombinedUserMailboxProjection -or -not $RequiresFilteredExportSnapshot) -and
-        -not $isTenantToTenantCutover
+        -not $isTenantToTenantCutover -and
+        -not $isPresalesScope
     ) {
         return
     }
@@ -11180,6 +11247,10 @@ function Prepare-AssessmentExportData {
     if ($isTenantToTenantCutover) {
         Write-AssessmentConsoleSubstep -Message 'Export preparation: tenant-to-tenant workbook and cutover shaping'
         Update-TenantToTenantMigrationExportData -TenantStatsStore $script:tenantStatsHash
+    }
+    elseif ($isPresalesScope) {
+        Write-AssessmentConsoleSubstep -Message 'Export preparation: pre-sales migration scope and licensing'
+        Update-MigrationScopeExportData -TenantStatsStore $script:tenantStatsHash
     }
 }
 
@@ -11682,29 +11753,171 @@ function Get-AssessmentMailboxStatsLookup {
     return $lookup
 }
 
+function Ensure-MigrationGroupMailboxInventory {
+    <#
+        Some Exchange Online builds accept Get-EXOMailbox -GroupMailbox but return no rows.
+        When UnifiedGroups was collected, preserve that known inventory as a dedicated
+        GroupMailboxes table and join its already-collected PrimaryMailboxStats evidence.
+        This is intentionally a zero-row fallback: genuine EXO group-mailbox rows win.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$TenantStatsStore
+    )
+
+    $existingRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'GroupMailboxes')
+    if ($existingRows.Count -gt 0) {
+        return [pscustomobject]@{ WasDerived = $false; RowCount = $existingRows.Count; MeasuredCount = $null; NeedsDataCount = $null }
+    }
+
+    $unifiedGroupRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'UnifiedGroups')
+    if ($unifiedGroupRows.Count -eq 0) {
+        return [pscustomobject]@{ WasDerived = $false; RowCount = 0; MeasuredCount = 0; NeedsDataCount = 0 }
+    }
+
+    $statsRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'PrimaryMailboxStats')
+    $statsByKey = @{}
+    foreach ($statsRow in $statsRows) {
+        foreach ($identifier in @(
+                (Get-AssessmentExportPropertyValue -Record $statsRow -Names @('MailboxGuid', 'ExchangeGuid')),
+                (Get-AssessmentExportPropertyValue -Record $statsRow -Names @('PrimarySmtpAddress', 'UserPrincipalName')),
+                (Get-AssessmentExportPropertyValue -Record $statsRow -Names @('ExternalDirectoryObjectId'))
+            )) {
+            if ([string]::IsNullOrWhiteSpace([string]$identifier)) { continue }
+            $identifierKey = ([string]$identifier).Trim().ToLowerInvariant()
+            if (-not $statsByKey.ContainsKey($identifierKey)) { $statsByKey[$identifierKey] = $statsRow }
+        }
+    }
+
+    $derivedRows = [ordered]@{}
+    $measuredCount = 0
+    $needsDataCount = 0
+    $rowIndex = 0
+    foreach ($groupRow in $unifiedGroupRows) {
+        $rowIndex++
+        $statsRow = $null
+        foreach ($identifier in @(
+                (Get-AssessmentExportPropertyValue -Record $groupRow -Names @('ExchangeGuid', 'Guid')),
+                (Get-AssessmentExportPropertyValue -Record $groupRow -Names @('PrimarySmtpAddress', 'UserPrincipalName')),
+                (Get-AssessmentExportPropertyValue -Record $groupRow -Names @('ExternalDirectoryObjectId'))
+            )) {
+            if ([string]::IsNullOrWhiteSpace([string]$identifier)) { continue }
+            $identifierKey = ([string]$identifier).Trim().ToLowerInvariant()
+            if ($statsByKey.ContainsKey($identifierKey)) {
+                $statsRow = $statsByKey[$identifierKey]
+                break
+            }
+        }
+
+        $mailboxSizeGB = $null
+        $deletedItemsGB = $null
+        if ($statsRow) {
+            $mailboxSizeGB = Convert-AssessmentExportByteCountToGb -Value (Get-AssessmentExportPropertyValue -Record $statsRow -Names @('TotalItemSizeBytes'))
+            if ($null -eq $mailboxSizeGB) {
+                $mailboxSizeGB = Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $statsRow -Names @('TotalItemSize'))
+            }
+            $deletedItemsGB = Convert-AssessmentExportByteCountToGb -Value (Get-AssessmentExportPropertyValue -Record $statsRow -Names @('TotalDeletedItemSizeBytes'))
+            if ($null -eq $deletedItemsGB) {
+                $deletedItemsGB = Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $statsRow -Names @('TotalDeletedItemSize'))
+            }
+        }
+        $knownSizeParts = @($mailboxSizeGB, $deletedItemsGB) | Where-Object { $null -ne $_ }
+        $totalDataGB = if ($knownSizeParts.Count -gt 0) { [math]::Round((($knownSizeParts | Measure-Object -Sum).Sum), 3) } else { $null }
+        $evidenceStatus = if ($null -eq $totalDataGB) { 'Needs Data' } elseif ($totalDataGB -gt 0) { 'Measured data' } else { 'Measured empty' }
+        if ($evidenceStatus -eq 'Needs Data') { $needsDataCount++ } else { $measuredCount++ }
+
+        $primarySmtpAddress = [string](Get-AssessmentExportPropertyValue -Record $groupRow -Names @('PrimarySmtpAddress', 'Mail'))
+        $exchangeGuid = [string](Get-AssessmentExportPropertyValue -Record $groupRow -Names @('ExchangeGuid'))
+        $externalDirectoryObjectId = [string](Get-AssessmentExportPropertyValue -Record $groupRow -Names @('ExternalDirectoryObjectId', 'Id'))
+        $rowKey = @($externalDirectoryObjectId, $exchangeGuid, $primarySmtpAddress) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+            Select-Object -First 1
+        if ([string]::IsNullOrWhiteSpace([string]$rowKey)) { $rowKey = 'derived-group-mailbox-{0:D4}' -f $rowIndex }
+
+        $derivedRows[[string]$rowKey] = [pscustomobject]@{
+            ExternalDirectoryObjectId = $externalDirectoryObjectId
+            DisplayName               = [string](Get-AssessmentExportPropertyValue -Record $groupRow -Names @('DisplayName'))
+            UserPrincipalName         = $primarySmtpAddress
+            RecipientTypeDetails      = 'GroupMailbox'
+            PrimarySmtpAddress        = $primarySmtpAddress
+            Identity                  = $primarySmtpAddress
+            Guid                      = $(if (-not [string]::IsNullOrWhiteSpace($exchangeGuid)) { $exchangeGuid } else { [string](Get-AssessmentExportPropertyValue -Record $groupRow -Names @('Guid')) })
+            ExchangeGuid              = $exchangeGuid
+            ArchiveStatus             = 'None'
+            ArchiveState              = 'None'
+            ArchiveGuid               = '00000000-0000-0000-0000-000000000000'
+            WhenMailboxCreated        = Get-AssessmentExportPropertyValue -Record $groupRow -Names @('WhenMailboxCreated', 'WhenCreated')
+            IsDirSynced               = Get-AssessmentExportPropertyValue -Record $groupRow -Names @('IsDirSynced', 'OnPremisesSyncEnabled')
+            HiddenFromAddressListsEnabled = Get-AssessmentExportPropertyValue -Record $groupRow -Names @('HiddenFromAddressListsEnabled', 'HiddenFromExchangeClientsEnabled')
+            Alias                     = [string](Get-AssessmentExportPropertyValue -Record $groupRow -Names @('Alias'))
+            EmailAddresses            = Get-AssessmentExportPropertyValue -Record $groupRow -Names @('EmailAddresses')
+            LegacyExchangeDn          = [string](Get-AssessmentExportPropertyValue -Record $groupRow -Names @('LegacyExchangeDn', 'LegacyExchangeDN'))
+            MailboxSizeGB             = $mailboxSizeGB
+            DeletedItemsGB            = $deletedItemsGB
+            ArchiveSizeGB             = $null
+            ArchiveDeletedItemsGB     = $null
+            HasArchive                = $false
+            TotalDataToMigrateGB      = $totalDataGB
+            MailboxEvidenceStatus     = $evidenceStatus
+            MailboxEvidenceSource     = $(if ($statsRow) { 'PrimaryMailboxStats (Graph/EXO)' } else { 'Not collected' })
+            InventorySource           = 'Derived from UnifiedGroups; mailbox size joined from PrimaryMailboxStats when available'
+            BitTitanLicenseType       = 'Report only - customer disposition required'
+            BitTitanLicenseCount      = $null
+        }
+    }
+
+    $TenantStatsStore['GroupMailboxes'] = $derivedRows
+    return [pscustomobject]@{ WasDerived = $true; RowCount = $derivedRows.Count; MeasuredCount = $measuredCount; NeedsDataCount = $needsDataCount }
+}
+
+function Test-AssessmentMailboxHasArchiveEvidence {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        $MailboxRecord
+    )
+
+    if ($null -eq $MailboxRecord) { return $false }
+
+    $archiveStatus = [string](Get-AssessmentExportPropertyValue -Record $MailboxRecord -Names @('ArchiveStatus'))
+    $archiveSizeGB = Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $MailboxRecord -Names @('ArchiveSizeGB'))
+    $archiveDeletedItemsGB = Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $MailboxRecord -Names @('ArchiveDeletedItemsGB'))
+    $archiveGuid = [string](Get-AssessmentExportPropertyValue -Record $MailboxRecord -Names @('ArchiveGuid'))
+
+    return (
+        $archiveStatus -match '^(?i:active|enabled)$' -or
+        ($null -ne $archiveSizeGB -and $archiveSizeGB -gt 0) -or
+        ($null -ne $archiveDeletedItemsGB -and $archiveDeletedItemsGB -gt 0) -or
+        (-not [string]::IsNullOrWhiteSpace($archiveGuid) -and $archiveGuid -notmatch '^0{8}-0{4}-0{4}-0{4}-0{12}$')
+    )
+}
+
 function Get-AssessmentMailboxLicenseType {
     [CmdletBinding()]
     param(
         [AllowNull()]
-        [double]$MailboxSizeGB,
+        [double]$TotalDataToMigrateGB,
         [AllowNull()]
-        [string]$ArchiveStatus
+        [double]$BlockSizeGB = 50
     )
 
-    $hasArchive = (-not [string]::IsNullOrWhiteSpace([string]$ArchiveStatus) -and [string]$ArchiveStatus -match '^(?i)active$')
-    if ($hasArchive) {
-        return 'User Migration Bundle'
-    }
-
-    if ($null -eq $MailboxSizeGB) {
+    # BitTitan mailbox licenses stack in fixed-size blocks for mailbox-only migrations. The
+    # caller must route archive-bearing objects to UMB before invoking this helper.
+    if ($null -eq $TotalDataToMigrateGB) {
         return $null
     }
 
-    if ($MailboxSizeGB -le 50) {
+    if ($BlockSizeGB -le 0) {
+        $BlockSizeGB = 50
+    }
+
+    $units = [int][math]::Max(1, [math]::Ceiling($TotalDataToMigrateGB / $BlockSizeGB))
+    if ($units -eq 1) {
         return 'MigrationWiz-Mailbox'
     }
 
-    return 'MigrationWiz-Mailbox x2'
+    return ('MigrationWiz-Mailbox x{0}' -f $units)
 }
 
 function Add-TenantToTenantMailboxDerivedFields {
@@ -11766,12 +11979,38 @@ function Add-TenantToTenantMailboxDerivedFields {
 
     $totalDataParts = @($mailboxSizeGB, $deletedItemsGB, $archiveSizeGB, $archiveDeletedItemsGB) | Where-Object { $null -ne $_ }
     $totalDataToMigrateGB = if ($totalDataParts.Count -gt 0) { [math]::Round((($totalDataParts | Measure-Object -Sum).Sum), 3) } else { $null }
-    $licenseType = Get-AssessmentMailboxLicenseType -MailboxSizeGB $mailboxSizeGB -ArchiveStatus (Get-AssessmentExportPropertyValue -Record $MailboxRecord -Names @('ArchiveStatus'))
-    $licenseCount = switch ($licenseType) {
-        'User Migration Bundle' { 1 }
-        'MigrationWiz-Mailbox' { 1 }
-        'MigrationWiz-Mailbox x2' { 2 }
-        default { $null }
+    $licenseBlockSizeGB = Get-AssessmentBitTitanBlockSizeGB
+    $recipientType = [string](Get-AssessmentExportPropertyValue -Record $MailboxRecord -Names @('RecipientTypeDetails'))
+    $archiveStatusValue = Get-AssessmentExportPropertyValue -Record $MailboxRecord -Names @('ArchiveStatus')
+    $archiveStatus = [string]$archiveStatusValue
+    $hasArchive = (
+        $archiveStatus -match '^(?i:active|enabled)$' -or
+        ($null -ne $archiveSizeGB -and $archiveSizeGB -gt 0) -or
+        ($null -ne $archiveDeletedItemsGB -and $archiveDeletedItemsGB -gt 0) -or
+        (-not [string]::IsNullOrWhiteSpace([string]$archiveGuid) -and [string]$archiveGuid -notmatch '^0{8}-0{4}-0{4}-0{4}-0{12}$')
+    )
+    $archiveStateKnown = (
+        ($null -ne $archiveStatusValue -and -not [string]::IsNullOrWhiteSpace($archiveStatus) -and $archiveStatus -notmatch '^(?i:unknown|unavailable|n/a)$') -or
+        $hasArchive
+    )
+    $licenseType = $null
+    $licenseCount = $null
+    if ($recipientType -eq 'GroupMailbox') {
+        $licenseType = 'Report only - customer disposition required'
+    }
+    elseif ($null -eq $totalDataToMigrateGB) {
+        $licenseType = 'Needs sizing data'
+    }
+    elseif (-not $archiveStateKnown) {
+        $licenseType = 'Needs archive status'
+    }
+    elseif ($hasArchive) {
+        $licenseType = 'User Migration Bundle'
+        $licenseCount = 1
+    }
+    else {
+        $licenseType = Get-AssessmentMailboxLicenseType -TotalDataToMigrateGB $totalDataToMigrateGB -BlockSizeGB $licenseBlockSizeGB
+        $licenseCount = [int][math]::Max(1, [math]::Ceiling($totalDataToMigrateGB / $licenseBlockSizeGB))
     }
 
     $routingSummary = Resolve-AssessmentExportRoutingSummary -Record $MailboxRecord
@@ -11785,6 +12024,7 @@ function Add-TenantToTenantMailboxDerivedFields {
     Set-AssessmentExportProperty -Record $MailboxRecord -Name 'DeletedItemsGB' -Value $deletedItemsGB
     Set-AssessmentExportProperty -Record $MailboxRecord -Name 'ArchiveSizeGB' -Value $archiveSizeGB
     Set-AssessmentExportProperty -Record $MailboxRecord -Name 'ArchiveDeletedItemsGB' -Value $archiveDeletedItemsGB
+    Set-AssessmentExportProperty -Record $MailboxRecord -Name 'HasArchive' -Value $hasArchive
     Set-AssessmentExportProperty -Record $MailboxRecord -Name 'TotalDataToMigrateGB' -Value $totalDataToMigrateGB
     Set-AssessmentExportProperty -Record $MailboxRecord -Name 'BitTitanLicenseType' -Value $licenseType
     Set-AssessmentExportProperty -Record $MailboxRecord -Name 'BitTitanLicenseCount' -Value $licenseCount
@@ -11795,6 +12035,1986 @@ function Add-TenantToTenantMailboxDerivedFields {
             Set-AssessmentExportProperty -Record $MailboxRecord -Name $propertyName -Value $null
         }
     }
+}
+
+function Get-AssessmentBitTitanBlockSizeGB {
+    [CmdletBinding()]
+    param()
+
+    if ($null -eq $script:AssessmentBitTitanLicenseModel) {
+        $script:AssessmentBitTitanLicenseModel = if (Get-Command -Name Get-ArrayaBitTitanLicenseModel -ErrorAction SilentlyContinue) {
+            Get-ArrayaBitTitanLicenseModel
+        } else {
+            $null
+        }
+    }
+
+    $blockSize = [double](Get-ArrayaObjectValue -Object $script:AssessmentBitTitanLicenseModel.Skus.MigrationWizMailbox -Names @('BlockSizeGB'))
+    if ($blockSize -le 0) {
+        return 50
+    }
+
+    return $blockSize
+}
+
+function Get-AssessmentNormalizedSiteUrl {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        $Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace([string]$Value)) {
+        return $null
+    }
+
+    return ([string]$Value).Trim().TrimEnd('/').ToLowerInvariant()
+}
+
+function Get-AssessmentTeamEnrichmentEvidence {
+    <#
+        Normalizes Teams channel/member enrichment into an evidence-aware tri-state.
+        Older snapshots did not record collection status and wrote zero after a failed
+        lookup, so an unqualified zero is deliberately treated as Needs Data. Positive
+        counts or names remain defensible measured evidence.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $TeamRecord
+    )
+
+    $normalizeStatus = {
+        param([string]$ExplicitStatus, [bool]$HasPositiveEvidence)
+
+        if ($ExplicitStatus -match '(?i)needs?\s+data|unknown|unavailable|failed|not\s+(?:collected|requested)|partial') {
+            return 'Needs Data'
+        }
+        if ($ExplicitStatus -match '(?i)measured\s+data') { return 'Measured data' }
+        if ($ExplicitStatus -match '(?i)measured\s+empty') { return 'Measured empty' }
+        if ($ExplicitStatus -match '(?i)measured|collected|complete|success') {
+            return $(if ($HasPositiveEvidence) { 'Measured data' } else { 'Measured empty' })
+        }
+        if ($HasPositiveEvidence) { return 'Measured data' }
+        return 'Needs Data'
+    }
+
+    $channelPositive = $false
+    foreach ($fieldName in @('TotalChannels', 'PublicChannelCount', 'PrivateChannelCount', 'SharedChannelCount')) {
+        $fieldValue = Convert-ArrayaToNumber -Value (Get-AssessmentExportPropertyValue -Record $TeamRecord -Names @($fieldName))
+        if ($null -ne $fieldValue -and $fieldValue -gt 0) {
+            $channelPositive = $true
+            break
+        }
+    }
+    if (-not $channelPositive) {
+        foreach ($fieldName in @('PublicChannels', 'PrivateChannels', 'SharedChannels')) {
+            if (-not [string]::IsNullOrWhiteSpace([string](Get-AssessmentExportPropertyValue -Record $TeamRecord -Names @($fieldName)))) {
+                $channelPositive = $true
+                break
+            }
+        }
+    }
+
+    $memberPositive = $false
+    foreach ($fieldName in @('MemberCount', 'GuestCount')) {
+        $fieldValue = Convert-ArrayaToNumber -Value (Get-AssessmentExportPropertyValue -Record $TeamRecord -Names @($fieldName))
+        if ($null -ne $fieldValue -and $fieldValue -gt 0) {
+            $memberPositive = $true
+            break
+        }
+    }
+
+    $channelStatus = & $normalizeStatus `
+        ([string](Get-AssessmentExportPropertyValue -Record $TeamRecord -Names @('ChannelInventoryStatus', 'ChannelEvidenceStatus'))) `
+        $channelPositive
+    $memberStatus = & $normalizeStatus `
+        ([string](Get-AssessmentExportPropertyValue -Record $TeamRecord -Names @('MemberInventoryStatus', 'MemberEvidenceStatus'))) `
+        $memberPositive
+
+    return [pscustomobject]@{
+        ChannelInventoryStatus = $channelStatus
+        MemberInventoryStatus  = $memberStatus
+        HasChannelEvidence     = ($channelStatus -ne 'Needs Data')
+        HasMemberEvidence      = ($memberStatus -ne 'Needs Data')
+        HasSharedChannels      = $(if ($channelStatus -eq 'Needs Data') { $null } else {
+                $sharedCount = Convert-ArrayaToNumber -Value (Get-AssessmentExportPropertyValue -Record $TeamRecord -Names @('SharedChannelCount'))
+                ($null -ne $sharedCount -and $sharedCount -gt 0) -or
+                    -not [string]::IsNullOrWhiteSpace([string](Get-AssessmentExportPropertyValue -Record $TeamRecord -Names @('SharedChannels')))
+            })
+    }
+}
+
+function Update-AssessmentTeamEnrichmentEvidenceRows {
+    <#
+        Rewrites the AllTeams export rows with the evidence-aware status used by migration
+        planning. This is particularly important when replaying snapshots created before the
+        status fields existed: those snapshots wrote zero after failed enrichment calls. A zero
+        is retained only when an explicit measured status proves it is a real measured empty.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$TenantStatsStore
+    )
+
+    $teamRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'AllTeams')
+    $normalizedRows = New-Object System.Collections.Generic.List[object]
+    $channelNeedsDataCount = 0
+    $memberNeedsDataCount = 0
+
+    foreach ($teamRow in $teamRows) {
+        if ($null -eq $teamRow) { continue }
+
+        $evidence = Get-AssessmentTeamEnrichmentEvidence -TeamRecord $teamRow
+        Set-AssessmentExportProperty -Record $teamRow -Name 'ChannelInventoryStatus' -Value $evidence.ChannelInventoryStatus
+        Set-AssessmentExportProperty -Record $teamRow -Name 'MemberInventoryStatus' -Value $evidence.MemberInventoryStatus
+
+        if ($evidence.ChannelInventoryStatus -eq 'Needs Data') {
+            $channelNeedsDataCount++
+            # Failed legacy calls often left every channel field at zero/empty. Clear those
+            # stale values so downstream exports cannot present them as collected evidence.
+            # Positive partial evidence is retained, even when the overall status is Needs Data.
+            $hasPositiveChannelEvidence = $false
+            foreach ($fieldName in @('TotalChannels', 'PublicChannelCount', 'PrivateChannelCount', 'SharedChannelCount')) {
+                $fieldValue = Convert-ArrayaToNumber -Value (Get-AssessmentExportPropertyValue -Record $teamRow -Names @($fieldName))
+                if ($null -ne $fieldValue -and $fieldValue -gt 0) {
+                    $hasPositiveChannelEvidence = $true
+                    break
+                }
+            }
+            if (-not $hasPositiveChannelEvidence) {
+                foreach ($fieldName in @('PublicChannels', 'PrivateChannels', 'SharedChannels')) {
+                    if (-not [string]::IsNullOrWhiteSpace([string](Get-AssessmentExportPropertyValue -Record $teamRow -Names @($fieldName)))) {
+                        $hasPositiveChannelEvidence = $true
+                        break
+                    }
+                }
+            }
+            if (-not $hasPositiveChannelEvidence) {
+                foreach ($fieldName in @('TotalChannels', 'PublicChannelCount', 'PrivateChannelCount', 'SharedChannelCount', 'PublicChannels', 'PrivateChannels', 'SharedChannels')) {
+                    Set-AssessmentExportProperty -Record $teamRow -Name $fieldName -Value $null
+                }
+            }
+            Set-AssessmentExportProperty -Record $teamRow -Name 'HasSharedChannels' -Value $null
+        }
+
+        if ($evidence.MemberInventoryStatus -eq 'Needs Data') {
+            $memberNeedsDataCount++
+            $hasPositiveMemberEvidence = $false
+            foreach ($fieldName in @('MemberCount', 'GuestCount')) {
+                $fieldValue = Convert-ArrayaToNumber -Value (Get-AssessmentExportPropertyValue -Record $teamRow -Names @($fieldName))
+                if ($null -ne $fieldValue -and $fieldValue -gt 0) {
+                    $hasPositiveMemberEvidence = $true
+                    break
+                }
+            }
+            if (-not $hasPositiveMemberEvidence) {
+                Set-AssessmentExportProperty -Record $teamRow -Name 'MemberCount' -Value $null
+                Set-AssessmentExportProperty -Record $teamRow -Name 'GuestCount' -Value $null
+            }
+        }
+
+        $normalizedRows.Add($teamRow) | Out-Null
+    }
+
+    $TenantStatsStore['AllTeams'] = @($normalizedRows.ToArray())
+    return [pscustomobject]@{
+        TeamCount             = $normalizedRows.Count
+        ChannelNeedsDataCount = $channelNeedsDataCount
+        MemberNeedsDataCount  = $memberNeedsDataCount
+    }
+}
+
+function Get-AssessmentMailboxPlanningRows {
+    <#
+        Builds the mailbox row set migration sizing plans against: the detailed mailbox rows
+        (falling back to the flat inventory) plus any inactive mailboxes not already present.
+        Extracted so the tenant-to-tenant cutover shaping and the pre-sales scope tables agree
+        on exactly which mailboxes are in scope.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$TenantStatsStore
+    )
+
+    $allMailboxRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'AllMailboxes')
+    $mailboxDetailsRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'MailboxFullDetails')
+    $inactiveMailboxRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'InactiveMailboxDetails')
+
+    $planningRows = if ($mailboxDetailsRows.Count -gt 0) { @($mailboxDetailsRows) } else { @($allMailboxRows) }
+
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($planningRow in @($planningRows)) {
+        $planningKey = [string](Get-AssessmentExportPropertyValue -Record $planningRow -Names @('PrimarySmtpAddress', 'UserPrincipalName', 'ExchangeGuid'))
+        if (-not [string]::IsNullOrWhiteSpace($planningKey)) {
+            [void]$seen.Add($planningKey)
+        }
+    }
+
+    foreach ($inactiveMailboxRecord in @($inactiveMailboxRows)) {
+        $inactiveKey = [string](Get-AssessmentExportPropertyValue -Record $inactiveMailboxRecord -Names @('PrimarySmtpAddress', 'UserPrincipalName', 'ExchangeGuid'))
+        if ([string]::IsNullOrWhiteSpace($inactiveKey) -or -not $seen.Contains($inactiveKey)) {
+            $planningRows += $inactiveMailboxRecord
+            if (-not [string]::IsNullOrWhiteSpace($inactiveKey)) {
+                [void]$seen.Add($inactiveKey)
+            }
+        }
+    }
+
+    return @($planningRows)
+}
+
+function Update-MigrationGroupWorkloadReconciliation {
+    <#
+        Reconciles Microsoft 365 Groups, Teams, and SharePoint sites into one attribution.
+
+        Three facts drive this:
+          - Every Team has a group, but not every group is a Team.
+          - A group's mailbox is BitTitan scope; its SharePoint site is ShareGate scope.
+          - A Team's files ARE its group's SharePoint site, so summing "Teams storage" and
+            "SharePoint storage" double counts. Teams is a count and a complexity signal only.
+
+        The join keys on normalized site URL. The IsTeamsConnected, IsOffice365GroupsConnected,
+        and GroupId columns exist on the SharePoint rows but come back empty on real tenants,
+        so they cannot be used for classification.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$TenantStatsStore
+    )
+
+    $unifiedGroupRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'UnifiedGroups')
+    $teamRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'AllTeams')
+    $sharePointRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'SharePoint')
+    $groupMailboxRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'GroupMailboxes')
+    $primaryMailboxStatsRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'PrimaryMailboxStats')
+
+    $emptyGroupFloorGB = 0
+    if ($null -ne $script:AssessmentBitTitanLicenseModel) {
+        $configuredFloor = Convert-ArrayaToNumber -Value (Get-ArrayaObjectValue -Object $script:AssessmentBitTitanLicenseModel.Thresholds -Names @('EmptyGroupMailboxFloorGB'))
+        if ($null -ne $configuredFloor) { $emptyGroupFloorGB = [double]$configuredFloor }
+    }
+
+    $teamsByUrl = @{}
+    foreach ($teamRow in $teamRows) {
+        $teamUrl = Get-AssessmentNormalizedSiteUrl -Value (Get-AssessmentExportPropertyValue -Record $teamRow -Names @('SharePointSiteUrl'))
+        if ($teamUrl -and -not $teamsByUrl.ContainsKey($teamUrl)) { $teamsByUrl[$teamUrl] = $teamRow }
+    }
+
+    $sitesByUrl = @{}
+    foreach ($siteRow in $sharePointRows) {
+        $siteUrl = Get-AssessmentNormalizedSiteUrl -Value (Get-AssessmentExportPropertyValue -Record $siteRow -Names @('Url', 'WebUrl'))
+        if ($siteUrl -and -not $sitesByUrl.ContainsKey($siteUrl)) { $sitesByUrl[$siteUrl] = $siteRow }
+    }
+
+    $groupMailboxByKey = @{}
+    foreach ($groupMailboxRow in $groupMailboxRows) {
+        foreach ($identifier in @(
+                (Get-AssessmentExportPropertyValue -Record $groupMailboxRow -Names @('ExchangeGuid')),
+                (Get-AssessmentExportPropertyValue -Record $groupMailboxRow -Names @('PrimarySmtpAddress')),
+                (Get-AssessmentExportPropertyValue -Record $groupMailboxRow -Names @('ExternalDirectoryObjectId'))
+            )) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$identifier)) {
+                $identifierKey = ([string]$identifier).Trim().ToLowerInvariant()
+                if (-not $groupMailboxByKey.ContainsKey($identifierKey)) { $groupMailboxByKey[$identifierKey] = $groupMailboxRow }
+            }
+        }
+    }
+
+    # Older snapshots did not persist a dedicated GroupMailboxes table. A matching
+    # PrimaryMailboxStats row is still trustworthy evidence; absence of both sources is not
+    # evidence that a Microsoft 365 Group mailbox is empty.
+    $groupMailboxStatsByKey = @{}
+    foreach ($statsRow in $primaryMailboxStatsRows) {
+        foreach ($identifier in @(
+                (Get-AssessmentExportPropertyValue -Record $statsRow -Names @('MailboxGuid', 'ExchangeGuid')),
+                (Get-AssessmentExportPropertyValue -Record $statsRow -Names @('PrimarySmtpAddress', 'UserPrincipalName')),
+                (Get-AssessmentExportPropertyValue -Record $statsRow -Names @('ExternalDirectoryObjectId'))
+            )) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$identifier)) {
+                $identifierKey = ([string]$identifier).Trim().ToLowerInvariant()
+                if (-not $groupMailboxStatsByKey.ContainsKey($identifierKey)) { $groupMailboxStatsByKey[$identifierKey] = $statsRow }
+            }
+        }
+    }
+
+    $resolveMailboxEvidence = {
+        param($InventoryRow, $GroupRow)
+
+        $statsRow = $null
+        foreach ($sourceRow in @($InventoryRow, $GroupRow)) {
+            if ($null -eq $sourceRow) { continue }
+            foreach ($identifier in @(
+                    (Get-AssessmentExportPropertyValue -Record $sourceRow -Names @('ExchangeGuid', 'MailboxGuid')),
+                    (Get-AssessmentExportPropertyValue -Record $sourceRow -Names @('PrimarySmtpAddress', 'UserPrincipalName')),
+                    (Get-AssessmentExportPropertyValue -Record $sourceRow -Names @('ExternalDirectoryObjectId'))
+                )) {
+                if ([string]::IsNullOrWhiteSpace([string]$identifier)) { continue }
+                $identifierKey = ([string]$identifier).Trim().ToLowerInvariant()
+                if ($groupMailboxStatsByKey.ContainsKey($identifierKey)) {
+                    $statsRow = $groupMailboxStatsByKey[$identifierKey]
+                    break
+                }
+            }
+            if ($statsRow) { break }
+        }
+
+        $explicitTotalGB = $null
+        $inventoryMailboxGB = $null
+        $inventoryDeletedGB = $null
+        if ($InventoryRow) {
+            $explicitTotalGB = Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $InventoryRow -Names @('TotalDataToMigrateGB'))
+            $inventoryMailboxGB = Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $InventoryRow -Names @('MailboxSizeGB', 'MBXSizeGB'))
+            $inventoryDeletedGB = Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $InventoryRow -Names @('DeletedItemsGB'))
+        }
+
+        $statsMailboxGB = $null
+        $statsDeletedGB = $null
+        if ($statsRow) {
+            $statsMailboxGB = Convert-AssessmentExportByteCountToGb -Value (Get-AssessmentExportPropertyValue -Record $statsRow -Names @('TotalItemSizeBytes'))
+            if ($null -eq $statsMailboxGB) {
+                $statsMailboxGB = Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $statsRow -Names @('TotalItemSize'))
+            }
+            $statsDeletedGB = Convert-AssessmentExportByteCountToGb -Value (Get-AssessmentExportPropertyValue -Record $statsRow -Names @('TotalDeletedItemSizeBytes'))
+            if ($null -eq $statsDeletedGB) {
+                $statsDeletedGB = Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $statsRow -Names @('TotalDeletedItemSize'))
+            }
+        }
+
+        $hasInventoryEvidence = $null -ne $explicitTotalGB -or $null -ne $inventoryMailboxGB -or $null -ne $inventoryDeletedGB
+        $hasStatsEvidence = $null -ne $statsMailboxGB -or $null -ne $statsDeletedGB
+        if (-not $hasInventoryEvidence -and -not $hasStatsEvidence) {
+            return [pscustomobject]@{ Status = 'Needs Data'; Source = 'Not collected'; SizeGB = $null }
+        }
+
+        $mailboxGB = if ($null -ne $inventoryMailboxGB) { $inventoryMailboxGB } else { $statsMailboxGB }
+        $deletedGB = if ($null -ne $inventoryDeletedGB) { $inventoryDeletedGB } else { $statsDeletedGB }
+        $totalGB = if ($null -ne $explicitTotalGB) {
+            $explicitTotalGB
+        }
+        else {
+            $knownParts = @($mailboxGB, $deletedGB) | Where-Object { $null -ne $_ }
+            if ($knownParts.Count -gt 0) { [math]::Round((($knownParts | Measure-Object -Sum).Sum), 3) } else { $null }
+        }
+        $source = if ($hasInventoryEvidence -and $hasStatsEvidence) { 'GroupMailboxes + PrimaryMailboxStats' }
+            elseif ($hasInventoryEvidence) { 'GroupMailboxes' }
+            else { 'PrimaryMailboxStats (Graph/EXO)' }
+
+        return [pscustomobject]@{
+            Status = $(if ($null -ne $totalGB -and $totalGB -gt $emptyGroupFloorGB) { 'Measured data' } else { 'Measured empty' })
+            Source = $source
+            SizeGB = $totalGB
+        }
+    }
+
+    $reconciliationRows = New-Object System.Collections.Generic.List[object]
+    $claimedSiteUrls = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $matchedTeamUrls = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $matchedGroupMailboxKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($groupRow in $unifiedGroupRows) {
+        $groupSiteUrl = Get-AssessmentNormalizedSiteUrl -Value (Get-AssessmentExportPropertyValue -Record $groupRow -Names @('SharePointSiteUrl'))
+        $teamRow = if ($groupSiteUrl -and $teamsByUrl.ContainsKey($groupSiteUrl)) { $teamsByUrl[$groupSiteUrl] } else { $null }
+        $siteRow = if ($groupSiteUrl -and $sitesByUrl.ContainsKey($groupSiteUrl)) { $sitesByUrl[$groupSiteUrl] } else { $null }
+
+        if ($teamRow -and $groupSiteUrl) { [void]$matchedTeamUrls.Add($groupSiteUrl) }
+
+        $groupMailboxRow = $null
+        foreach ($identifier in @(
+                (Get-AssessmentExportPropertyValue -Record $groupRow -Names @('ExchangeGuid')),
+                (Get-AssessmentExportPropertyValue -Record $groupRow -Names @('PrimarySmtpAddress')),
+                (Get-AssessmentExportPropertyValue -Record $groupRow -Names @('ExternalDirectoryObjectId'))
+            )) {
+            if ([string]::IsNullOrWhiteSpace([string]$identifier)) { continue }
+            $identifierKey = ([string]$identifier).Trim().ToLowerInvariant()
+            if ($groupMailboxByKey.ContainsKey($identifierKey)) {
+                $groupMailboxRow = $groupMailboxByKey[$identifierKey]
+                break
+            }
+        }
+        if ($groupMailboxRow) {
+            foreach ($identifier in @(
+                    (Get-AssessmentExportPropertyValue -Record $groupMailboxRow -Names @('ExchangeGuid')),
+                    (Get-AssessmentExportPropertyValue -Record $groupMailboxRow -Names @('PrimarySmtpAddress')),
+                    (Get-AssessmentExportPropertyValue -Record $groupMailboxRow -Names @('ExternalDirectoryObjectId'))
+                )) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$identifier)) {
+                    [void]$matchedGroupMailboxKeys.Add(([string]$identifier).Trim().ToLowerInvariant())
+                }
+            }
+        }
+
+        $mailboxEvidence = & $resolveMailboxEvidence $groupMailboxRow $groupRow
+        $mailboxSizeGB = $mailboxEvidence.SizeGB
+
+        $siteStorageGB = if ($siteRow) {
+            Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $siteRow -Names @('StorageUsedGB'))
+        } else { $null }
+
+        # Each site is attributed to exactly one owner. Claiming it here keeps it out of the
+        # standalone-site bucket below, which is what stops the ShareGate total double counting.
+        if ($siteRow -and $groupSiteUrl) { [void]$claimedSiteUrls.Add($groupSiteUrl) }
+
+        $mailboxEvidenceStatus = [string]$mailboxEvidence.Status
+        $hasMailData = $mailboxEvidenceStatus -eq 'Measured data'
+        $mailboxEvidenceMissing = $mailboxEvidenceStatus -eq 'Needs Data'
+        $hasSiteData = ($null -ne $siteStorageGB -and $siteStorageGB -gt 0)
+        $isTeam = [bool]$teamRow
+        $teamEvidence = if ($teamRow) { Get-AssessmentTeamEnrichmentEvidence -TeamRecord $teamRow } else { $null }
+
+        $classification = if ($mailboxEvidenceMissing -and $isTeam -and $hasSiteData) { 'Team with site; mail evidence unavailable' }
+            elseif ($mailboxEvidenceMissing -and $isTeam) { 'Team; mail evidence unavailable' }
+            elseif ($mailboxEvidenceMissing -and $hasSiteData) { 'Group with site; mail evidence unavailable' }
+            elseif ($mailboxEvidenceMissing) { 'Group; mail evidence unavailable' }
+            elseif ($isTeam -and $hasMailData -and $hasSiteData) { 'Team with mail and site' }
+            elseif ($isTeam -and $hasSiteData) { 'Team, site only' }
+            elseif ($isTeam) { 'Team, no measured content' }
+            elseif ($hasMailData -and $hasSiteData) { 'Group with mail and site' }
+            elseif ($hasSiteData) { 'Group, site only' }
+            elseif ($hasMailData) { 'Group, mail only' }
+            else { 'Empty shell' }
+
+        $reconciliationRows.Add([pscustomobject]@{
+            DisplayName       = [string](Get-AssessmentExportPropertyValue -Record $groupRow -Names @('DisplayName'))
+            PrimarySmtpAddress = [string](Get-AssessmentExportPropertyValue -Record $groupRow -Names @('PrimarySmtpAddress'))
+            IsTeam            = $isTeam
+            HasSharedChannels = $(if ($teamEvidence) { $teamEvidence.HasSharedChannels } else { $false })
+            ChannelInventoryStatus = $(if ($teamEvidence) { $teamEvidence.ChannelInventoryStatus } else { $null })
+            MemberInventoryStatus = $(if ($teamEvidence) { $teamEvidence.MemberInventoryStatus } else { $null })
+            SiteUrl           = [string](Get-AssessmentExportPropertyValue -Record $groupRow -Names @('SharePointSiteUrl'))
+            MailboxSizeGB     = $mailboxSizeGB
+            MailboxEvidenceStatus = $mailboxEvidenceStatus
+            MailboxEvidenceSource = [string]$mailboxEvidence.Source
+            SiteStorageGB     = $siteStorageGB
+            MailboxScope      = $(if ($mailboxEvidenceMissing) { 'Needs Data' } elseif ($hasMailData) { 'BitTitan (optional)' } else { 'None' })
+            SiteScope         = $(if ($hasSiteData) { 'ShareGate' } else { 'None' })
+            Classification    = $classification
+            Notes             = $(
+                if ($mailboxEvidenceMissing -and -not $siteRow -and $groupSiteUrl) { 'Group site URL did not match a collected SharePoint site. Group mailbox inventory/statistics were not collected or could not be joined; collect evidence and do not infer zero conversations.' }
+                elseif ($mailboxEvidenceMissing) { 'Group mailbox inventory/statistics were not collected or could not be joined. Collect evidence; do not infer zero conversations from missing collector data.' }
+                elseif (-not $hasMailData -and $hasSiteData) { 'Group mailbox was measured and has no data to migrate. Site content only.' }
+                elseif (-not $siteRow -and $groupSiteUrl) { 'Group site URL did not match a collected SharePoint site.' }
+                elseif ($classification -eq 'Empty shell') { 'No measured mail or site content. Confirm before including in scope.' }
+                elseif ($hasMailData) { 'Group mailbox conversations are report-only by practice default. BitTitan is the candidate tool only if the customer approves this exception.' }
+                else { $null }
+            )
+        }) | Out-Null
+    }
+
+    # A dedicated Exchange group-mailbox row can outlive or fail to join to the Graph group
+    # collection. Keep it visible for disposition/readiness rather than silently dropping it.
+    foreach ($groupMailboxRow in $groupMailboxRows) {
+        $mailboxKeys = @(
+            (Get-AssessmentExportPropertyValue -Record $groupMailboxRow -Names @('ExchangeGuid')),
+            (Get-AssessmentExportPropertyValue -Record $groupMailboxRow -Names @('PrimarySmtpAddress')),
+            (Get-AssessmentExportPropertyValue -Record $groupMailboxRow -Names @('ExternalDirectoryObjectId'))
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() }
+        $isMatched = @($mailboxKeys | Where-Object { $matchedGroupMailboxKeys.Contains($_) }).Count -gt 0
+        if ($isMatched) { continue }
+
+        $mailboxEvidence = & $resolveMailboxEvidence $groupMailboxRow $null
+        $mailboxEvidenceStatus = [string]$mailboxEvidence.Status
+        $hasMailData = $mailboxEvidenceStatus -eq 'Measured data'
+        $mailboxEvidenceMissing = $mailboxEvidenceStatus -eq 'Needs Data'
+        $reconciliationRows.Add([pscustomobject]@{
+            DisplayName          = [string](Get-AssessmentExportPropertyValue -Record $groupMailboxRow -Names @('DisplayName'))
+            PrimarySmtpAddress   = [string](Get-AssessmentExportPropertyValue -Record $groupMailboxRow -Names @('PrimarySmtpAddress'))
+            IsTeam              = $false
+            HasSharedChannels   = $false
+            ChannelInventoryStatus = $null
+            MemberInventoryStatus = $null
+            SiteUrl             = $null
+            MailboxSizeGB       = $mailboxEvidence.SizeGB
+            MailboxEvidenceStatus = $mailboxEvidenceStatus
+            MailboxEvidenceSource = [string]$mailboxEvidence.Source
+            SiteStorageGB       = $null
+            MailboxScope        = $(if ($mailboxEvidenceMissing) { 'Needs Data' } elseif ($hasMailData) { 'BitTitan (optional)' } else { 'None' })
+            SiteScope           = 'Needs Data'
+            Classification      = $(if ($mailboxEvidenceMissing) { 'Unmatched group mailbox; mail evidence unavailable' } elseif ($hasMailData) { 'Unmatched group mailbox with measured mail data' } else { 'Unmatched measured-empty group mailbox' })
+            Notes               = 'Dedicated GroupMailboxes inventory did not match a collected UnifiedGroups row. Keep report-only and confirm the group, Team/site attribution, and customer disposition.'
+        }) | Out-Null
+    }
+
+    $TenantStatsStore['GroupWorkloadReconciliation'] = @($reconciliationRows.ToArray())
+
+    $standaloneSiteRows = @($sharePointRows | Where-Object {
+            $candidateUrl = Get-AssessmentNormalizedSiteUrl -Value (Get-AssessmentExportPropertyValue -Record $_ -Names @('Url', 'WebUrl'))
+            $null -eq $candidateUrl -or -not $claimedSiteUrls.Contains($candidateUrl)
+        })
+
+    return [pscustomobject]@{
+        ReconciliationRows = @($reconciliationRows.ToArray())
+        MeasuredMailDataCount = @($reconciliationRows | Where-Object { $_.MailboxEvidenceStatus -eq 'Measured data' }).Count
+        MeasuredEmptyMailboxCount = @($reconciliationRows | Where-Object { $_.MailboxEvidenceStatus -eq 'Measured empty' }).Count
+        UnknownMailboxEvidenceCount = @($reconciliationRows | Where-Object { $_.MailboxEvidenceStatus -eq 'Needs Data' }).Count
+        StandaloneSiteRows = $standaloneSiteRows
+        ClaimedSiteUrls    = $claimedSiteUrls
+        TeamRows           = $teamRows
+        SharePointRows     = $sharePointRows
+        UnmatchedTeamCount = @($teamRows | Where-Object {
+                $candidateUrl = Get-AssessmentNormalizedSiteUrl -Value (Get-AssessmentExportPropertyValue -Record $_ -Names @('SharePointSiteUrl'))
+                $null -eq $candidateUrl -or -not $matchedTeamUrls.Contains($candidateUrl)
+            }).Count
+    }
+}
+
+function Get-AssessmentCustomDomainApplicationUris {
+    <#
+        Finds applications whose identifier URI, reply URL, or redirect URI is hosted on one of
+        the tenant's own verified custom domains. These cannot be registered in a target tenant
+        until the domain itself moves, which makes them a hard sequencing dependency and often
+        a migration blocker.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$TenantStatsStore
+    )
+
+    $applicationRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'EnterpriseApplications')
+    $domainRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'Domains')
+
+    $customDomains = @($domainRows | ForEach-Object {
+            [string](Get-AssessmentExportPropertyValue -Record $_ -Names @('Name', 'Domain', 'Id'))
+        } | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_) -and
+            $_ -notlike '*.onmicrosoft.com' -and
+            $_ -notlike '*.microsoftonline.com'
+        } | ForEach-Object { $_.Trim().ToLowerInvariant() } | Select-Object -Unique)
+
+    $matches = New-Object System.Collections.Generic.List[object]
+    if ($customDomains.Count -eq 0 -or $applicationRows.Count -eq 0) {
+        return [pscustomobject]@{
+            Matches        = @()
+            HasSourceData  = ($applicationRows.Count -gt 0)
+            CustomDomains  = $customDomains
+        }
+    }
+
+    foreach ($applicationRow in $applicationRows) {
+        $uriValues = @()
+        foreach ($fieldName in @('IdentifierUris', 'ReplyUrls', 'RedirectUris', 'HomePageUrl')) {
+            $fieldValue = Get-AssessmentExportPropertyValue -Record $applicationRow -Names @($fieldName)
+            if ($null -eq $fieldValue) { continue }
+            if ($fieldValue -is [string]) {
+                $uriValues += @($fieldValue -split '[;,]')
+            }
+            elseif ($fieldValue -is [System.Collections.IEnumerable]) {
+                $uriValues += @($fieldValue | ForEach-Object { [string]$_ })
+            }
+        }
+
+        $matchedUris = @($uriValues | Where-Object {
+                $candidate = ([string]$_).Trim().ToLowerInvariant()
+                if ([string]::IsNullOrWhiteSpace($candidate)) { return $false }
+                $hit = $false
+                foreach ($customDomain in $customDomains) {
+                    if ($candidate -like ("*{0}*" -f $customDomain)) { $hit = $true; break }
+                }
+                $hit
+            } | Select-Object -Unique)
+
+        if ($matchedUris.Count -gt 0) {
+            $matches.Add([pscustomobject]@{
+                DisplayName = [string](Get-AssessmentExportPropertyValue -Record $applicationRow -Names @('DisplayName'))
+                AppId       = [string](Get-AssessmentExportPropertyValue -Record $applicationRow -Names @('AppId'))
+                MatchedUris = ($matchedUris -join '; ')
+            }) | Out-Null
+        }
+    }
+
+    return [pscustomobject]@{
+        Matches       = @($matches.ToArray())
+        HasSourceData = $true
+        CustomDomains = $customDomains
+    }
+}
+
+function Update-MigrationComplexityFlags {
+    <#
+        Builds the migration complexity checklist. Each row is something that adds effort,
+        risk, or a sequencing dependency to a tenant-to-tenant migration and that a Solutions
+        Engineer needs to price before quoting.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$TenantStatsStore,
+        [Parameter(Mandatory = $true)]
+        $Reconciliation,
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        [object[]]$MailboxPlanningRows,
+        [Parameter(Mandatory = $true)]
+        $Estimate
+    )
+
+    $flagRows = New-Object System.Collections.Generic.List[object]
+    $addFlag = {
+        param($Category, $Item, $Status, $Value, $Notes, $MigrationAction, $SourceWorksheet)
+        $flagRows.Add([pscustomobject]@{
+            Category        = $Category
+            Item            = $Item
+            Status          = $Status
+            Value           = $Value
+            Notes           = $Notes
+            MigrationAction = $MigrationAction
+            SourceWorksheet = $SourceWorksheet
+        }) | Out-Null
+    }
+
+    $publicFolderRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'PublicFolderDetails')
+    if ($publicFolderRows.Count -gt 0) {
+        & $addFlag 'Exchange' 'Public folders' 'Review' $publicFolderRows.Count `
+            'Public folders are a separate migration track with their own tooling and cutover window.' `
+            'Scope public folder migration separately and confirm target hierarchy strategy.' 'PublicFolderDetails'
+    }
+
+    $teamRows = @($Reconciliation.TeamRows)
+    $teamsWithSharedChannels = @($teamRows | Where-Object { (Get-AssessmentTeamEnrichmentEvidence -TeamRecord $_).HasSharedChannels -eq $true })
+    $teamsMissingChannelEvidence = @($teamRows | Where-Object { (Get-AssessmentTeamEnrichmentEvidence -TeamRecord $_).ChannelInventoryStatus -eq 'Needs Data' })
+    $teamsMissingMemberEvidence = @($teamRows | Where-Object { (Get-AssessmentTeamEnrichmentEvidence -TeamRecord $_).MemberInventoryStatus -eq 'Needs Data' })
+    if ($teamsMissingChannelEvidence.Count -gt 0 -or $teamsMissingMemberEvidence.Count -gt 0) {
+        & $addFlag 'Teams' 'Teams channel and member inventory' 'Needs Data' `
+            ("Channel inventory unavailable for {0}/{1} Team(s); member/guest inventory unavailable for {2}/{1}." -f $teamsMissingChannelEvidence.Count, $teamRows.Count, $teamsMissingMemberEvidence.Count) `
+            'A zero produced without successful enrichment is not evidence that a Team has no shared channels, members, or guests.' `
+            'Collect the missing Team channel and membership inventories before finalizing ShareGate effort or unsupported-feature remediation.' 'AllTeams'
+    }
+    if ($teamsWithSharedChannels.Count -gt 0) {
+        $sharedChannelTotal = [int](@($teamRows | ForEach-Object { [int](Convert-ArrayaToNumber -Value $_.SharedChannelCount -AsInt64) } | Measure-Object -Sum).Sum)
+        & $addFlag 'Teams' 'Shared channels' 'Review' ("{0} team(s), {1} shared channel(s)" -f $teamsWithSharedChannels.Count, $sharedChannelTotal) `
+            'Shared channels do not move cleanly cross-tenant. Each one needs an individual plan.' `
+            'Inventory shared channels and their external members; plan manual recreation.' 'AllTeams'
+    }
+
+    $adConnectRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'AdConnectConfiguration')
+    if ($adConnectRows.Count -gt 0) {
+        & $addFlag 'Identity' 'AD Connect directory synchronization' 'Review' 'Configured' `
+            'Synced objects are not writable in the cloud, so source of authority has to be re-pointed as part of the move.' `
+            'Plan source-of-authority transfer and target-side directory sync before user cutover.' 'AdConnectConfiguration'
+    }
+
+    $hybridRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'HybridConfiguration')
+    if ($hybridRows.Count -gt 0) {
+        & $addFlag 'Exchange' 'Exchange hybrid' 'Review' 'Configured' `
+            'On-premises coexistence and mail routing have to be unwound alongside the cloud move.' `
+            'Map hybrid endpoints, connectors, and autodiscover before scheduling cutover.' 'HybridConfiguration'
+    }
+
+    $ssoApplicationRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'AuthenticationSSOApplications')
+    if ($ssoApplicationRows.Count -gt 0) {
+        & $addFlag 'Applications' 'SSO applications' 'Review' $ssoApplicationRows.Count `
+            'Every federated application needs re-integration against the target tenant.' `
+            'Collect per-application owners and re-federation requirements.' 'AuthenticationSSOApplications'
+    }
+
+    $customDomainApps = Get-AssessmentCustomDomainApplicationUris -TenantStatsStore $TenantStatsStore
+    if (-not $customDomainApps.HasSourceData) {
+        & $addFlag 'Applications' 'Applications with a custom-domain application URI' 'Needs Data' $null `
+            'Enterprise application data was not collected, so custom-domain application URIs could not be evaluated.' `
+            'Re-run with application collection enabled to assess this dependency.' 'EnterpriseApplications'
+    }
+    elseif (@($customDomainApps.Matches).Count -gt 0) {
+        & $addFlag 'Applications' 'Applications with a custom-domain application URI' 'Blocker' @($customDomainApps.Matches).Count `
+            'An application URI on a custom domain cannot be registered in the target tenant until that domain is moved. This is a hard sequencing dependency.' `
+            'Sequence domain cutover ahead of application re-registration; plan downtime for each affected app.' 'EnterpriseApplications'
+    }
+
+    $sharedMailboxCount = @($MailboxPlanningRows | Where-Object { [string](Get-AssessmentExportPropertyValue -Record $_ -Names @('RecipientTypeDetails')) -eq 'SharedMailbox' }).Count
+    if ($sharedMailboxCount -gt 0) {
+        & $addFlag 'Exchange' 'Shared mailboxes' 'Review' $sharedMailboxCount `
+            'Shared mailboxes have no licensable user, so they are priced a-la-carte on both licensing paths.' `
+            'Confirm which shared mailboxes are still in use before including them in scope.' 'AllMailboxes'
+    }
+
+    $mailboxesOnHold = @($MailboxPlanningRows | Where-Object { $_.LitigationHoldEnabled -eq $true }).Count
+    if ($mailboxesOnHold -gt 0) {
+        & $addFlag 'Compliance' 'Mailboxes on litigation hold' 'Review' $mailboxesOnHold `
+            'Holds affect migration sequencing and post-migration validation.' `
+            'Confirm hold requirements survive the move and document chain of custody.' 'AllMailboxes'
+    }
+
+    $mailboxesWithForwarding = @($MailboxPlanningRows | Where-Object {
+            -not [string]::IsNullOrWhiteSpace([string](Get-AssessmentExportPropertyValue -Record $_ -Names @('ForwardingSmtpAddress'))) -or
+            -not [string]::IsNullOrWhiteSpace([string](Get-AssessmentExportPropertyValue -Record $_ -Names @('ForwardingAddress')))
+        }).Count
+    if ($mailboxesWithForwarding -gt 0) {
+        & $addFlag 'Exchange' 'Mailboxes with forwarding' 'Review' $mailboxesWithForwarding `
+            'Forwarding needs cutover-day validation and a restamping decision.' `
+            'Capture current forwarding targets and decide whether they follow the mailbox.' 'AllMailboxes'
+    }
+
+    $largeMailboxCount = @($Estimate.ObjectLines | Where-Object { $null -ne $_.LicenseUnits -and [int]$_.LicenseUnits -gt 1 }).Count
+    if ($largeMailboxCount -gt 0) {
+        & $addFlag 'Sizing' 'Mailboxes needing more than one license block' 'Review' $largeMailboxCount `
+            'Each of these consumes multiple mailbox licenses and takes proportionally longer to migrate.' `
+            'Consider archive trimming or staged migration for the largest mailboxes.' 'BitTitanLicenseDetail'
+    }
+
+    if ([int]$Estimate.NeedsDataCount -gt 0) {
+        & $addFlag 'Sizing' 'Objects with incomplete license evidence' 'Needs Data' $Estimate.NeedsDataCount `
+            'These objects lack mailbox statistics or confirmed archive state and are excluded from license totals, so the unit baskets are a floor.' `
+            'Collect mailbox statistics and confirm archive state before issuing a firm quote.' 'BitTitanLicenseDetail'
+    }
+
+    $emptyGroupCount = @($Reconciliation.ReconciliationRows | Where-Object { [string]$_.Classification -eq 'Empty shell' }).Count
+    if ($emptyGroupCount -gt 0) {
+        & $addFlag 'Collaboration' 'Microsoft 365 Groups with no measured content' 'Review' $emptyGroupCount `
+            'These groups have neither mail nor site content. Including them inflates both the BitTitan and ShareGate estimates.' `
+            'Confirm with the customer whether these groups need to move at all.' 'GroupWorkloadReconciliation'
+    }
+
+    $splitScopeGroups = @($Reconciliation.ReconciliationRows | Where-Object {
+            ([string]$_.MailboxEvidenceStatus -eq 'Measured data' -or [string]$_.MailboxScope -match '^BitTitan') -and
+            $_.SiteScope -eq 'ShareGate'
+        }).Count
+    if ($splitScopeGroups -gt 0) {
+        & $addFlag 'Collaboration' 'Groups split across both migration tools' 'Review' $splitScopeGroups `
+            'The mailbox moves with BitTitan and the site moves with ShareGate. The two halves need coordinated cutover to avoid a split-brain group.' `
+            'Sequence group mailbox and site cutover together for each of these groups.' 'GroupWorkloadReconciliation'
+    }
+
+    if ([int]$Reconciliation.UnmatchedTeamCount -gt 0) {
+        & $addFlag 'Collaboration' 'Teams with no matching group site' 'Needs Data' $Reconciliation.UnmatchedTeamCount `
+            'These Teams did not join to a collected SharePoint site, so their content is not represented in the ShareGate totals.' `
+            'Verify SharePoint collection covered these Teams before relying on the storage figures.' 'AllTeams'
+    }
+
+    $spamFilteringSummary = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'SpamFilteringSummary')
+    $usesThirdPartyFiltering = @($spamFilteringSummary | Where-Object { $_.Uses3rdPartyFiltering -eq $true }).Count -gt 0
+    if ($usesThirdPartyFiltering) {
+        & $addFlag 'Mail flow' 'Third-party mail filtering' 'Review' 'Detected' `
+            'A third-party filter in front of Exchange has to be re-pointed as part of the mail flow cutover.' `
+            'Identify the filtering vendor and plan MX and connector changes.' 'SpamFilteringConfig'
+    }
+
+    $TenantStatsStore['MigrationComplexityFlags'] = @($flagRows.ToArray())
+}
+
+function Update-MigrationPlanningRegisters {
+    <#
+        Produces the editable registers that turn a source-tenant inventory into a scoped
+        migration plan. Discovered evidence and customer decisions deliberately remain in
+        separate columns. When a completed scope questionnaire is merged back as
+        MigrationScopeDecisions, DecisionKey is used to advance rows from Needs Input or
+        Provisional to Confirmed.
+
+        Quote readiness is confidence in scope, not a price. A source-only assessment stays
+        ROM because destination readiness, mappings, domain sequencing, and migration-tool
+        endpoint configuration cannot be proven from the source tenant.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$TenantStatsStore
+    )
+
+    $decisionRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'MigrationScopeDecisions')
+    $decisionLookup = @{}
+    foreach ($decisionRow in $decisionRows) {
+        $decisionKey = [string](Get-AssessmentExportPropertyValue -Record $decisionRow -Names @('DecisionKey'))
+        if (-not [string]::IsNullOrWhiteSpace($decisionKey)) {
+            $decisionLookup[$decisionKey.Trim().ToLowerInvariant()] = $decisionRow
+        }
+    }
+
+    $getDecision = {
+        param([string]$DecisionKey, [string]$FallbackDecisionKey)
+
+        foreach ($candidateKey in @($DecisionKey, $FallbackDecisionKey)) {
+            if ([string]::IsNullOrWhiteSpace($candidateKey)) { continue }
+            $normalizedKey = $candidateKey.Trim().ToLowerInvariant()
+            if ($decisionLookup.ContainsKey($normalizedKey)) { return $decisionLookup[$normalizedKey] }
+        }
+        return $null
+    }
+    $getDecisionField = {
+        param($Decision, [string[]]$Names)
+        if ($null -eq $Decision) { return $null }
+        return Get-AssessmentExportPropertyValue -Record $Decision -Names $Names
+    }
+    $isDecisionConfirmed = {
+        param($Decision)
+        if ($null -eq $Decision) { return $false }
+        $status = [string](& $getDecisionField $Decision @('Status'))
+        return $status -match '^(?i)(confirmed|approved|complete|completed|resolved)$'
+    }
+    $getInScopeDecisionState = {
+        param($Decision)
+
+        if ($null -eq $Decision) {
+            return [pscustomobject]@{ HasValue = $false; Value = $null; RawValue = $null }
+        }
+
+        $rawValue = & $getDecisionField $Decision @('InScope')
+        if ($null -eq $rawValue) {
+            return [pscustomobject]@{ HasValue = $false; Value = $null; RawValue = $null }
+        }
+        if ($rawValue -is [bool]) {
+            return [pscustomobject]@{ HasValue = $true; Value = [bool]$rawValue; RawValue = $rawValue }
+        }
+
+        $normalizedValue = ([string]$rawValue).Trim().ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($normalizedValue)) {
+            return [pscustomobject]@{ HasValue = $false; Value = $null; RawValue = $rawValue }
+        }
+
+        if ($normalizedValue -match '^(true|yes|y|1|include|included|in scope|inscope)$') {
+            return [pscustomobject]@{ HasValue = $true; Value = $true; RawValue = $rawValue }
+        }
+        if ($normalizedValue -match '^(false|no|n|0|exclude|excluded|out of scope|outofscope)$') {
+            return [pscustomobject]@{ HasValue = $true; Value = $false; RawValue = $rawValue }
+        }
+
+        return [pscustomobject]@{ HasValue = $false; Value = $null; RawValue = $rawValue }
+    }
+    $getPlanningScopeSummary = {
+        param(
+            [AllowNull()][object[]]$Rows,
+            [Parameter(Mandatory = $true)][scriptblock]$DecisionKeySelector,
+            [string]$SizeField
+        )
+
+        $sourceRows = @($Rows)
+        $planningRows = New-Object System.Collections.Generic.List[object]
+        $includedRows = New-Object System.Collections.Generic.List[object]
+        $excludedRows = New-Object System.Collections.Generic.List[object]
+        $undecidedRows = New-Object System.Collections.Generic.List[object]
+
+        foreach ($sourceRow in $sourceRows) {
+            $decisionKey = [string](& $DecisionKeySelector $sourceRow)
+            $specificDecision = if ([string]::IsNullOrWhiteSpace($decisionKey)) { $null } else { & $getDecision $decisionKey $null }
+            $scopeState = & $getInScopeDecisionState $specificDecision
+            $decisionConfirmed = & $isDecisionConfirmed $specificDecision
+
+            if ($decisionConfirmed -and $scopeState.HasValue -and -not $scopeState.Value) {
+                $excludedRows.Add($sourceRow) | Out-Null
+                continue
+            }
+
+            $planningRows.Add($sourceRow) | Out-Null
+            if ($decisionConfirmed -and $scopeState.HasValue -and $scopeState.Value) {
+                $includedRows.Add($sourceRow) | Out-Null
+            }
+            else {
+                # An unconfirmed false is not an exclusion. Keeping it in the planning floor
+                # prevents an accidental or incomplete questionnaire edit from shrinking scope.
+                $undecidedRows.Add($sourceRow) | Out-Null
+            }
+        }
+
+        $sumSize = {
+            param($InputRows)
+            if ([string]::IsNullOrWhiteSpace($SizeField)) { return $null }
+            return [math]::Round((@($InputRows | ForEach-Object {
+                        $size = Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $_ -Names @($SizeField))
+                        if ($null -eq $size) { 0 } else { [double]$size }
+                    } | Measure-Object -Sum).Sum), 3)
+        }
+
+        return [pscustomobject]@{
+            DiscoveredRows         = $sourceRows
+            PlanningRows           = @($planningRows.ToArray())
+            ExplicitIncludedRows   = @($includedRows.ToArray())
+            ExplicitExcludedRows   = @($excludedRows.ToArray())
+            UndecidedRows          = @($undecidedRows.ToArray())
+            DiscoveredObjectCount  = $sourceRows.Count
+            PlanningObjectCount    = $planningRows.Count
+            ExplicitIncludedCount  = $includedRows.Count
+            ExplicitExcludedCount  = $excludedRows.Count
+            UndecidedObjectCount   = $undecidedRows.Count
+            DiscoveredDataGB       = & $sumSize $sourceRows
+            PlanningDataGB         = & $sumSize @($planningRows.ToArray())
+            ExplicitExcludedDataGB = & $sumSize @($excludedRows.ToArray())
+        }
+    }
+    $getDomainFromAddress = {
+        param($Value)
+        $address = [string]$Value
+        if ($address -match '@([^@\s>]+)$') { return $matches[1].Trim().ToLowerInvariant() }
+        return $null
+    }
+    $getSizeTotal = {
+        param($Rows, [string]$Field)
+        return [math]::Round((@($Rows | ForEach-Object {
+                    $size = Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $_ -Names @($Field))
+                    if ($null -eq $size) { 0 } else { [double]$size }
+                } | Measure-Object -Sum).Sum), 3)
+    }
+    $getSummaryMetric = {
+        param([string]$Table, [string]$Metric)
+        $row = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key $Table | Where-Object {
+                [string](Get-AssessmentExportPropertyValue -Record $_ -Names @('Metric')) -eq $Metric
+            } | Select-Object -First 1) | Select-Object -First 1
+        if ($row) { return Get-AssessmentExportPropertyValue -Record $row -Names @('Value') }
+        return $null
+    }
+
+    $mailboxRows = @(Get-AssessmentMailboxPlanningRows -TenantStatsStore $TenantStatsStore)
+    $userRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'Users')
+    $recipientRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'AllRecipients')
+    $domainRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'Domains')
+    $groupRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'GroupWorkloadReconciliation')
+    $sharePointRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'SharePoint')
+    $oneDriveRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'OneDrive')
+    $teamRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'AllTeams')
+    $publicFolderRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'PublicFolderDetails')
+    $applicationRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'EnterpriseApplications')
+    $complexityRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'MigrationComplexityFlags')
+    $licenseDetailRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'BitTitanLicenseDetail')
+
+    # ---- Target readiness ---------------------------------------------------------------
+    $targetReadinessDefinitions = @(
+        @{ DecisionKey = 'ID-01'; Area = 'Destination tenant'; Check = 'Destination identity, domains, geography, access, and accountable owners confirmed'; Blocking = $true; Action = 'Record destination tenant ID, initial/default domains, data geography, access method, and service owners.'; Evidence = 'Customer confirmation; destination tenant is not queried by this assessment.' },
+        @{ DecisionKey = 'ID-03'; Area = 'Destination capacity'; Check = 'Target provisioning, licenses, mailbox capacity, and application consent confirmed'; Blocking = $true; Action = 'Validate target object provisioning, license supply, storage limits, and required application consent.'; Evidence = 'Customer confirmation; destination capacity is not queried by this assessment.' },
+        @{ DecisionKey = 'BT-09'; Area = 'BitTitan source endpoint'; Check = 'MigrationWiz source application/authentication and EWS readiness validated'; Blocking = $true; Action = 'Validate the MigrationWiz source app/authentication, organization and user EWS availability, and the EWSAllowedAppIDs allow-list decision/configuration. Allow up to 24 hours for allow-list propagation.'; Evidence = 'Customer/MigrationWiz endpoint validation. The Arraya assessment application is separate and is not evidence of MigrationWiz readiness.' },
+        @{ DecisionKey = 'BT-10'; Area = 'BitTitan destination endpoint'; Check = 'MigrationWiz destination application/authentication and EWS readiness validated'; Blocking = $true; Action = 'Validate the MigrationWiz destination app/authentication, organization and user EWS availability, and the EWSAllowedAppIDs allow-list decision/configuration. Allow up to 24 hours for allow-list propagation.'; Evidence = 'Customer/MigrationWiz endpoint validation. The Arraya assessment application is separate and is not evidence of MigrationWiz readiness.' },
+        @{ DecisionKey = 'SG-04'; Area = 'ShareGate endpoints'; Check = 'ShareGate source and destination connectivity, roles, and consent validated'; Blocking = $true; Action = 'Validate source and destination connections, required admin roles, application consent, and a representative access test.'; Evidence = 'Customer/ShareGate connection validation; destination access is not queried by this assessment.' }
+    )
+    $targetReadinessRows = foreach ($definition in $targetReadinessDefinitions) {
+        $decision = & $getDecision $definition.DecisionKey $null
+        $confirmed = & $isDecisionConfirmed $decision
+        [pscustomobject]@{
+            DecisionKey            = $definition.DecisionKey
+            Area                   = $definition.Area
+            ReadinessCheck         = $definition.Check
+            DiscoveredValue        = 'Not discoverable from the source-only assessment'
+            EvidenceSource         = $definition.Evidence
+            Confidence             = 'Customer confirmation required'
+            CustomerConfirmedValue = & $getDecisionField $decision @('CustomerConfirmedValue')
+            Status                 = if ($confirmed) { 'Confirmed' } else { 'Needs Input' }
+            Blocking               = [bool]$definition.Blocking
+            RequiredAction         = $definition.Action
+            DecisionOwner          = & $getDecisionField $decision @('DecisionOwner')
+            DueDate                = & $getDecisionField $decision @('DueDate')
+            Notes                  = & $getDecisionField $decision @('Notes')
+        }
+    }
+    $TenantStatsStore['MigrationTargetReadiness'] = @($targetReadinessRows)
+
+    # ---- Identity mapping ---------------------------------------------------------------
+    $identityRows = New-Object System.Collections.Generic.List[object]
+    $seenIdentityKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $addIdentityRow = {
+        param($Record, [string]$ObjectType, [string]$FallbackDecisionKey)
+
+        $sourceUpn = [string](Get-AssessmentExportPropertyValue -Record $Record -Names @('UserPrincipalName'))
+        $sourceSmtp = [string](Get-AssessmentExportPropertyValue -Record $Record -Names @('PrimarySmtpAddress', 'MailboxPrimarySmtpAddress', 'Mail'))
+        $sourceAnchor = [string](Get-AssessmentExportPropertyValue -Record $Record -Names @('OnPremisesImmutableId', 'ExchangeGuid', 'Id'))
+        $identityKey = @($sourceUpn, $sourceSmtp, $sourceAnchor | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1) | Select-Object -First 1
+        if ([string]::IsNullOrWhiteSpace([string]$identityKey)) { return }
+        if (-not $seenIdentityKeys.Add(([string]$identityKey).Trim().ToLowerInvariant())) { return }
+
+        $decisionKey = 'IDENTITY:{0}' -f ([string]$identityKey).Trim().ToLowerInvariant()
+        # ID-02 is a section-level sign-off only. It cannot provide an individual target
+        # mapping, so child rows resolve their own key without falling back to ID-02.
+        $decision = & $getDecision $decisionKey $null
+        $targetUpn = [string](Get-AssessmentExportPropertyValue -Record $Record -Names @('TargetUPN'))
+        $targetSmtp = [string](Get-AssessmentExportPropertyValue -Record $Record -Names @('TargetPrimarySmtpAddress'))
+        $targetMapping = [string](& $getDecisionField $decision @('TargetMapping'))
+        $confirmed = & $isDecisionConfirmed $decision
+        $scopeState = & $getInScopeDecisionState $decision
+        $mappingProvided = -not [string]::IsNullOrWhiteSpace($targetMapping) -or -not [string]::IsNullOrWhiteSpace($targetUpn) -or -not [string]::IsNullOrWhiteSpace($targetSmtp)
+        $mappingStatus = if ($confirmed -and $scopeState.HasValue -and -not $scopeState.Value) {
+            'Confirmed Excluded'
+        }
+        elseif ($confirmed -and $mappingProvided) {
+            'Confirmed'
+        }
+        elseif ($confirmed) {
+            'Incomplete - target mapping required'
+        }
+        elseif ($mappingProvided) {
+            'Draft - confirmation required'
+        }
+        else {
+            'Needs Mapping'
+        }
+
+        $identityRows.Add([pscustomobject]@{
+            DecisionKey             = $decisionKey
+            ObjectType              = $ObjectType
+            SourceDisplayName       = [string](Get-AssessmentExportPropertyValue -Record $Record -Names @('DisplayName', 'Title'))
+            SourceUPN               = $sourceUpn
+            SourcePrimarySmtpAddress = $sourceSmtp
+            SourceAnchor            = $sourceAnchor
+            OnPremisesSyncEnabled   = Get-AssessmentExportPropertyValue -Record $Record -Names @('OnPremisesSyncEnabled', 'IsDirSynced')
+            TargetUPN               = $targetUpn
+            TargetPrimarySmtpAddress = $targetSmtp
+            TargetMapping           = $targetMapping
+            InScope                 = & $getDecisionField $decision @('InScope')
+            MappingStatus           = $mappingStatus
+            ConfirmationGap         = if ($mappingStatus -eq 'Incomplete - target mapping required') { 'The object-specific decision is approved, but TargetMapping/TargetUPN/TargetPrimarySmtpAddress is empty.' } else { $null }
+            ConflictStatus          = 'Not evaluated against destination'
+            CustomerConfirmedValue  = & $getDecisionField $decision @('CustomerConfirmedValue')
+            DecisionOwner           = & $getDecisionField $decision @('DecisionOwner')
+            DueDate                 = & $getDecisionField $decision @('DueDate')
+            Notes                   = & $getDecisionField $decision @('Notes')
+        }) | Out-Null
+    }
+
+    foreach ($userRow in $userRows) { & $addIdentityRow $userRow 'User' 'ID-02' }
+    foreach ($mailboxRow in $mailboxRows) {
+        $recipientType = [string](Get-AssessmentExportPropertyValue -Record $mailboxRow -Names @('RecipientTypeDetails'))
+        & $addIdentityRow $mailboxRow $(if ($recipientType) { $recipientType } else { 'Mailbox' }) 'ID-02'
+    }
+    foreach ($groupRow in $groupRows) { & $addIdentityRow $groupRow 'Microsoft365Group' 'ID-02' }
+    $TenantStatsStore['MigrationIdentityMapping'] = @($identityRows.ToArray())
+
+    # ---- Domain dependencies ------------------------------------------------------------
+    $domainDependencyRows = New-Object System.Collections.Generic.List[object]
+    foreach ($domainRow in $domainRows) {
+        $domainName = [string](Get-AssessmentExportPropertyValue -Record $domainRow -Names @('Name', 'Domain', 'Id'))
+        if ([string]::IsNullOrWhiteSpace($domainName)) { continue }
+        $domainKey = $domainName.Trim().ToLowerInvariant()
+        $decisionKey = 'DOMAIN:{0}' -f $domainKey
+        # DC-01 approves the domain workstream, not the disposition of every namespace.
+        $decision = & $getDecision $decisionKey $null
+        $isSourceNamespace = $domainKey -like '*.onmicrosoft.com' -or $domainKey -like '*.microsoftonline.com'
+        $confirmed = & $isDecisionConfirmed $decision
+        $scopeState = & $getInScopeDecisionState $decision
+        $confirmedDisposition = [string](& $getDecisionField $decision @('CustomerConfirmedValue'))
+        $dnsOwner = [string](& $getDecisionField $decision @('DecisionOwner'))
+        $releaseOrder = [string](& $getDecisionField $decision @('TargetMapping'))
+        $domainFieldsComplete = (
+            $confirmed -and
+            $scopeState.HasValue -and
+            -not [string]::IsNullOrWhiteSpace($confirmedDisposition) -and
+            -not [string]::IsNullOrWhiteSpace($dnsOwner) -and
+            ((-not $scopeState.Value) -or -not [string]::IsNullOrWhiteSpace($releaseOrder))
+        )
+        $domainStatus = if ($isSourceNamespace) {
+            'Source namespace'
+        }
+        elseif ($domainFieldsComplete) {
+            'Confirmed'
+        }
+        elseif ($confirmed) {
+            'Incomplete Decision'
+        }
+        else {
+            'Needs Input'
+        }
+        $appReferenceCount = @($applicationRows | Where-Object {
+                $applicationText = @(
+                    (Get-AssessmentExportPropertyValue -Record $_ -Names @('IdentifierUris')),
+                    (Get-AssessmentExportPropertyValue -Record $_ -Names @('ReplyUrls')),
+                    (Get-AssessmentExportPropertyValue -Record $_ -Names @('RedirectUris', 'RedirectUrisText')),
+                    (Get-AssessmentExportPropertyValue -Record $_ -Names @('HomePageUrl'))
+                ) -join ';'
+                $applicationText -match [regex]::Escape($domainKey)
+            }).Count
+
+        $domainDependencyRows.Add([pscustomobject]@{
+            DecisionKey                 = $decisionKey
+            Domain                      = $domainName
+            IsDefault                   = Get-AssessmentExportPropertyValue -Record $domainRow -Names @('IsDefault')
+            IsInitial                   = Get-AssessmentExportPropertyValue -Record $domainRow -Names @('IsInitial')
+            Verified                    = Get-AssessmentExportPropertyValue -Record $domainRow -Names @('Verified', 'IsVerified')
+            AuthenticationType          = Get-AssessmentExportPropertyValue -Record $domainRow -Names @('AuthenticationType')
+            RecipientCount              = @($recipientRows | Where-Object { (& $getDomainFromAddress (Get-AssessmentExportPropertyValue -Record $_ -Names @('PrimarySmtpAddress', 'WindowsEmailAddress'))) -eq $domainKey }).Count
+            UserUPNCount                = @($userRows | Where-Object { (& $getDomainFromAddress (Get-AssessmentExportPropertyValue -Record $_ -Names @('UserPrincipalName'))) -eq $domainKey }).Count
+            MailboxSmtpCount            = @($mailboxRows | Where-Object { (& $getDomainFromAddress (Get-AssessmentExportPropertyValue -Record $_ -Names @('PrimarySmtpAddress'))) -eq $domainKey }).Count
+            GroupSmtpCount              = @($groupRows | Where-Object { (& $getDomainFromAddress (Get-AssessmentExportPropertyValue -Record $_ -Names @('PrimarySmtpAddress'))) -eq $domainKey }).Count
+            ApplicationUriReferenceCount = $appReferenceCount
+            ProposedDisposition         = if ($isSourceNamespace) { 'Retain as source-tenant namespace; cannot transfer' } else { 'Confirm move, retain, replace, or retire' }
+            CustomerConfirmedValue      = $confirmedDisposition
+            InScope                    = & $getDecisionField $decision @('InScope')
+            DnsOwner                    = $dnsOwner
+            ReleaseOrder                = $releaseOrder
+            Status                      = $domainStatus
+            ConfirmationGap             = if ($domainStatus -eq 'Incomplete Decision') { 'Object-specific approval also requires InScope, disposition, DNS owner, and release order when the domain will move.' } else { $null }
+            DueDate                     = & $getDecisionField $decision @('DueDate')
+            Notes                       = & $getDecisionField $decision @('Notes')
+        }) | Out-Null
+    }
+    if ($domainDependencyRows.Count -eq 0) {
+        $decision = & $getDecision 'DC-01' $null
+        $domainDependencyRows.Add([pscustomobject]@{
+            DecisionKey = 'DC-01'; Domain = 'Not collected'; IsDefault = $null; IsInitial = $null; Verified = $null; AuthenticationType = $null
+            RecipientCount = $null; UserUPNCount = $null; MailboxSmtpCount = $null; GroupSmtpCount = $null; ApplicationUriReferenceCount = $null
+            ProposedDisposition = 'Collect source domains and confirm disposition'; CustomerConfirmedValue = & $getDecisionField $decision @('CustomerConfirmedValue')
+            DnsOwner = & $getDecisionField $decision @('DecisionOwner'); ReleaseOrder = $null; Status = 'Needs Data'; DueDate = & $getDecisionField $decision @('DueDate'); Notes = & $getDecisionField $decision @('Notes')
+        }) | Out-Null
+    }
+    $TenantStatsStore['MigrationDomainDependencies'] = @($domainDependencyRows.ToArray())
+
+    # ---- Object disposition -------------------------------------------------------------
+    $dispositionRows = New-Object System.Collections.Generic.List[object]
+    $addDispositionRow = {
+        param(
+            [string]$DecisionKey, [string]$FallbackDecisionKey, [string]$ObjectType,
+            [string]$DisplayName, [string]$SourceIdentity, [string]$State, $DataGB,
+            $HasArchive, $ArchiveSizeGB, [string]$ProposedDisposition,
+            [string]$DefaultTool, [string]$Prerequisite, [string]$EvidenceSource
+        )
+        # Section decisions such as ID-04, BT-04, and BT-08 do not contain the per-object
+        # include/exclude, target, and tool fields. Only the exact object key can confirm a row.
+        $decision = & $getDecision $DecisionKey $null
+        $confirmed = & $isDecisionConfirmed $decision
+        $decisionTool = [string](& $getDecisionField $decision @('MigrationTool'))
+        $targetMapping = [string](& $getDecisionField $decision @('TargetMapping'))
+        $scopeState = & $getInScopeDecisionState $decision
+        $dispositionStatus = if (-not $confirmed) {
+            'Needs Confirmation'
+        }
+        elseif (-not $scopeState.HasValue) {
+            'Incomplete - InScope required'
+        }
+        elseif (-not $scopeState.Value) {
+            'Confirmed'
+        }
+        elseif ([string]::IsNullOrWhiteSpace($targetMapping)) {
+            'Incomplete - target mapping required'
+        }
+        elseif ([string]::IsNullOrWhiteSpace($decisionTool)) {
+            'Incomplete - migration tool required'
+        }
+        else {
+            'Confirmed'
+        }
+        $scopeAccountingState = if ($confirmed -and $scopeState.HasValue -and -not $scopeState.Value) {
+            'Confirmed Excluded'
+        }
+        elseif ($confirmed -and $scopeState.HasValue -and $scopeState.Value) {
+            'Confirmed Included'
+        }
+        else {
+            'Undecided - included in provisional counts'
+        }
+        $dispositionRows.Add([pscustomobject]@{
+            DecisionKey            = $DecisionKey
+            ObjectType             = $ObjectType
+            DisplayName            = $DisplayName
+            SourceIdentity         = $SourceIdentity
+            State                  = $State
+            DataGB                 = $DataGB
+            HasArchive             = $HasArchive
+            ArchiveSizeGB          = $ArchiveSizeGB
+            ProposedDisposition    = $ProposedDisposition
+            CustomerConfirmedValue = & $getDecisionField $decision @('CustomerConfirmedValue')
+            InScope                = & $getDecisionField $decision @('InScope')
+            ScopeAccountingState   = $scopeAccountingState
+            TargetMapping          = $targetMapping
+            MigrationTool          = if ($decisionTool) { $decisionTool } else { $DefaultTool }
+            MigrationToolSource    = if ($decisionTool) { 'Customer-confirmed value' } else { 'Proposed default - not confirmation' }
+            MigrationPrerequisite  = $Prerequisite
+            Status                 = $dispositionStatus
+            ConfirmationGap        = switch ($dispositionStatus) {
+                'Incomplete - InScope required' { 'The object-specific approval must explicitly set InScope to true or false.' }
+                'Incomplete - target mapping required' { 'An included object must have an object-specific TargetMapping.' }
+                'Incomplete - migration tool required' { 'An included object must have an object-specific MigrationTool.' }
+                default { $null }
+            }
+            EvidenceSource         = $EvidenceSource
+            DecisionOwner          = & $getDecisionField $decision @('DecisionOwner')
+            DueDate                = & $getDecisionField $decision @('DueDate')
+            Notes                  = & $getDecisionField $decision @('Notes')
+        }) | Out-Null
+    }
+
+    foreach ($mailboxRow in $mailboxRows) {
+        $identity = [string](Get-AssessmentExportPropertyValue -Record $mailboxRow -Names @('PrimarySmtpAddress', 'UserPrincipalName', 'ExchangeGuid'))
+        $inactive = (Get-AssessmentExportPropertyValue -Record $mailboxRow -Names @('IsInactiveMailbox')) -eq $true
+        $archiveSize = Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $mailboxRow -Names @('ArchiveSizeGB'))
+        $archiveStatusValue = Get-AssessmentExportPropertyValue -Record $mailboxRow -Names @('ArchiveStatus')
+        $archiveStatus = [string]$archiveStatusValue
+        $archiveGuid = [string](Get-AssessmentExportPropertyValue -Record $mailboxRow -Names @('ArchiveGuid'))
+        $archiveDeletedItemsSize = Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $mailboxRow -Names @('ArchiveDeletedItemsGB'))
+        $archiveEvidence = Test-AssessmentMailboxHasArchiveEvidence -MailboxRecord $mailboxRow
+        $archiveStateKnown = (
+            ($null -ne $archiveStatusValue -and -not [string]::IsNullOrWhiteSpace($archiveStatus) -and $archiveStatus -notmatch '^(?i:unknown|unavailable|n/a)$') -or
+            $archiveEvidence -or
+            ($null -ne $archiveSize) -or
+            ($null -ne $archiveDeletedItemsSize) -or
+            $archiveGuid -match '^0{8}-0{4}-0{4}-0{4}-0{12}$'
+        )
+        $hasArchive = if ($archiveStateKnown) { [bool]$archiveEvidence } else { $null }
+        & $addDispositionRow ('MAILBOX:{0}' -f $identity.Trim().ToLowerInvariant()) 'ID-04' `
+            ([string](Get-AssessmentExportPropertyValue -Record $mailboxRow -Names @('RecipientTypeDetails'))) `
+            ([string](Get-AssessmentExportPropertyValue -Record $mailboxRow -Names @('DisplayName'))) $identity `
+            $(if ($inactive) { 'Inactive' } else { 'Active' }) `
+            (Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $mailboxRow -Names @('TotalDataToMigrateGB'))) `
+            $hasArchive $archiveSize $(if ($inactive) { 'Restore/recover, then migrate with BitTitan' } else { 'Migrate with BitTitan' }) 'BitTitan MigrationWiz' `
+            $(if ($inactive -and $hasArchive) { 'Restore/recover the inactive primary mailbox and its archive; validate archive endpoint/workload before migration.' } elseif ($inactive) { 'Restore/recover the inactive mailbox before creating the MigrationWiz job.' } else { $null }) 'AllMailboxes / InactiveMailboxDetails'
+    }
+
+    foreach ($groupRow in $groupRows) {
+        $identity = [string](Get-AssessmentExportPropertyValue -Record $groupRow -Names @('PrimarySmtpAddress', 'DisplayName'))
+        $mailboxEvidenceStatus = [string](Get-AssessmentExportPropertyValue -Record $groupRow -Names @('MailboxEvidenceStatus'))
+        $groupMailboxScope = [string](Get-AssessmentExportPropertyValue -Record $groupRow -Names @('MailboxScope'))
+        $needsMailboxEvidence = $mailboxEvidenceStatus -eq 'Needs Data' -or $groupMailboxScope -eq 'Needs Data'
+        $hasMail = $mailboxEvidenceStatus -eq 'Measured data' -or ([string]::IsNullOrWhiteSpace($mailboxEvidenceStatus) -and $groupMailboxScope -in @('BitTitan', 'BitTitan (optional)'))
+        $hasSite = [string](Get-AssessmentExportPropertyValue -Record $groupRow -Names @('SiteScope')) -eq 'ShareGate'
+        & $addDispositionRow ('GROUP:{0}' -f $identity.Trim().ToLowerInvariant()) 'BT-04' 'Microsoft365Group' `
+            ([string](Get-AssessmentExportPropertyValue -Record $groupRow -Names @('DisplayName'))) $identity `
+            ([string](Get-AssessmentExportPropertyValue -Record $groupRow -Names @('Classification'))) `
+            (Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $groupRow -Names @('MailboxSizeGB'))) $false $null `
+            $(if ($needsMailboxEvidence) { 'Collect group mailbox statistics, then confirm conversation disposition' } elseif ($hasMail) { 'Confirm whether group conversations migrate; do not assume automatic license inclusion' } elseif ($hasSite) { 'Migrate site content only' } else { 'Confirm exclusion or recreation' }) `
+            $(if ($needsMailboxEvidence) { 'Pending mailbox evidence; ShareGate for measured site content' } elseif ($hasMail -and $hasSite) { 'BitTitan (mail, if selected) + ShareGate (site)' } elseif ($hasMail) { 'BitTitan (optional group conversations)' } elseif ($hasSite) { 'ShareGate' } else { 'None unless recreated' }) `
+            $(if ($needsMailboxEvidence) { 'Collect group mailbox statistics before estimating, excluding, or selecting a mail migration tool.' } else { 'Confirm target group/site provisioning and coordinate both halves when both are in scope.' }) 'GroupWorkloadReconciliation'
+    }
+
+    foreach ($siteRow in $sharePointRows) {
+        $identity = [string](Get-AssessmentExportPropertyValue -Record $siteRow -Names @('Url', 'WebUrl'))
+        & $addDispositionRow ('SITE:{0}' -f $identity.Trim().ToLowerInvariant()) 'ID-04' 'SharePointSite' `
+            ([string](Get-AssessmentExportPropertyValue -Record $siteRow -Names @('Title'))) $identity `
+            ([string](Get-AssessmentExportPropertyValue -Record $siteRow -Names @('LockState', 'ArchiveStatus'))) `
+            (Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $siteRow -Names @('StorageUsedGB'))) $false $null `
+            'Migrate or explicitly exclude' 'ShareGate' 'Confirm target URL, owner, template compatibility, and sharing disposition.' 'SharePoint'
+    }
+    foreach ($driveRow in $oneDriveRows) {
+        $identity = [string](Get-AssessmentExportPropertyValue -Record $driveRow -Names @('Url', 'WebUrl', 'Owner'))
+        & $addDispositionRow ('ONEDRIVE:{0}' -f $identity.Trim().ToLowerInvariant()) 'ID-04' 'OneDrive' `
+            ([string](Get-AssessmentExportPropertyValue -Record $driveRow -Names @('Title', 'Owner'))) $identity `
+            ([string](Get-AssessmentExportPropertyValue -Record $driveRow -Names @('LockState', 'ArchiveStatus'))) `
+            (Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $driveRow -Names @('StorageUsedGB'))) $false $null `
+            'Migrate or explicitly exclude' 'ShareGate' 'Confirm destination user mapping and target OneDrive provisioning.' 'OneDrive'
+    }
+    foreach ($teamRow in $teamRows) {
+        $identity = [string](Get-AssessmentExportPropertyValue -Record $teamRow -Names @('SharePointSiteUrl', 'DisplayName'))
+        & $addDispositionRow ('TEAM:{0}' -f $identity.Trim().ToLowerInvariant()) 'ID-04' 'Team' `
+            ([string](Get-AssessmentExportPropertyValue -Record $teamRow -Names @('DisplayName'))) $identity `
+            $(if ((Get-AssessmentExportPropertyValue -Record $teamRow -Names @('IsArchived')) -eq $true) { 'Archived' } else { 'Active' }) $null $false $null `
+            'Migrate or recreate configuration; files remain counted on the backing SharePoint site' 'ShareGate' 'Confirm owners, members, channels, apps/tabs, and shared-channel handling.' 'AllTeams'
+    }
+    foreach ($publicFolderRow in $publicFolderRows) {
+        $identity = [string](Get-AssessmentExportPropertyValue -Record $publicFolderRow -Names @('Identity', 'Path', 'Name'))
+        & $addDispositionRow ('PUBLICFOLDER:{0}' -f $identity.Trim().ToLowerInvariant()) 'BT-08' 'PublicFolder' `
+            ([string](Get-AssessmentExportPropertyValue -Record $publicFolderRow -Names @('Name'))) $identity 'Active' $null $false $null `
+            'Scope as a separate migration track' 'Separate tool/workstream - confirm' 'Confirm hierarchy, mail-enabled objects, permissions, volume, and target design.' 'PublicFolderDetails'
+    }
+    $TenantStatsStore['MigrationObjectDisposition'] = @($dispositionRows.ToArray())
+
+    # ---- Workload-level provisional effort ---------------------------------------------
+    # Provisional scope is conservative: every discovered or undecided object remains in the
+    # count. Only an exact object decision with Confirmed/Approved status and InScope=false is
+    # subtracted. This lets pre-sales see both the planning count and its decision maturity.
+    $mailboxScope = & $getPlanningScopeSummary $mailboxRows {
+        param($row)
+        $identity = [string](Get-AssessmentExportPropertyValue -Record $row -Names @('PrimarySmtpAddress', 'UserPrincipalName', 'ExchangeGuid'))
+        if ($identity) { 'MAILBOX:{0}' -f $identity.Trim().ToLowerInvariant() }
+    } 'TotalDataToMigrateGB'
+    $unknownGroupMailboxRows = @($groupRows | Where-Object {
+            [string](Get-AssessmentExportPropertyValue -Record $_ -Names @('MailboxEvidenceStatus')) -eq 'Needs Data' -or
+            [string](Get-AssessmentExportPropertyValue -Record $_ -Names @('MailboxScope')) -eq 'Needs Data'
+        })
+    $groupMailSourceRows = @($groupRows | Where-Object {
+            $evidenceStatus = [string](Get-AssessmentExportPropertyValue -Record $_ -Names @('MailboxEvidenceStatus'))
+            # Do not reuse $mailboxScope here: PowerShell scriptblocks share the parent scope,
+            # and overwriting it would replace the mailbox planning-summary object with text.
+            $candidateMailboxScope = [string](Get-AssessmentExportPropertyValue -Record $_ -Names @('MailboxScope'))
+            $evidenceStatus -eq 'Measured data' -or
+            ([string]::IsNullOrWhiteSpace($evidenceStatus) -and $candidateMailboxScope -in @('BitTitan', 'BitTitan (optional)'))
+        })
+    $groupMailScope = & $getPlanningScopeSummary $groupMailSourceRows {
+        param($row)
+        $identity = [string](Get-AssessmentExportPropertyValue -Record $row -Names @('PrimarySmtpAddress', 'DisplayName'))
+        if ($identity) { 'GROUP:{0}' -f $identity.Trim().ToLowerInvariant() }
+    } 'MailboxSizeGB'
+    $sharePointScope = & $getPlanningScopeSummary $sharePointRows {
+        param($row)
+        $identity = [string](Get-AssessmentExportPropertyValue -Record $row -Names @('Url', 'WebUrl'))
+        if ($identity) { 'SITE:{0}' -f $identity.Trim().ToLowerInvariant() }
+    } 'StorageUsedGB'
+    $oneDriveScope = & $getPlanningScopeSummary $oneDriveRows {
+        param($row)
+        $identity = [string](Get-AssessmentExportPropertyValue -Record $row -Names @('Url', 'WebUrl', 'Owner'))
+        if ($identity) { 'ONEDRIVE:{0}' -f $identity.Trim().ToLowerInvariant() }
+    } 'StorageUsedGB'
+    $teamScope = & $getPlanningScopeSummary $teamRows {
+        param($row)
+        $identity = [string](Get-AssessmentExportPropertyValue -Record $row -Names @('SharePointSiteUrl', 'DisplayName'))
+        if ($identity) { 'TEAM:{0}' -f $identity.Trim().ToLowerInvariant() }
+    } $null
+    $identityScope = & $getPlanningScopeSummary @($identityRows.ToArray()) { param($row) [string]$row.DecisionKey } $null
+    $customDomainRows = @($domainDependencyRows.ToArray() | Where-Object { [string]$_.Status -ne 'Source namespace' -and [string]$_.Domain -ne 'Not collected' })
+    $customDomainScope = & $getPlanningScopeSummary $customDomainRows { param($row) [string]$row.DecisionKey } $null
+
+    $planningMailboxRows = @($mailboxScope.PlanningRows)
+    $planningSharePointRows = @($sharePointScope.PlanningRows)
+    $planningOneDriveRows = @($oneDriveScope.PlanningRows)
+    $planningTeamRows = @($teamScope.PlanningRows)
+    $inactiveRows = @($planningMailboxRows | Where-Object { (Get-AssessmentExportPropertyValue -Record $_ -Names @('IsInactiveMailbox')) -eq $true })
+    $archiveRows = @($planningMailboxRows | Where-Object { Test-AssessmentMailboxHasArchiveEvidence -MailboxRecord $_ })
+    $mailboxDataGB = $mailboxScope.PlanningDataGB
+    $sharePointDataGB = $sharePointScope.PlanningDataGB
+    $oneDriveDataGB = $oneDriveScope.PlanningDataGB
+    $unknownTeamChannelRows = @($planningTeamRows | Where-Object { (Get-AssessmentTeamEnrichmentEvidence -TeamRecord $_).ChannelInventoryStatus -eq 'Needs Data' })
+    $unknownTeamMemberRows = @($planningTeamRows | Where-Object { (Get-AssessmentTeamEnrichmentEvidence -TeamRecord $_).MemberInventoryStatus -eq 'Needs Data' })
+    $unknownTeamEnrichmentRows = @($planningTeamRows | Where-Object {
+            $teamEvidence = Get-AssessmentTeamEnrichmentEvidence -TeamRecord $_
+            $teamEvidence.ChannelInventoryStatus -eq 'Needs Data' -or $teamEvidence.MemberInventoryStatus -eq 'Needs Data'
+        })
+    $sharedChannelCount = [int](@($planningTeamRows | Where-Object {
+                (Get-AssessmentTeamEnrichmentEvidence -TeamRecord $_).ChannelInventoryStatus -ne 'Needs Data'
+            } | ForEach-Object {
+                [int](Convert-ArrayaToNumber -Value (Get-AssessmentExportPropertyValue -Record $_ -Names @('SharedChannelCount')) -AsInt64)
+            } | Measure-Object -Sum).Sum)
+    $needsSizeData = [int](Convert-ArrayaToNumber -Value (& $getSummaryMetric 'BitTitanLicenseSummary' 'Objects needing license evidence') -AsInt64)
+    $mailEffort = if ($needsSizeData -gt 0) { 'Needs Data' } elseif ($planningMailboxRows.Count -ge 500 -or $mailboxDataGB -ge 10000 -or $inactiveRows.Count -ge 50) { 'High' } elseif ($planningMailboxRows.Count -ge 100 -or $mailboxDataGB -ge 1000 -or $inactiveRows.Count -gt 0 -or $archiveRows.Count -gt 0) { 'Medium' } else { 'Low' }
+    $sharePointEffort = if (@($planningSharePointRows | Where-Object { $null -eq (Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $_ -Names @('StorageUsedGB'))) }).Count -gt 0) { 'Needs Data' } elseif ($planningSharePointRows.Count -ge 250 -or $sharePointDataGB -ge 10000) { 'High' } elseif ($planningSharePointRows.Count -ge 50 -or $sharePointDataGB -ge 1000) { 'Medium' } else { 'Low' }
+    $oneDriveEffort = if (@($planningOneDriveRows | Where-Object { $null -eq (Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $_ -Names @('StorageUsedGB'))) }).Count -gt 0) { 'Needs Data' } elseif ($planningOneDriveRows.Count -ge 500 -or $oneDriveDataGB -ge 10000) { 'High' } elseif ($planningOneDriveRows.Count -ge 100 -or $oneDriveDataGB -ge 1000) { 'Medium' } else { 'Low' }
+    $teamEffort = if ($unknownTeamEnrichmentRows.Count -gt 0) { 'Needs Data' } elseif ($sharedChannelCount -gt 0 -or $planningTeamRows.Count -ge 100) { 'High' } elseif ($planningTeamRows.Count -ge 20) { 'Medium' } else { 'Low' }
+    $customDomainCount = $customDomainScope.PlanningObjectCount
+
+    $effortDefinitions = @(
+        @{ DecisionKey = 'EFFORT:MAILBOXES'; Fallback = 'PM-02'; Scope = $mailboxScope; Workload = 'User, shared, room, equipment, and inactive mailboxes'; Tool = 'BitTitan MigrationWiz'; Count = $mailboxScope.PlanningObjectCount; Data = $mailboxDataGB; Band = $mailEffort; Drivers = ('{0} inactive; {1} archive-enabled; {2} need sizing or archive-state evidence; {3} explicitly excluded; {4} undecided' -f $inactiveRows.Count, $archiveRows.Count, $needsSizeData, $mailboxScope.ExplicitExcludedCount, $mailboxScope.UndecidedObjectCount); Basis = 'Relative band from the conservative planning count, measured data, inactive/archive handling, and incomplete license evidence.'; Assumptions = 'Inactive mailboxes are restored/recovered before MigrationWiz. Undecided objects remain counted. Band is not a labor-hour commitment.' },
+        @{ DecisionKey = 'EFFORT:GROUPMAIL'; Fallback = 'BT-04'; Scope = $groupMailScope; UnknownEvidenceCount = $unknownGroupMailboxRows.Count; Workload = 'Microsoft 365 Group mailbox conversations (optional)'; Tool = 'BitTitan MigrationWiz'; Count = $groupMailScope.PlanningObjectCount; Data = $groupMailScope.PlanningDataGB; Band = $(if ($unknownGroupMailboxRows.Count -gt 0) { 'Needs Data' } elseif ($groupMailScope.PlanningObjectCount -gt 25) { 'High' } elseif ($groupMailScope.PlanningObjectCount -gt 0) { 'Medium' } else { 'None' }); Drivers = ('Special object mapping and coordinated group/site cutover; {0} group mailbox(es) need statistics; {1} explicitly excluded; {2} undecided.' -f $unknownGroupMailboxRows.Count, $groupMailScope.ExplicitExcludedCount, $groupMailScope.UndecidedObjectCount); Basis = 'Only measured mail data feeds the optional group-conversation count. Unknown mailbox evidence keeps this workload at Needs Data.'; Assumptions = 'Not automatically included; undecided measured group conversations remain in the provisional count until explicitly excluded.' },
+        @{ DecisionKey = 'EFFORT:SHAREPOINT'; Fallback = 'PM-02'; Scope = $sharePointScope; Workload = 'SharePoint sites'; Tool = 'ShareGate'; Count = $sharePointScope.PlanningObjectCount; Data = $sharePointDataGB; Band = $sharePointEffort; Drivers = ('Site count, storage, templates, sharing, and group-connected sites; {0} explicitly excluded; {1} undecided.' -f $sharePointScope.ExplicitExcludedCount, $sharePointScope.UndecidedObjectCount); Basis = 'Relative band from measured sites and storage after confirmed exclusions.'; Assumptions = 'Teams files remain counted once on their backing SharePoint sites. Undecided sites remain counted.' },
+        @{ DecisionKey = 'EFFORT:ONEDRIVE'; Fallback = 'PM-02'; Scope = $oneDriveScope; Workload = 'OneDrive'; Tool = 'ShareGate'; Count = $oneDriveScope.PlanningObjectCount; Data = $oneDriveDataGB; Band = $oneDriveEffort; Drivers = ('User mapping, object count, storage, and target provisioning; {0} explicitly excluded; {1} undecided.' -f $oneDriveScope.ExplicitExcludedCount, $oneDriveScope.UndecidedObjectCount); Basis = 'Relative band from measured OneDrive sites and storage after confirmed exclusions.'; Assumptions = 'Every included OneDrive has an approved destination user mapping. Undecided OneDrives remain counted.' },
+        @{ DecisionKey = 'EFFORT:TEAMS'; Fallback = 'PM-02'; Scope = $teamScope; UnknownEvidenceCount = $unknownTeamEnrichmentRows.Count; Workload = 'Teams configuration'; Tool = 'ShareGate + manual remediation'; Count = $teamScope.PlanningObjectCount; Data = $null; Band = $teamEffort; Drivers = ('{0} measured shared channel(s); channel inventory Needs Data for {1} Team(s); member/guest inventory Needs Data for {2} Team(s); {3} explicitly excluded; {4} undecided; apps, tabs, owners, members, and unsupported features require review' -f $sharedChannelCount, $unknownTeamChannelRows.Count, $unknownTeamMemberRows.Count, $teamScope.ExplicitExcludedCount, $teamScope.UndecidedObjectCount); Basis = 'Configuration count only after confirmed exclusions; file storage is not double counted. Missing enrichment is not treated as zero.'; Assumptions = 'Shared channels and unsupported features may require manual rebuild. Channel/member inventory must be measured before final effort is assigned. Undecided Teams remain counted.' },
+        @{ DecisionKey = 'EFFORT:IDENTITYDOMAIN'; Fallback = 'PM-02'; Scope = $identityScope; Workload = 'Identity, domain, coexistence, and cutover'; Tool = 'Project workstream'; Count = $identityScope.PlanningObjectCount; Data = $null; Band = $(if ($customDomainCount -gt 3 -or $identityScope.PlanningObjectCount -ge 500) { 'High' } elseif ($customDomainCount -gt 0 -or $identityScope.PlanningObjectCount -gt 0) { 'Medium' } else { 'Needs Data' }); Drivers = ('{0} planning identity mapping rows ({1} excluded, {2} undecided); {3} planning custom domain(s)' -f $identityScope.PlanningObjectCount, $identityScope.ExplicitExcludedCount, $identityScope.UndecidedObjectCount, $customDomainCount); Basis = 'Relative band from mapping volume and domain dependencies; target/coexistence decisions remain customer-confirmed.'; Assumptions = 'No target conflicts are considered resolved by a source-only assessment.' },
+        @{ DecisionKey = 'BT-07'; Fallback = $null; Scope = $null; Workload = 'Optional Tenant Migration Bundle collaboration licensing'; Tool = 'BitTitan MigrationWiz'; Count = $null; Data = $null; Band = 'Needs Library Mapping'; Drivers = 'Exact Flex Collaboration License demand cannot be derived from site count.'; Basis = 'Each in-scope Team/SharePoint document library must be mapped and its capacity validated; site count is not a valid substitute for FCL demand.'; Assumptions = 'Optional commercial alternative only. Build a document-library-level map before sizing this path.' }
+    )
+    $effortRows = foreach ($definition in $effortDefinitions) {
+        $decision = & $getDecision $definition.DecisionKey $definition.Fallback
+        $confirmed = & $isDecisionConfirmed $decision
+        [pscustomobject]@{
+            DecisionKey             = $definition.DecisionKey
+            Workload                = $definition.Workload
+            MigrationTool           = $definition.Tool
+            ObjectCount             = $definition.Count
+            DataGB                  = $definition.Data
+            DiscoveredObjectCount   = if ($null -ne $definition.Scope) { $definition.Scope.DiscoveredObjectCount } else { $null }
+            ExplicitIncludedCount   = if ($null -ne $definition.Scope) { $definition.Scope.ExplicitIncludedCount } else { $null }
+            ExplicitExcludedCount   = if ($null -ne $definition.Scope) { $definition.Scope.ExplicitExcludedCount } else { $null }
+            UndecidedObjectCount    = if ($null -ne $definition.Scope) { $definition.Scope.UndecidedObjectCount } else { $null }
+            DiscoveredDataGB        = if ($null -ne $definition.Scope) { $definition.Scope.DiscoveredDataGB } else { $null }
+            ExplicitExcludedDataGB  = if ($null -ne $definition.Scope) { $definition.Scope.ExplicitExcludedDataGB } else { $null }
+            UnknownEvidenceCount    = if ($null -ne $definition.UnknownEvidenceCount) { $definition.UnknownEvidenceCount } else { 0 }
+            ComplexityDrivers       = $definition.Drivers
+            ProvisionalEffortBand   = $definition.Band
+            EstimateBasis           = $definition.Basis
+            CustomerConfirmedBand   = & $getDecisionField $decision @('CustomerConfirmedValue')
+            Status                  = if ($definition.Band -eq 'Needs Data') { 'Needs Data' } elseif ($confirmed) { 'Confirmed' } elseif ($definition.DecisionKey -eq 'BT-07') { 'Optional - needs decision and mapping' } else { 'Provisional' }
+            Assumptions             = $definition.Assumptions
+            DecisionOwner           = & $getDecisionField $decision @('DecisionOwner')
+            DueDate                 = & $getDecisionField $decision @('DueDate')
+            Notes                   = & $getDecisionField $decision @('Notes')
+        }
+    }
+    $TenantStatsStore['MigrationWorkloadEffort'] = @($effortRows)
+
+    # ---- Provisional wave model ---------------------------------------------------------
+    $waveDecision = & $getDecision 'PM-03' $null
+    $wavesConfirmed = & $isDecisionConfirmed $waveDecision
+    $pilotCount = if ($mailboxScope.PlanningObjectCount -gt 0) { [int][math]::Min(25, [math]::Max(1, [math]::Ceiling($mailboxScope.PlanningObjectCount * 0.05))) } else { 0 }
+    $productionMailboxCount = [math]::Max(($mailboxScope.PlanningObjectCount - $pilotCount), 0)
+    $mailboxWaveCount = if ($productionMailboxCount -gt 0) { [int][math]::Ceiling($productionMailboxCount / 100.0) } else { 0 }
+    $collaborationObjectCount = $sharePointScope.PlanningObjectCount + $oneDriveScope.PlanningObjectCount + $teamScope.PlanningObjectCount
+    $collaborationWaveCount = if ($collaborationObjectCount -gt 0) { [int][math]::Ceiling($collaborationObjectCount / 50.0) } else { 0 }
+    $waveStatus = if ($wavesConfirmed) { 'Confirmed' } else { 'Provisional' }
+    $waveRows = @(
+        [pscustomobject]@{ DecisionKey = 'PM-03'; Wave = '0 - Foundations'; Purpose = 'Resolve target, identity, domain, endpoint, and provisioning gates'; Workloads = 'All'; CandidateObjectCount = $identityScope.PlanningObjectCount; ExplicitExcludedCount = $identityScope.ExplicitExcludedCount; UndecidedObjectCount = $identityScope.UndecidedObjectCount; EstimatedWaveCount = 1; PlanningAssumption = 'Complete before production migration begins. Counts subtract only confirmed object-specific exclusions; undecided objects remain included.'; EntryCriteria = 'Owners assigned and target access available.'; ExitCriteria = 'No quote-readiness blockers remain.'; Dependencies = 'ID-01 through ID-04, DC-01 through DC-03, BT-09, BT-10, SG-04'; Status = $waveStatus; DecisionOwner = & $getDecisionField $waveDecision @('DecisionOwner'); DueDate = & $getDecisionField $waveDecision @('DueDate'); Notes = $null },
+        [pscustomobject]@{ DecisionKey = 'PM-03'; Wave = '1 - Pilot'; Purpose = 'Validate authentication, mappings, throughput, fidelity, and support process'; Workloads = 'Representative mailboxes and collaboration objects'; CandidateObjectCount = $pilotCount; ExplicitExcludedCount = $mailboxScope.ExplicitExcludedCount; UndecidedObjectCount = $mailboxScope.UndecidedObjectCount; EstimatedWaveCount = $(if ($pilotCount -gt 0) { 1 } else { 0 }); PlanningAssumption = 'Provisional mailbox pilot is 5% capped at 25, calculated from the conservative planning scope; customer selects representative candidates.'; EntryCriteria = 'Foundation gates complete and pilot users approve test window.'; ExitCriteria = 'Acceptance criteria met and production runbook updated.'; Dependencies = 'BT-09, BT-10, SG-04, mappings, acceptance criteria'; Status = $waveStatus; DecisionOwner = & $getDecisionField $waveDecision @('DecisionOwner'); DueDate = & $getDecisionField $waveDecision @('DueDate'); Notes = $null },
+        [pscustomobject]@{ DecisionKey = 'PM-03'; Wave = '2-N - Mailbox production'; Purpose = 'Move remaining mailbox objects in controlled batches'; Workloads = 'BitTitan mailbox projects'; CandidateObjectCount = $productionMailboxCount; ExplicitExcludedCount = $mailboxScope.ExplicitExcludedCount; UndecidedObjectCount = $mailboxScope.UndecidedObjectCount; EstimatedWaveCount = $mailboxWaveCount; PlanningAssumption = 'Planning placeholder of up to 100 mailbox objects per wave after confirmed exclusions; resize after pilot throughput and customer constraints.'; EntryCriteria = 'Pilot accepted, inactive mailboxes restored, target objects licensed/provisioned.'; ExitCriteria = 'Delta passes and mailbox validation complete for each batch.'; Dependencies = 'BT-01 through BT-05, target mapping, blackout/change windows'; Status = $waveStatus; DecisionOwner = & $getDecisionField $waveDecision @('DecisionOwner'); DueDate = & $getDecisionField $waveDecision @('DueDate'); Notes = $null },
+        [pscustomobject]@{ DecisionKey = 'PM-03'; Wave = 'Parallel - Collaboration'; Purpose = 'Move SharePoint, OneDrive, and Teams configuration without double-counting Teams files'; Workloads = 'ShareGate'; CandidateObjectCount = $collaborationObjectCount; ExplicitExcludedCount = ($sharePointScope.ExplicitExcludedCount + $oneDriveScope.ExplicitExcludedCount + $teamScope.ExplicitExcludedCount); UndecidedObjectCount = ($sharePointScope.UndecidedObjectCount + $oneDriveScope.UndecidedObjectCount + $teamScope.UndecidedObjectCount); EstimatedWaveCount = $collaborationWaveCount; PlanningAssumption = 'Planning placeholder of up to 50 collaboration objects per wave after confirmed exclusions; undecided objects remain included and batches are weighted by storage and complexity after mappings are approved.'; EntryCriteria = 'Target mappings and unsupported-feature dispositions approved.'; ExitCriteria = 'Content, permissions, sharing, and Teams configuration validated.'; Dependencies = 'SG-01 through SG-04, ID-02, ID-04'; Status = $waveStatus; DecisionOwner = & $getDecisionField $waveDecision @('DecisionOwner'); DueDate = & $getDecisionField $waveDecision @('DueDate'); Notes = $null },
+        [pscustomobject]@{ DecisionKey = 'PM-03'; Wave = 'Final - Domain cutover and hypercare'; Purpose = 'Complete namespace release, routing changes, final deltas, validation, and support'; Workloads = 'Identity, Exchange, DNS, all migration tools'; CandidateObjectCount = $customDomainCount; ExplicitExcludedCount = $customDomainScope.ExplicitExcludedCount; UndecidedObjectCount = $customDomainScope.UndecidedObjectCount; EstimatedWaveCount = 1; PlanningAssumption = 'One coordinated final-cutover workstream; domain count subtracts only confirmed object-specific exclusions and actual duration depends on approved DNS/coexistence design.'; EntryCriteria = 'Production waves accepted and rollback decision point reached.'; ExitCriteria = 'Mail flow, sign-in, domains, applications, and business acceptance validated.'; Dependencies = 'DC-01 through DC-03, PM-01, PM-03'; Status = $waveStatus; DecisionOwner = & $getDecisionField $waveDecision @('DecisionOwner'); DueDate = & $getDecisionField $waveDecision @('DueDate'); Notes = $null }
+    )
+    $TenantStatsStore['MigrationWavePlan'] = @($waveRows)
+
+    # ---- Quote readiness ----------------------------------------------------------------
+    $readinessChecks = New-Object System.Collections.Generic.List[object]
+    $addReadinessCheck = {
+        param([string]$Category, [string]$DecisionKey, [string]$Requirement, [bool]$Blocking, [string]$DefaultStatus, $DiscoveredValue, [string]$EvidenceSource, [string]$Resolution, [string]$Notes)
+        $decision = & $getDecision $DecisionKey $null
+        $confirmed = & $isDecisionConfirmed $decision
+        $status = if ($confirmed) { 'Complete' } else { $DefaultStatus }
+        $readinessChecks.Add([pscustomobject]@{
+            RowType               = 'Check'
+            ReadinessLevel        = $null
+            Category              = $Category
+            DecisionKey           = $DecisionKey
+            Requirement           = $Requirement
+            Status                = $status
+            Blocking              = $Blocking
+            DiscoveredValue       = $DiscoveredValue
+            EvidenceSource        = $EvidenceSource
+            CustomerConfirmedValue = & $getDecisionField $decision @('CustomerConfirmedValue')
+            Resolution            = $Resolution
+            DecisionOwner         = & $getDecisionField $decision @('DecisionOwner')
+            DueDate               = & $getDecisionField $decision @('DueDate')
+            Notes                 = if ($Notes) { $Notes } else { & $getDecisionField $decision @('Notes') }
+        }) | Out-Null
+    }
+
+    $inventoryAvailable = $TenantStatsStore.ContainsKey('AllMailboxes') -or $TenantStatsStore.ContainsKey('MailboxFullDetails')
+    & $addReadinessCheck 'Source inventory' 'AUTO-MAIL-SIZE' 'Mailbox inventory, statistics, and archive state support license sizing' $true `
+        $(if ($inventoryAvailable -and $needsSizeData -eq 0) { 'Complete' } else { 'Blocker' }) `
+        ("{0} mailbox planning row(s); {1} object(s) need sizing or archive-state evidence" -f $mailboxRows.Count, $needsSizeData) 'AllMailboxes, mailbox statistics, BitTitanLicenseDetail' 'Collect missing mailbox statistics and confirm archive state.' $null
+
+    foreach ($definition in @(
+            @{ Category = 'Target'; Key = 'ID-01'; Requirement = 'Destination identity, domains, geography, access, and ownership confirmed'; Blocking = $true; Resolution = 'Complete destination readiness fields.' },
+            @{ Category = 'Target'; Key = 'ID-03'; Requirement = 'Destination provisioning, capacity, licenses, and consent confirmed'; Blocking = $true; Resolution = 'Validate target capacity and provisioning.' },
+            @{ Category = 'Identity'; Key = 'ID-02'; Requirement = 'Source-to-target identity mappings and conflicts approved'; Blocking = $true; Resolution = 'Complete and approve MigrationIdentityMapping.' },
+            @{ Category = 'Disposition'; Key = 'ID-04'; Requirement = 'Every included and excluded object has an approved disposition'; Blocking = $true; Resolution = 'Complete and approve MigrationObjectDisposition.' },
+            @{ Category = 'Domains'; Key = 'DC-01'; Requirement = 'Domain disposition, DNS owner, release order, and application dependencies approved'; Blocking = $true; Resolution = 'Complete and approve MigrationDomainDependencies.' },
+            @{ Category = 'Cutover'; Key = 'DC-02'; Requirement = 'Wave/coexistence, forwarding, and routing approach confirmed'; Blocking = $false; Resolution = 'Approve coexistence and migration-wave strategy.' },
+            @{ Category = 'Cutover'; Key = 'DC-03'; Requirement = 'Confirm DNS TTL, MX/Autodiscover/SPF/DKIM/DMARC, freeze, rollback, and communications ownership'; Blocking = $false; Resolution = 'Complete domain cutover runbook inputs, including every named DNS record and accountable owner.' },
+            @{ Category = 'BitTitan'; Key = 'BT-01'; Requirement = 'Mailbox objects in BitTitan scope confirmed'; Blocking = $true; Resolution = 'Approve mailbox scope and exclusions.' },
+            @{ Category = 'BitTitan'; Key = 'BT-05'; Requirement = 'BitTitan licensing approach selected'; Blocking = $true; Resolution = 'Select standard mailbox/User Migration Bundle/Tenant Migration Bundle option using SE commercial inputs.' },
+            @{ Category = 'BitTitan'; Key = 'BT-06'; Requirement = 'Optional Tenant Migration Bundle evaluation decision recorded'; Blocking = $false; Resolution = 'Record whether the optional TMB alternative will be evaluated.' },
+            @{ Category = 'BitTitan endpoint'; Key = 'BT-09'; Requirement = 'MigrationWiz source app/auth, EWS availability, and allow-list readiness validated'; Blocking = $true; Resolution = 'Validate the source MigrationWiz endpoint; allow up to 24 hours for EWSAllowedAppIDs propagation.' },
+            @{ Category = 'BitTitan endpoint'; Key = 'BT-10'; Requirement = 'MigrationWiz destination app/auth, EWS availability, and allow-list readiness validated'; Blocking = $true; Resolution = 'Validate the destination MigrationWiz endpoint; allow up to 24 hours for EWSAllowedAppIDs propagation.' },
+            @{ Category = 'ShareGate'; Key = 'SG-01'; Requirement = 'ShareGate scope/tool choice confirmed'; Blocking = $true; Resolution = 'Approve ShareGate workload scope.' },
+            @{ Category = 'ShareGate'; Key = 'SG-02'; Requirement = 'Teams, group, and group-connected site mappings confirmed'; Blocking = $true; Resolution = 'Complete collaboration target mappings.' },
+            @{ Category = 'ShareGate endpoint'; Key = 'SG-04'; Requirement = 'ShareGate source and destination connections, roles, and consent validated'; Blocking = $true; Resolution = 'Validate both ShareGate endpoints with representative access tests.' },
+            @{ Category = 'Compliance'; Key = 'CP-01'; Requirement = 'Confirm legal, hold, retention, eDiscovery, and records requirements before restoring inactive mailboxes'; Blocking = $true; Resolution = 'Obtain legal/records-owner approval for retention, inactive mailbox restoration, hold, eDiscovery, and records requirements.' },
+            @{ Category = 'Compliance'; Key = 'CP-02'; Requirement = 'Confirm treatment for encrypted, recoverable, oversized, corrupt, and unsupported data'; Blocking = $false; Resolution = 'Define exception handling, acceptance thresholds, and validation responsibilities before production.' },
+            @{ Category = 'Compliance'; Key = 'CP-03'; Requirement = 'Confirm destination retention, sensitivity, DLP, sharing, and residency requirements'; Blocking = $false; Resolution = 'Document destination retention, sensitivity, DLP, sharing, and residency constraints.' },
+            @{ Category = 'Project'; Key = 'PM-01'; Requirement = 'Blackouts, completion date, work hours, change windows, and owners confirmed'; Blocking = $false; Resolution = 'Complete project constraints.' },
+            @{ Category = 'Project'; Key = 'PM-02'; Requirement = 'Workload effort bands and assumptions reviewed'; Blocking = $false; Resolution = 'Approve MigrationWorkloadEffort.' },
+            @{ Category = 'Project'; Key = 'PM-03'; Requirement = 'Pilot, waves, passes, acceptance, hypercare, and rollback approved'; Blocking = $false; Resolution = 'Approve MigrationWavePlan.' }
+        )) {
+        & $addReadinessCheck $definition.Category $definition.Key $definition.Requirement $definition.Blocking `
+            $(if ($definition.Blocking) { 'Blocker' } else { 'Condition' }) 'Customer decision not collected by the source-only assessment' 'Migration scope questionnaire / customer confirmation' $definition.Resolution `
+            $(if ($definition.Key -in @('BT-09', 'BT-10')) { 'The Arraya assessment application is not the MigrationWiz application and does not satisfy this check.' } else { $null })
+    }
+
+    if ($inactiveRows.Count -gt 0) {
+        & $addReadinessCheck 'BitTitan' 'BT-02' 'Inactive mailbox restore/recovery plan approved' $true 'Blocker' $inactiveRows.Count 'InactiveMailboxDetails' 'Confirm restore/recovery owners, timing, licensing, and prerequisites before MigrationWiz jobs are created.' $null
+        $inactiveWithArchive = @($inactiveRows | Where-Object { Test-AssessmentMailboxHasArchiveEvidence -MailboxRecord $_ })
+        if ($inactiveWithArchive.Count -gt 0) {
+            & $addReadinessCheck 'BitTitan' 'BT-03' 'Inactive mailbox archives are identified and have a restore/migration plan' $true 'Blocker' $inactiveWithArchive.Count 'InactiveMailboxDetails / MigrationObjectDisposition' 'Restore/recover and validate each inactive primary mailbox and archive workload before migration.' $null
+        }
+    }
+    $groupMailCount = $groupMailScope.PlanningObjectCount
+    if ($groupMailCount -gt 0) {
+        & $addReadinessCheck 'BitTitan' 'BT-04' 'Microsoft 365 Group mailbox conversation disposition confirmed' $true 'Blocker' $groupMailCount 'GroupWorkloadReconciliation' 'Approve include/exclude/recreate disposition; do not assume automatic license inclusion.' $null
+    }
+    if ($unknownGroupMailboxRows.Count -gt 0) {
+        & $addReadinessCheck 'BitTitan' 'AUTO-GROUP-MAIL-EVIDENCE' 'Microsoft 365 Group mailbox statistics are complete enough to classify conversation scope' $true 'Blocker' $unknownGroupMailboxRows.Count 'GroupWorkloadReconciliation / GroupMailboxes' 'Collect group mailbox statistics. Only measured data can enter the optional group-conversation count; unknown evidence cannot be treated as empty.' $null
+    }
+    if ($publicFolderRows.Count -gt 0) {
+        & $addReadinessCheck 'BitTitan' 'BT-08' 'Public folders have a separate approved migration plan' $true 'Blocker' $publicFolderRows.Count 'PublicFolderDetails' 'Scope public folders separately from mailbox/Tenant Migration Bundle licensing.' $null
+    }
+    if ($unknownTeamEnrichmentRows.Count -gt 0) {
+        & $addReadinessCheck 'ShareGate' 'SG-03' 'Teams channel/member evidence and unsupported-feature remediation approved' $true 'Needs Data' `
+            ("Channel inventory Needs Data for {0} Team(s); member/guest inventory Needs Data for {1} Team(s); {2} measured shared channel(s)." -f $unknownTeamChannelRows.Count, $unknownTeamMemberRows.Count, $sharedChannelCount) `
+            'AllTeams' 'Collect missing Team channel/member evidence, then approve manual recreation/remediation for shared channels and unsupported features.' `
+            'Unqualified zero counts are not treated as measured evidence.'
+    }
+    elseif ($sharedChannelCount -gt 0) {
+        & $addReadinessCheck 'ShareGate' 'SG-03' 'Shared-channel and unsupported-feature remediation approved' $true 'Blocker' $sharedChannelCount 'AllTeams' 'Approve manual recreation/remediation for shared channels and unsupported features.' $null
+    }
+
+    $unresolvedIdentityMappings = @($identityRows.ToArray() | Where-Object { [string]$_.MappingStatus -notin @('Confirmed', 'Confirmed Excluded') }).Count
+    & $addReadinessCheck 'Identity' 'AUTO-IDENTITY-MAPPINGS' 'Every source identity has a confirmed target mapping' $true `
+        $(if ($unresolvedIdentityMappings -eq 0) { 'Complete' } else { 'Blocker' }) $unresolvedIdentityMappings 'MigrationIdentityMapping' 'Confirm each object-level identity mapping and destination conflict disposition.' $null
+
+    $unresolvedDomainDependencies = @($domainDependencyRows.ToArray() | Where-Object { [string]$_.Status -notin @('Confirmed', 'Source namespace') }).Count
+    & $addReadinessCheck 'Domains' 'AUTO-DOMAIN-DISPOSITIONS' 'Every transferable domain has a confirmed disposition and release sequence' $true `
+        $(if ($unresolvedDomainDependencies -eq 0) { 'Complete' } else { 'Blocker' }) $unresolvedDomainDependencies 'MigrationDomainDependencies' 'Confirm every custom-domain disposition, DNS owner, application dependency, and release order.' $null
+
+    $unresolvedObjectDispositions = @($dispositionRows.ToArray() | Where-Object { [string]$_.Status -ne 'Confirmed' }).Count
+    & $addReadinessCheck 'Disposition' 'AUTO-OBJECT-DISPOSITIONS' 'Every inventoried migration object has a confirmed include/exclude/recreate decision' $true `
+        $(if ($unresolvedObjectDispositions -eq 0) { 'Complete' } else { 'Blocker' }) $unresolvedObjectDispositions 'MigrationObjectDisposition' 'Confirm disposition, target mapping, and migration tool for every object.' $null
+
+    $tmbDecision = & $getDecision 'BT-06' $null
+    $tmbScopeState = & $getInScopeDecisionState $tmbDecision
+    $tmbDecisionConfirmed = & $isDecisionConfirmed $tmbDecision
+    $tmbDecisionValue = [string](& $getDecisionField $tmbDecision @('CustomerConfirmedValue'))
+    $tmbMigrationTool = [string](& $getDecisionField $tmbDecision @('MigrationTool'))
+    $tmbExplicitNo = $tmbDecisionConfirmed -and (
+        ($tmbScopeState.HasValue -and -not $tmbScopeState.Value) -or
+        $tmbDecisionValue -match '(?i)\b(no|decline|exclude|do not|not evaluate|not use)\b'
+    )
+    $tmbRequested = -not $tmbExplicitNo -and $tmbDecisionConfirmed -and (
+        ($tmbScopeState.HasValue -and $tmbScopeState.Value) -or
+        $tmbMigrationTool -match '(?i)Tenant\s+Migration\s+Bundle|\bTMB\b' -or
+        $tmbDecisionValue -match '(?i)\b(yes|include|evaluate|use)\b'
+    )
+    $tmbChoiceRecorded = $tmbExplicitNo -or $tmbRequested
+    if ($tmbDecisionConfirmed -and -not $tmbChoiceRecorded) {
+        & $addReadinessCheck 'BitTitan optional TMB' 'AUTO-TMB-CHOICE' 'The optional Tenant Migration Bundle evaluation decision explicitly records yes or no' $true 'Blocker' 'BT-06 is approved but has no explicit choice' 'MigrationScopeDecisions' 'Set BT-06 InScope to true/false or record an explicit evaluate/decline value. Approval status alone does not indicate which option was selected.' $null
+    }
+    if ($tmbRequested) {
+        & $addReadinessCheck 'BitTitan optional TMB' 'BT-07' 'Document-library-to-Flex-Collaboration-License mapping completed' $true 'Blocker' 'Library-level inventory not collected' 'Customer library mapping; a SharePoint site count is not an FCL count' 'Map every in-scope Team/SharePoint document library and validate capacity before calculating FCL demand.' $null
+    }
+
+    foreach ($complexityRow in $complexityRows) {
+        $item = [string](Get-AssessmentExportPropertyValue -Record $complexityRow -Names @('Item'))
+        $sourceStatus = [string](Get-AssessmentExportPropertyValue -Record $complexityRow -Names @('Status'))
+        $flagKey = 'FLAG:{0}' -f (($item -replace '[^A-Za-z0-9]+', '-').Trim('-').ToLowerInvariant())
+        $flagDecision = & $getDecision $flagKey $null
+        $flagConfirmed = & $isDecisionConfirmed $flagDecision
+        $blocking = $sourceStatus -in @('Blocker', 'Needs Data')
+        & $addReadinessCheck 'Complexity' $flagKey $item $blocking `
+            $(if ($flagConfirmed) { 'Complete' } elseif ($blocking) { 'Blocker' } else { 'Condition' }) `
+            (Get-AssessmentExportPropertyValue -Record $complexityRow -Names @('Value')) `
+            ([string](Get-AssessmentExportPropertyValue -Record $complexityRow -Names @('SourceWorksheet'))) `
+            ([string](Get-AssessmentExportPropertyValue -Record $complexityRow -Names @('MigrationAction'))) `
+            ([string](Get-AssessmentExportPropertyValue -Record $complexityRow -Names @('Notes')))
+    }
+
+    $blockerRows = @($readinessChecks.ToArray() | Where-Object { [string]$_.Status -in @('Blocker', 'Needs Data') })
+    $conditionRows = @($readinessChecks.ToArray() | Where-Object { [string]$_.Status -eq 'Condition' })
+    $readinessLevel = if ($blockerRows.Count -gt 0) { 'ROM' } elseif ($conditionRows.Count -gt 0) { 'Conditional' } else { 'Firm' }
+    $topBlockers = @($blockerRows | Select-Object -First 5 | ForEach-Object { $_.Requirement }) -join '; '
+    $summaryRow = [pscustomobject]@{
+        RowType = 'Summary'; ReadinessLevel = $readinessLevel; Category = 'Overall'; DecisionKey = 'QR-01'; Requirement = 'Quote readiness'
+        Status = $readinessLevel; Blocking = ($blockerRows.Count -gt 0); DiscoveredValue = ('{0} blocker(s); {1} condition(s)' -f $blockerRows.Count, $conditionRows.Count)
+        EvidenceSource = 'Migration readiness checks and customer decisions'; CustomerConfirmedValue = $null; Resolution = $topBlockers
+        DecisionOwner = $null; DueDate = $null; Notes = 'ROM: unresolved scope/technical blockers. Conditional: blockers resolved but assumptions or project conditions remain. Firm: all required checks are complete. Readiness does not include pricing.'
+    }
+    $TenantStatsStore['MigrationQuoteReadiness'] = @($summaryRow) + @($readinessChecks.ToArray())
+
+    # Seed an editable decision-entry table in the workbook. Existing responses are preserved
+    # verbatim; missing core and object-level keys are added as Needs Input. This makes the
+    # DecisionKey merge contract usable without confusing discovered evidence with customer
+    # confirmation.
+    $decisionPrompts = [ordered]@{
+        'QR-01' = 'Confirm the quote-readiness level and resolve every blocker before changing it.'
+        'QR-02' = 'Confirm pricing will be applied separately by the solution engineer.'
+        'BT-01' = 'Confirm the mailbox objects that will be migrated with BitTitan.'
+        'BT-02' = 'Confirm inactive mailboxes will be restored or recovered before a MigrationWiz job is submitted.'
+        'BT-03' = 'Confirm every inactive mailbox archive will be restored and migrated as a separate archive workload where required.'
+        'BT-04' = 'Confirm the disposition of Microsoft 365 group mailbox conversations.'
+        'BT-05' = 'Select the applicable BitTitan mail licensing approach.'
+        'BT-06' = 'Should Tenant Migration Bundles be evaluated as an optional alternative?'
+        'BT-07' = 'If TMB is selected, map each Flex Collaboration entitlement to one Team or one SharePoint library and validate the 100 GB allowance.'
+        'BT-08' = 'Confirm public folders are outside TMB and have a separate disposition and licensing plan.'
+        'BT-09' = 'Validate source MigrationWiz authentication, organization/user EWS access, and the EWS application allow-list.'
+        'BT-10' = 'Validate destination MigrationWiz authentication, organization/user EWS access, and the EWS application allow-list.'
+        'SG-01' = 'Confirm ShareGate remains the default tool for Teams, SharePoint, and OneDrive content.'
+        'SG-02' = 'Confirm target mappings for Teams, non-Team groups, and group-connected sites.'
+        'SG-03' = 'Review shared channels and unsupported or manually rebuilt collaboration features.'
+        'SG-04' = 'Validate ShareGate source and destination connectivity, required admin roles, application consent, and representative test access.'
+        'ID-01' = 'Confirm destination tenant identity, domain, geography, access, and migration ownership.'
+        'ID-02' = 'Approve source-to-target UPN, SMTP, alias, anchor, and conflict mappings.'
+        'ID-03' = 'Confirm target provisioning, licenses, mailbox capacity, and application consent.'
+        'ID-04' = 'Approve a disposition for every included and excluded object.'
+        'DC-01' = 'Approve domain disposition, DNS ownership, release order, and dependencies.'
+        'DC-02' = 'Select big-bang or waves and confirm coexistence, forwarding, and routing.'
+        'DC-03' = 'Confirm DNS TTL, MX/Autodiscover/SPF/DKIM/DMARC, freeze, rollback, and communications ownership.'
+        'CP-01' = 'Confirm legal, hold, retention, eDiscovery, and records requirements before restoring inactive mailboxes.'
+        'CP-02' = 'Confirm treatment for encrypted, recoverable, oversized, corrupt, and unsupported data.'
+        'CP-03' = 'Confirm destination retention, sensitivity, DLP, sharing, and residency requirements.'
+        'PM-01' = 'Confirm blackout dates, completion date, work hours, change windows, and decision owners.'
+        'PM-02' = 'Review workload effort bands and validate their assumptions.'
+        'PM-03' = 'Approve pilot criteria, waves, migration passes, acceptance, hypercare, and rollback.'
+    }
+    foreach ($row in @($identityRows.ToArray())) {
+        $decisionPrompts[[string]$row.DecisionKey] = 'Confirm target identity mapping and destination conflict disposition for {0}.' -f $row.SourceDisplayName
+    }
+    foreach ($row in @($domainDependencyRows.ToArray())) {
+        $decisionPrompts[[string]$row.DecisionKey] = 'Confirm disposition, DNS ownership, dependencies, and release order for domain {0}.' -f $row.Domain
+    }
+    foreach ($row in @($dispositionRows.ToArray())) {
+        $decisionPrompts[[string]$row.DecisionKey] = 'Confirm include, exclude, recreate, target mapping, and migration tool for {0}.' -f $row.DisplayName
+    }
+    foreach ($row in @($effortRows)) {
+        $effortDecisionKey = [string]$row.DecisionKey
+        # BT-07 is a customer library-to-FCL mapping decision, not merely an effort-band
+        # acknowledgement. Preserve the canonical core prompt when an effort row reuses its key.
+        if (-not $decisionPrompts.Contains($effortDecisionKey)) {
+            $decisionPrompts[$effortDecisionKey] = 'Review the provisional effort band and assumptions for {0}.' -f $row.Workload
+        }
+    }
+
+    $mergedDecisionRows = New-Object System.Collections.Generic.List[object]
+    $mergedDecisionKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($existingDecision in $decisionRows) {
+        $existingKey = [string](Get-AssessmentExportPropertyValue -Record $existingDecision -Names @('DecisionKey'))
+        if ([string]::IsNullOrWhiteSpace($existingKey) -or -not $mergedDecisionKeys.Add($existingKey)) { continue }
+        # DecisionPrompt is generated contract text, not a customer-editable response. Refresh
+        # it on replay so an older snapshot cannot keep a stale or repurposed prompt while all
+        # customer-entered fields continue to merge by DecisionKey.
+        $existingPrompt = [string](Get-AssessmentExportPropertyValue -Record $existingDecision -Names @('DecisionPrompt'))
+        $canonicalPrompt = if ($decisionPrompts.Contains($existingKey)) { [string]$decisionPrompts[$existingKey] } else { $existingPrompt }
+        $mergedDecisionRows.Add([pscustomobject]@{
+            DecisionKey            = $existingKey
+            DecisionPrompt         = $canonicalPrompt
+            CustomerConfirmedValue = & $getDecisionField $existingDecision @('CustomerConfirmedValue')
+            Status                 = & $getDecisionField $existingDecision @('Status')
+            InScope                = & $getDecisionField $existingDecision @('InScope')
+            TargetMapping          = & $getDecisionField $existingDecision @('TargetMapping')
+            MigrationTool          = & $getDecisionField $existingDecision @('MigrationTool')
+            DecisionOwner          = & $getDecisionField $existingDecision @('DecisionOwner')
+            DueDate                = & $getDecisionField $existingDecision @('DueDate')
+            Notes                  = & $getDecisionField $existingDecision @('Notes')
+        }) | Out-Null
+    }
+    foreach ($entry in $decisionPrompts.GetEnumerator()) {
+        if ([string]::IsNullOrWhiteSpace([string]$entry.Key) -or -not $mergedDecisionKeys.Add([string]$entry.Key)) { continue }
+        $mergedDecisionRows.Add([pscustomobject]@{
+            DecisionKey            = [string]$entry.Key
+            DecisionPrompt         = [string]$entry.Value
+            CustomerConfirmedValue = $null
+            Status                 = 'Needs Input'
+            InScope                = $null
+            TargetMapping          = $null
+            MigrationTool          = $null
+            DecisionOwner          = $null
+            DueDate                = $null
+            Notes                  = $null
+        }) | Out-Null
+    }
+    $TenantStatsStore['MigrationScopeDecisions'] = @($mergedDecisionRows.ToArray())
+}
+
+function Get-MigrationShareGateScopeData {
+    <#
+        Produces a non-duplicated collaboration-storage total plus the component site
+        categories that explain it. Teams and Microsoft 365 Groups store files in their
+        backing SharePoint sites, so those rows are carved out of SharePoint rather than
+        added to it a second time.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Reconciliation,
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyCollection()]
+        [object[]]$OneDriveRows = @()
+    )
+
+    $sharePointRows = @($Reconciliation.SharePointRows)
+    $standaloneSiteRows = @($Reconciliation.StandaloneSiteRows)
+    $reconciliationRows = @($Reconciliation.ReconciliationRows)
+    $teamRows = @($Reconciliation.TeamRows)
+
+    $groupSiteRows = @($sharePointRows | Where-Object {
+            $candidateUrl = Get-AssessmentNormalizedSiteUrl -Value (Get-AssessmentExportPropertyValue -Record $_ -Names @('Url', 'WebUrl'))
+            $candidateUrl -and $Reconciliation.ClaimedSiteUrls -and $Reconciliation.ClaimedSiteUrls.Contains($candidateUrl)
+        })
+
+    $teamSiteUrlSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($teamGroupRow in @($reconciliationRows | Where-Object { $_.IsTeam -eq $true })) {
+        $teamSiteUrl = Get-AssessmentNormalizedSiteUrl -Value (Get-AssessmentExportPropertyValue -Record $teamGroupRow -Names @('SiteUrl', 'SharePointSiteUrl'))
+        if ($teamSiteUrl) { $null = $teamSiteUrlSet.Add($teamSiteUrl) }
+    }
+    $teamConnectedSiteRows = @($groupSiteRows | Where-Object {
+            $candidateUrl = Get-AssessmentNormalizedSiteUrl -Value (Get-AssessmentExportPropertyValue -Record $_ -Names @('Url', 'WebUrl'))
+            $candidateUrl -and $teamSiteUrlSet.Contains($candidateUrl)
+        })
+    $nonTeamGroupSiteRows = @($groupSiteRows | Where-Object {
+            $candidateUrl = Get-AssessmentNormalizedSiteUrl -Value (Get-AssessmentExportPropertyValue -Record $_ -Names @('Url', 'WebUrl'))
+            -not ($candidateUrl -and $teamSiteUrlSet.Contains($candidateUrl))
+        })
+
+    $summarizeStorage = {
+        param($Rows, $SizeField, $NameField)
+        $inputRows = @($Rows)
+        $known = @($inputRows | Where-Object { $null -ne (Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $_ -Names @($SizeField))) })
+        $total = if ($known.Count -gt 0) {
+            [math]::Round((@($known | ForEach-Object { [double](Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $_ -Names @($SizeField))) } | Measure-Object -Sum).Sum), 3)
+        } else { $null }
+        $largest = @($known | Sort-Object @{ Expression = { Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $_ -Names @($SizeField)) }; Descending = $true } | Select-Object -First 1) | Select-Object -First 1
+        [pscustomobject]@{
+            Total = $total
+            Known = $known.Count
+            Unknown = [Math]::Max(($inputRows.Count - $known.Count), 0)
+            LargestName = $(if ($largest) { Get-AssessmentExportPropertyValue -Record $largest -Names @($NameField, 'Url') } else { $null })
+            LargestSize = $(if ($largest) { Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $largest -Names @($SizeField)) } else { $null })
+        }
+    }
+
+    $sharePointStats = & $summarizeStorage $sharePointRows 'StorageUsedGB' 'Title'
+    $teamSiteStats = & $summarizeStorage $teamConnectedSiteRows 'StorageUsedGB' 'Title'
+    $nonTeamGroupSiteStats = & $summarizeStorage $nonTeamGroupSiteRows 'StorageUsedGB' 'Title'
+    $standaloneSiteStats = & $summarizeStorage $standaloneSiteRows 'StorageUsedGB' 'Title'
+    $oneDriveStats = & $summarizeStorage $OneDriveRows 'StorageUsedGB' 'Title'
+    $allCollaborationSiteRows = @($sharePointRows + @($OneDriveRows))
+    $allCollaborationStats = & $summarizeStorage $allCollaborationSiteRows 'StorageUsedGB' 'Title'
+
+    $teamsWithSharedChannels = @($teamRows | Where-Object { (Get-AssessmentTeamEnrichmentEvidence -TeamRecord $_).HasSharedChannels -eq $true })
+    $teamsMissingChannelEvidence = @($teamRows | Where-Object { (Get-AssessmentTeamEnrichmentEvidence -TeamRecord $_).ChannelInventoryStatus -eq 'Needs Data' })
+    $teamsMissingMemberEvidence = @($teamRows | Where-Object { (Get-AssessmentTeamEnrichmentEvidence -TeamRecord $_).MemberInventoryStatus -eq 'Needs Data' })
+    $teamScopeNote = if ($teamsMissingChannelEvidence.Count -gt 0 -or $teamsMissingMemberEvidence.Count -gt 0) {
+        "Files are measured on the backing SharePoint sites and are already included in the non-duplicated total. Channel inventory Needs Data for $($teamsMissingChannelEvidence.Count) Team(s); member/guest inventory Needs Data for $($teamsMissingMemberEvidence.Count) Team(s)."
+    }
+    else {
+        "Files are measured on the backing SharePoint sites and are already included in the non-duplicated total. $($teamsWithSharedChannels.Count) team(s) use shared channels."
+    }
+
+    $summaryRows = @(
+        [pscustomobject]@{
+            Workload = 'All collaboration sites (non-duplicated)'
+            ObjectCount = $allCollaborationSiteRows.Count
+            TotalStorageGB = $allCollaborationStats.Total
+            UnknownStorageCount = $allCollaborationStats.Unknown
+            LargestObjectName = $allCollaborationStats.LargestName
+            LargestObjectSizeGB = $allCollaborationStats.LargestSize
+            Notes = 'SharePoint plus OneDrive. Teams and Microsoft 365 Group file storage is represented by backing SharePoint sites and is not added again.'
+        },
+        [pscustomobject]@{
+            Workload = 'Teams-connected SharePoint'
+            ObjectCount = $teamConnectedSiteRows.Count
+            TotalStorageGB = $teamSiteStats.Total
+            UnknownStorageCount = $teamSiteStats.Unknown
+            LargestObjectName = $teamSiteStats.LargestName
+            LargestObjectSizeGB = $teamSiteStats.LargestSize
+            Notes = $teamScopeNote
+        },
+        [pscustomobject]@{
+            Workload = 'Microsoft 365 Group SharePoint (non-Team)'
+            ObjectCount = $nonTeamGroupSiteRows.Count
+            TotalStorageGB = $nonTeamGroupSiteStats.Total
+            UnknownStorageCount = $nonTeamGroupSiteStats.Unknown
+            LargestObjectName = $nonTeamGroupSiteStats.LargestName
+            LargestObjectSizeGB = $nonTeamGroupSiteStats.LargestSize
+            Notes = 'SharePoint sites backing Microsoft 365 Groups that are not Teams.'
+        },
+        [pscustomobject]@{
+            Workload = 'Standalone SharePoint'
+            ObjectCount = $standaloneSiteRows.Count
+            TotalStorageGB = $standaloneSiteStats.Total
+            UnknownStorageCount = $standaloneSiteStats.Unknown
+            LargestObjectName = $standaloneSiteStats.LargestName
+            LargestObjectSizeGB = $standaloneSiteStats.LargestSize
+            Notes = 'Classic, communication, and other sites with no collected group or Team relationship.'
+        },
+        [pscustomobject]@{
+            Workload = 'SharePoint (total)'
+            ObjectCount = $sharePointRows.Count
+            TotalStorageGB = $sharePointStats.Total
+            UnknownStorageCount = $sharePointStats.Unknown
+            LargestObjectName = $sharePointStats.LargestName
+            LargestObjectSizeGB = $sharePointStats.LargestSize
+            Notes = 'Teams-connected, other group-connected, and standalone SharePoint sites.'
+        },
+        [pscustomobject]@{
+            Workload = 'OneDrive'
+            ObjectCount = @($OneDriveRows).Count
+            TotalStorageGB = $oneDriveStats.Total
+            UnknownStorageCount = $oneDriveStats.Unknown
+            LargestObjectName = $oneDriveStats.LargestName
+            LargestObjectSizeGB = $oneDriveStats.LargestSize
+            Notes = 'OneDrive sites are separate from the SharePoint site inventory.'
+        }
+    )
+
+    return [pscustomobject]@{
+        SummaryRows = $summaryRows
+        SharePointRows = $sharePointRows
+        StandaloneSiteRows = $standaloneSiteRows
+        GroupSiteRows = $groupSiteRows
+        TeamConnectedSiteRows = $teamConnectedSiteRows
+        NonTeamGroupSiteRows = $nonTeamGroupSiteRows
+        TeamRows = $teamRows
+        TeamScopeNote = $teamScopeNote
+        SharePointStats = $sharePointStats
+        TeamSiteStats = $teamSiteStats
+        NonTeamGroupSiteStats = $nonTeamGroupSiteStats
+        StandaloneSiteStats = $standaloneSiteStats
+        OneDriveStats = $oneDriveStats
+        AllCollaborationStats = $allCollaborationStats
+    }
+}
+
+function Update-MigrationScopeExportData {
+    <#
+        Builds the migration scope, licensing, and complexity tables shared by the pre-sales
+        and tenant-to-tenant profiles. BitTitan covers mailbox data; ShareGate covers
+        SharePoint, OneDrive, and Teams content, so the two are reported side by side and
+        never totalled together.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$TenantStatsStore
+    )
+
+    # Normalize live and replayed Team rows before any reconciliation, effort, readiness, or
+    # workbook shaping consumes them. This converts unqualified legacy zeroes to Needs Data
+    # while preserving zeroes explicitly marked as measured empty.
+    $null = Update-AssessmentTeamEnrichmentEvidenceRows -TenantStatsStore $TenantStatsStore
+
+    $blockSizeGB = Get-AssessmentBitTitanBlockSizeGB
+    $mailboxPlanningRows = @(Get-AssessmentMailboxPlanningRows -TenantStatsStore $TenantStatsStore)
+    $null = Ensure-MigrationGroupMailboxInventory -TenantStatsStore $TenantStatsStore
+    $groupMailboxRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'GroupMailboxes')
+    $userRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'Users')
+
+    $primaryMailboxStatsLookup = Get-AssessmentMailboxStatsLookup -StatsRows @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'PrimaryMailboxStats')
+    $archiveMailboxStatsLookup = Get-AssessmentMailboxStatsLookup -StatsRows @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'ArchiveMailboxStats')
+
+    # Idempotent: recomputes each derived size from the same source fields every time, so it
+    # is safe whether or not the tenant-to-tenant shaping already ran.
+    foreach ($mailboxRecord in @($mailboxPlanningRows + $groupMailboxRows)) {
+        Add-TenantToTenantMailboxDerivedFields -MailboxRecord $mailboxRecord -PrimaryMailboxStatsLookup $primaryMailboxStatsLookup -ArchiveMailboxStatsLookup $archiveMailboxStatsLookup
+    }
+
+    $reconciliation = Update-MigrationGroupWorkloadReconciliation -TenantStatsStore $TenantStatsStore
+    $estimate = Get-ArrayaBitTitanLicenseEstimate -MailboxRows $mailboxPlanningRows -GroupMailboxRows $groupMailboxRows -UserRows $userRows
+
+    $TenantStatsStore['BitTitanLicenseDetail'] = @($estimate.ObjectLines | ForEach-Object {
+        [pscustomobject]@{
+            ObjectType     = $_.ObjectType
+            Identity       = $_.Identity
+            DisplayName    = $_.DisplayName
+            RecipientType  = $_.RecipientType
+            SizeGB         = $_.SizeGB
+            IsInactiveMailbox = $_.IsInactiveMailbox
+            ArchiveStatus  = $_.ArchiveStatus
+            HasArchive     = $_.HasArchive
+            ArchiveSizeGB  = $_.ArchiveSizeGB
+            ArchiveDeletedItemsGB = $_.ArchiveDeletedItemsGB
+            MigrationPrerequisite = $_.MigrationPrerequisite
+            RecommendedSku = $_.RecommendedSku
+            LicenseUnits   = $_.LicenseUnits
+            BundleEligible = $_.BundleEligible
+            UmbEligibilityValidationRequired = $_.UmbEligibilityValidationRequired
+            EstimateStatus = $_.EstimateStatus
+            SizingBasis    = $_.SizingBasis
+            Notes          = $_.Notes
+        }
+    })
+    $TenantStatsStore['BitTitanLicenseMixBreakdown'] = @($estimate.LicenseMixBreakdown)
+    $TenantStatsStore['BitTitanPlanningOptions'] = @($estimate.PlanningOptions)
+
+    # These rows were enriched before the practice policy was applied. Keep the directly
+    # exported GroupMailboxes inventory consistent with BitTitanLicenseDetail: inventory-only
+    # by default, no automatic license SKU or unit count.
+    foreach ($groupMailboxRecord in @($groupMailboxRows)) {
+        Set-AssessmentExportProperty -Record $groupMailboxRecord -Name 'BitTitanLicenseType' -Value 'Report only - customer disposition required'
+        Set-AssessmentExportProperty -Record $groupMailboxRecord -Name 'BitTitanLicenseCount' -Value $null
+    }
+
+    # ---- BitTitan license summary -------------------------------------------------------
+    # The Counts/Thresholds/Data metric labels are consumed by the tenant-to-tenant cutover
+    # checklist by exact name. Do not rename them without updating that reader.
+    $activeMailboxes = @($mailboxPlanningRows | Where-Object { $_.IsInactiveMailbox -ne $true })
+    $inactiveMailboxes = @($mailboxPlanningRows | Where-Object { $_.IsInactiveMailbox -eq $true })
+    $mailboxesWithArchive = @($mailboxPlanningRows | Where-Object { Test-AssessmentMailboxHasArchiveEvidence -MailboxRecord $_ })
+
+    # Every threshold reads sizes through the same converter. Mixing direct [double] casts
+    # with a size parser is what made "120 GB" behave differently per threshold before.
+    $mailboxesOver50 = @($mailboxPlanningRows | Where-Object {
+            $size = Convert-AssessmentExportSizeToGb -Value $_.MailboxSizeGB
+            $null -ne $size -and $size -gt 50
+        })
+    $mailboxesOver100 = @($mailboxPlanningRows | Where-Object {
+            $size = Convert-AssessmentExportSizeToGb -Value $_.MailboxSizeGB
+            $null -ne $size -and $size -gt 100
+        })
+    $mailboxesOver50WithDeleted = @($mailboxPlanningRows | Where-Object {
+            $mailboxSize = Convert-AssessmentExportSizeToGb -Value $_.MailboxSizeGB
+            $deletedSize = Convert-AssessmentExportSizeToGb -Value $_.DeletedItemsGB
+            $null -ne $mailboxSize -and $null -ne $deletedSize -and (($mailboxSize + $deletedSize) -gt 50) -and ($mailboxSize -le 50)
+        })
+    $archivesOver100 = @($mailboxPlanningRows | Where-Object {
+            $size = Convert-AssessmentExportSizeToGb -Value $_.ArchiveSizeGB
+            $null -ne $size -and $size -gt 100
+        })
+
+    $sumGb = {
+        param($Rows, $Field)
+        [math]::Round((@($Rows | ForEach-Object {
+            $value = Convert-AssessmentExportSizeToGb -Value (Get-AssessmentExportPropertyValue -Record $_ -Names @($Field))
+            if ($null -eq $value) { 0 } else { [double]$value }
+        } | Measure-Object -Sum).Sum), 3)
+    }
+    $sizingRows = @($mailboxPlanningRows + $groupMailboxRows)
+    $totalMailboxDataGB = & $sumGb $sizingRows 'MailboxSizeGB'
+    $totalDeletedItemsGB = & $sumGb $sizingRows 'DeletedItemsGB'
+    $totalArchiveDataGB = & $sumGb $sizingRows 'ArchiveSizeGB'
+    $totalArchiveDeletedItemsGB = & $sumGb $sizingRows 'ArchiveDeletedItemsGB'
+    $grandTotalDataGB = [math]::Round(($totalMailboxDataGB + $totalDeletedItemsGB + $totalArchiveDataGB + $totalArchiveDeletedItemsGB), 3)
+
+    $workloadFitRow = @($estimate.PathComparison | Where-Object { $_.Path -eq 'Workload fit' } | Select-Object -First 1) | Select-Object -First 1
+    $umbLedRow = @($estimate.PathComparison | Where-Object { $_.Path -eq 'UMB-led' } | Select-Object -First 1) | Select-Object -First 1
+    $groupMailboxesWithData = $reconciliation.MeasuredMailDataCount
+    $emptyGroupMailboxes = $reconciliation.MeasuredEmptyMailboxCount
+    $unknownGroupMailboxEvidence = $reconciliation.UnknownMailboxEvidenceCount
+    $inactiveMailboxesWithArchive = @($estimate.ObjectLines | Where-Object { $_.IsInactiveMailbox -eq $true -and $_.HasArchive -eq $true })
+
+    $bitTitanLicenseSummaryRows = New-Object System.Collections.Generic.List[object]
+    foreach ($metricRow in @(
+            @{ Section = 'Counts'; Metric = 'Active mailboxes'; Value = $activeMailboxes.Count; Notes = 'Mailbox rows included in migration planning.' },
+            @{ Section = 'Counts'; Metric = 'Inactive mailboxes'; Value = $inactiveMailboxes.Count; Notes = 'Assumes each in-scope inactive mailbox is restored or activated before a regular BitTitan migration job.' },
+            @{ Section = 'Counts'; Metric = 'Inactive mailboxes with archive'; Value = $inactiveMailboxesWithArchive.Count; Notes = 'See BitTitanLicenseDetail for HasArchive, ArchiveSizeGB, and the restore prerequisite on each inactive mailbox.' },
+            @{ Section = 'Counts'; Metric = 'Archive-enabled mailboxes'; Value = $mailboxesWithArchive.Count; Notes = 'Archive content is included in each mailbox sizing total.' },
+            @{ Section = 'Counts'; Metric = 'Microsoft 365 Group mailboxes with data'; Value = $groupMailboxesWithData; Notes = 'Visible for customer disposition. Practice default excludes all group mailboxes from automatic BitTitan license units.' },
+            @{ Section = 'Counts'; Metric = 'Empty Microsoft 365 Group mailboxes'; Value = $emptyGroupMailboxes; Notes = 'Measured zero mail data. These groups exist for their SharePoint site, which is ShareGate scope.' },
+            @{ Section = 'Counts'; Metric = 'Microsoft 365 Group mailboxes needing evidence'; Value = $unknownGroupMailboxEvidence; Notes = 'Mailbox inventory/statistics were unavailable or could not be joined. Do not infer empty conversations; collect evidence before final scope.' },
+            @{ Section = 'Thresholds'; Metric = 'Mailboxes over 50 GB'; Value = $mailboxesOver50.Count; Notes = 'Mailbox primary content only.' },
+            @{ Section = 'Thresholds'; Metric = 'Mailboxes over 100 GB'; Value = $mailboxesOver100.Count; Notes = 'Mailbox primary content only.' },
+            @{ Section = 'Thresholds'; Metric = 'Mailboxes over 50 GB including deleted items'; Value = $mailboxesOver50WithDeleted.Count; Notes = 'Mailboxes that cross a license block only once deleted items are counted.' },
+            @{ Section = 'Thresholds'; Metric = 'Archives over 100 GB'; Value = $archivesOver100.Count; Notes = 'Archive review threshold.' },
+            @{ Section = 'Data'; Metric = 'Total mailbox data (GB)'; Value = $totalMailboxDataGB; Notes = 'Primary mailbox content only.' },
+            @{ Section = 'Data'; Metric = 'Total deleted items (GB)'; Value = $totalDeletedItemsGB; Notes = 'Primary mailbox deleted items only.' },
+            @{ Section = 'Data'; Metric = 'Total archive data (GB)'; Value = $totalArchiveDataGB; Notes = 'Archive content only.' },
+            @{ Section = 'Data'; Metric = 'Total archive deleted items (GB)'; Value = $totalArchiveDeletedItemsGB; Notes = 'Archive deleted items only.' },
+            @{ Section = 'Data'; Metric = 'Grand total data to migrate (GB)'; Value = $grandTotalDataGB; Notes = $(if ($unknownGroupMailboxEvidence -gt 0) { 'Known-data floor only: one or more Microsoft 365 Group mailboxes need statistics. Includes discovered mailbox + deleted items + archive + archive deleted items; customer disposition determines final scope.' } else { 'Discovered mailbox + deleted items + archive + archive deleted items, including report-only Microsoft 365 Group mailboxes; customer disposition determines final in-scope data.' }) },
+            @{ Section = 'Data'; Metric = 'Inactive archive data (GB)'; Value = $estimate.InactiveArchiveDataGB; Notes = 'Archive plus archive deleted data for inactive mailboxes only.' },
+            @{ Section = 'Alternative scenarios'; Metric = 'Workload-fit: MigrationWiz-Mailbox units'; Value = $(if ($workloadFitRow) { $workloadFitRow.PrimaryUnits } else { 0 }); Notes = ("Alternative unit basket (not a recommendation): mailbox-only objects in {0} GB blocks. Group mailboxes are excluded by default." -f $blockSizeGB) },
+            @{ Section = 'Alternative scenarios'; Metric = 'Workload-fit: User Migration Bundles'; Value = $(if ($workloadFitRow) { $workloadFitRow.SecondaryUnits } else { 0 }); Notes = 'Alternative unit basket (not a recommendation): one UMB planning unit for every archive-bearing migration object; validate non-user and restored inactive eligibility.' },
+            @{ Section = 'Alternative scenarios'; Metric = 'UMB-led: User Migration Bundles'; Value = $(if ($umbLedRow) { $umbLedRow.PrimaryUnits } else { 0 }); Notes = 'Alternative unit basket (not a recommendation): one UMB planning unit per licensable user or archive-bearing object; validate non-user and restored inactive eligibility.' },
+            @{ Section = 'Alternative scenarios'; Metric = 'UMB-led: residual MigrationWiz-Mailbox units'; Value = $(if ($umbLedRow) { $umbLedRow.SecondaryUnits } else { 0 }); Notes = 'Alternative unit basket (not a recommendation): mailbox-only shared, room, equipment, and scheduling objects. Group mailboxes remain report-only.' },
+            @{ Section = 'Policy'; Metric = 'Group mailbox licensing'; Value = $estimate.GroupMailboxLicensingMode; Notes = 'Inventory remains visible; an explicit override is required to include units.' },
+            @{ Section = 'Policy'; Metric = 'Inactive mailbox treatment'; Value = 'Restore then migrate'; Notes = 'MigrationWiz does not migrate an inactive mailbox directly; restore or activate it before the regular job.' },
+            @{ Section = 'Policy'; Metric = 'Tenant Migration Bundle'; Value = 'Optional / non-default'; Notes = 'Review when BitTitan will migrate Teams or SharePoint. Normal ShareGate delivery leaves the included Flex Collaboration entitlement unused. Public Folders are excluded. Teams Private Chat (PCH) requires a separate project and current BitTitan capability/licensing validation; do not assume inclusion or exclusion because vendor terms are changing.' },
+            @{ Section = 'Totals'; Metric = 'License path selection'; Value = $estimate.RecommendedPath; Notes = 'Unit baskets only. The Solutions Engineer applies commercial rates; no dollar cost or cost-based recommendation is emitted.' },
+            @{ Section = 'Totals'; Metric = 'Objects needing license evidence'; Value = $estimate.NeedsDataCount; Notes = 'Missing mailbox statistics or archive state. Excluded from license totals; treat the unit baskets as a floor until evidence is complete.' },
+            @{ Section = 'Totals'; Metric = 'Bundle entitlement caveat'; Value = 'OneDrive and documents unused'; Notes = 'The User Migration Bundle includes OneDrive and document migration. Those entitlements go unused because ShareGate handles file workloads.' }
+        )) {
+        $bitTitanLicenseSummaryRows.Add([pscustomobject]$metricRow) | Out-Null
+    }
+    $TenantStatsStore['BitTitanLicenseSummary'] = @($bitTitanLicenseSummaryRows.ToArray())
+
+    # ---- ShareGate collaboration scope ---------------------------------------------------
+    $oneDriveRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'OneDrive')
+    $shareGateScope = Get-MigrationShareGateScopeData -Reconciliation $reconciliation -OneDriveRows $oneDriveRows
+    $shareGateScopeRows = @($shareGateScope.SummaryRows)
+    $TenantStatsStore['ShareGateScopeSummary'] = @($shareGateScopeRows)
+
+    $sharePointRows = @($shareGateScope.SharePointRows)
+    $standaloneSiteRows = @($shareGateScope.StandaloneSiteRows)
+    $groupSiteRows = @($shareGateScope.GroupSiteRows)
+    $teamRows = @($shareGateScope.TeamRows)
+    $teamScopeNote = [string]$shareGateScope.TeamScopeNote
+    $sharePointStats = $shareGateScope.SharePointStats
+    $standaloneSiteStats = $shareGateScope.StandaloneSiteStats
+    $oneDriveStats = $shareGateScope.OneDriveStats
+
+    # Preserve the legacy CollaborationSummary shape for existing consumers, but sourced from
+    # the reconciliation so Teams no longer contributes storage.
+    $TenantStatsStore['CollaborationSummary'] = @(
+        [pscustomobject]@{ Workload = 'Teams'; TotalCount = $teamRows.Count; TotalStorageGB = $null; UnknownStorageCount = 0; LargestObjectName = $null; LargestObjectSizeGB = $null; Notes = $teamScopeNote },
+        [pscustomobject]@{ Workload = 'SharePoint'; TotalCount = $sharePointRows.Count; TotalStorageGB = $sharePointStats.Total; UnknownStorageCount = $sharePointStats.Unknown; LargestObjectName = $sharePointStats.LargestName; LargestObjectSizeGB = $sharePointStats.LargestSize; Notes = 'Includes group and Teams connected sites.' },
+        [pscustomobject]@{ Workload = 'OneDrive'; TotalCount = $oneDriveRows.Count; TotalStorageGB = $oneDriveStats.Total; UnknownStorageCount = $oneDriveStats.Unknown; LargestObjectName = $oneDriveStats.LargestName; LargestObjectSizeGB = $oneDriveStats.LargestSize; Notes = $null }
+    )
+
+    # ---- Migration scope summary ---------------------------------------------------------
+    $scopeSummaryRows = New-Object System.Collections.Generic.List[object]
+    $mailboxesByType = @($mailboxPlanningRows | Group-Object { [string](Get-AssessmentExportPropertyValue -Record $_ -Names @('RecipientTypeDetails')) } | Sort-Object Name)
+    $licensableUserCount = @($estimate.ObjectLines | Where-Object { $_.BundleEligible -eq $true }).Count
+
+    $scopeSummaryRows.Add([pscustomobject]@{ Tool = 'BitTitan'; Section = 'Identity'; Metric = 'Licensable users with a mailbox'; Value = $licensableUserCount; Notes = 'Drives the User Migration Bundle count.' }) | Out-Null
+    foreach ($mailboxGroup in $mailboxesByType) {
+        $typeName = if ([string]::IsNullOrWhiteSpace([string]$mailboxGroup.Name)) { 'Unknown' } else { [string]$mailboxGroup.Name }
+        $scopeSummaryRows.Add([pscustomobject]@{ Tool = 'BitTitan'; Section = 'Mailboxes'; Metric = $typeName; Value = @($mailboxGroup.Group).Count; Notes = $null }) | Out-Null
+    }
+    $scopeSummaryRows.Add([pscustomobject]@{ Tool = 'BitTitan'; Section = 'Mailboxes'; Metric = 'Microsoft 365 Group mailboxes with data'; Value = $groupMailboxesWithData; Notes = 'Report-only by practice default; customer disposition determines whether conversations migrate. Empty group mailboxes are excluded.' }) | Out-Null
+    $scopeSummaryRows.Add([pscustomobject]@{ Tool = 'BitTitan'; Section = 'Mailboxes'; Metric = 'Microsoft 365 Group mailboxes needing evidence'; Value = $unknownGroupMailboxEvidence; Notes = 'Needs Data: missing group mailbox evidence is not treated as zero or excluded from customer disposition.' }) | Out-Null
+    $scopeSummaryRows.Add([pscustomobject]@{ Tool = 'BitTitan'; Section = 'Mailboxes'; Metric = 'Archive-enabled mailboxes'; Value = $mailboxesWithArchive.Count; Notes = 'Archive content is inside each mailbox sizing total.' }) | Out-Null
+    $scopeSummaryRows.Add([pscustomobject]@{ Tool = 'BitTitan'; Section = 'Data'; Metric = 'Total mailbox data to migrate (GB)'; Value = $grandTotalDataGB; Notes = $(if ($unknownGroupMailboxEvidence -gt 0) { 'Known-data floor; group mailbox evidence is incomplete. Final in-scope total depends on collected evidence and customer disposition.' } else { 'Discovered mailbox + deleted + archive + archive deleted, including report-only group data. Final in-scope total depends on customer disposition.' }) }) | Out-Null
+
+    $scopeSummaryRows.Add([pscustomobject]@{ Tool = 'ShareGate'; Section = 'Sites'; Metric = 'SharePoint sites (total)'; Value = $sharePointRows.Count; Notes = 'Group-connected plus standalone.' }) | Out-Null
+    $scopeSummaryRows.Add([pscustomobject]@{ Tool = 'ShareGate'; Section = 'Sites'; Metric = 'SharePoint sites backing a group or Team'; Value = $groupSiteRows.Count; Notes = 'Already included in the total above.' }) | Out-Null
+    $scopeSummaryRows.Add([pscustomobject]@{ Tool = 'ShareGate'; Section = 'Sites'; Metric = 'SharePoint sites (standalone)'; Value = $standaloneSiteRows.Count; Notes = 'Classic and communication sites.' }) | Out-Null
+    $scopeSummaryRows.Add([pscustomobject]@{ Tool = 'ShareGate'; Section = 'Data'; Metric = 'SharePoint storage (GB)'; Value = $sharePointStats.Total; Notes = 'Authoritative site storage figure.' }) | Out-Null
+    $scopeSummaryRows.Add([pscustomobject]@{ Tool = 'ShareGate'; Section = 'Data'; Metric = 'Largest site (GB)'; Value = $sharePointStats.LargestSize; Notes = [string]$sharePointStats.LargestName }) | Out-Null
+    $scopeSummaryRows.Add([pscustomobject]@{ Tool = 'ShareGate'; Section = 'OneDrive'; Metric = 'OneDrive sites'; Value = $oneDriveRows.Count; Notes = $null }) | Out-Null
+    $scopeSummaryRows.Add([pscustomobject]@{ Tool = 'ShareGate'; Section = 'OneDrive'; Metric = 'OneDrive storage (GB)'; Value = $oneDriveStats.Total; Notes = $null }) | Out-Null
+    $scopeSummaryRows.Add([pscustomobject]@{ Tool = 'ShareGate'; Section = 'Teams'; Metric = 'Teams'; Value = $teamRows.Count; Notes = $teamScopeNote }) | Out-Null
+    $scopeSummaryRows.Add([pscustomobject]@{ Tool = 'ShareGate'; Section = 'Teams'; Metric = 'Microsoft 365 Groups'; Value = @($reconciliation.ReconciliationRows).Count; Notes = 'Not every group is a Team. See GroupWorkloadReconciliation.' }) | Out-Null
+
+    $TenantStatsStore['MigrationScopeSummary'] = @($scopeSummaryRows.ToArray())
+
+    # ---- Complexity flags ----------------------------------------------------------------
+    Update-MigrationComplexityFlags -TenantStatsStore $TenantStatsStore -Reconciliation $reconciliation -MailboxPlanningRows $mailboxPlanningRows -Estimate $estimate
+
+    # Readiness and planning registers consume all of the scope and complexity tables above.
+    # Keep this call last so a rerun is idempotent and questionnaire decisions can be merged
+    # before the registers are rebuilt.
+    Update-MigrationPlanningRegisters -TenantStatsStore $TenantStatsStore
 }
 
 function Update-TenantToTenantMigrationExportData {
@@ -12051,7 +14271,7 @@ function Update-TenantToTenantMigrationExportData {
             MailboxCount                     = $groupRows.Count
             ActiveMailboxCount               = @($groupRows | Where-Object { $_.IsInactiveMailbox -ne $true }).Count
             InactiveMailboxCount             = @($groupRows | Where-Object { $_.IsInactiveMailbox -eq $true }).Count
-            ArchiveEnabledCount              = @($groupRows | Where-Object { ([string]$_.ArchiveStatus) -match '^(?i)active$' }).Count
+            ArchiveEnabledCount              = @($groupRows | Where-Object { Test-AssessmentMailboxHasArchiveEvidence -MailboxRecord $_ }).Count
             ForwardingCount                  = @($groupRows | Where-Object {
                     -not [string]::IsNullOrWhiteSpace([string]$_.ForwardingSmtpAddress) -or
                     -not [string]::IsNullOrWhiteSpace([string]$_.ForwardingAddress)
@@ -12067,47 +14287,14 @@ function Update-TenantToTenantMigrationExportData {
     }
     $TenantStatsStore['MailboxMigrationSummary'] = @($mailboxMigrationSummaryRows.ToArray())
 
-    $bitTitanLicenseSummaryRows = New-Object System.Collections.Generic.List[object]
-    $activeMailboxes = @($mailboxPlanningRows | Where-Object { $_.IsInactiveMailbox -ne $true })
-    $inactiveMailboxes = @($mailboxPlanningRows | Where-Object { $_.IsInactiveMailbox -eq $true })
-    $allMailboxesForSizing = @($mailboxPlanningRows)
-    $mailboxesWithArchive = @($allMailboxesForSizing | Where-Object { ([string]$_.ArchiveStatus) -match '^(?i)active$' })
-    $mailboxesOver50 = @($allMailboxesForSizing | Where-Object { $null -ne $_.MailboxSizeGB -and [double]$_.MailboxSizeGB -gt 50 })
-    $mailboxesOver100 = @($allMailboxesForSizing | Where-Object { $null -ne $_.MailboxSizeGB -and [double]$_.MailboxSizeGB -gt 100 })
-    $mailboxesOver50WithDeleted = @($allMailboxesForSizing | Where-Object {
-            $mailboxSize = Convert-AssessmentExportSizeToGb -Value $_.MailboxSizeGB
-            $deletedSize = Convert-AssessmentExportSizeToGb -Value $_.DeletedItemsGB
-            $null -ne $mailboxSize -and $null -ne $deletedSize -and (($mailboxSize + $deletedSize) -gt 50) -and ($mailboxSize -le 50)
-        })
-    $archivesOver100 = @($allMailboxesForSizing | Where-Object { $null -ne $_.ArchiveSizeGB -and [double]$_.ArchiveSizeGB -gt 100 })
-    $migrationWizMailboxLicenses = @($allMailboxesForSizing | Where-Object { $_.BitTitanLicenseType -eq 'MigrationWiz-Mailbox' }).Count
-    $migrationWizMailboxX2Licenses = @($allMailboxesForSizing | Where-Object { $_.BitTitanLicenseType -eq 'MigrationWiz-Mailbox x2' }).Count
-    $userMigrationBundleLicenses = @($allMailboxesForSizing | Where-Object { $_.BitTitanLicenseType -eq 'User Migration Bundle' }).Count
-    $totalMailboxDataGB = [math]::Round((($allMailboxesForSizing | ForEach-Object { [double](Convert-ArrayaToNumber -Value $_.MailboxSizeGB) } | Measure-Object -Sum).Sum), 3)
-    $totalDeletedItemsGB = [math]::Round((($allMailboxesForSizing | ForEach-Object { [double](Convert-ArrayaToNumber -Value $_.DeletedItemsGB) } | Measure-Object -Sum).Sum), 3)
-    $totalArchiveDataGB = [math]::Round((($allMailboxesForSizing | ForEach-Object { [double](Convert-ArrayaToNumber -Value $_.ArchiveSizeGB) } | Measure-Object -Sum).Sum), 3)
-    $totalArchiveDeletedItemsGB = [math]::Round((($allMailboxesForSizing | ForEach-Object { [double](Convert-ArrayaToNumber -Value $_.ArchiveDeletedItemsGB) } | Measure-Object -Sum).Sum), 3)
-    $grandTotalDataGB = [math]::Round(($totalMailboxDataGB + $totalDeletedItemsGB + $totalArchiveDataGB + $totalArchiveDeletedItemsGB), 3)
-    foreach ($metricRow in @(
-            @{ Section = 'Counts'; Metric = 'Active mailboxes'; Value = $activeMailboxes.Count; Notes = 'Mailbox rows included in wave and cutover planning.' },
-            @{ Section = 'Counts'; Metric = 'Inactive mailboxes'; Value = $inactiveMailboxes.Count; Notes = 'Inactive mailbox rows that may require inactive-mailbox handling.' },
-            @{ Section = 'Counts'; Metric = 'Archive-enabled mailboxes'; Value = $mailboxesWithArchive.Count; Notes = 'Archive-enabled mailboxes usually map to User Migration Bundle planning.' },
-            @{ Section = 'Thresholds'; Metric = 'Mailboxes over 50 GB'; Value = $mailboxesOver50.Count; Notes = 'Mailbox primary content only.' },
-            @{ Section = 'Thresholds'; Metric = 'Mailboxes over 100 GB'; Value = $mailboxesOver100.Count; Notes = 'Mailbox primary content only.' },
-            @{ Section = 'Thresholds'; Metric = 'Mailboxes over 50 GB including deleted items'; Value = $mailboxesOver50WithDeleted.Count; Notes = 'BitTitan-style review threshold from the legacy sizing model.' },
-            @{ Section = 'Thresholds'; Metric = 'Archives over 100 GB'; Value = $archivesOver100.Count; Notes = 'Archive review threshold.' },
-            @{ Section = 'Data'; Metric = 'Total mailbox data (GB)'; Value = $totalMailboxDataGB; Notes = 'Primary mailbox content only.' },
-            @{ Section = 'Data'; Metric = 'Total deleted items (GB)'; Value = $totalDeletedItemsGB; Notes = 'Primary mailbox deleted items only.' },
-            @{ Section = 'Data'; Metric = 'Total archive data (GB)'; Value = $totalArchiveDataGB; Notes = 'Archive content only.' },
-            @{ Section = 'Data'; Metric = 'Total archive deleted items (GB)'; Value = $totalArchiveDeletedItemsGB; Notes = 'Archive deleted items only.' },
-            @{ Section = 'Data'; Metric = 'Grand total data to migrate (GB)'; Value = $grandTotalDataGB; Notes = 'Mailbox + deleted items + archive + archive deleted items.' },
-            @{ Section = 'Licensing'; Metric = 'MigrationWiz-Mailbox'; Value = $migrationWizMailboxLicenses; Notes = 'Estimated mailbox count at 50 GB or below without archive.' },
-            @{ Section = 'Licensing'; Metric = 'MigrationWiz-Mailbox x2'; Value = $migrationWizMailboxX2Licenses; Notes = 'Estimated mailbox count above 50 GB without archive.' },
-            @{ Section = 'Licensing'; Metric = 'User Migration Bundle'; Value = $userMigrationBundleLicenses; Notes = 'Estimated mailbox count with active archive.' }
-        )) {
-        $bitTitanLicenseSummaryRows.Add([pscustomobject]$metricRow) | Out-Null
-    }
-    $TenantStatsStore['BitTitanLicenseSummary'] = @($bitTitanLicenseSummaryRows.ToArray())
+    # BitTitanLicenseSummary and the rest of the migration scope tables are owned by
+    # Update-MigrationScopeExportData so the tenant-to-tenant and pre-sales profiles quote off
+    # exactly the same sizing model. The cutover checklist below reads metrics back out of it.
+    Update-MigrationScopeExportData -TenantStatsStore $TenantStatsStore
+    $bitTitanLicenseSummaryRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'BitTitanLicenseSummary')
+    $grandTotalDataGB = [double](Convert-ArrayaToNumber -Value (Get-AssessmentExportPropertyValue `
+        -Record (@($bitTitanLicenseSummaryRows | Where-Object { [string]$_.Metric -eq 'Grand total data to migrate (GB)' } | Select-Object -First 1) | Select-Object -First 1) `
+        -Names @('Value')))
 
     $delegateSummaryRows = New-Object System.Collections.Generic.List[object]
     foreach ($permissionGroup in @(
@@ -13570,6 +15757,7 @@ function Get-AuthenticationConfiguration {
                 CredentialIssueSummary        = ''
                 SignInAudience                = $null
                 ApplicationCreatedDateTime    = $null
+                IdentifierUris                = $null
                 DelegatedPermissionScopes     = ''
                 DelegatedPermissionGrantCount = 0
                 ApplicationPermissions        = ''
@@ -13871,7 +16059,7 @@ function Get-AuthenticationConfiguration {
 
             $applicationRows = @(
                 Get-ArrayaGraphResource `
-                    -Uri "https://graph.microsoft.com/v1.0/applications?`$select=id,appId,createdDateTime,signInAudience,keyCredentials,passwordCredentials,publicClient,web,spa,isFallbackPublicClient&`$top=250" `
+                    -Uri "https://graph.microsoft.com/v1.0/applications?`$select=id,appId,identifierUris,createdDateTime,signInAudience,keyCredentials,passwordCredentials,publicClient,web,spa,isFallbackPublicClient&`$top=250" `
                     -Activity 'Enterprise application registrations' `
                     -Headers $global:GraphHeaders `
                     -SuppressProgress
@@ -13985,6 +16173,11 @@ function Get-AuthenticationConfiguration {
                     CredentialIssueSummary     = $credentialMetadata.CredentialIssueSummary
                     SignInAudience             = Get-ArrayaObjectValue -Object $applicationRow -Names @('signInAudience', 'SignInAudience')
                     ApplicationCreatedDateTime = Get-ArrayaObjectValue -Object $applicationRow -Names @('createdDateTime', 'CreatedDateTime')
+                    # Identifier URIs on a customer-owned domain cannot be re-registered in a
+                    # target tenant until that domain moves, which makes them a migration
+                    # sequencing dependency rather than just an inventory detail.
+                    IdentifierUris             = @(Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $applicationRow -Names @('identifierUris', 'IdentifierUris')))
+                    IdentifierUrisText         = ((@(Convert-ArrayaObjectToArray (Get-ArrayaObjectValue -Object $applicationRow -Names @('identifierUris', 'IdentifierUris'))) | ForEach-Object { [string]$_ }) -join ', ')
                 }
             }
 
@@ -14647,6 +16840,7 @@ function Get-AuthenticationConfiguration {
                     CredentialIssueSummary        = $(if ($appRegistration) { [string]$appRegistration.CredentialIssueSummary } else { '' })
                     SignInAudience                = $(if ($appRegistration) { $appRegistration.SignInAudience } else { $null })
                     ApplicationCreatedDateTime    = $(if ($appRegistration) { $appRegistration.ApplicationCreatedDateTime } else { $null })
+                    IdentifierUris                = $(if ($appRegistration) { $appRegistration.IdentifierUrisText } else { $null })
                     DelegatedLastSignIn           = $(if ($servicePrincipalActivity) { $servicePrincipalActivity.DelegatedLastSignIn } else { $null })
                     ApplicationLastSignIn         = $(if ($servicePrincipalActivity) { $servicePrincipalActivity.ApplicationLastSignIn } else { $null })
                     LastSignInType                = $(if ($latestServicePrincipalSignIn) { $latestServicePrincipalSignIn.LastSignInType } else { $null })
@@ -15706,17 +17900,17 @@ function Ensure-PurviewComplianceSession {
         $interactiveTokenIssue = ($purviewAuthPath -ne 'Certificate' -and (Test-IsAssessmentInteractiveTokenAcquisitionFailure -Message $underlyingError))
         $guidance = if ($purviewAuthPath -eq 'Certificate') {
             if ($underlyingError -match 'No cmdlet assigned to the user have this feature enabled') {
-                'The certificate and app registration were accepted, but this tenant did not expose the Purview retention/DLP cmdlets to that app session. Update the service principal to include the Exchange Administrator role in this tenant, or establish Connect-IPPSSession successfully in the current PowerShell session and rerun the assessment with session reuse. Also confirm the target tenant is licensed and enabled for those compliance features.'
+                'The certificate and app registration were accepted, but this tenant did not expose the Purview retention/DLP cmdlets to that app session. Assign Global Reader for the broad read-only access model, or add the service principal to workload-scoped Purview read-only RBAC role groups for least privilege. Exchange Administrator alone does not authorize Security & Compliance PowerShell. Also confirm the target tenant is licensed and enabled for those compliance features.'
             }
             else {
-                'Confirm the app registration has the required Purview / compliance PowerShell access, the certificate thumbprint is valid on this host, and the tenant initial domain used for -Organization is correct. If the app path remains blocked, update the service principal to include the Exchange Administrator role in this tenant or run Connect-IPPSSession successfully in the current session and rerun the assessment with session reuse.'
+                'Confirm the app registration has the required Purview / compliance PowerShell access, the certificate thumbprint is valid on this host, and the tenant initial domain used for -Organization is correct. Use Global Reader for the broad read-only model or workload-scoped Purview read-only RBAC for least privilege; Exchange Administrator alone does not authorize Security & Compliance PowerShell.'
             }
         }
         elseif ($interactiveTokenIssue) {
             'Interactive Purview sign-in hit a Windows broker / WAM token acquisition failure. The assessment already tried the available delegated retries, including -DisableWAM and device code when supported. Next, try Connect-IPPSSession manually in a fresh PowerShell window. If that works, rerun the assessment with session reuse. If browser-based sign-in keeps failing on this host, complete the device code prompt in this console or switch to certificate-based authentication.'
         }
         else {
-            'Confirm the signed-in operator can establish a compliance PowerShell session and that Connect-IPPSSession is allowed in this environment. If app-based Purview access is expected, update the service principal to include the Exchange Administrator role in the tenant.'
+            'Confirm the signed-in operator can establish a compliance PowerShell session and that Connect-IPPSSession is allowed in this environment. For app-based Purview access, use Global Reader or workload-scoped Purview read-only RBAC; Exchange Administrator alone is not sufficient.'
         }
         $diagnosticMessage = if ($interactiveTokenIssue) {
             "Purview compliance PowerShell interactive sign-in hit a Windows broker / WAM token acquisition failure. Underlying error: $underlyingError"
@@ -17017,13 +19211,21 @@ if ($runExportOnly) {
         }
     }
 
+    $snapshotTenantDisplayName = $null
+    if ($script:tenantStatsHash.ContainsKey('TenantInfo') -and $script:tenantStatsHash['TenantInfo']) {
+        $snapshotTenantDisplayName = Get-ArrayaObjectValue -Object $script:tenantStatsHash['TenantInfo'] -Names @('DisplayName', 'TenantName')
+    }
     if (
-        $script:tenantStatsHash.ContainsKey('TenantInfo') -and
-        $script:tenantStatsHash['TenantInfo'] -and
-        $script:tenantStatsHash['TenantInfo'].PSObject.Properties['DisplayName'] -and
-        -not [string]::IsNullOrWhiteSpace([string]$script:tenantStatsHash['TenantInfo'].DisplayName)
+        [string]::IsNullOrWhiteSpace([string]$snapshotTenantDisplayName) -and
+        $script:LoadedTenantSnapshot -and
+        $script:LoadedTenantSnapshot.Contains('Metadata') -and
+        $script:LoadedTenantSnapshot['Metadata'] -is [System.Collections.IDictionary] -and
+        $script:LoadedTenantSnapshot['Metadata'].Contains('Tenant')
     ) {
-        $defaultTenantDisplayName = [string]$script:tenantStatsHash['TenantInfo'].DisplayName
+        $snapshotTenantDisplayName = Get-ArrayaObjectValue -Object $script:LoadedTenantSnapshot['Metadata']['Tenant'] -Names @('DisplayName', 'TenantName')
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$snapshotTenantDisplayName)) {
+        $defaultTenantDisplayName = [string]$snapshotTenantDisplayName
     }
 }
 else {

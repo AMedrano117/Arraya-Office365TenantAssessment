@@ -28,6 +28,8 @@ Describe 'Arraya.M365.Common' {
             'Filter-TenantStatsHash'
             'Get-ArrayaAssessmentOutputProfilePolicy'
             'Get-ArrayaAssessmentOutputRoot'
+            'Get-ArrayaBitTitanLicenseEstimate'
+            'Get-ArrayaBitTitanLicenseModel'
             'Get-ArrayaCollectorCacheValue'
             'Get-ArrayaObjectValue'
             'Get-ArrayaTenantSnapshotMetricSet'
@@ -652,7 +654,13 @@ Describe 'Arraya.M365.Common' {
     It 'maps output profiles to the updated reporting modes' {
         Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
 
-        (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile Presales).ReportingMode | Should -Be 'Minimum'
+        # Presales runs at Operator, not Minimum: Minimum depth disables unified group mailbox
+        # statistics and full SharePoint detail, both of which the migration sizing model needs.
+        (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile Presales).ReportingMode | Should -Be 'Operator'
+        (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile Presales).GenerateWorkbook | Should -BeTrue
+        (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile Presales).WorkbookExportPolicy | Should -Be 'Presales'
+        (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile Presales).TechnicalHtmlPolicy | Should -Be 'Presales'
+        (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile Presales).CollectionScopePolicy | Should -Be 'Presales'
         (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile ExecutiveLevel).ReportingMode | Should -Be 'Minimum'
         (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile SolutionsEngineer).ReportingMode | Should -Be 'Operator'
         (Get-ArrayaAssessmentOutputProfilePolicy -OutputProfile SolutionsEngineer).GenerateWorkbook | Should -BeTrue
@@ -1353,6 +1361,72 @@ Describe 'Arraya.M365.Common' {
         @($rows | Where-Object { $_.RuleId -eq 'ID-002' })[0].Recommendation | Should -Be 'Enable CA policy'
     }
 
+    It 'preserves blank customer-entry columns on Presales editable planning worksheets' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        if (
+            -not (Get-Command -Name Get-ExcelSheetInfo -ErrorAction SilentlyContinue) -or
+            -not (Get-Command -Name Import-Excel -ErrorAction SilentlyContinue)
+        ) {
+            Set-ItResult -Skipped -Because 'ImportExcel worksheet inspection is not available in this environment.'
+            return
+        }
+
+        function global:Write-Log { param() }
+        function global:Write-ProgressHelper { param() }
+
+        $exportPath = Join-Path $TestDrive 'presales-editable-schema.xlsx'
+        Export-HashTableToExcel -ExportDetails $exportPath -WorkbookExportPolicy Presales -hashtable @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Contoso' }
+            MigrationScopeDecisions = @(
+                [pscustomobject]@{
+                    DecisionKey    = 'BT-01'
+                    DecisionPrompt = 'Confirm mailbox scope.'
+                    Status         = 'Needs Input'
+                }
+            )
+            MigrationIdentityMapping = @(
+                [pscustomobject]@{
+                    DecisionKey             = 'IDENTITY:user1@contoso.com'
+                    ObjectType              = 'User'
+                    SourceDisplayName       = 'User One'
+                    SourceUPN               = 'user1@contoso.com'
+                    SourcePrimarySmtpAddress = 'user1@contoso.com'
+                    MappingStatus           = 'Needs Mapping'
+                }
+            )
+            AllTeams = @(
+                [pscustomobject]@{
+                    DisplayName = 'Legacy Team'
+                    ChannelInventoryStatus = 'Needs Data'
+                    MemberInventoryStatus = 'Needs Data'
+                }
+            )
+        }
+
+        $decisionRows = @(Import-Excel -Path $exportPath -WorksheetName 'MigrationScopeDecisions')
+        @($decisionRows[0].PSObject.Properties.Name) | Should -Be @(
+            'DecisionKey', 'DecisionPrompt', 'CustomerConfirmedValue', 'Status', 'InScope',
+            'TargetMapping', 'MigrationTool', 'DecisionOwner', 'DueDate', 'Notes'
+        )
+
+        $identityRows = @(Import-Excel -Path $exportPath -WorksheetName 'MigrationIdentityMapping')
+        @($identityRows[0].PSObject.Properties.Name) | Should -Contain 'TargetUPN'
+        @($identityRows[0].PSObject.Properties.Name) | Should -Contain 'InScope'
+        @($identityRows[0].PSObject.Properties.Name) | Should -Contain 'DecisionOwner'
+        @($identityRows[0].PSObject.Properties.Name) | Should -Contain 'Notes'
+
+        $teamRows = @(Import-Excel -Path $exportPath -WorksheetName 'AllTeams')
+        @($teamRows[0].PSObject.Properties.Name) | Should -Contain 'TotalChannels'
+        @($teamRows[0].PSObject.Properties.Name) | Should -Contain 'SharedChannelCount'
+        @($teamRows[0].PSObject.Properties.Name) | Should -Contain 'MemberCount'
+        @($teamRows[0].PSObject.Properties.Name) | Should -Contain 'GuestCount'
+        @($teamRows[0].PSObject.Properties.Name) | Should -Contain 'ChannelInventoryStatus'
+        @($teamRows[0].PSObject.Properties.Name) | Should -Contain 'MemberInventoryStatus'
+        $teamRows[0].ChannelInventoryStatus | Should -Be 'Needs Data'
+        $teamRows[0].MemberInventoryStatus | Should -Be 'Needs Data'
+    }
+
     It 'adds full-assessment governance datasets to workbook export while excluding them from T2T output' {
         $script:htmlHelperSource | Should -Match '\$isFullAssessmentGovernanceScope = \('
         $script:htmlHelperSource | Should -Match "\$collectionDepthMode -in @\('Operator', 'Automation', 'Geek', 'All'\)"
@@ -1447,7 +1521,7 @@ Describe 'Arraya.M365.Common' {
             MailFlowConnectors = @([pscustomobject]@{ Name = 'Inbound Connector' })
             RemoteDomains = @([pscustomobject]@{ Name = 'partner.com' })
             SMTPRelayServiceAccounts = @([pscustomobject]@{ UserPrincipalName = 'relay@contoso.com' })
-            AllTeams = @([pscustomobject]@{ DisplayName = 'Projects Team'; Visibility = 'Private'; IsArchived = $false; SharePointSiteUrl = 'https://contoso.sharepoint.com/sites/projects'; 'SiteSize-GB' = 44.5; TotalChannels = 12; SharedChannelCount = 2; SharedChannels = 'Vendors; Program Office'; OwnerCount = 2; MemberCount = 16; GuestCount = 1; LastActivityDate = '2026-04-01' })
+            AllTeams = @([pscustomobject]@{ DisplayName = 'Projects Team'; Visibility = 'Private'; IsArchived = $false; SharePointSiteUrl = 'https://contoso.sharepoint.com/sites/projects'; 'SiteSize-GB' = 44.5; TotalChannels = 12; SharedChannelCount = 2; SharedChannels = 'Vendors; Program Office'; ChannelInventoryStatus = 'Measured data'; OwnerCount = 2; MemberCount = 16; GuestCount = 1; MemberInventoryStatus = 'Measured data'; LastActivityDate = '2026-04-01' })
             SharePoint = @([pscustomobject]@{ Title = 'Projects'; Url = 'https://contoso.sharepoint.com/sites/projects'; Template = 'TEAMSITE'; Owner = 'owner@contoso.com'; StorageUsedGB = 44.5; StorageQuota = 1024; LastContentModifiedDate = '2026-04-01'; LockState = 'Unlock'; ArchiveStatus = 'NotArchived'; SharingCapability = 'ExternalUserAndGuestSharing'; IsTeamsConnected = $true })
             OneDrive = @([pscustomobject]@{ Title = 'User One OneDrive'; Url = 'https://contoso-my.sharepoint.com/personal/user1_contoso_com'; Template = 'SPSPERS'; Owner = 'user1@contoso.com'; StorageUsedGB = 18.4; StorageQuota = 1024; LastContentModifiedDate = '2026-04-02'; LockState = 'Unlock'; ArchiveStatus = 'NotArchived'; SharingCapability = 'Disabled'; IsTeamsConnected = $false })
             AuthenticationConfig = @([pscustomobject]@{ DefaultMfaState = 'Enabled' })
@@ -1499,7 +1573,10 @@ Describe 'Arraya.M365.Common' {
         $teamsSheet = @(Import-Excel -Path $exportPath -WorksheetName 'AllTeams')
         $teamsSheet[0].PSObject.Properties.Name | Should -Contain 'SharedChannelCount'
         $teamsSheet[0].PSObject.Properties.Name | Should -Contain 'SharedChannels'
+        $teamsSheet[0].PSObject.Properties.Name | Should -Contain 'ChannelInventoryStatus'
+        $teamsSheet[0].PSObject.Properties.Name | Should -Contain 'MemberInventoryStatus'
         $teamsSheet[0].SharedChannelCount | Should -Be 2
+        $teamsSheet[0].ChannelInventoryStatus | Should -Be 'Measured data'
 
         $delegateSheet = @(Import-Excel -Path $exportPath -WorksheetName 'MailboxDelegateAssignments')
         $delegateSheet[0].PSObject.Properties.Name | Should -Be @('MailboxDisplayName', 'MailboxPrimarySmtpAddress', 'MailboxUserPrincipalName', 'RecipientTypeDetails', 'PermissionType', 'Delegate', 'DelegateCountSource', 'CollectionState', 'Wave', 'Notes')

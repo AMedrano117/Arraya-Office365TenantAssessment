@@ -1193,6 +1193,74 @@ function Get-AllExchangeMailboxDetails {
             }
         }
 
+        # Microsoft 365 Group mailboxes are not returned by Get-EXOMailbox without -GroupMailbox,
+        # so the inventory above has zero GroupMailbox rows on every tenant. They hold real mail
+        # data that migration sizing has to account for, and their SharePoint site is a separate
+        # workload owned by a different tool, so they are collected into their own table rather
+        # than merged into AllMailboxes (which many downstream counts assume excludes groups).
+        # -GroupMailbox cannot be combined with -IncludeInactiveMailbox; this is its own call.
+        $tenantStatsHash["GroupMailboxes"] = @{}
+        try {
+            $groupMailboxProperties = @(
+                "ExternalDirectoryObjectId", "DisplayName", "UserPrincipalName", "RecipientTypeDetails", "PrimarySmtpAddress"
+                "Identity", "Guid", "ExchangeGuid", "ArchiveStatus", "ArchiveState", "ArchiveGuid"
+                "WhenMailboxCreated", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias", "EmailAddresses", "LegacyExchangeDN"
+            )
+            $desiredGroupMailboxProperties = @(
+                "ExternalDirectoryObjectId", "DisplayName", "UserPrincipalName", "RecipientTypeDetails", "PrimarySmtpAddress",
+                "Identity", "Guid", "ExchangeGuid", "ArchiveStatus", "ArchiveState", "ArchiveGuid",
+                "WhenMailboxCreated", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias", "LegacyExchangeDN",
+                @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}}
+            )
+
+            $exoMailboxCommand = Get-Command -Name Get-EXOMailbox -ErrorAction Stop
+            $supportsGroupMailboxSwitch = $exoMailboxCommand.Parameters.ContainsKey('GroupMailbox')
+            $groupMailboxes = @(
+                Invoke-QuietCommand -ScriptBlock {
+                    if ($supportsGroupMailboxSwitch) {
+                        try {
+                            Get-EXOMailbox -GroupMailbox -Properties $groupMailboxProperties -ResultSize Unlimited -ErrorAction Stop |
+                                Select-Object $desiredGroupMailboxProperties
+                        }
+                        catch {
+                            if ($_.Exception.Message -notmatch 'GroupMailbox is not a supported parameter') { throw }
+                            $supportsGroupMailboxSwitch = $false
+                            Get-EXOMailbox -Filter "RecipientTypeDetails -eq 'GroupMailbox'" -Properties $groupMailboxProperties -ResultSize Unlimited -ErrorAction Stop |
+                                Select-Object $desiredGroupMailboxProperties
+                        }
+                    }
+                    else {
+                        # Older ExchangeOnlineManagement builds do not expose -GroupMailbox.
+                        # A server-side RecipientTypeDetails filter returns the same inventory
+                        # without mixing it into the active/inactive mailbox query above.
+                        Get-EXOMailbox -Filter "RecipientTypeDetails -eq 'GroupMailbox'" -Properties $groupMailboxProperties -ResultSize Unlimited -ErrorAction Stop |
+                            Select-Object $desiredGroupMailboxProperties
+                    }
+                }
+            )
+
+            foreach ($groupMailbox in $groupMailboxes) {
+                $groupKey = @(
+                    [string]$groupMailbox.ExternalDirectoryObjectId
+                    if ($groupMailbox.ExchangeGuid) { [string]$groupMailbox.ExchangeGuid }
+                    if ($groupMailbox.Guid) { [string]$groupMailbox.Guid }
+                    [string]$groupMailbox.PrimarySmtpAddress
+                    [string]$groupMailbox.Identity
+                ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1
+                if ([string]::IsNullOrWhiteSpace($groupKey)) {
+                    $groupKey = "groupmailbox:$([guid]::NewGuid().Guid)"
+                }
+
+                $tenantStatsHash["GroupMailboxes"][$groupKey] = $groupMailbox
+            }
+
+            $groupMailboxQueryMode = if ($supportsGroupMailboxSwitch) { '-GroupMailbox' } else { "-Filter RecipientTypeDetails=GroupMailbox" }
+            Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Gathered $($tenantStatsHash['GroupMailboxes'].Count) Microsoft 365 Group mailboxes (Get-EXOMailbox $groupMailboxQueryMode)." -ExportFileLocation $exportDetails
+        }
+        catch {
+            Write-Log -Type ERROR -Message "[Get-AllExchangeMailboxDetails] An error occurred gathering Microsoft 365 Group mailboxes. Group mailbox sizing will be unavailable. $($_.Exception.Message)" -ExportFileLocation $exportDetails -CaptureError -ErrorRecordVar $_
+        }
+
         Update-MailboxDelegatePermissionInventory -TenantStatsHash $tenantStatsHash -CollectionDepthPolicy $collectionDepthPolicy -ProgressId $mailboxInventoryProgressId -ExportFileLocation $exportDetails
         Update-MailboxCalendarDelegateInventory -TenantStatsHash $tenantStatsHash -CollectionDepthPolicy $collectionDepthPolicy -ProgressId $mailboxInventoryProgressId -ExportFileLocation $exportDetails
     }
@@ -1550,10 +1618,17 @@ function Get-AllExchangeMailboxDetails {
                 $groupActivityLookup = Get-Office365GroupsActivityMailboxLookup -Context $Context
                 $groupActivityReportRows = if ($groupActivityLookup -and $groupActivityLookup.PSObject.Properties['Rows']) { [int]$groupActivityLookup.Rows } else { 0 }
                 $unifiedGroupsForStats = @()
-                $groupMailboxCandidateSource = 'AllMailboxes(GroupMailbox)'
-                $groupMailboxCandidates = @($tenantStatsHash['AllMailboxes'].Values | Where-Object {
-                    $_.PSObject.Properties['RecipientTypeDetails'] -and [string]$_.RecipientTypeDetails -eq 'GroupMailbox'
-                })
+                $groupMailboxCandidateSource = 'GroupMailboxes'
+                $groupMailboxCandidates = @()
+                if ($tenantStatsHash['GroupMailboxes'] -is [System.Collections.IDictionary]) {
+                    $groupMailboxCandidates = @($tenantStatsHash['GroupMailboxes'].Values)
+                }
+                if ($groupMailboxCandidates.Count -eq 0) {
+                    $groupMailboxCandidateSource = 'AllMailboxes(GroupMailbox)'
+                    $groupMailboxCandidates = @($tenantStatsHash['AllMailboxes'].Values | Where-Object {
+                        $_.PSObject.Properties['RecipientTypeDetails'] -and [string]$_.RecipientTypeDetails -eq 'GroupMailbox'
+                    })
+                }
                 if ($groupMailboxCandidates.Count -eq 0) {
                     $groupMailboxCandidateSource = 'UnifiedGroupsInventory'
                     $unifiedGroupsForStats = if ($unifiedGroupsInventoryCache) { @($unifiedGroupsInventoryCache) } else { @() }

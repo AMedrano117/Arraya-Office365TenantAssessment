@@ -71,15 +71,18 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match '\$invokeParams\.TechnicalHtmlPolicyOverride = \[string\]\$plan\.TechnicalHtmlPolicy'
         $runnerSource | Should -Match '\$invokeParams\.GenerateMigrationPackOverride = \[bool\]\$plan\.GenerateMigrationPack'
         $runnerSource | Should -Match '\$invokeParams\.CollectionScopePolicyOverride = \[string\]\$plan\.CollectionScopePolicy'
-        $runnerSource | Should -Match '\$shouldEnablePolicyTechnicalHtml = \(\[string\]\$plan\.TechnicalHtmlPolicy -eq ''TenantToTenantCutover''\)'
+        $runnerSource | Should -Match '\$shouldEnablePolicyTechnicalHtml = \(\[string\]\$plan\.TechnicalHtmlPolicy -in @\(''TenantToTenantCutover'', ''Presales''\)\)'
+        $runnerSource | Should -Match '\$shouldEnablePolicyQuestionnaire = \('
+        $runnerSource | Should -Match '\[string\]\$plan\.WorkbookExportPolicy -eq ''Presales'''
         $runnerSource | Should -Match 'if \(\$IncludeLegacyAssessmentArtifacts -or \$shouldEnablePolicyTechnicalHtml\)'
+        $runnerSource | Should -Match 'if \(\$IncludeLegacyAssessmentArtifacts -or \$shouldEnablePolicyQuestionnaire\)'
         $runnerSource | Should -Match 'if \(-not \$UseExistingConnections\) \{[\s\S]*\$invokeParams\.SkipAuth = \$SkipAuth[\s\S]*\$invokeParams\.SkipPermissionPreflight = \$SkipPermissionPreflight[\s\S]*\$invokeParams\.AuthMode = \$AuthMode'
         $runnerSource | Should -Match 'if \(-not \$UseExistingConnections\) \{[\s\S]*\$invokeParams\.CertificateThumbprint = \$CertificateThumbprint[\s\S]*\$invokeParams\.ClientSecretSecure = \$ClientSecretSecure'
         $runnerSource | Should -Match '\$invokeParams\.ExportOnly = \$true'
         $runnerSource | Should -Match '\$invokeParams\.TenantStatsJsonPath = \$AssessmentJsonPath'
         $runnerSource | Should -Match 'function Test-AssessmentPlanSkipsImproveByDefault'
         $runnerSource | Should -Match 'SkipImproveByDefault'
-        $runnerSource | Should -Match 'Tenant-to-tenant migration profile defaults to workbook, cutover pack, technical HTML, and JSON snapshot output\. Skipping Improve/customer-style follow-up artifacts unless requested separately\.'
+        $runnerSource | Should -Match 'Migration scoping profile.*defaults to workbook and technical HTML output\. Skipping Improve/customer-style follow-up artifacts unless requested separately\.'
     }
 
     It 'builds phase-specific collector invocations without crossing run-mode boundaries' {
@@ -104,6 +107,18 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $defaultCollectionInvocation.Parameters.ContainsKey('CollectorSection') | Should -BeFalse
         $defaultCollectionInvocation.Parameters.ContainsKey('CollectorStep') | Should -BeFalse
         $defaultCollectionInvocation.Parameters.ContainsKey('SkipAuth') | Should -BeFalse
+
+        $presalesInvocation = & $module {
+            param($Path)
+            Invoke-M365TenantWorkflow -Mode Full -ExportPath $Path -OutputProfile Presales -PassThruInvocation
+        } $TestDrive
+        $presalesInvocation.Parameters.GenerateQuestionnaireOverride | Should -BeTrue
+
+        $solutionsEngineerInvocation = & $module {
+            param($Path)
+            Invoke-M365TenantWorkflow -Mode Full -ExportPath $Path -OutputProfile SolutionsEngineer -PassThruInvocation
+        } $TestDrive
+        $solutionsEngineerInvocation.Parameters.GenerateQuestionnaireOverride | Should -BeFalse
 
         $existingConnectionInvocation = & $module {
             param($Path)
@@ -149,7 +164,12 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $runnerSource | Should -Match '\[string\]::Equals\(\$resolvedOutputFolder, \$resolvedExportPath, \[System\.StringComparison\]::OrdinalIgnoreCase\)'
     }
 
-    It 'uses the primary profile for workbook and HTML policy, but falls back to default collection scope for merged selections' {
+    It 'keeps curated workbook, HTML, and collection policies together and falls back to default for merged selections' {
+        # Curated output policies are inseparable from their collection scope: the curated
+        # sheet lists only name tables their own scope pass builds, and they set
+        # appendRemainingWorksheets to false. A merged selection forces CollectionScopePolicy
+        # back to Default, so keeping a curated workbook policy would emit a short workbook of
+        # mostly missing sheets and silently drop what the merged profiles collected.
         $module = Get-Module -Name 'Arraya.M365.AssessmentRunner' -ErrorAction Stop | Select-Object -First 1
 
         $singlePlan = & $module {
@@ -161,15 +181,33 @@ Describe 'Arraya.M365.AssessmentRunner' {
         $singlePlan.CollectionScopePolicy | Should -Be 'TenantToTenantCutover'
         $singlePlan.SkipImproveByDefault | Should -BeTrue
 
+        $presalesPlan = & $module {
+            Resolve-M365OutputProfileExecutionPlan -OutputProfile 'Presales'
+        }
+        $presalesPlan.WorkbookExportPolicy | Should -Be 'Presales'
+        $presalesPlan.TechnicalHtmlPolicy | Should -Be 'Presales'
+        $presalesPlan.CollectionScopePolicy | Should -Be 'Presales'
+        $presalesPlan.GenerateWorkbook | Should -BeTrue
+        $presalesPlan.ReportingMode | Should -Be 'Operator'
+        $presalesPlan.SkipImproveByDefault | Should -BeTrue
+
         $mergedPlan = & $module {
             Resolve-M365OutputProfileExecutionPlan -OutputProfile @('TenantToTenantMigration', 'SolutionsEngineer')
         }
         $mergedPlan.PrimaryProfile | Should -Be 'TenantToTenantMigration'
-        $mergedPlan.WorkbookExportPolicy | Should -Be 'TenantToTenantCutover'
-        $mergedPlan.TechnicalHtmlPolicy | Should -Be 'TenantToTenantCutover'
+        $mergedPlan.WorkbookExportPolicy | Should -Be 'Default'
+        $mergedPlan.TechnicalHtmlPolicy | Should -Be 'Default'
         $mergedPlan.GenerateMigrationPack | Should -BeTrue
         $mergedPlan.CollectionScopePolicy | Should -Be 'Default'
         $mergedPlan.SkipImproveByDefault | Should -BeFalse
+
+        $mergedPresalesPlan = & $module {
+            Resolve-M365OutputProfileExecutionPlan -OutputProfile @('Presales', 'SolutionsEngineer')
+        }
+        $mergedPresalesPlan.WorkbookExportPolicy | Should -Be 'Default'
+        $mergedPresalesPlan.TechnicalHtmlPolicy | Should -Be 'Default'
+        $mergedPresalesPlan.CollectionScopePolicy | Should -Be 'Default'
+        $mergedPresalesPlan.SkipImproveByDefault | Should -BeFalse
     }
 
     It 'surfaces auth and permission-preflight controls on tenant assessment entrypoints' {

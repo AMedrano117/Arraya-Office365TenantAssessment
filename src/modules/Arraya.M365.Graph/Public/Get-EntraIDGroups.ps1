@@ -429,7 +429,11 @@ function Get-EntraIDGroups {
         if ($collectGroupLicenseChecks) {
             $licensedGroupLookupById = Get-EntraLicensedGroupLookup
         }
-        if ($collectDeepGroupDetails -and ($collectGroupMemberCounts -or $collectGroupOwnerCounts) -and $groups.Count -gt 0) {
+        # Member/owner counts are independently enabled by the collection-depth policy.
+        # Presales/Operator deliberately skips the extra per-group detail GET, but still
+        # requests these counts. Prefetch them in that mode too so the loop does not fall
+        # back to /members/$count calls without the batch ConsistencyLevel header.
+        if (($collectGroupMemberCounts -or $collectGroupOwnerCounts) -and $groups.Count -gt 0) {
             $countLookups = Get-EntraGroupCountLookups -Groups $groups
             $groupMemberCountLookup = $countLookups.Members
             $groupOwnerCountLookup = $countLookups.Owners

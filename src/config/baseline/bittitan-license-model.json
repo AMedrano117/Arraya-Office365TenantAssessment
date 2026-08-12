@@ -1,0 +1,80 @@
+{
+  "ModelVersion": "1.1",
+  "LastReviewed": "2026-08-12",
+  "Scope": "Mailbox data only. SharePoint, OneDrive, and Teams content are migrated with ShareGate and are deliberately absent from this model.",
+  "Notes": [
+    "BitTitan SKU names, entitlements, and data thresholds change with their published price list.",
+    "Confirm these values against the current BitTitan price list before quoting a customer.",
+    "This file owns the SKU rules; Get-ArrayaBitTitanLicenseEstimate owns the counting.",
+    "The estimator emits unit baskets and decision guidance only. Dollar costs and automatic cost-based recommendations are intentionally excluded."
+  ],
+
+  "Skus": {
+    "MigrationWizMailbox": {
+      "Name": "MigrationWiz-Mailbox",
+      "BlockSizeGB": 50,
+      "PassesPerMailbox": 10,
+      "Stackable": true,
+      "Covers": [ "Primary mailbox" ],
+      "Notes": "Best used for mailbox-only migrations without archive content. One license applies to one mailbox for up to BlockSizeGB and up to PassesPerMailbox passes; units cannot be pooled across mailboxes. If that mailbox reaches the transfer limit, an additional license is required before the same migration can resume."
+    },
+    "UserMigrationBundle": {
+      "Name": "User Migration Bundle",
+      "PerUser": true,
+      "Covers": [ "Primary mailbox", "Personal archive", "OneDrive", "Documents" ],
+      "UnusedEntitlements": [ "OneDrive", "Documents" ],
+      "Notes": "Per licensable user, no per-user data cap. The OneDrive and Documents entitlements go unused when ShareGate handles file workloads."
+    }
+  },
+
+  "Sizing": {
+    "IncludeDeletedItems": true,
+    "IncludeArchive": true,
+    "IncludeArchiveDeletedItems": true,
+    "Notes": "Total sizing data per mailbox = primary + primary deleted + archive + archive deleted."
+  },
+
+  "Thresholds": {
+    "LargeMailboxGB": 50,
+    "VeryLargeMailboxGB": 100,
+    "LargeArchiveGB": 100,
+    "EmptyGroupMailboxFloorGB": 0,
+    "Notes": "EmptyGroupMailboxFloorGB: Microsoft 365 Group mailboxes at or below this size are treated as empty shells, reported separately, and excluded from license units. Many groups exist only for their SharePoint site and were never emailed."
+  },
+
+  "BundleEligibility": {
+    "RecipientTypeDetails": [ "UserMailbox" ],
+    "RequiresBackingUser": true,
+    "Notes": "Mailbox-only shared, room, equipment, and scheduling mailboxes use mailbox-license blocks. Archive-bearing objects require UMB and should be validated against the project configuration. Microsoft 365 Group mailboxes are report-only by practice default."
+  },
+
+  "PracticePolicy": {
+    "GroupMailboxLicensing": "ReportOnly",
+    "InactiveMailboxTreatment": "RestoreThenMigrate",
+    "EmitDollarCosts": false,
+    "AutomaticLicenseRecommendation": false,
+    "Notes": "Microsoft 365 Group mailbox conversations remain visible for customer disposition but do not contribute automatic BitTitan license units unless explicitly overridden. Inactive mailboxes are assumed to be restored or activated and then migrated through a regular mailbox/archive job."
+  },
+
+  "OptionalCommercialOptions": {
+    "TenantMigrationBundle": {
+      "Name": "Tenant Migration Bundle",
+      "DefaultIncluded": false,
+      "Eligibility": "Microsoft 365 tenant-to-tenant migration where BitTitan will migrate mailbox plus Teams or SharePoint workloads.",
+      "Includes": [
+        "One User Migration Bundle per user",
+        "One Flex Collaboration License per bundle"
+      ],
+      "FlexUnitBasis": "One Team or one SharePoint library, up to 100 GB per Flex Collaboration License",
+      "DoesNotInclude": [ "Public folders" ],
+      "Excludes": [ "Public folders" ],
+      "RequiresCurrentValidation": [ "Teams private chat (PCH) capability and licensing" ],
+      "PrivateChatProjectType": "Collaboration (Private Chats)",
+      "PrivateChatGuidance": "Teams Private Chat (PCH) uses a separate Collaboration (Private Chats) project. Do not assume TMB/UMB inclusion or exclusion: BitTitan's current official pages describe changing and conflicting license treatment. Validate capability, limitations, and entitlement against the current migration guide and Getting Started page when scoping and again before ordering.",
+      "PrivateChatGuideUrl": "https://help.bittitan.com/hc/en-us/articles/25603590557979-Teams-Private-Chat-Migration-Guide",
+      "GettingStartedUrl": "https://help.bittitan.com/hc/en-us/articles/1260806785629-Getting-Started-with-Migrations",
+      "WhenToReview": "Review when BitTitan will carry Teams or SharePoint and the included Flex Collaboration entitlements can be used.",
+      "PracticeNotes": "Not used by default. ShareGate owns SharePoint, OneDrive, and Teams in the normal delivery model, so the Flex Collaboration entitlement is normally unused. Additional Collaboration or Shared Document licenses may be required when demand exceeds the included Flex licenses."
+    }
+  }
+}
