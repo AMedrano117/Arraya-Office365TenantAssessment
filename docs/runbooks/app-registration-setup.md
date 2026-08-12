@@ -2,6 +2,33 @@
 
 Use this runbook when you want to run the assessment with app-based auth. Certificate auth is the recommended production path. `ClientSecret` remains available as a compatibility mode for Graph-focused automation, but it is not equivalent to the certificate path in this workflow.
 
+## Automated setup
+
+[New-AssessmentAppRegistration.ps1](../../onboarding/New-AssessmentAppRegistration.ps1) creates the app registration, certificate, service principal, and Graph/Exchange application consent. Its `-AccessModel` parameter selects one of two mutually exclusive workload authorization models.
+
+```powershell
+.\onboarding\New-AssessmentAppRegistration.ps1 -TenantId '<tenant-guid>' -PermissionSet Standard -AccessModel LeastPrivilege
+```
+
+For the complete certificate-authenticated assessment, including Purview retention and DLP inventory, use the read-only Global Reader option:
+
+```powershell
+.\onboarding\New-AssessmentAppRegistration.ps1 -TenantId '<tenant-guid>' -PermissionSet Standard -AccessModel GlobalReader
+```
+
+- `LeastPrivilege` is the default. It assigns no Entra directory role; Exchange and Purview must use workload-scoped read-only RBAC role groups.
+- `GlobalReader` assigns the read-only Global Reader directory role and removes a legacy Exchange Administrator assignment from the same service principal. It is broader but simpler and supports both Exchange Online and Security & Compliance PowerShell.
+
+- `-PermissionSet` accepts `Core` (the 19 baseline permissions), `Standard` (adds `TeamMember.Read.All`, the default), or `Extended` (adds the optional enrichment permissions listed below).
+- `-WhatIf` previews the changes without writing to the tenant.
+- `-SkipExchange` provisions a Graph-only app. `-SkipCertificate` skips certificate generation.
+- `-DisableWebAccountManager` forces the system browser when Web Account Manager sign-in fails with a window handle error, which happens in some embedded terminals and background hosts.
+- Re-running is safe. An existing app of the same display name is reused, only missing permissions are added, and existing consent is left alone.
+
+The signed-in admin needs Global Administrator, or Application Administrator plus Privileged Role Administrator, because the script both grants admin consent and assigns a directory role. Sign-in is interactive, so run it from a terminal you can respond in.
+
+The manual steps below remain accurate if you would rather click through the portal.
+
 ## Create the app registration
 
 1. Go to Entra admin center.
@@ -70,7 +97,7 @@ Exchange Online app-only access must be configured on the app registration. With
 Purview retention and DLP collection uses `Connect-IPPSSession` from `ExchangeOnlineManagement`. In certificate mode this requires:
 
 1. The app's service principal exists in the **target tenant** (created when the customer admin grants consent to the app).
-2. The **Exchange Administrator** role is assigned to that service principal in the target tenant.
+2. Either workload-scoped read-only Purview RBAC is configured (`LeastPrivilege`) or **Global Reader** is assigned (`GlobalReader`). Do not stack Global Reader with Exchange Administrator.
 
 This is a per-engagement step — it must be done in every customer tenant, not just in the Arraya tenant where the app is registered.
 
@@ -78,9 +105,11 @@ To assign the role in the customer tenant:
 
 1. Sign in to the customer's Entra admin center.
 2. Go to **Enterprise applications** and find the Arraya assessment app.
-3. Under **Roles and administrators**, assign **Exchange Administrator** to the service principal.
+3. For the `GlobalReader` model, assign **Global Reader** to the service principal. Do not also assign **Exchange Administrator**.
 
-Without this, `Connect-IPPSSession` will accept the certificate but the compliance cmdlets will not be exposed to the app session. Purview collection is skipped and retention/DLP data will be absent from the report.
+`Exchange Administrator` alone does not expose Security & Compliance PowerShell cmdlets to an app-only session. Without a supported Purview role, `Connect-IPPSSession` can accept the certificate while exposing no retention or DLP cmdlets.
+
+`Global Reader` is broad but read-only. For `LeastPrivilege`, create workload custom role groups containing only the Exchange inventory and Purview retention/DLP view roles required by the collector, then add the service principal to those groups.
 
 > **Note:** Client secret auth is not supported for Purview compliance PowerShell. Certificate auth is the only supported app-based path for Purview collection.
 
