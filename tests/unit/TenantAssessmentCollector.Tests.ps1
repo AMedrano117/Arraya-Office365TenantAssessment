@@ -352,6 +352,12 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:entraGroupsSource | Should -Match '\$assignedLicenseSkuIds\.Count -gt 0'
     }
 
+    It 'prefetches requested Entra group counts even when deep group detail is disabled' {
+        $script:entraGroupsSource | Should -Match 'if \(\(\$collectGroupMemberCounts -or \$collectGroupOwnerCounts\) -and \$groups\.Count -gt 0\)'
+        $script:entraGroupsSource | Should -Not -Match 'if \(\$collectDeepGroupDetails -and \(\$collectGroupMemberCounts -or \$collectGroupOwnerCounts\)'
+        $script:entraGroupsSource | Should -Match "ConsistencyLevel = 'eventual'"
+    }
+
     It 'builds a dedicated action-only T2T migration readiness checklist dataset with split mail-flow and mailbox-prep rows' {
         $script:collectorSource | Should -Match 'MigrationReadinessChecklist'
         $script:collectorSource | Should -Match 'Mail flow connectors'
@@ -451,6 +457,11 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'governance findings'
         $script:collectorSource | Should -Not -Match 'Exchange governance Tier B summaries'
         $script:collectorSource | Should -Not -Match 'Operational Tier B summaries'
+    }
+
+    It 'skips per-mailbox Exchange governance enrichment for Presales sizing runs' {
+        $script:collectorSource | Should -Match '''Presales''[\s\S]*\$plan\.BuildExchangeGovernanceTables = \$false'
+        $script:collectorSource | Should -Match 'New-ArrayaCollectorStep -Name ''Exchange governance summaries''[\s\S]*-Enabled \(\[bool\]\$script:ProfileCollectionPlan\.BuildExchangeGovernanceTables\)'
     }
 
     It 'separates connection from assessment and uses the new six-section assessment flow' {

@@ -100,6 +100,8 @@ Describe 'Arraya.M365.Exchange' {
         $script:mailboxSource | Should -Match 'function Update-MailboxCalendarDelegateInventory'
         $script:mailboxSource | Should -Match 'function Resolve-MailboxCalendarQueryIdentity'
         $script:mailboxSource | Should -Match 'Get-EXOMailboxPermission'
+        $script:mailboxSource | Should -Match "Parameters\.ContainsKey\('GroupMailbox'\)"
+        $script:mailboxSource | Should -Match "RecipientTypeDetails -eq 'GroupMailbox'"
         $script:mailboxSource | Should -Match 'Get-EXORecipientPermission -AccessRights SendAs -ResultSize Unlimited'
         $script:mailboxSource | Should -Match 'Get-EXOMailboxFolderStatistics -Identity \$mailboxCalendarQueryIdentity -FolderScope Calendar'
         $script:mailboxSource | Should -Match 'Get-EXOMailboxFolderPermission \$calendarPermissionIdentity'

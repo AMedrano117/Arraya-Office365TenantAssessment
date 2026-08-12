@@ -7,7 +7,7 @@ function Export-HashTableToExcel {
         [Parameter(Mandatory=$True)] 
         [string]$ExportDetails,
         [Parameter(Mandatory = $false)]
-        [ValidateSet('Default', 'TenantToTenantCutover')]
+        [ValidateSet('Default', 'TenantToTenantCutover', 'Presales')]
         [string]$WorkbookExportPolicy = 'Default'
         #[Parameter(Mandatory=$false)] [switch]$tenant
     )
@@ -93,7 +93,22 @@ function Export-HashTableToExcel {
         'PrivilegedAccessRemediationSummary',
         'TeamsGroupsCleanupCandidates',
         'GroupLicensingSummary',
-        'LicenseOptimizationCandidates'
+        'LicenseOptimizationCandidates',
+        'BitTitanLicenseMixBreakdown',
+        'BitTitanPlanningOptions',
+        'BitTitanLicenseDetail',
+        'MigrationComplexityFlags',
+        'MigrationQuoteReadiness',
+        'MigrationTargetReadiness',
+        'MigrationIdentityMapping',
+        'MigrationDomainDependencies',
+        'MigrationObjectDisposition',
+        'MigrationWorkloadEffort',
+        'MigrationWavePlan',
+        'MigrationScopeDecisions',
+        'ShareGateScopeSummary',
+        'GroupWorkloadReconciliation',
+        'GroupMailboxes'
     )
 
     $defaultExcludedWorksheets = @(
@@ -763,6 +778,7 @@ function Export-HashTableToExcel {
             'RecipientDomainSummary'          = @('Domain', 'RecipientCount', 'UserMailboxCount', 'SharedMailboxCount', 'GroupRecipientCount', 'HiddenFromAddressListsCount', 'Notes')
             'MailboxMigrationSummary'         = @('RecipientTypeDetails', 'MailboxCount', 'ActiveMailboxCount', 'InactiveMailboxCount', 'ArchiveEnabledCount', 'ForwardingCount', 'MailboxesWithDelegateDependencies', 'TotalDataToMigrateGB')
             'BitTitanLicenseSummary'          = @('Section', 'Metric', 'Value', 'Notes')
+            'BitTitanLicenseMixBreakdown'     = @('Category', 'ObjectCount', 'MailboxMigrationLicenseUnits', 'UserMigrationBundleUnits', 'ReportOnlyObjectCount', 'OptionalMigrationObjectCount', 'NeedsDataObjectCount', 'DataGB', 'UmbEligibilityValidationCount', 'Treatment', 'Notes')
             'DelegateSummary'                 = @('PermissionType', 'AffectedMailboxCount', 'AssignmentCount', 'CollectionStates', 'Notes')
             'CollaborationSummary'            = @('Workload', 'TotalCount', 'TotalStorageGB', 'UnknownStorageCount', 'LargestObjectName', 'LargestObjectSizeGB', 'Notes')
             'CutoverPrepSummary'              = @('Category', 'Item', 'Status', 'Value', 'Notes')
@@ -779,7 +795,7 @@ function Export-HashTableToExcel {
             'MailFlowConnectors'              = @('Name', 'Enabled', 'ConnectorType', 'ConnectorSource', 'SenderDomains', 'RecipientDomains', 'SmartHosts', 'TlsSettings', 'Comment', 'Notes')
             'RemoteDomains'                   = @('Name', 'DomainName', 'AutoForwardEnabled', 'AllowedOOFType', 'TNEFEnabled', 'TrustedMailOutboundEnabled', 'Notes')
             'SMTPRelayServiceAccounts'        = @('DisplayName', 'UserPrincipalName', 'PrimarySmtpAddress', 'RecipientTypeDetails', 'IsDirSynced', 'AssignedLicensesFriendly', 'Notes')
-            'AllTeams'                        = @('DisplayName', 'Visibility', 'IsArchived', 'SharePointSiteUrl', 'SiteSize-GB', 'TotalChannels', 'SharedChannelCount', 'SharedChannels', 'OwnerCount', 'MemberCount', 'GuestCount', 'LastActivityDate', 'Notes')
+            'AllTeams'                        = @('DisplayName', 'Visibility', 'IsArchived', 'SharePointSiteUrl', 'SiteSize-GB', 'TotalChannels', 'SharedChannelCount', 'SharedChannels', 'ChannelInventoryStatus', 'OwnerCount', 'MemberCount', 'GuestCount', 'MemberInventoryStatus', 'LastActivityDate', 'Notes')
             'SharePoint'                      = @('Title', 'Url', 'Template', 'Owner', 'StorageUsedGB', 'StorageQuota', 'LastContentModifiedDate', 'LockState', 'ArchiveStatus', 'SharingCapability', 'IsTeamsConnected', 'Notes')
             'OneDrive'                        = @('Title', 'Url', 'Template', 'Owner', 'StorageUsedGB', 'StorageQuota', 'LastContentModifiedDate', 'LockState', 'ArchiveStatus', 'SharingCapability', 'IsTeamsConnected', 'Notes')
         }
@@ -800,7 +816,9 @@ function Export-HashTableToExcel {
         [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
-            [string]$LogicalName
+            [string]$LogicalName,
+            [Parameter(Mandatory = $false)]
+            [string]$Policy = 'Default'
         )
 
         $userIdentityColumns = @(
@@ -827,6 +845,40 @@ function Export-HashTableToExcel {
                     'DriveURL', 'DriveStorageGB'
                 )
             )
+        }
+
+        # The pre-sales workbook is read by a Solutions Engineer sizing a deal, so its raw
+        # inventories are trimmed to the sizing and identity columns that decision needs.
+        # Scoped to the Presales policy so the default assessment workbook is unaffected.
+        if ($Policy -eq 'Presales') {
+            $presalesColumnMap = @{
+                'MigrationScopeSummary'       = @('Tool', 'Section', 'Metric', 'Value', 'Notes')
+                'MigrationQuoteReadiness'     = @('RowType', 'ReadinessLevel', 'Category', 'DecisionKey', 'Requirement', 'Status', 'Blocking', 'DiscoveredValue', 'EvidenceSource', 'CustomerConfirmedValue', 'Resolution', 'DecisionOwner', 'DueDate', 'Notes')
+                'MigrationTargetReadiness'    = @('DecisionKey', 'Area', 'ReadinessCheck', 'DiscoveredValue', 'EvidenceSource', 'Confidence', 'CustomerConfirmedValue', 'Status', 'Blocking', 'RequiredAction', 'DecisionOwner', 'DueDate', 'Notes')
+                'MigrationScopeDecisions'     = @('DecisionKey', 'DecisionPrompt', 'CustomerConfirmedValue', 'Status', 'InScope', 'TargetMapping', 'MigrationTool', 'DecisionOwner', 'DueDate', 'Notes')
+                'MigrationIdentityMapping'    = @('DecisionKey', 'ObjectType', 'SourceDisplayName', 'SourceUPN', 'SourcePrimarySmtpAddress', 'SourceAnchor', 'OnPremisesSyncEnabled', 'TargetUPN', 'TargetPrimarySmtpAddress', 'TargetMapping', 'InScope', 'MappingStatus', 'ConfirmationGap', 'ConflictStatus', 'CustomerConfirmedValue', 'DecisionOwner', 'DueDate', 'Notes')
+                'MigrationDomainDependencies' = @('DecisionKey', 'Domain', 'IsDefault', 'IsInitial', 'Verified', 'AuthenticationType', 'RecipientCount', 'UserUPNCount', 'MailboxSmtpCount', 'GroupSmtpCount', 'ApplicationUriReferenceCount', 'ProposedDisposition', 'CustomerConfirmedValue', 'InScope', 'DnsOwner', 'ReleaseOrder', 'Status', 'ConfirmationGap', 'DueDate', 'Notes')
+                'MigrationObjectDisposition'  = @('DecisionKey', 'ObjectType', 'DisplayName', 'SourceIdentity', 'State', 'DataGB', 'HasArchive', 'ArchiveSizeGB', 'ProposedDisposition', 'CustomerConfirmedValue', 'InScope', 'ScopeAccountingState', 'TargetMapping', 'MigrationTool', 'MigrationToolSource', 'MigrationPrerequisite', 'Status', 'ConfirmationGap', 'EvidenceSource', 'DecisionOwner', 'DueDate', 'Notes')
+                'MigrationWorkloadEffort'     = @('DecisionKey', 'Workload', 'MigrationTool', 'ObjectCount', 'DataGB', 'DiscoveredObjectCount', 'ExplicitIncludedCount', 'ExplicitExcludedCount', 'UndecidedObjectCount', 'UnknownEvidenceCount', 'DiscoveredDataGB', 'ExplicitExcludedDataGB', 'ComplexityDrivers', 'ProvisionalEffortBand', 'EstimateBasis', 'CustomerConfirmedBand', 'Status', 'Assumptions', 'DecisionOwner', 'DueDate', 'Notes')
+                'MigrationWavePlan'           = @('DecisionKey', 'Wave', 'Purpose', 'Workloads', 'CandidateObjectCount', 'ExplicitExcludedCount', 'UndecidedObjectCount', 'EstimatedWaveCount', 'PlanningAssumption', 'EntryCriteria', 'ExitCriteria', 'Dependencies', 'Status', 'DecisionOwner', 'DueDate', 'Notes')
+                'BitTitanLicenseMixBreakdown' = @('Category', 'ObjectCount', 'MailboxMigrationLicenseUnits', 'UserMigrationBundleUnits', 'ReportOnlyObjectCount', 'OptionalMigrationObjectCount', 'NeedsDataObjectCount', 'DataGB', 'UmbEligibilityValidationCount', 'Treatment', 'Notes')
+                'BitTitanPlanningOptions'     = @('Option', 'DefaultPractice', 'PlanningUnits', 'Eligibility', 'WorkloadCoverage', 'UnitBasis', 'WhenToReview', 'WhyNormallyExcluded', 'Exclusions', 'PrivateChatValidation', 'PrivateChatGuideUrl', 'GettingStartedUrl', 'GuidanceParagraph', 'Decision')
+                'BitTitanLicenseDetail'       = @('ObjectType', 'DisplayName', 'Identity', 'RecipientType', 'IsInactiveMailbox', 'SizeGB', 'ArchiveStatus', 'HasArchive', 'ArchiveSizeGB', 'ArchiveDeletedItemsGB', 'MigrationPrerequisite', 'RecommendedSku', 'LicenseUnits', 'BundleEligible', 'UmbEligibilityValidationRequired', 'EstimateStatus', 'SizingBasis', 'Notes')
+                'ShareGateScopeSummary'       = @('Workload', 'ObjectCount', 'TotalStorageGB', 'UnknownStorageCount', 'LargestObjectName', 'LargestObjectSizeGB', 'Notes')
+                'GroupWorkloadReconciliation' = @('DisplayName', 'PrimarySmtpAddress', 'IsTeam', 'HasSharedChannels', 'ChannelInventoryStatus', 'MemberInventoryStatus', 'SiteUrl', 'MailboxSizeGB', 'MailboxEvidenceStatus', 'MailboxEvidenceSource', 'SiteStorageGB', 'MailboxScope', 'SiteScope', 'Classification', 'Notes')
+                'MigrationComplexityFlags'    = @('Category', 'Item', 'Status', 'Value', 'Notes', 'MigrationAction', 'SourceWorksheet')
+                'AllMailboxes'                = @('DisplayName', 'UserPrincipalName', 'PrimarySmtpAddress', 'RecipientTypeDetails', 'IsInactiveMailbox', 'MailboxSizeGB', 'DeletedItemsGB', 'ArchiveStatus', 'HasArchive', 'ArchiveSizeGB', 'ArchiveDeletedItemsGB', 'TotalDataToMigrateGB', 'BitTitanLicenseType', 'BitTitanLicenseCount', 'LitigationHoldEnabled', 'ForwardingSmtpAddress')
+                'GroupMailboxes'              = @('DisplayName', 'PrimarySmtpAddress', 'Alias', 'RecipientTypeDetails', 'ExchangeGuid', 'InventorySource', 'MailboxEvidenceStatus', 'MailboxEvidenceSource', 'MailboxSizeGB', 'DeletedItemsGB', 'ArchiveStatus', 'HasArchive', 'ArchiveSizeGB', 'TotalDataToMigrateGB', 'BitTitanLicenseType', 'BitTitanLicenseCount', 'WhenMailboxCreated', 'HiddenFromAddressListsEnabled')
+                'SharePoint'                  = @('Title', 'Url', 'Template', 'Owner', 'StorageUsedGB', 'StorageQuota', 'LastContentModifiedDate', 'LockState', 'SharingCapability')
+                'OneDrive'                    = @('Title', 'Url', 'Owner', 'StorageUsedGB', 'StorageQuota', 'LastContentModifiedDate', 'LockState')
+                'AllTeams'                    = @('DisplayName', 'Visibility', 'IsArchived', 'SharePointSiteUrl', 'TotalChannels', 'PrivateChannelCount', 'SharedChannelCount', 'SharedChannels', 'ChannelInventoryStatus', 'OwnerCount', 'MemberCount', 'GuestCount', 'MemberInventoryStatus', 'LastActivityDate')
+                'UnifiedGroups'               = @('DisplayName', 'PrimarySmtpAddress', 'AccessType', 'SharePointSiteUrl', 'GroupMemberCount', 'ManagedByDetails', 'WhenCreated')
+                'EnterpriseApplications'      = @('DisplayName', 'AppId', 'PreferredSingleSignOnMode', 'IdentifierUris', 'RedirectUrisText', 'SignInAudience', 'AccountEnabled')
+            }
+
+            if ($presalesColumnMap.ContainsKey($LogicalName)) {
+                return @($presalesColumnMap[$LogicalName])
+            }
         }
 
         if ($columnMap.ContainsKey($LogicalName)) {
@@ -1062,6 +1114,7 @@ function Export-HashTableToExcel {
         'RecipientDomainSummary',
         'MailboxMigrationSummary',
         'BitTitanLicenseSummary',
+        'BitTitanLicenseMixBreakdown',
         'DelegateSummary',
         'CollaborationSummary',
         'CutoverPrepSummary',
@@ -1097,6 +1150,67 @@ function Export-HashTableToExcel {
         'GroupLicensingSummary', 'LicenseOptimizationCandidates'
     )
 
+    # Pre-sales scoping workbook: a Solutions Engineer sizing a deal needs the scope, the
+    # licensing, and the complexity drivers - not the ~90-sheet assessment. Ordered so the
+    # workbook reads tool by tool: overall scope, then BitTitan mailbox side, then ShareGate
+    # collaboration side, then supporting inventory.
+    $presalesDesiredOrder = @(
+        'MigrationScopeSummary',
+        'MigrationQuoteReadiness',
+        'MigrationTargetReadiness',
+        'MigrationComplexityFlags',
+        'MigrationScopeDecisions',
+        'MigrationDomainDependencies',
+        'MigrationIdentityMapping',
+        'MigrationObjectDisposition',
+        'MigrationWorkloadEffort',
+        'MigrationWavePlan',
+        'BitTitanLicenseSummary',
+        'BitTitanLicenseMixBreakdown',
+        'BitTitanPlanningOptions',
+        'BitTitanLicenseDetail',
+        'MailboxMigrationSummary',
+        'AllMailboxes',
+        'GroupMailboxes',
+        'ShareGateScopeSummary',
+        'GroupWorkloadReconciliation',
+        'SharePoint',
+        'OneDrive',
+        'AllTeams',
+        'UnifiedGroups',
+        'TenantInfo',
+        'Domains',
+        'PublicFolderDetails',
+        'AuthenticationSSOApplications',
+        'EnterpriseApplications',
+        'AdConnectConfiguration',
+        'HybridConfiguration',
+        'LicenseSKUs'
+    )
+
+    # These Presales worksheets are working registers, not read-only evidence tables.
+    # Their curated schemas deliberately include blank customer-entry columns that an SE
+    # completes and later merges back into a snapshot. Keep those headers even when every
+    # generated row is initially blank in that column.
+    $presalesEditableSchemaWorksheets = @(
+        'MigrationQuoteReadiness',
+        'MigrationTargetReadiness',
+        'MigrationScopeDecisions',
+        'MigrationDomainDependencies',
+        'MigrationIdentityMapping',
+        'MigrationObjectDisposition',
+        'MigrationWorkloadEffort',
+        'MigrationWavePlan'
+    )
+
+    # These evidence tables also have a stable schema. In particular, when every Team
+    # enrichment call needs data, the numeric columns are intentionally blank and the status
+    # columns explain why; pruning those headers would hide that distinction on replay.
+    $presalesEvidenceSchemaWorksheets = @(
+        'AllTeams',
+        'GroupWorkloadReconciliation'
+    )
+
     $desiredOrder = $defaultDesiredOrder
     $excludedWorksheets = $defaultExcludedWorksheets
     $appendRemainingWorksheets = $true
@@ -1104,6 +1218,11 @@ function Export-HashTableToExcel {
         'TenantToTenantCutover' {
             $desiredOrder = $tenantToTenantCutoverDesiredOrder
             $excludedWorksheets = @($defaultExcludedWorksheets + $tenantToTenantCutoverExcludedWorksheets | Select-Object -Unique)
+            $appendRemainingWorksheets = $false
+        }
+        'Presales' {
+            $desiredOrder = $presalesDesiredOrder
+            $excludedWorksheets = @($defaultExcludedWorksheets | Select-Object -Unique)
             $appendRemainingWorksheets = $false
         }
     }
@@ -1165,7 +1284,7 @@ function Export-HashTableToExcel {
                 $sourceCount = [int]$sourceInfo.Count
                 $exportSource = $sourceInfo.Source
                 $explicitColumns = if ($WorkbookExportPolicy -eq 'TenantToTenantCutover') { @(Get-TenantToTenantWorksheetColumns -LogicalName $table) } else { @() }
-                $curatedColumns = if ($WorkbookExportPolicy -ne 'TenantToTenantCutover') { @(Get-AssessmentDefaultWorksheetColumns -LogicalName $table) } else { @() }
+                $curatedColumns = if ($WorkbookExportPolicy -ne 'TenantToTenantCutover') { @(Get-AssessmentDefaultWorksheetColumns -LogicalName $table -Policy $WorkbookExportPolicy) } else { @() }
 
                 if ($sourceCount -gt 0) {
                     $autoSizeSheet = ($sourceCount -le $autoSizeRowLimit -and $WorkbookExportPolicy -ne 'TenantToTenantCutover')
@@ -1209,11 +1328,19 @@ function Export-HashTableToExcel {
                     # that are empty for every row. Drop them so the columns that carry data
                     # are not pushed off-screen.
                     #
-                    # Skipped for the two worksheet shapes that are a fixed contract: the
+                    # Skipped for worksheet shapes that are a fixed contract: the
                     # tenant-to-tenant explicit columns (which deliberately allow empty-schema
-                    # sheets) and the flattened Section/Item/Value/Notes configuration sheets,
-                    # where an empty Notes column for one tenant must not change the schema.
-                    if ($explicitColumns.Count -eq 0 -and -not $isConfigurationSheet) {
+                    # sheets), Presales editable planning registers and evidence-status tables,
+                    # and the flattened Section/Item/Value/Notes configuration sheets, where
+                    # an empty Notes column for one tenant must not change the schema.
+                    $preservePresalesSchema = (
+                        $WorkbookExportPolicy -eq 'Presales' -and
+                        (
+                            $presalesEditableSchemaWorksheets -contains $table -or
+                            $presalesEvidenceSchemaWorksheets -contains $table
+                        )
+                    )
+                    if ($explicitColumns.Count -eq 0 -and -not $isConfigurationSheet -and -not $preservePresalesSchema) {
                         $droppedColumns = @()
                         $friendlyRows = @(Remove-WorkbookExportEmptyColumns -Records $friendlyRows -DroppedColumns ([ref]$droppedColumns))
                         if ($droppedColumns.Count -gt 0) {

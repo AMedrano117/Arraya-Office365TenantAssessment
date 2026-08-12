@@ -709,11 +709,17 @@ function Resolve-M365OutputProfileExecutionPlan {
         GenerateQuestionnaire       = $mergedGenerateQuestionnaire
         GenerateJson                = $mergedGenerateJson
         GeneratePdf                 = $mergedGeneratePdf
-        WorkbookExportPolicy        = if ($primaryPolicy -and $primaryPolicy.PSObject.Properties['WorkbookExportPolicy']) { [string]$primaryPolicy.WorkbookExportPolicy } else { 'Default' }
-        TechnicalHtmlPolicy         = if ($primaryPolicy -and $primaryPolicy.PSObject.Properties['TechnicalHtmlPolicy']) { [string]$primaryPolicy.TechnicalHtmlPolicy } else { 'Default' }
+        # A merged selection means "give me the union", so it falls back to the default
+        # workbook and HTML. Curated policies are inseparable from their collection scope: the
+        # curated sheet lists only contain tables their own scope pass builds, and merged
+        # selections force CollectionScopePolicy back to Default. Keeping a curated workbook
+        # policy here would produce a short workbook of mostly missing sheets.
+        WorkbookExportPolicy        = if ($selectedOutputProfiles.Count -gt 1) { 'Default' } elseif ($primaryPolicy -and $primaryPolicy.PSObject.Properties['WorkbookExportPolicy']) { [string]$primaryPolicy.WorkbookExportPolicy } else { 'Default' }
+        TechnicalHtmlPolicy         = if ($selectedOutputProfiles.Count -gt 1) { 'Default' } elseif ($primaryPolicy -and $primaryPolicy.PSObject.Properties['TechnicalHtmlPolicy']) { [string]$primaryPolicy.TechnicalHtmlPolicy } else { 'Default' }
         GenerateMigrationPack       = $mergedGenerateMigrationPack
         CollectionScopePolicy       = if ($selectedOutputProfiles.Count -gt 1) { 'Default' } elseif ($primaryPolicy -and $primaryPolicy.PSObject.Properties['CollectionScopePolicy']) { [string]$primaryPolicy.CollectionScopePolicy } else { 'Default' }
-        SkipImproveByDefault        = ($selectedOutputProfiles.Count -eq 1 -and [string]::Equals($primaryProfile, 'TenantToTenantMigration', [System.StringComparison]::OrdinalIgnoreCase))
+        # Migration scoping runs should not silently trigger the Improve/remediation follow-up.
+        SkipImproveByDefault        = ($selectedOutputProfiles.Count -eq 1 -and (@('TenantToTenantMigration', 'Presales') -contains [string]$primaryProfile))
     }
 }
 
@@ -816,7 +822,15 @@ function Invoke-M365TenantWorkflow {
     $invokeParams.GenerateMigrationPackOverride = [bool]$plan.GenerateMigrationPack
     $invokeParams.CollectionScopePolicyOverride = [string]$plan.CollectionScopePolicy
 
-    $shouldEnablePolicyTechnicalHtml = ([string]$plan.TechnicalHtmlPolicy -eq 'TenantToTenantCutover')
+    # Profiles whose technical HTML IS the deliverable, rather than a legacy extra, are not
+    # gated behind -IncludeLegacyAssessmentArtifacts.
+    $shouldEnablePolicyTechnicalHtml = ([string]$plan.TechnicalHtmlPolicy -in @('TenantToTenantCutover', 'Presales'))
+    # Presales uses a purpose-built migration scope confirmation artifact. The legacy
+    # questionnaire remains gated for every other profile.
+    $shouldEnablePolicyQuestionnaire = (
+        [string]$plan.WorkbookExportPolicy -eq 'Presales' -and
+        [string]$plan.TechnicalHtmlPolicy -eq 'Presales'
+    )
 
     switch ($Mode) {
         'Full' {
@@ -824,7 +838,7 @@ function Invoke-M365TenantWorkflow {
             $invokeParams.GenerateWorkbookOverride = [bool]$plan.GenerateWorkbook
             $invokeParams.GenerateTechnicalHtmlOverride = if ($IncludeLegacyAssessmentArtifacts -or $shouldEnablePolicyTechnicalHtml) { [bool]$plan.GenerateTechnicalHtml } else { $false }
             $invokeParams.GenerateBestPracticesHtmlOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateBestPracticesHtml } else { $false }
-            $invokeParams.GenerateQuestionnaireOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateQuestionnaire } else { $false }
+            $invokeParams.GenerateQuestionnaireOverride = if ($IncludeLegacyAssessmentArtifacts -or $shouldEnablePolicyQuestionnaire) { [bool]$plan.GenerateQuestionnaire } else { $false }
             $invokeParams.GenerateJsonOverride = [bool]$plan.GenerateJson
             if (-not $invokeParams.GenerateJsonOverride) {
                 $invokeParams.GenerateJsonOverride = $true
@@ -880,7 +894,7 @@ function Invoke-M365TenantWorkflow {
             $invokeParams.GenerateWorkbookOverride = [bool]$plan.GenerateWorkbook
             $invokeParams.GenerateTechnicalHtmlOverride = if ($IncludeLegacyAssessmentArtifacts -or $shouldEnablePolicyTechnicalHtml) { [bool]$plan.GenerateTechnicalHtml } else { $false }
             $invokeParams.GenerateBestPracticesHtmlOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateBestPracticesHtml } else { $false }
-            $invokeParams.GenerateQuestionnaireOverride = if ($IncludeLegacyAssessmentArtifacts) { [bool]$plan.GenerateQuestionnaire } else { $false }
+            $invokeParams.GenerateQuestionnaireOverride = if ($IncludeLegacyAssessmentArtifacts -or $shouldEnablePolicyQuestionnaire) { [bool]$plan.GenerateQuestionnaire } else { $false }
             $invokeParams.GenerateJsonOverride = [bool]$plan.GenerateJson
             if (-not $invokeParams.GenerateJsonOverride) {
                 $invokeParams.GenerateJsonOverride = $true
@@ -1002,7 +1016,7 @@ function Invoke-M365TenantAssessment {
 
     if (Test-AssessmentPlanSkipsImproveByDefault -Plan $plan) {
         if (-not $SkipImprove) {
-            Write-Host 'Tenant-to-tenant migration profile defaults to workbook, cutover pack, technical HTML, and JSON snapshot output. Skipping Improve/customer-style follow-up artifacts unless requested separately.' -ForegroundColor DarkCyan
+            Write-Host ('Migration scoping profile ''{0}'' defaults to workbook and technical HTML output. Skipping Improve/customer-style follow-up artifacts unless requested separately.' -f $plan.PrimaryProfile) -ForegroundColor DarkCyan
         }
         return
     }
@@ -1176,7 +1190,7 @@ function Invoke-M365TenantAssessmentExport {
 
     if (Test-AssessmentPlanSkipsImproveByDefault -Plan $plan) {
         if (-not $SkipImprove) {
-            Write-Host 'Tenant-to-tenant migration export defaults to workbook, cutover pack, technical HTML, and JSON snapshot output. Skipping Improve/customer-style follow-up artifacts unless requested separately.' -ForegroundColor DarkCyan
+            Write-Host ('Migration scoping export for profile ''{0}'' defaults to workbook and technical HTML output. Skipping Improve/customer-style follow-up artifacts unless requested separately.' -f $plan.PrimaryProfile) -ForegroundColor DarkCyan
         }
         return
     }

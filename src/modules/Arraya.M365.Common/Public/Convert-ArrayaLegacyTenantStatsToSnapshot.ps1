@@ -212,6 +212,7 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
             'AllRecipients', 'AllMailboxes', 'AllMailboxes-MailIdentity', 'AllMailboxes-UserPrincipalName',
             'AllMailboxes-PrimarySmtpAddress', 'PrimaryMailboxStats', 'ArchiveMailboxes', 'ArchiveMailboxStats',
             'InactiveMailboxes', 'InactiveMailboxDetails', 'LitigationHoldMailboxes', 'NonUserMailboxes',
+            'GroupMailboxes',
             'AllExchangeGroups', 'MailFlowRules', 'MailFlowConnectors', 'PublicFolderDetails', 'PublicFolderPerms',
             'RemoteDomains', 'EmailActivityTopSenders', 'EmailActivityTopReceivers', 'EmailActivitySummary',
             'MailboxFullDetails', 'InboxRulesExternalForwarding', 'InboxRuleForwardingSummary', 'SharedMailboxGovernanceSummary',
@@ -254,7 +255,12 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
         'OwnershipGovernanceSummary', 'UnmanagedObjects', 'OneDriveOwnerMismatches',
         'EmployeeExperienceInsightsSummary', 'LicenseClassificationMetadata',
         'TenantInfoSummary', 'AuthenticationConfigSummary',
-        'SpamFilteringSummary', 'FederationSummary', 'MfaRegistrationSummary'
+        'SpamFilteringSummary', 'FederationSummary', 'MfaRegistrationSummary',
+        'MigrationScopeSummary', 'BitTitanLicenseSummary', 'BitTitanLicenseMixBreakdown', 'BitTitanPlanningOptions', 'BitTitanLicenseDetail',
+        'ShareGateScopeSummary', 'GroupWorkloadReconciliation', 'MigrationComplexityFlags',
+        'MigrationQuoteReadiness', 'MigrationTargetReadiness', 'MigrationIdentityMapping',
+        'MigrationDomainDependencies', 'MigrationObjectDisposition', 'MigrationWorkloadEffort',
+        'MigrationWavePlan', 'MigrationScopeDecisions'
     )) {
         $null = $derivedKeys.Add($key)
     }

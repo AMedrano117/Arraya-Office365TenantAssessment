@@ -9212,6 +9212,7 @@ function New-TenantMigrationCutoverHtmlReport {
     $recipientDomainSummaryRows = @(ConvertTo-MigrationHtmlArray -Key 'RecipientDomainSummary')
     $mailboxMigrationSummaryRows = @(ConvertTo-MigrationHtmlArray -Key 'MailboxMigrationSummary')
     $bitTitanLicenseSummaryRows = @(ConvertTo-MigrationHtmlArray -Key 'BitTitanLicenseSummary')
+    $bitTitanLicenseMixRows = @(ConvertTo-MigrationHtmlArray -Key 'BitTitanLicenseMixBreakdown')
     $delegateSummaryRows = @(ConvertTo-MigrationHtmlArray -Key 'DelegateSummary')
     $collaborationSummaryRows = @(ConvertTo-MigrationHtmlArray -Key 'CollaborationSummary')
     $cutoverPrepSummaryRows = @(ConvertTo-MigrationHtmlArray -Key 'CutoverPrepSummary')
@@ -9241,9 +9242,25 @@ function New-TenantMigrationCutoverHtmlReport {
     $mailboxesOver50Gb = Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'Mailboxes over 50 GB'
     $mailboxesOver100Gb = Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'Mailboxes over 100 GB'
     $archivesOver100Gb = Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'Archives over 100 GB'
-    $migrationWizMailboxLicenses = Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'MigrationWiz-Mailbox'
-    $migrationWizMailboxX2Licenses = Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'MigrationWiz-Mailbox x2'
-    $userMigrationBundleLicenses = Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'User Migration Bundle'
+    # Proposal-facing output uses one canonical practice mix. Older snapshots can still be
+    # replayed by falling back to the workload-fit totals, but the alternative-basket labels
+    # are intentionally not presented in HTML.
+    $practicalMailboxLicenseUnits = if ($bitTitanLicenseMixRows.Count -gt 0) {
+        [int](@($bitTitanLicenseMixRows | ForEach-Object { Get-MigrationNumericValue $_.MailboxMigrationLicenseUnits } | Measure-Object -Sum).Sum)
+    } else { Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'Workload-fit: MigrationWiz-Mailbox units' }
+    $practicalUmbUnits = if ($bitTitanLicenseMixRows.Count -gt 0) {
+        [int](@($bitTitanLicenseMixRows | ForEach-Object { Get-MigrationNumericValue $_.UserMigrationBundleUnits } | Measure-Object -Sum).Sum)
+    } else { Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'Workload-fit: User Migration Bundles' }
+    $optionalGroupMailboxCount = if ($bitTitanLicenseMixRows.Count -gt 0) {
+        [int](@($bitTitanLicenseMixRows | ForEach-Object { Get-MigrationNumericValue $_.OptionalMigrationObjectCount } | Measure-Object -Sum).Sum)
+    } else { Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'Microsoft 365 Group mailboxes with data' }
+    $licenseNeedsDataCount = if ($bitTitanLicenseMixRows.Count -gt 0) {
+        [int](@($bitTitanLicenseMixRows | ForEach-Object { Get-MigrationNumericValue $_.NeedsDataObjectCount } | Measure-Object -Sum).Sum)
+    } else { Get-MigrationSummaryMetricValue -Rows $bitTitanLicenseSummaryRows -Metric 'Objects needing license evidence' }
+    $visibleBitTitanLicenseSummaryRows = @($bitTitanLicenseSummaryRows | Where-Object {
+            [string]$_.Section -ne 'Alternative scenarios' -and
+            [string]$_.Metric -notmatch '^(Workload-fit:|UMB-led:|License path selection$)'
+        })
 
     $recipientDomainTopRows = @(
         $recipientDomainSummaryRows |
@@ -9394,12 +9411,26 @@ function New-TenantMigrationCutoverHtmlReport {
     $sizingHtml += New-KpiCard -Title 'Mailboxes over 50 GB' -Value (Format-MigrationDisplayValue $mailboxesOver50Gb) -Theme $(if ((Get-MigrationNumericValue $mailboxesOver50Gb) -gt 0) { 'warning' } else { 'success' })
     $sizingHtml += New-KpiCard -Title 'Mailboxes over 100 GB' -Value (Format-MigrationDisplayValue $mailboxesOver100Gb) -Theme $(if ((Get-MigrationNumericValue $mailboxesOver100Gb) -gt 0) { 'warning' } else { 'success' })
     $sizingHtml += New-KpiCard -Title 'Archives over 100 GB' -Value (Format-MigrationDisplayValue $archivesOver100Gb) -Theme $(if ((Get-MigrationNumericValue $archivesOver100Gb) -gt 0) { 'warning' } else { 'success' })
-    $sizingHtml += New-KpiCard -Title 'MigrationWiz-Mailbox' -Value (Format-MigrationDisplayValue $migrationWizMailboxLicenses) -Theme 'default'
-    $sizingHtml += New-KpiCard -Title 'MigrationWiz-Mailbox x2' -Value (Format-MigrationDisplayValue $migrationWizMailboxX2Licenses) -Theme 'default'
-    $sizingHtml += New-KpiCard -Title 'User Migration Bundle' -Value (Format-MigrationDisplayValue $userMigrationBundleLicenses) -Theme 'default'
+    $sizingHtml += New-KpiCard -Title 'Mailbox Migration Licenses' -Value (Format-MigrationDisplayValue $practicalMailboxLicenseUnits) -Subtitle 'Mailbox-only license blocks' -Theme 'default'
+    $sizingHtml += New-KpiCard -Title 'User Migration Bundles' -Value (Format-MigrationDisplayValue $practicalUmbUnits) -Subtitle 'Archive-bearing migration objects' -Theme 'default'
+    $sizingHtml += New-KpiCard -Title 'Optional Group Mailboxes' -Value (Format-MigrationDisplayValue $optionalGroupMailboxCount) -Subtitle 'Report-only customer decisions' -Theme 'default'
+    $sizingHtml += New-KpiCard -Title 'Needs License Evidence' -Value (Format-MigrationDisplayValue $licenseNeedsDataCount) -Theme $(if ((Get-MigrationNumericValue $licenseNeedsDataCount) -gt 0) { 'warning' } else { 'success' })
     $sizingHtml += '</div>'
+    $sizingHtml += "<p>Figures are SKU-specific BitTitan license <strong>units</strong>, not dollar costs. Mailbox-only objects use mailbox-license blocks; archive-bearing objects use UMB. Microsoft 365 Group mailbox conversations are report-only by default. BitTitan covers mailbox data only; SharePoint, OneDrive, and Teams migrate with ShareGate.</p>"
     $sizingHtml += "<p>Mailbox sizing is kept summary-focused in this HTML view. Detailed mailbox-by-mailbox sizing remains in the workbook and the T2T cutover pack for migration execution.</p>"
-    $sizingHtml += New-HtmlTable -Data $bitTitanLicenseSummaryRows -Columns @('Section', 'Metric', 'Value', 'Notes') -ValueFormatters @{
+    $sizingHtml += "<h3 style='margin-top:20px;'>Practical License Mix by Recipient Category</h3>"
+    $sizingHtml += New-HtmlTable -Data $bitTitanLicenseMixRows -Columns @('Category', 'ObjectCount', 'MailboxMigrationLicenseUnits', 'UserMigrationBundleUnits', 'ReportOnlyObjectCount', 'OptionalMigrationObjectCount', 'NeedsDataObjectCount', 'DataGB', 'UmbEligibilityValidationCount', 'Treatment') -ColumnHeaders @{
+        MailboxMigrationLicenseUnits = 'Mailbox Migration Licenses'
+        UserMigrationBundleUnits = 'User Migration Bundles'
+        ReportOnlyObjectCount = 'Report-Only Objects'
+        OptionalMigrationObjectCount = 'Optional Migration Objects'
+        NeedsDataObjectCount = 'Needs Data'
+        DataGB = 'Data'
+        UmbEligibilityValidationCount = 'UMB Eligibility Checks'
+    } -ValueFormatters @{
+        DataGB = { param($value, $row) Format-MigrationHumanDataSize -Value $value }
+    } -EmptyMessage 'The canonical BitTitan license-mix breakdown was not generated for this snapshot.'
+    $sizingHtml += New-HtmlTable -Data $visibleBitTitanLicenseSummaryRows -Columns @('Section', 'Metric', 'Value', 'Notes') -ValueFormatters @{
         Value = {
             param($value, $row)
             if ([string]$row.Section -eq 'Data') {
@@ -9559,6 +9590,442 @@ function New-TenantMigrationCutoverHtmlReport {
     }
     catch {
         Write-Error "Failed to write tenant-to-tenant cutover HTML report: $_"
+        return [pscustomobject]@{
+            Success    = $false
+            OutputPath = $null
+            Error      = $_.Exception.Message
+        }
+    }
+}
+
+function New-TenantMigrationScopeHtmlReport {
+    <#
+    .SYNOPSIS
+        Pre-sales migration scoping brief.
+
+    .DESCRIPTION
+        A one-page answer to "how big is this migration, how complex is it, and what BitTitan
+        licensing does the mail side need". Deliberately separate from the tenant-to-tenant
+        cutover report: that one is built around routing gaps, delegate detail, and cutover
+        preparation, none of which a pre-sales run collects.
+
+        The two migration tools are labelled in the rendered headings, not just the data,
+        because the vendor split is the thing a reader acts on. BitTitan carries mailbox data;
+        ShareGate carries SharePoint, OneDrive, and Teams content.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [hashtable]$TenantStatsHash = $script:tenantStatsHash,
+
+        [Parameter()]
+        [string]$OutputPath
+    )
+
+    function Format-MigrationDisplayValue {
+        param(
+            [AllowNull()]$Value,
+            [string]$Fallback = 'Not surfaced in current source'
+        )
+
+        if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
+            return $Fallback
+        }
+        return $Value
+    }
+
+    function Get-MigrationNumericValue {
+        param([AllowNull()]$Value)
+
+        if ($null -eq $Value) { return $null }
+        try { return [double]$Value } catch { return $null }
+    }
+
+    function Format-MigrationHumanDataSize {
+        param(
+            [AllowNull()]$Value,
+            [string]$Fallback = 'Not surfaced in current source'
+        )
+
+        $numericValue = Get-MigrationNumericValue -Value $Value
+        if ($null -eq $numericValue) { return $Fallback }
+        if ($numericValue -eq 0) { return '0 GB' }
+
+        $sizeInBytes = [double]$numericValue * 1GB
+        $absoluteBytes = [math]::Abs($sizeInBytes)
+        $units = @('B', 'KB', 'MB', 'GB', 'TB', 'PB')
+        $unitIndex = 0
+        while ($absoluteBytes -ge 1024 -and $unitIndex -lt ($units.Count - 1)) {
+            $sizeInBytes /= 1024
+            $absoluteBytes /= 1024
+            $unitIndex++
+        }
+        return '{0:N2} {1}' -f $sizeInBytes, $units[$unitIndex]
+    }
+
+    function Get-ScopeRows {
+        param([Parameter(Mandatory = $true)][string]$Key)
+
+        if (-not $TenantStatsHash.ContainsKey($Key) -or $null -eq $TenantStatsHash[$Key]) { return @() }
+        $value = $TenantStatsHash[$Key]
+        if ($value -is [System.Collections.IDictionary]) { return @($value.Values) }
+        if ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) { return @($value) }
+        return @($value)
+    }
+
+    $scopeRows = @(Get-ScopeRows -Key 'MigrationScopeSummary')
+    $licenseSummaryRows = @(Get-ScopeRows -Key 'BitTitanLicenseSummary')
+    $licenseMixRows = @(Get-ScopeRows -Key 'BitTitanLicenseMixBreakdown')
+    $licenseDetailRows = @(Get-ScopeRows -Key 'BitTitanLicenseDetail')
+    $licensePlanningOptionRows = @(Get-ScopeRows -Key 'BitTitanPlanningOptions')
+    $shareGateRows = @(Get-ScopeRows -Key 'ShareGateScopeSummary')
+    $reconciliationRows = @(Get-ScopeRows -Key 'GroupWorkloadReconciliation')
+    $complexityRows = @(Get-ScopeRows -Key 'MigrationComplexityFlags')
+    $quoteReadinessRows = @(Get-ScopeRows -Key 'MigrationQuoteReadiness')
+    $targetReadinessRows = @(Get-ScopeRows -Key 'MigrationTargetReadiness')
+    $workloadEffortRows = @(Get-ScopeRows -Key 'MigrationWorkloadEffort')
+    $wavePlanRows = @(Get-ScopeRows -Key 'MigrationWavePlan')
+    $tenantInfoSource = if ($TenantStatsHash.ContainsKey('TenantInfo')) { $TenantStatsHash['TenantInfo'] } else { $null }
+    $tenantInfoRows = @(Get-ScopeRows -Key 'TenantInfo')
+    $domainRows = @(Get-ScopeRows -Key 'Domains')
+
+    function Get-PresalesTenantInfoValue {
+        param(
+            [string[]]$PropertyNames,
+            [string[]]$ItemNames = @()
+        )
+
+        $directValue = Get-ArrayaObjectValue -Object $tenantInfoSource -Names $PropertyNames
+        if (-not [string]::IsNullOrWhiteSpace([string]$directValue)) { return $directValue }
+
+        foreach ($row in $tenantInfoRows) {
+            $itemName = [string](Get-ArrayaObjectValue -Object $row -Names @('Item', 'Name', 'Metric'))
+            if ($itemName -notin $ItemNames) { continue }
+            $rowValue = Get-ArrayaObjectValue -Object $row -Names @('Value', 'Answer')
+            if (-not [string]::IsNullOrWhiteSpace([string]$rowValue)) { return $rowValue }
+        }
+        return $null
+    }
+
+    $tenantName = [string](Get-PresalesTenantInfoValue -PropertyNames @('DisplayName', 'TenantName') -ItemNames @('Display Name', 'Tenant Name'))
+    if ([string]::IsNullOrWhiteSpace($tenantName)) { $tenantName = 'Microsoft 365 Tenant' }
+    $tenantNameHtml = [System.Web.HttpUtility]::HtmlEncode($tenantName)
+    $defaultDomain = Get-PresalesTenantInfoValue -PropertyNames @('DefaultDomain', 'DefaultDomainName', 'InitialDomain') -ItemNames @('Default Domain', 'Default Domain Name', 'Initial Domain')
+    $defaultDomainHtml = [System.Web.HttpUtility]::HtmlEncode([string]$defaultDomain)
+
+    $scopeMetric = {
+        param($Tool, $Metric)
+        $row = @($scopeRows | Where-Object { [string]$_.Tool -eq $Tool -and [string]$_.Metric -eq $Metric } | Select-Object -First 1) | Select-Object -First 1
+        if ($row) { $row.Value } else { $null }
+    }
+    $licenseMetric = {
+        param($Metric)
+        $row = @($licenseSummaryRows | Where-Object { [string]$_.Metric -eq $Metric } | Select-Object -First 1) | Select-Object -First 1
+        if ($row) { $row.Value } else { $null }
+    }
+    $practicalMailboxLicenseUnits = if ($licenseMixRows.Count -gt 0) {
+        [int](@($licenseMixRows | ForEach-Object { Get-MigrationNumericValue $_.MailboxMigrationLicenseUnits } | Measure-Object -Sum).Sum)
+    } else { & $licenseMetric 'Workload-fit: MigrationWiz-Mailbox units' }
+    $practicalUmbUnits = if ($licenseMixRows.Count -gt 0) {
+        [int](@($licenseMixRows | ForEach-Object { Get-MigrationNumericValue $_.UserMigrationBundleUnits } | Measure-Object -Sum).Sum)
+    } else { & $licenseMetric 'Workload-fit: User Migration Bundles' }
+    $optionalGroupMailboxCount = if ($licenseMixRows.Count -gt 0) {
+        [int](@($licenseMixRows | ForEach-Object { Get-MigrationNumericValue $_.OptionalMigrationObjectCount } | Measure-Object -Sum).Sum)
+    } else { & $licenseMetric 'Microsoft 365 Group mailboxes with data' }
+    $licenseNeedsDataCount = if ($licenseMixRows.Count -gt 0) {
+        [int](@($licenseMixRows | ForEach-Object { Get-MigrationNumericValue $_.NeedsDataObjectCount } | Measure-Object -Sum).Sum)
+    } else { & $licenseMetric 'Objects needing license evidence' }
+    $visibleLicenseSummaryRows = @($licenseSummaryRows | Where-Object {
+            [string]$_.Section -ne 'Alternative scenarios' -and
+            [string]$_.Metric -notmatch '^(Workload-fit:|UMB-led:|License path selection$)'
+        })
+    $tenantBundlePlanningOption = @($licensePlanningOptionRows | Where-Object { [string]$_.Option -eq 'Tenant Migration Bundle' } | Select-Object -First 1) | Select-Object -First 1
+    $tenantBundleGuidanceParagraph = if ($tenantBundlePlanningOption -and -not [string]::IsNullOrWhiteSpace([string]$tenantBundlePlanningOption.GuidanceParagraph)) {
+        [string]$tenantBundlePlanningOption.GuidanceParagraph
+    } else {
+        'Tenant Migration Bundle is optional and is not the default practice. ShareGate normally carries SharePoint, OneDrive, and Teams, so exact Flex Collaboration demand requires customer-confirmed Team/library mapping. Public folders require separate planning. Teams Private Chat uses a separate project; validate current capability, limitations, and licensing against current BitTitan guidance before ordering. No prices or automatic recommendation are included.'
+    }
+
+    $mailboxRecipientCount = if ($licenseMixRows.Count -gt 0) {
+        [int](@($licenseMixRows | Where-Object { [string]$_.Category -notmatch '^Office 365 Groups' } | ForEach-Object { Get-MigrationNumericValue $_.ObjectCount } | Measure-Object -Sum).Sum)
+    } elseif ($scopeRows.Count -gt 0) {
+        [int](@($scopeRows | Where-Object { [string]$_.Tool -eq 'BitTitan' -and [string]$_.Section -eq 'Mailboxes' -and [string]$_.Metric -match '^(SchedulingMailbox|SharedMailbox|UserMailbox)$' } | ForEach-Object { Get-MigrationNumericValue $_.Value } | Measure-Object -Sum).Sum)
+    } else { $null }
+    $inactiveMailboxCount = if ($licenseMixRows.Count -gt 0) {
+        [int](@($licenseMixRows | Where-Object { [string]$_.Category -match '^Inactive' } | ForEach-Object { Get-MigrationNumericValue $_.ObjectCount } | Measure-Object -Sum).Sum)
+    } elseif ($licenseDetailRows.Count -gt 0) {
+        @($licenseDetailRows | Where-Object { $_.IsInactiveMailbox -eq $true }).Count
+    } else { $null }
+    $groupObjectCount = if ($reconciliationRows.Count -gt 0) { $reconciliationRows.Count } else { & $scopeMetric 'ShareGate' 'Microsoft 365 Groups' }
+
+    $customDomainRows = @($domainRows | Where-Object {
+            $domainName = [string](Get-ArrayaObjectValue -Object $_ -Names @('Domain', 'Id', 'Name'))
+            -not [string]::IsNullOrWhiteSpace($domainName) -and
+            $domainName -notmatch '(?i)\.(onmicrosoft\.com|microsoftonline\.com)$'
+        })
+    $customDomainPrimaryRecipientCount = [int](@($customDomainRows | ForEach-Object { Get-MigrationNumericValue $_.PrimarySMTPRecipients } | Measure-Object -Sum).Sum)
+    $customDomainAliasOnlyRecipientCount = [int](@($customDomainRows | ForEach-Object { Get-MigrationNumericValue $_.AliasOnlyRecipients } | Measure-Object -Sum).Sum)
+    $domainPresentationRows = @($domainRows | Sort-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('Domain', 'Id', 'Name')) } | ForEach-Object {
+            $dnsHost = [string](Get-ArrayaObjectValue -Object $_ -Names @('DNSCompanies'))
+            $nameServers = [string](Get-ArrayaObjectValue -Object $_ -Names @('NSRecords'))
+            [pscustomobject]@{
+                Domain = [string](Get-ArrayaObjectValue -Object $_ -Names @('Domain', 'Id', 'Name'))
+                DomainType = [string](Get-ArrayaObjectValue -Object $_ -Names @('DomainType'))
+                Verified = Get-ArrayaObjectValue -Object $_ -Names @('Verified', 'IsVerified')
+                IsDefault = Get-ArrayaObjectValue -Object $_ -Names @('IsDefault')
+                DNSHost = if ([string]::IsNullOrWhiteSpace($dnsHost) -or $dnsHost -eq '.') { 'Not identified' } else { $dnsHost }
+                NSRecords = if ([string]::IsNullOrWhiteSpace($nameServers)) { 'Not identified' } else { $nameServers }
+                PrimarySMTPRecipients = Get-ArrayaObjectValue -Object $_ -Names @('PrimarySMTPRecipients')
+                AliasOnlyRecipients = Get-ArrayaObjectValue -Object $_ -Names @('AliasOnlyRecipients')
+                TotalDomainRecipients = Get-ArrayaObjectValue -Object $_ -Names @('TotalDomainRecipients')
+            }
+        })
+
+    # ---- Tenant scope at a glance ----
+    $overviewHtml = "<div class='kpi-grid'>"
+    $overviewHtml += New-KpiCard -Title 'Mailbox Recipients' -Value (Format-MigrationDisplayValue $mailboxRecipientCount) -Subtitle 'Active and inactive; groups separate' -Theme 'default'
+    $overviewHtml += New-KpiCard -Title 'Inactive Mailboxes' -Value (Format-MigrationDisplayValue $inactiveMailboxCount) -Subtitle 'Restore before migration' -Theme $(if ((Get-MigrationNumericValue $inactiveMailboxCount) -gt 0) { 'warning' } else { 'default' })
+    $overviewHtml += New-KpiCard -Title 'Microsoft 365 Groups' -Value (Format-MigrationDisplayValue $groupObjectCount) -Subtitle 'Mailbox and site reconciled' -Theme 'default'
+    $overviewHtml += New-KpiCard -Title 'Mailbox Data' -Value (Format-MigrationHumanDataSize -Value (& $scopeMetric 'BitTitan' 'Total mailbox data to migrate (GB)')) -Subtitle 'BitTitan scope' -Theme 'default'
+    $overviewHtml += New-KpiCard -Title 'SharePoint Sites' -Value (Format-MigrationDisplayValue (& $scopeMetric 'ShareGate' 'SharePoint sites (total)')) -Subtitle ("{0} of source data" -f (Format-MigrationHumanDataSize -Value (& $scopeMetric 'ShareGate' 'SharePoint storage (GB)'))) -Theme 'default'
+    $overviewHtml += New-KpiCard -Title 'OneDrive Sites' -Value (Format-MigrationDisplayValue (& $scopeMetric 'ShareGate' 'OneDrive sites')) -Subtitle ("{0} of source data" -f (Format-MigrationHumanDataSize -Value (& $scopeMetric 'ShareGate' 'OneDrive storage (GB)'))) -Theme 'default'
+    $overviewHtml += New-KpiCard -Title 'Teams' -Value (Format-MigrationDisplayValue (& $scopeMetric 'ShareGate' 'Teams')) -Subtitle 'Files already counted in SharePoint' -Theme 'default'
+    $overviewHtml += '</div>'
+    $overviewHtml += "<p><strong>This report inventories the source tenant only.</strong> BitTitan carries mailbox data, while ShareGate carries SharePoint, OneDrive, and Teams content. Teams file storage is already included in SharePoint and is not counted twice. Destination assumptions and mappings are customer-provided inputs elsewhere in the report.</p>"
+
+    # ---- Domain and DNS inventory -----------------------------------------------------
+    $domainHtml = "<div class='kpi-grid'>"
+    $domainHtml += New-KpiCard -Title 'Tenant Domains' -Value $domainRows.Count -Subtitle 'Source tenant inventory' -Theme 'default'
+    $domainHtml += New-KpiCard -Title 'Custom Domains' -Value $customDomainRows.Count -Subtitle 'Excludes Microsoft service domains' -Theme 'default'
+    $domainHtml += New-KpiCard -Title 'Custom-Domain Primary SMTP' -Value $customDomainPrimaryRecipientCount -Subtitle 'Recipient count summed by domain' -Theme 'default'
+    $domainHtml += New-KpiCard -Title 'Custom-Domain Alias Only' -Value $customDomainAliasOnlyRecipientCount -Subtitle 'Recipient count summed by domain' -Theme 'default'
+    $domainHtml += '</div>'
+    $domainHtml += '<p>Domains are inventory and cutover inputs, not automatic issues. Recipient counts are unique within each domain: <strong>Primary SMTP</strong> means the recipient uses that domain as its reply address; <strong>Alias Only</strong> means the recipient has a proxy address in that domain but a different primary address. A recipient can appear in more than one domain row when it has aliases across domains.</p>'
+    $domainHtml += New-HtmlTable -Data $domainPresentationRows -Columns @('Domain', 'DomainType', 'Verified', 'IsDefault', 'DNSHost', 'NSRecords', 'PrimarySMTPRecipients', 'AliasOnlyRecipients', 'TotalDomainRecipients') -ColumnHeaders @{
+        Domain = 'Domain'
+        DomainType = 'Type'
+        Verified = 'Verified'
+        IsDefault = 'Default'
+        DNSHost = 'Detected DNS Host'
+        NSRecords = 'Name Servers'
+        PrimarySMTPRecipients = 'Primary SMTP Recipients'
+        AliasOnlyRecipients = 'Alias-Only Recipients'
+        TotalDomainRecipients = 'Total Recipients'
+    } -CssClass 'data-table wrap-cells' -EmptyMessage 'No source-tenant domain inventory was collected.'
+
+    # ---- Quote readiness ---------------------------------------------------------------
+    $quoteSummary = @($quoteReadinessRows | Where-Object { [string]$_.RowType -eq 'Summary' } | Select-Object -First 1) | Select-Object -First 1
+    $quoteBlockerRows = @($quoteReadinessRows | Where-Object { [string]$_.Status -eq 'Blocker' })
+    $quoteConditionRows = @($quoteReadinessRows | Where-Object { [string]$_.Status -eq 'Condition' })
+    $prioritizedQuoteBlockerRows = @($quoteBlockerRows | Sort-Object `
+            @{ Expression = {
+                    $decisionKey = [string]$_.DecisionKey
+                    if ($decisionKey -like 'FLAG:*' -or $decisionKey -in @('AUTO-MAIL-SIZE', 'AUTO-GROUP-MAIL-EVIDENCE', 'SG-03')) { return 0 }
+                    if ($decisionKey -in @('BT-02', 'BT-03', 'BT-04', 'BT-08')) { return 1 }
+                    if ($decisionKey -in @('AUTO-IDENTITY-MAPPINGS', 'AUTO-DOMAIN-DISPOSITIONS', 'AUTO-OBJECT-DISPOSITIONS')) { return 2 }
+                    if ($decisionKey -in @('BT-09', 'BT-10', 'SG-04')) { return 3 }
+                    return 4
+                }; Ascending = $true }, `
+            @{ Expression = { [string]$_.Category }; Ascending = $true }, `
+            @{ Expression = { [string]$_.DecisionKey }; Ascending = $true })
+    $quoteReadinessDataAvailable = ($null -ne $quoteSummary -and $quoteReadinessRows.Count -gt 0)
+    $targetReadinessDataAvailable = ($targetReadinessRows.Count -gt 0)
+    $targetNeedsInputCount = if ($targetReadinessDataAvailable) { @($targetReadinessRows | Where-Object { [string]$_.Status -ne 'Confirmed' }).Count } else { $null }
+    $readinessLevel = if ($quoteReadinessDataAvailable) { [string]$quoteSummary.ReadinessLevel } else { 'Needs Data' }
+    $readinessTheme = if (-not $quoteReadinessDataAvailable) { 'warning' } elseif ($readinessLevel -eq 'Firm') { 'success' } elseif ($readinessLevel -eq 'Conditional') { 'warning' } else { 'danger' }
+    $readinessHtml = "<div class='kpi-grid'>"
+    $readinessHtml += New-KpiCard -Title 'Quote Readiness' -Value (Format-MigrationDisplayValue $readinessLevel) -Subtitle 'Scope confidence, not price' -Theme $readinessTheme
+    $readinessHtml += New-KpiCard -Title 'Unresolved Blockers' -Value $(if ($quoteReadinessDataAvailable) { $quoteBlockerRows.Count } else { 'Needs Data' }) -Theme $(if (-not $quoteReadinessDataAvailable) { 'warning' } elseif ($quoteBlockerRows.Count -gt 0) { 'danger' } else { 'success' })
+    $readinessHtml += New-KpiCard -Title 'Open Conditions' -Value $(if ($quoteReadinessDataAvailable) { $quoteConditionRows.Count } else { 'Needs Data' }) -Theme $(if (-not $quoteReadinessDataAvailable) { 'warning' } elseif ($quoteConditionRows.Count -gt 0) { 'warning' } else { 'success' })
+    $readinessHtml += New-KpiCard -Title 'Customer Inputs Needed' -Value $(if ($targetReadinessDataAvailable) { $targetNeedsInputCount } else { 'Needs Data' }) -Subtitle 'Destination and tool readiness' -Theme $(if (-not $targetReadinessDataAvailable -or $targetNeedsInputCount -gt 0) { 'warning' } else { 'success' })
+    $readinessHtml += '</div>'
+    $readinessHtml += "<p><strong>ROM</strong> means scope or technical blockers remain. <strong>Conditional</strong> means blockers are resolved but assumptions or project conditions remain. <strong>Firm</strong> requires every readiness check to be complete. Dollar pricing is intentionally not part of this assessment.</p>"
+    $readinessHtml += "<p><strong>This is a source-only snapshot.</strong> Destination readiness is represented by customer-provided destination inputs, not queried target-tenant evidence. Tool endpoint checks likewise require customer or delivery-team validation.</p>"
+    $readinessHtml += New-CalloutBox -Type 'warning' -Title 'MigrationWiz endpoint validation is separate' -Content 'The Arraya assessment application and certificate do not prove MigrationWiz readiness. Validate the MigrationWiz application/authentication, organization and user EWS availability, and any EWSAllowedAppIDs configuration in both tenants. Allow up to 24 hours for allow-list propagation.'
+    $readinessHtml += "<h3 style='margin-top:20px;'>Highest-Priority Unresolved Blockers</h3>"
+    $readinessHtml += "<p>Showing up to 10 of $($quoteBlockerRows.Count) unresolved blocker(s). Discovered data gaps, workload prerequisites, and object-level registers are listed before broad customer confirmation inputs.</p>"
+    $readinessHtml += New-HtmlTable -Data @($prioritizedQuoteBlockerRows | Select-Object -First 10) -Columns @('Category', 'DecisionKey', 'Requirement', 'DiscoveredValue', 'Resolution', 'DecisionOwner', 'DueDate') -EmptyMessage 'No unresolved quote-readiness blockers were generated.'
+    $readinessHtml += "<h3 style='margin-top:20px;'>Customer-Provided Destination and Tool Inputs (Not Queried)</h3>"
+    $readinessHtml += New-HtmlTable -Data $targetReadinessRows -Columns @('Area', 'DecisionKey', 'ReadinessCheck', 'Status', 'CustomerConfirmedValue', 'RequiredAction', 'DecisionOwner', 'DueDate') -EmptyMessage 'Target-readiness rows were not generated for this run.'
+
+    # ---- BitTitan mailbox licensing ----
+    $licensingHtml = "<div class='kpi-grid'>"
+    $licensingHtml += New-KpiCard -Title 'Mailbox Migration Licenses' -Value (Format-MigrationDisplayValue $practicalMailboxLicenseUnits) -Subtitle 'Mailbox-only license blocks' -Theme 'default'
+    $licensingHtml += New-KpiCard -Title 'User Migration Bundles' -Value (Format-MigrationDisplayValue $practicalUmbUnits) -Subtitle 'Archive-bearing migration objects' -Theme 'default'
+    $licensingHtml += New-KpiCard -Title 'Optional Group Conversations' -Value (Format-MigrationDisplayValue $optionalGroupMailboxCount) -Subtitle 'Customer decision; no units added' -Theme 'default'
+    $licensingHtml += '</div>'
+    $licensingHtml += "<p>This is the practical default-practice mix, expressed as SKU-specific BitTitan license <strong>units</strong>, not costs. Mailbox-only objects use Mailbox Migration license blocks; archive-bearing objects use one UMB planning unit, subject to eligibility validation where identified. Objects lacking size or archive-state evidence are excluded, so treat the totals as a floor.</p>"
+    if ((Get-MigrationNumericValue $licenseNeedsDataCount) -gt 0) {
+        $licensingHtml += New-CalloutBox -Type 'warning' -Title 'License evidence is incomplete' -Content ("$licenseNeedsDataCount migration object(s) are excluded from the unit totals until mailbox size and archive evidence are collected.")
+    }
+    $licensingHtml += New-CalloutBox -Type 'warning' -Title 'Practice policy and commercial decision' -Content 'Microsoft 365 Group mailbox conversations remain report-only by default. No dollar cost or automatic cost-based recommendation is emitted; the Solutions Engineer applies current rates. Tenant Migration Bundle is optional and non-default because ShareGate normally carries collaboration workloads.'
+    $licensingHtml += "<h3 style='margin-top:20px;'>Practical License Mix by Recipient Category</h3>"
+    $licensingHtml += '<p>The two license columns are the estimate. Office 365 Group conversations are shown as optional objects because no license units are added until the customer chooses to migrate them. Evidence gaps, eligibility checks, treatment notes, and commercial alternatives remain in the workbook.</p>'
+    $licenseMixPresentationRows = @($licenseMixRows | ForEach-Object {
+            [pscustomobject]@{
+                Category = ([string]$_.Category -replace ' \(report-only / optional\)$', '')
+                ObjectCount = $_.ObjectCount
+                MailboxMigrationLicenseUnits = $_.MailboxMigrationLicenseUnits
+                UserMigrationBundleUnits = $_.UserMigrationBundleUnits
+                DataGB = $_.DataGB
+            }
+        })
+    $licensingHtml += New-HtmlTable -Data $licenseMixPresentationRows -Columns @('Category', 'ObjectCount', 'MailboxMigrationLicenseUnits', 'UserMigrationBundleUnits', 'DataGB') -ColumnHeaders @{
+        ObjectCount = 'Recipients'
+        MailboxMigrationLicenseUnits = 'Mailbox Licenses'
+        UserMigrationBundleUnits = 'UMB'
+        DataGB = 'Data'
+    } -ValueFormatters @{
+        DataGB = { param($value, $row) Format-MigrationHumanDataSize -Value $value }
+    } -EmptyMessage 'The canonical BitTitan license-mix breakdown was not generated for this snapshot.'
+    $licensingHtml += '<p>Inactive mailboxes are counted in their own rows and are assumed to be restored or activated before a regular MigrationWiz job. The separate <strong>Inactive + archive</strong> row makes archive-bearing inactive mailboxes visible because archive evidence changes the planning SKU.</p>'
+    $licensingHtml += "<h3 style='margin-top:20px;'>Optional License Planning Guidance</h3>"
+    $tenantBundleGuidanceHtml = [System.Web.HttpUtility]::HtmlEncode($tenantBundleGuidanceParagraph)
+    if ($tenantBundlePlanningOption) {
+        $privateChatGuideUrlHtml = [System.Web.HttpUtility]::HtmlAttributeEncode([string]$tenantBundlePlanningOption.PrivateChatGuideUrl)
+        $gettingStartedUrlHtml = [System.Web.HttpUtility]::HtmlAttributeEncode([string]$tenantBundlePlanningOption.GettingStartedUrl)
+        $tenantBundleGuidanceHtml += " <a href='$privateChatGuideUrlHtml'>Current Teams Private Chat guide</a> | <a href='$gettingStartedUrlHtml'>Current BitTitan Getting Started guidance</a>."
+    }
+    $licensingHtml += "<p><strong>Tenant Migration Bundle (optional / non-default):</strong> $tenantBundleGuidanceHtml</p>"
+
+    # ---- ShareGate collaboration scope ----
+    $visibleShareGateRows = @($shareGateRows | Where-Object { [string]$_.Workload -ne 'SharePoint (total)' })
+    $collaborationTotalRow = @($visibleShareGateRows | Where-Object { [string]$_.Workload -eq 'All collaboration sites (non-duplicated)' } | Select-Object -First 1) | Select-Object -First 1
+    $collaborationHtml = "<div class='kpi-grid'>"
+    if ($collaborationTotalRow) {
+        $collaborationHtml += New-KpiCard -Title 'Total Collaboration Storage' -Value (Format-MigrationHumanDataSize -Value $collaborationTotalRow.TotalStorageGB) -Subtitle ("{0} SharePoint and OneDrive sites; no double counting" -f (Format-MigrationDisplayValue $collaborationTotalRow.ObjectCount)) -Theme 'default'
+    }
+    foreach ($shareGateRow in @($visibleShareGateRows | Where-Object { [string]$_.Workload -ne 'All collaboration sites (non-duplicated)' })) {
+        $collaborationHtml += New-KpiCard -Title ([string]$shareGateRow.Workload) -Value (Format-MigrationHumanDataSize -Value $shareGateRow.TotalStorageGB) -Subtitle ("{0} site(s)" -f (Format-MigrationDisplayValue $shareGateRow.ObjectCount)) -Theme 'default'
+    }
+    $collaborationHtml += '</div>'
+    $collaborationHtml += New-CalloutBox -Type 'info' -Title 'How the storage total works' -Content 'The non-duplicated total is SharePoint plus OneDrive. The Teams and Microsoft 365 Group rows carve backing sites out of the SharePoint total so their separate storage is visible without adding the same files twice.'
+    $collaborationHtml += New-HtmlTable -Data $visibleShareGateRows -Columns @('Workload', 'ObjectCount', 'TotalStorageGB', 'LargestObjectName', 'LargestObjectSizeGB') -ColumnHeaders @{
+        ObjectCount = 'Sites'
+        TotalStorageGB = 'Storage'
+        LargestObjectName = 'Largest Site'
+        LargestObjectSizeGB = 'Largest Site Size'
+    } -ValueFormatters @{
+        TotalStorageGB = {
+            param($value, $row)
+            Format-MigrationHumanDataSize -Value $value
+        }
+        LargestObjectSizeGB = {
+            param($value, $row)
+            Format-MigrationHumanDataSize -Value $value
+        }
+    } -EmptyMessage 'ShareGate scope rows were not generated for this run.'
+
+    # ---- Group reconciliation ----
+    $groupHtml = ''
+    $classificationCounts = @($reconciliationRows | Group-Object Classification | Sort-Object Count -Descending)
+    $groupHtml += "<div class='kpi-grid'>"
+    $groupHtml += New-KpiCard -Title 'Microsoft 365 Groups' -Value $reconciliationRows.Count -Theme 'default'
+    $groupHtml += New-KpiCard -Title 'Groups That Are Teams' -Value (@($reconciliationRows | Where-Object { $_.IsTeam -eq $true }).Count) -Subtitle 'Not every group is a Team' -Theme 'default'
+    $groupHtml += New-KpiCard -Title 'Split Across Both Tools' -Value (@($reconciliationRows | Where-Object { [string]$_.MailboxScope -match '^BitTitan' -and $_.SiteScope -eq 'ShareGate' }).Count) -Subtitle 'Mailbox and site move separately' -Theme 'warning'
+    $groupHtml += New-KpiCard -Title 'Needs Mail Evidence' -Value (@($reconciliationRows | Where-Object { $_.MailboxEvidenceStatus -eq 'Needs Data' -or $_.MailboxScope -eq 'Needs Data' }).Count) -Subtitle 'Collect statistics; missing data is not empty' -Theme 'warning'
+    $groupHtml += New-KpiCard -Title 'Empty Shells' -Value (@($reconciliationRows | Where-Object { [string]$_.Classification -eq 'Empty shell' }).Count) -Subtitle 'No mail or site content' -Theme $(if (@($reconciliationRows | Where-Object { [string]$_.Classification -eq 'Empty shell' }).Count -gt 0) { 'warning' } else { 'success' })
+    $groupHtml += '</div>'
+    $groupHtml += "<p>Every Microsoft 365 Group is classified by what it actually contains, so no object is counted twice and no empty group inflates the estimate. A group's mailbox is BitTitan scope; its SharePoint site is ShareGate scope. Groups appearing in both need coordinated cutover.</p>"
+    $groupHtml += New-HtmlTable -Data @($classificationCounts | ForEach-Object { [pscustomobject]@{ Classification = $_.Name; GroupCount = $_.Count } }) -Columns @('Classification', 'GroupCount') -ColumnHeaders @{ GroupCount = 'Groups' } -EmptyMessage 'No Microsoft 365 Groups were surfaced in this run.'
+
+    # ---- Complexity ----
+    $blockerCount = @($complexityRows | Where-Object { [string]$_.Status -eq 'Blocker' }).Count
+    $needsDataCount = @($complexityRows | Where-Object { [string]$_.Status -eq 'Needs Data' }).Count
+    $complexityHtml = "<div class='kpi-grid'>"
+    $complexityHtml += New-KpiCard -Title 'Total Flags' -Value $complexityRows.Count -Theme $(if ($complexityRows.Count -gt 0) { 'warning' } else { 'success' })
+    $complexityHtml += New-KpiCard -Title 'Blockers' -Value $blockerCount -Theme $(if ($blockerCount -gt 0) { 'danger' } else { 'success' })
+    $complexityHtml += New-KpiCard -Title 'Needs Data' -Value $needsDataCount -Theme $(if ($needsDataCount -gt 0) { 'warning' } else { 'success' })
+    $complexityHtml += '</div>'
+    $complexityHtml += "<p>Each item below adds effort, risk, or a sequencing dependency to the migration and should be priced before quoting.</p>"
+    $complexityHtml += New-HtmlTable -Data $complexityRows -Columns @('Category', 'Item', 'Status', 'Value', 'Notes', 'MigrationAction') -ColumnHeaders @{
+        Item            = 'Driver'
+        Value           = 'Current State'
+        MigrationAction = 'Action'
+    } -EmptyMessage 'No migration complexity drivers were surfaced in this run.'
+
+    # ---- Provisional workload effort ---------------------------------------------------
+    $provisionalEffortCount = @($workloadEffortRows | Where-Object { [string]$_.Status -ne 'Confirmed' }).Count
+    $planningHtml = "<div class='kpi-grid'>"
+    $planningHtml += New-KpiCard -Title 'Workload Effort Bands' -Value $workloadEffortRows.Count -Subtitle 'Relative bands, not labor hours' -Theme 'default'
+    $planningHtml += New-KpiCard -Title 'Bands Awaiting Confirmation' -Value $provisionalEffortCount -Theme $(if ($provisionalEffortCount -gt 0) { 'warning' } else { 'success' })
+    $planningHtml += '</div>'
+    $planningHtml += "<p>Effort bands are transparent planning assumptions for pre-sales scoping, not labor-hour estimates or a delivery schedule. They become reliable only after mappings, dispositions, customer constraints, and exception handling are confirmed.</p>"
+    $planningHtml += New-HtmlTable -Data $workloadEffortRows -Columns @('Workload', 'MigrationTool', 'ObjectCount', 'DataGB', 'ProvisionalEffortBand', 'Status') -ColumnHeaders @{ DataGB = 'Measured Data'; ProvisionalEffortBand = 'Effort Band' } -ValueFormatters @{
+        DataGB = {
+            param($value, $row)
+            if ($null -eq (Get-MigrationNumericValue $value)) { return 'Not applicable / needs mapping' }
+            return Format-MigrationHumanDataSize -Value $value
+        }
+    } -EmptyMessage 'Workload effort rows were not generated for this run.'
+    $sectionContents = @(
+        @{ Id = 'presales-scope'; Name = 'Tenant Scope at a Glance'; Workload = 'Source-tenant migration scoping'; Content = $overviewHtml },
+        @{ Id = 'presales-domains'; Name = 'Domain and DNS Inventory'; Workload = 'Source-tenant namespaces and recipient use'; Content = $domainHtml },
+        @{ Id = 'presales-readiness'; Name = 'Quote Readiness and Blockers'; Workload = 'Customer decisions; destination inputs are not queried'; Content = $readinessHtml },
+        @{ Id = 'presales-bittitan'; Name = 'BitTitan Mailbox Licensing'; Workload = 'BitTitan - mailbox data'; Content = $licensingHtml },
+        @{ Id = 'presales-sharegate'; Name = 'ShareGate Collaboration Scope'; Workload = 'ShareGate - SharePoint, OneDrive, Teams'; Content = $collaborationHtml },
+        @{ Id = 'presales-groups'; Name = 'Microsoft 365 Group Reconciliation'; Workload = 'Both tools'; Content = $groupHtml },
+        @{ Id = 'presales-complexity'; Name = 'Migration Complexity Drivers'; Workload = 'Migration scoping'; Content = $complexityHtml },
+        @{ Id = 'presales-planning'; Name = 'Provisional Workload Effort'; Workload = 'Pre-sales sizing assumptions'; Content = $planningHtml }
+    )
+
+    $reportDate = Get-Date -Format 'MMMM dd, yyyy h:mm tt'
+    $reportDateHtml = [System.Web.HttpUtility]::HtmlEncode($reportDate)
+
+    $htmlContent = @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>$tenantNameHtml - Migration Scoping Brief | Arraya Solutions</title>
+    $(Get-AssessmentBundledChartJsScript)
+    $(Get-HtmlStyle)
+</head>
+<body>
+    <div class="container">
+        <div class="report-header">
+            <div class="report-brand">Prepared by Arraya Solutions</div>
+            <h1>$tenantNameHtml</h1>
+            <p style="font-size:1.1em;">Migration Scoping Brief</p>
+            <div class="report-meta">
+                <div class="report-meta-item">Generated: $reportDateHtml</div>
+                <div class="report-meta-item">Default Domain: $defaultDomainHtml</div>
+                <div class="report-meta-item">Mailbox: BitTitan</div>
+                <div class="report-meta-item">Files and Teams: ShareGate</div>
+            </div>
+        </div>
+        $(Build-Navigation -Sections $sectionContents)
+"@
+
+    foreach ($section in $sectionContents) {
+        $htmlContent += @"
+        <div class="section" id="$($section.Id)">
+            <div class="section-workload">$([System.Web.HttpUtility]::HtmlEncode([string]$section.Workload))</div>
+            <h2>$([System.Web.HttpUtility]::HtmlEncode([string]$section.Name))</h2>
+            $($section.Content)
+        </div>
+"@
+    }
+
+    $htmlContent += @"
+    </div>
+    $(Get-HtmlScript)
+</body>
+</html>
+"@
+
+    try {
+        $htmlContent | Out-File -FilePath $OutputPath -Encoding UTF8 -Force
+        return [pscustomobject]@{
+            Success       = $true
+            OutputPath    = $OutputPath
+            SectionCount  = $sectionContents.Count
+            FindingsCount = $complexityRows.Count
+        }
+    }
+    catch {
+        Write-Error "Failed to write migration scoping brief HTML report: $_"
         return [pscustomobject]@{
             Success    = $false
             OutputPath = $null

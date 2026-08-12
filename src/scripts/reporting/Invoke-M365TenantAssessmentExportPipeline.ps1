@@ -28,10 +28,10 @@ function Invoke-M365TenantAssessmentExportPipeline {
         [Parameter(Mandatory = $true)]
         [bool]$ExportOnly,
         [Parameter(Mandatory = $false)]
-        [ValidateSet('Default', 'TenantToTenantCutover')]
+        [ValidateSet('Default', 'TenantToTenantCutover', 'Presales')]
         [string]$WorkbookExportPolicy = 'Default',
         [Parameter(Mandatory = $false)]
-        [ValidateSet('Default', 'TenantToTenantCutover')]
+        [ValidateSet('Default', 'TenantToTenantCutover', 'Presales')]
         [string]$TechnicalHtmlPolicy = 'Default',
         [Parameter(Mandatory = $false)]
         [bool]$GenerateMigrationPack = $false,
@@ -296,38 +296,67 @@ function Invoke-M365TenantAssessmentExportPipeline {
     }
     else {
         try {
-            if (Get-Command -Name Ensure-TenantQuestionnaireHelperLoaded -ErrorAction SilentlyContinue) {
-                Ensure-TenantQuestionnaireHelperLoaded
-            }
-            if (-not (Get-Command -Name Export-TenantToTenantQuestionnaireMarkdown -ErrorAction SilentlyContinue)) {
-                $questionnaireHelperPath = [System.IO.Path]::GetFullPath((Join-Path -Path (Resolve-LegacyHelperRoot) -ChildPath 'Export-TenantToTenantQuestionnaireMarkdown.ps1'))
-                if (Test-Path -Path $questionnaireHelperPath) {
-                    . $questionnaireHelperPath
-                }
-            }
-            if (Get-Command -Name Export-TenantToTenantQuestionnaireMarkdown -ErrorAction SilentlyContinue) {
-                $resolvedLegacyRoot = if (-not [string]::IsNullOrWhiteSpace($LegacyScriptRoot)) {
-                    $LegacyScriptRoot
-                }
-                else {
-                    $PSScriptRoot
-                }
-                $questionnaireTemplateCandidates = @(
-                    [System.IO.Path]::GetFullPath((Join-Path -Path $resolvedLegacyRoot -ChildPath '..\..\..\..\docs\Microsoft 365 Tenant to Tenant Questionnaire.md')),
-                    [System.IO.Path]::GetFullPath((Join-Path -Path $resolvedLegacyRoot -ChildPath '..\..\..\..\docs\templates\Microsoft 365 Tenant to Tenant Questionnaire.md'))
-                )
-                $questionnaireTemplatePath = $questionnaireTemplateCandidates | Where-Object { Test-Path -Path $_ } | Select-Object -First 1
-                if (-not $questionnaireTemplatePath) {
-                    throw "Questionnaire template not found in expected locations: $($questionnaireTemplateCandidates -join '; ')"
+            $isPresalesScopeQuestionnaire = (
+                $WorkbookExportPolicy -eq 'Presales' -or
+                $TechnicalHtmlPolicy -eq 'Presales'
+            )
+            if ($isPresalesScopeQuestionnaire) {
+                if (-not (Get-Command -Name Export-PresalesMigrationScopeQuestionnaireMarkdown -ErrorAction SilentlyContinue)) {
+                    $presalesQuestionnaireHelperCandidates = @(
+                        [System.IO.Path]::GetFullPath((Join-Path -Path (Resolve-LegacyHelperRoot) -ChildPath 'Export-PresalesMigrationScopeQuestionnaireMarkdown.ps1')),
+                        [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\migrated\legacy\Export-PresalesMigrationScopeQuestionnaireMarkdown.ps1'))
+                    )
+                    $presalesQuestionnaireHelperPath = $presalesQuestionnaireHelperCandidates |
+                        Where-Object { Test-Path -Path $_ } |
+                        Select-Object -First 1
+                    if ($presalesQuestionnaireHelperPath) {
+                        . $presalesQuestionnaireHelperPath
+                    }
                 }
 
-                $questionnaireExportPath = $ExportDetails -replace '\.xlsx$', '-TenantToTenantQuestionnaire.md'
-                Export-TenantToTenantQuestionnaireMarkdown -TenantStatsHash $TenantStatsHash -TemplatePath $questionnaireTemplatePath -Path $questionnaireExportPath
+                if (-not (Get-Command -Name Export-PresalesMigrationScopeQuestionnaireMarkdown -ErrorAction SilentlyContinue)) {
+                    throw "Presales migration scope questionnaire helper not found in expected locations: $($presalesQuestionnaireHelperCandidates -join '; ')"
+                }
+
+                $questionnaireExportPath = $ExportDetails -replace '\.xlsx$', '-MigrationScopeQuestionnaire.md'
+                Export-PresalesMigrationScopeQuestionnaireMarkdown -TenantStatsHash $TenantStatsHash -Path $questionnaireExportPath
                 $generatedArtifacts['Questionnaire'] = $questionnaireExportPath
-                Write-PipelineLog -Type INFO -Message "Exported Tenant to Tenant Questionnaire to $questionnaireExportPath"
+                Write-PipelineLog -Type INFO -Message "Exported Presales migration scope questionnaire to $questionnaireExportPath"
             }
             else {
-                Write-PipelineLog -Type WARNING -Message 'Skipping questionnaire export because Export-TenantToTenantQuestionnaireMarkdown is unavailable.'
+                if (Get-Command -Name Ensure-TenantQuestionnaireHelperLoaded -ErrorAction SilentlyContinue) {
+                    Ensure-TenantQuestionnaireHelperLoaded
+                }
+                if (-not (Get-Command -Name Export-TenantToTenantQuestionnaireMarkdown -ErrorAction SilentlyContinue)) {
+                    $questionnaireHelperPath = [System.IO.Path]::GetFullPath((Join-Path -Path (Resolve-LegacyHelperRoot) -ChildPath 'Export-TenantToTenantQuestionnaireMarkdown.ps1'))
+                    if (Test-Path -Path $questionnaireHelperPath) {
+                        . $questionnaireHelperPath
+                    }
+                }
+                if (Get-Command -Name Export-TenantToTenantQuestionnaireMarkdown -ErrorAction SilentlyContinue) {
+                    $resolvedLegacyRoot = if (-not [string]::IsNullOrWhiteSpace($LegacyScriptRoot)) {
+                        $LegacyScriptRoot
+                    }
+                    else {
+                        $PSScriptRoot
+                    }
+                    $questionnaireTemplateCandidates = @(
+                        [System.IO.Path]::GetFullPath((Join-Path -Path $resolvedLegacyRoot -ChildPath '..\..\..\..\docs\Microsoft 365 Tenant to Tenant Questionnaire.md')),
+                        [System.IO.Path]::GetFullPath((Join-Path -Path $resolvedLegacyRoot -ChildPath '..\..\..\..\docs\templates\Microsoft 365 Tenant to Tenant Questionnaire.md'))
+                    )
+                    $questionnaireTemplatePath = $questionnaireTemplateCandidates | Where-Object { Test-Path -Path $_ } | Select-Object -First 1
+                    if (-not $questionnaireTemplatePath) {
+                        throw "Questionnaire template not found in expected locations: $($questionnaireTemplateCandidates -join '; ')"
+                    }
+
+                    $questionnaireExportPath = $ExportDetails -replace '\.xlsx$', '-TenantToTenantQuestionnaire.md'
+                    Export-TenantToTenantQuestionnaireMarkdown -TenantStatsHash $TenantStatsHash -TemplatePath $questionnaireTemplatePath -Path $questionnaireExportPath
+                    $generatedArtifacts['Questionnaire'] = $questionnaireExportPath
+                    Write-PipelineLog -Type INFO -Message "Exported Tenant to Tenant Questionnaire to $questionnaireExportPath"
+                }
+                else {
+                    Write-PipelineLog -Type WARNING -Message 'Skipping questionnaire export because Export-TenantToTenantQuestionnaireMarkdown is unavailable.'
+                }
             }
         }
         catch {
@@ -380,11 +409,10 @@ function Invoke-M365TenantAssessmentExportPipeline {
             if (Test-Path -Path $fullHtmlHelperPath) {
                 . $fullHtmlHelperPath
             }
-            $htmlExportPath = if ($TechnicalHtmlPolicy -eq 'TenantToTenantCutover') {
-                $ExportDetails -replace '\.xlsx$', '-T2TCutover.html'
-            }
-            else {
-                $ExportDetails -replace '\.xlsx$', '-TenantSnapshot.html'
+            $htmlExportPath = switch ($TechnicalHtmlPolicy) {
+                'TenantToTenantCutover' { $ExportDetails -replace '\.xlsx$', '-T2TCutover.html' }
+                'Presales' { $ExportDetails -replace '\.xlsx$', '-MigrationScopingBrief.html' }
+                default { $ExportDetails -replace '\.xlsx$', '-TenantSnapshot.html' }
             }
 
             $htmlResult = $null
@@ -394,6 +422,14 @@ function Invoke-M365TenantAssessmentExportPipeline {
                 }
                 else {
                     $htmlResult = New-TenantMigrationCutoverHtmlReport -TenantStatsHash $TenantStatsHash -OutputPath $htmlExportPath -CollectionScopePolicy 'TenantToTenantCutover'
+                }
+            }
+            elseif ($TechnicalHtmlPolicy -eq 'Presales') {
+                if (-not (Get-Command -Name New-TenantMigrationScopeHtmlReport -ErrorAction SilentlyContinue)) {
+                    Write-PipelineLog -Type WARNING -Message 'Skipping migration scoping brief because New-TenantMigrationScopeHtmlReport is unavailable.'
+                }
+                else {
+                    $htmlResult = New-TenantMigrationScopeHtmlReport -TenantStatsHash $TenantStatsHash -OutputPath $htmlExportPath
                 }
             }
             else {

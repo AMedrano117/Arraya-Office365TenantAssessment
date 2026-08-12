@@ -8,19 +8,22 @@ function Get-ArrayaAssessmentOutputProfilePolicy {
 
     switch ($OutputProfile) {
         'Presales' {
+            # Pre-sales scoping needs mailbox and site sizing data, which Minimum depth
+            # suppresses (unified group mailbox stats and full SharePoint detail), so this
+            # profile runs at Operator with a deliberately narrow collection plan.
             return [PSCustomObject]@{
                 OutputProfile              = $OutputProfile
-                ReportingMode              = 'Minimum'
-                GenerateWorkbook           = $false
+                ReportingMode              = 'Operator'
+                GenerateWorkbook           = $true
                 GenerateTechnicalHtml      = $true
                 GenerateBestPracticesHtml  = $false
                 GenerateQuestionnaire      = $true
                 GenerateJson               = $false
                 GeneratePdf                = $false
-                WorkbookExportPolicy       = 'Default'
-                TechnicalHtmlPolicy        = 'Default'
+                WorkbookExportPolicy       = 'Presales'
+                TechnicalHtmlPolicy        = 'Presales'
                 GenerateMigrationPack      = $false
-                CollectionScopePolicy      = 'Default'
+                CollectionScopePolicy      = 'Presales'
             }
         }
         'SolutionsEngineer' {

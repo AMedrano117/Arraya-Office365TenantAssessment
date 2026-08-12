@@ -79,4 +79,21 @@ Describe 'Export Pipeline - Integration' {
         $validation.Valid | Should -BeTrue
         ($validation.Warnings | Where-Object { $_ -match 'Data domain' }).Count | Should -Be 0
     }
+
+    It 'routes the Presales questionnaire to the migration scope artifact' {
+        $snapshot = New-ArrayaTenantSnapshot -Metadata @{ OutputProfileLabel = 'Presales' }
+        $params = $script:baseInvokeParams.Clone()
+        $params.TenantStatsHash = $snapshot
+        $params.ExportDetails = Join-Path $TestDrive 'Deliverables\Presales.xlsx'
+        $params.SkipQuestionnaire = $false
+        $params.WorkbookExportPolicy = 'Presales'
+        $params.TechnicalHtmlPolicy = 'Presales'
+        $params.LegacyScriptRoot = Join-Path $script:repoRoot 'src\scripts\migrated\legacy'
+
+        $result = Invoke-M365TenantAssessmentExportPipeline @params
+
+        $result['Questionnaire'] | Should -Match '-MigrationScopeQuestionnaire\.md$'
+        Test-Path -Path $result['Questionnaire'] | Should -BeTrue
+        Test-Path -Path ($params.ExportDetails -replace '\.xlsx$', '-TenantToTenantQuestionnaire.md') | Should -BeFalse
+    }
 }
