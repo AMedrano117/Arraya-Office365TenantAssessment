@@ -15,3 +15,19 @@ onboarding/customers.json
 TestResults/
 coverage.xml
 TestRuns/
+
+# Test and coverage output written to the repository root by tools/run-pester.ps1
+/TestResults.xml
+/CoverageResults.xml
+
+# Customer run artifacts (deliverables, snapshots, logs)
+/runs/
+
+# Python tooling
+.venv/
+__pycache__/
+*.pyc
+
+# Machine-local agent state
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
