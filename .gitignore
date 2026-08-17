@@ -28,6 +28,6 @@ TestRuns/
 __pycache__/
 *.pyc
 
-# Machine-local agent state
-.claude/settings.local.json
-.claude/scheduled_tasks.lock
+# Local AI assistant configuration and state. Not shared project config.
+.claude/
+.codex/
