@@ -18,14 +18,17 @@ stages:
   - job: LintAndTest
     steps:
     - checkout: self
-    - powershell: |
-        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-        Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
-        Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck
+    - pwsh: |
+        if ($PSVersionTable.PSVersion.Major -lt 7) {
+            throw "Expected PowerShell 7+ on the build agent, found $($PSVersionTable.PSVersion)."
+        }
+        Write-Host "PowerShell runtime: $($PSVersionTable.PSVersion)"
+      displayName: Assert PowerShell 7 runtime
+    - pwsh: ./tools/install-dependencies.ps1 -Scope DevTools
       displayName: Install tooling
-    - powershell: ./tools/invoke-scriptanalyzer.ps1
+    - pwsh: ./tools/invoke-scriptanalyzer.ps1
       displayName: Run ScriptAnalyzer
-    - powershell: ./tools/run-pester.ps1
+    - pwsh: ./tools/run-pester.ps1
       displayName: Run Pester tests
     - task: PublishTestResults@2
       displayName: Publish test results
@@ -39,3 +42,22 @@ stages:
         codeCoverageTool: JaCoCo
         summaryFileLocation: CoverageResults.xml
       condition: always()
+
+  # Proves dependencies.psd1 is sufficient to provision a machine from nothing. Runs on a
+  # fresh agent so a module that only works because it lingers on a developer laptop fails
+  # here rather than on a customer engagement.
+  - job: CleanMachineDependencies
+    displayName: Clean-machine dependency validation
+    steps:
+    - checkout: self
+    - pwsh: ./tools/install-dependencies.ps1 -Scope All
+      displayName: Install dependencies from manifest
+    - pwsh: ./tools/install-dependencies.ps1 -Scope All -Validate
+      displayName: Verify manifest is satisfied
+    - pwsh: |
+        $manifests = Get-ChildItem ./src/modules -Filter *.psd1 -Recurse
+        foreach ($manifest in $manifests) {
+            Import-Module $manifest.FullName -Force -ErrorAction Stop
+            Write-Host "Imported $($manifest.BaseName)"
+        }
+      displayName: Import project modules

@@ -11,7 +11,7 @@ Use this guide when you are ready to execute the assessment and review the resul
 Install the required PowerShell modules:
 
 ```powershell
-.\tools\install-microsoft-modules.ps1
+.\tools\install-dependencies.ps1 -Scope Runtime
 ```
 
 ## Authentication Options
@@ -278,7 +278,7 @@ If you need to validate the workflow on another workstation or jump box:
 
 1. Install PowerShell 7 or later.
 2. Clone or copy the repo.
-3. Install required modules: `.\tools\install-microsoft-modules.ps1`
+3. Install required modules: `.\tools\install-dependencies.ps1 -Scope Runtime`
 4. If using certificate auth, import the `.pfx` and verify it has a private key.
 5. Start with the lowest-risk path:
    - Run `Improve` against an existing known-good snapshot first.
@@ -289,7 +289,7 @@ This separates environment setup issues from tenant authentication issues.
 
 ## Troubleshooting
 
-**Missing module**: rerun `.\tools\install-microsoft-modules.ps1`
+**Missing module**: rerun `.\tools\install-dependencies.ps1 -Scope Runtime`
 
 **Unexpected auth prompt**: check whether `-SkipAuth` should be used to reuse an existing session.
 
@@ -303,6 +303,6 @@ This separates environment setup issues from tenant authentication issues.
 
 ## Additional References
 
-- [Tenant Assessment Quick Start](docs/runbooks/tenant-assessment-quick-start.md)
+- [Repository Quick Start](README.md#quick-start)
 - [Customer Execution Checklist](docs/runbooks/customer-execution-checklist.md)
 - [Improvement Plan Rule Taxonomy](docs/runbooks/improvement-plan-rule-taxonomy.md)

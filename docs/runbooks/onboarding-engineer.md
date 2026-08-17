@@ -15,14 +15,23 @@ cd <repo-folder>
 
 ## 3. Install required modules
 
+Module versions come from `dependencies.psd1` at the repository root, so every machine
+resolves the same versions.
+
 ```powershell
-.\tools\install-microsoft-modules.ps1
+.\tools\install-dependencies.ps1 -Scope Runtime
 ```
 
-To also install test and lint tooling:
+To also install app-registration and test/lint tooling:
 
 ```powershell
-.\tools\install-microsoft-modules.ps1 -IncludeDevTools
+.\tools\install-dependencies.ps1 -Scope All
+```
+
+To check an existing machine without installing anything:
+
+```powershell
+.\tools\install-dependencies.ps1 -Scope All -Validate
 ```
 
 ## 4. Validate the setup
@@ -54,7 +63,7 @@ If the run stops reporting that Graph and Exchange Online are on different tenan
 
 ## Next steps
 
-- [Tenant Assessment Quick Start](tenant-assessment-quick-start.md) — how to run your first assessment
+- [Repository Quick Start](../../README.md#quick-start) — how to run your first assessment
 - [App Registration Setup](app-registration-setup.md) — set up app-based auth
 - [Certificate Auth Setup](certificate-auth-setup.md) — configure certificate auth
 - [RUN.md](../../RUN.md) — full execution reference

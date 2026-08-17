@@ -40,7 +40,7 @@ For the full operator guide, see [RUN.md](RUN.md).
 2. Install the Microsoft modules used by the assessment:
 
 ```powershell
-.\tools\install-microsoft-modules.ps1
+.\tools\install-dependencies.ps1 -Scope Runtime
 ```
 
 3. Start with a preflight check if this is a new tenant, new workstation, or new app registration:
@@ -189,7 +189,7 @@ Setup references:
 - [App Registration Setup](docs/runbooks/app-registration-setup.md)
 - [Certificate Auth Setup](docs/runbooks/certificate-auth-setup.md)
 
-> **Automated app registration setup** -- a guided script to create and configure the Entra app registration is in development. Until it is available, follow the manual steps in the runbooks above.
+> **Automated app registration setup** -- use `onboarding\New-AssessmentAppRegistration.ps1` for guided setup, or follow the manual steps in the runbooks above.
 
 ## Output Profiles
 
@@ -267,7 +267,7 @@ Pass `-ExportPath` when you want to choose the output folder:
 Install the maintainer tooling:
 
 ```powershell
-.\tools\install-microsoft-modules.ps1 -IncludeDevTools
+.\tools\install-dependencies.ps1 -Scope All
 ```
 
 Run the usual validation checks:
