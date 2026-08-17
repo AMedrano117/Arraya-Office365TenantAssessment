@@ -5,7 +5,9 @@ Describe 'Export Pipeline - Integration' {
         Import-Module -Name $script:commonManifest -Force -WarningAction SilentlyContinue -DisableNameChecking
 
         $script:pipelinePath = Join-Path $script:repoRoot 'src\scripts\reporting\Invoke-M365TenantAssessmentExportPipeline.ps1'
+        $script:presalesQuestionnaireExporterPath = Join-Path $script:repoRoot 'src\scripts\migrated\legacy\Export-PresalesMigrationScopeQuestionnaireMarkdown.ps1'
         . $script:pipelinePath
+        . $script:presalesQuestionnaireExporterPath
 
         $script:baseInvokeParams = @{
             SkipWorkbook           = $true
@@ -81,6 +83,16 @@ Describe 'Export Pipeline - Integration' {
     }
 
     It 'routes the Presales questionnaire to the migration scope artifact' {
+        Mock Export-PresalesMigrationScopeQuestionnaireMarkdown {
+            param($TenantStatsHash, $Path)
+
+            $outputDirectory = Split-Path -Path $Path -Parent
+            if (-not (Test-Path -LiteralPath $outputDirectory)) {
+                $null = New-Item -ItemType Directory -Path $outputDirectory -Force
+            }
+            '# Presales migration scope fixture' | Set-Content -LiteralPath $Path -Encoding UTF8
+        }
+
         $snapshot = New-ArrayaTenantSnapshot -Metadata @{ OutputProfileLabel = 'Presales' }
         $params = $script:baseInvokeParams.Clone()
         $params.TenantStatsHash = $snapshot

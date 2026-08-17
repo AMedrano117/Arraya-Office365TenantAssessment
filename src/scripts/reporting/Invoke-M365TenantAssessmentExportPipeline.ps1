@@ -163,6 +163,25 @@ function Invoke-M365TenantAssessmentExportPipeline {
         }
     }
 
+    function Assert-RequiredArtifactFile {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Label,
+            [Parameter(Mandatory = $false)]
+            [AllowNull()]
+            [string]$Path
+        )
+
+        if ([string]::IsNullOrWhiteSpace($Path)) {
+            throw "$Label export completed without returning an artifact path."
+        }
+
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            throw "$Label export completed without producing the required artifact: $Path"
+        }
+    }
+
     $generatedArtifacts = [ordered]@{
         Workbook              = $null
         'Best Practices HTML' = $null
@@ -215,10 +234,13 @@ function Invoke-M365TenantAssessmentExportPipeline {
 
             Write-PipelineLog -Type INFO -Message "Exporting the Tenant Statistics to $ExportDetails."
             Export-HashTableToExcel -hashtable $ExportTenantStatsHash -ExportDetails $ExportDetails -WorkbookExportPolicy $WorkbookExportPolicy
+            Assert-RequiredArtifactFile -Label 'Workbook' -Path $ExportDetails
             $generatedArtifacts['Workbook'] = $ExportDetails
         }
         catch {
-            Write-PipelineLog -Type ERROR -Message "Workbook export failed: $($_.Exception.Message)"
+            $workbookFailureMessage = "Workbook export failed: $($_.Exception.Message)"
+            Write-PipelineLog -Type ERROR -Message $workbookFailureMessage
+            throw $workbookFailureMessage
         }
     }
 
@@ -229,18 +251,31 @@ function Invoke-M365TenantAssessmentExportPipeline {
             }
 
             $cutoverPackResult = Export-ArrayaTenantToTenantCutoverPack -TenantStatsHash $TenantStatsHash -BaseExportPath $ExportDetails
-            if ($cutoverPackResult -and -not [string]::IsNullOrWhiteSpace([string]$cutoverPackResult.WorkbookPath)) {
-                $generatedArtifacts['T2T Cutover Pack Workbook'] = [string]$cutoverPackResult.WorkbookPath
+            if ($null -eq $cutoverPackResult) {
+                throw 'The cutover pack exporter completed without returning an artifact result.'
             }
 
-            if ($cutoverPackResult -and $cutoverPackResult.CsvArtifacts -is [System.Collections.IDictionary]) {
-                foreach ($csvArtifactName in $cutoverPackResult.CsvArtifacts.Keys) {
-                    $generatedArtifacts["T2T Cutover Pack CSV - $csvArtifactName"] = [string]$cutoverPackResult.CsvArtifacts[$csvArtifactName]
-                }
+            $cutoverPackWorkbookPath = [string]$cutoverPackResult.WorkbookPath
+            Assert-RequiredArtifactFile -Label 'Tenant-to-tenant cutover pack workbook' -Path $cutoverPackWorkbookPath
+            $generatedArtifacts['T2T Cutover Pack Workbook'] = $cutoverPackWorkbookPath
+
+            if (
+                $cutoverPackResult.CsvArtifacts -isnot [System.Collections.IDictionary] -or
+                $cutoverPackResult.CsvArtifacts.Count -eq 0
+            ) {
+                throw 'The cutover pack exporter completed without returning its required CSV artifacts.'
+            }
+
+            foreach ($csvArtifactName in $cutoverPackResult.CsvArtifacts.Keys) {
+                $csvArtifactPath = [string]$cutoverPackResult.CsvArtifacts[$csvArtifactName]
+                Assert-RequiredArtifactFile -Label "Tenant-to-tenant cutover pack CSV '$csvArtifactName'" -Path $csvArtifactPath
+                $generatedArtifacts["T2T Cutover Pack CSV - $csvArtifactName"] = $csvArtifactPath
             }
         }
         catch {
-            Write-PipelineLog -Type ERROR -Message "Tenant-to-tenant cutover pack export failed: $($_.Exception.Message)"
+            $cutoverPackFailureMessage = "Tenant-to-tenant cutover pack export failed: $($_.Exception.Message)"
+            Write-PipelineLog -Type ERROR -Message $cutoverPackFailureMessage
+            throw $cutoverPackFailureMessage
         }
     }
 
@@ -320,6 +355,7 @@ function Invoke-M365TenantAssessmentExportPipeline {
 
                 $questionnaireExportPath = $ExportDetails -replace '\.xlsx$', '-MigrationScopeQuestionnaire.md'
                 Export-PresalesMigrationScopeQuestionnaireMarkdown -TenantStatsHash $TenantStatsHash -Path $questionnaireExportPath
+                Assert-RequiredArtifactFile -Label 'Presales migration scope questionnaire' -Path $questionnaireExportPath
                 $generatedArtifacts['Questionnaire'] = $questionnaireExportPath
                 Write-PipelineLog -Type INFO -Message "Exported Presales migration scope questionnaire to $questionnaireExportPath"
             }
@@ -351,16 +387,19 @@ function Invoke-M365TenantAssessmentExportPipeline {
 
                     $questionnaireExportPath = $ExportDetails -replace '\.xlsx$', '-TenantToTenantQuestionnaire.md'
                     Export-TenantToTenantQuestionnaireMarkdown -TenantStatsHash $TenantStatsHash -TemplatePath $questionnaireTemplatePath -Path $questionnaireExportPath
+                    Assert-RequiredArtifactFile -Label 'Tenant-to-tenant questionnaire' -Path $questionnaireExportPath
                     $generatedArtifacts['Questionnaire'] = $questionnaireExportPath
                     Write-PipelineLog -Type INFO -Message "Exported Tenant to Tenant Questionnaire to $questionnaireExportPath"
                 }
                 else {
-                    Write-PipelineLog -Type WARNING -Message 'Skipping questionnaire export because Export-TenantToTenantQuestionnaireMarkdown is unavailable.'
+                    throw 'Export-TenantToTenantQuestionnaireMarkdown is unavailable for the required questionnaire export.'
                 }
             }
         }
         catch {
-            Write-PipelineLog -Type WARNING -Message "Unable to export Tenant to Tenant Questionnaire: $($_.Exception.Message)"
+            $questionnaireFailureMessage = "Questionnaire export failed: $($_.Exception.Message)"
+            Write-PipelineLog -Type ERROR -Message $questionnaireFailureMessage
+            throw $questionnaireFailureMessage
         }
     }
 
@@ -418,7 +457,7 @@ function Invoke-M365TenantAssessmentExportPipeline {
             $htmlResult = $null
             if ($TechnicalHtmlPolicy -eq 'TenantToTenantCutover') {
                 if (-not (Get-Command -Name New-TenantMigrationCutoverHtmlReport -ErrorAction SilentlyContinue)) {
-                    Write-PipelineLog -Type WARNING -Message 'Skipping full HTML report generation because New-TenantMigrationCutoverHtmlReport is unavailable.'
+                    throw 'New-TenantMigrationCutoverHtmlReport is unavailable for the required technical HTML export.'
                 }
                 else {
                     $htmlResult = New-TenantMigrationCutoverHtmlReport -TenantStatsHash $TenantStatsHash -OutputPath $htmlExportPath -CollectionScopePolicy 'TenantToTenantCutover'
@@ -426,7 +465,7 @@ function Invoke-M365TenantAssessmentExportPipeline {
             }
             elseif ($TechnicalHtmlPolicy -eq 'Presales') {
                 if (-not (Get-Command -Name New-TenantMigrationScopeHtmlReport -ErrorAction SilentlyContinue)) {
-                    Write-PipelineLog -Type WARNING -Message 'Skipping migration scoping brief because New-TenantMigrationScopeHtmlReport is unavailable.'
+                    throw 'New-TenantMigrationScopeHtmlReport is unavailable for the required technical HTML export.'
                 }
                 else {
                     $htmlResult = New-TenantMigrationScopeHtmlReport -TenantStatsHash $TenantStatsHash -OutputPath $htmlExportPath
@@ -434,7 +473,7 @@ function Invoke-M365TenantAssessmentExportPipeline {
             }
             else {
                 if (-not (Get-Command -Name New-TenantHtmlReport -ErrorAction SilentlyContinue)) {
-                    Write-PipelineLog -Type WARNING -Message 'Skipping full HTML report generation because New-TenantHtmlReport is unavailable.'
+                    throw 'New-TenantHtmlReport is unavailable for the required technical HTML export.'
                 }
                 else {
                     $reportThresholds = @{
@@ -450,42 +489,47 @@ function Invoke-M365TenantAssessmentExportPipeline {
                 }
             }
 
-            if ($null -ne $htmlResult) {
-                if ($htmlResult.Success) {
-                    $generatedArtifacts['Full HTML'] = $htmlResult.OutputPath
-                    Write-PipelineLog -Type INFO -Message "HTML report generated: $($htmlResult.OutputPath)"
-                    Try-OpenHtmlArtifact -Path $htmlResult.OutputPath -Label 'Technical HTML report'
+            if ($null -eq $htmlResult) {
+                throw 'The technical HTML exporter completed without returning an artifact result.'
+            }
 
-                    if ($SkipPdfReport) {
-                        # Intentionally no-op for profile-based PDF skips.
-                    }
-                    elseif (-not (Get-Command -Name Export-TenantHtmlReportPdf -ErrorAction SilentlyContinue)) {
-                        Write-PipelineLog -Type WARNING -Message 'Skipping PDF report generation because Export-TenantHtmlReportPdf is unavailable.'
+            if (-not $htmlResult.Success) {
+                throw "The technical HTML exporter reported failure: $($htmlResult.Error)"
+            }
+
+            $technicalHtmlPath = [string]$htmlResult.OutputPath
+            Assert-RequiredArtifactFile -Label 'Technical HTML report' -Path $technicalHtmlPath
+            $generatedArtifacts['Full HTML'] = $technicalHtmlPath
+            Write-PipelineLog -Type INFO -Message "HTML report generated: $technicalHtmlPath"
+            Try-OpenHtmlArtifact -Path $technicalHtmlPath -Label 'Technical HTML report'
+
+            if ($SkipPdfReport) {
+                # Intentionally no-op for profile-based PDF skips.
+            }
+            elseif (-not (Get-Command -Name Export-TenantHtmlReportPdf -ErrorAction SilentlyContinue)) {
+                Write-PipelineLog -Type WARNING -Message 'Skipping PDF report generation because Export-TenantHtmlReportPdf is unavailable.'
+            }
+            else {
+                try {
+                    $pdfExportPath = $technicalHtmlPath -replace '\.html$', '.pdf'
+                    $pdfResult = Export-TenantHtmlReportPdf -HtmlPath $technicalHtmlPath -PdfPath $pdfExportPath
+                    if ($pdfResult.Success) {
+                        $generatedArtifacts['PDF'] = $pdfResult.PdfPath
+                        Write-PipelineLog -Type INFO -Message "PDF report generated: $($pdfResult.PdfPath) using $($pdfResult.Renderer)"
                     }
                     else {
-                        try {
-                            $pdfExportPath = $htmlResult.OutputPath -replace '\.html$', '.pdf'
-                            $pdfResult = Export-TenantHtmlReportPdf -HtmlPath $htmlResult.OutputPath -PdfPath $pdfExportPath
-                            if ($pdfResult.Success) {
-                                $generatedArtifacts['PDF'] = $pdfResult.PdfPath
-                                Write-PipelineLog -Type INFO -Message "PDF report generated: $($pdfResult.PdfPath) using $($pdfResult.Renderer)"
-                            }
-                            else {
-                                Write-PipelineLog -Type WARNING -Message "PDF report generation failed: $($pdfResult.Error)"
-                            }
-                        }
-                        catch {
-                            Write-PipelineLog -Type WARNING -Message "Error generating PDF report: $($_.Exception.Message)"
-                        }
+                        Write-PipelineLog -Type WARNING -Message "PDF report generation failed: $($pdfResult.Error)"
                     }
                 }
-                else {
-                    Write-PipelineLog -Type ERROR -Message "HTML report generation failed: $($htmlResult.Error)"
+                catch {
+                    Write-PipelineLog -Type WARNING -Message "Error generating PDF report: $($_.Exception.Message)"
                 }
             }
         }
         catch {
-            Write-PipelineLog -Type ERROR -Message "HTML report generation error: $($_.Exception.Message)"
+            $technicalHtmlFailureMessage = "Technical HTML export failed: $($_.Exception.Message)"
+            Write-PipelineLog -Type ERROR -Message $technicalHtmlFailureMessage
+            throw $technicalHtmlFailureMessage
         }
     }
 
@@ -497,12 +541,13 @@ function Invoke-M365TenantAssessmentExportPipeline {
             -ReportingMode $ReportingMode `
             -CollectionOnly $CollectionOnly `
             -ExportOnly $ExportOnly
-        if (-not [string]::IsNullOrWhiteSpace($artifactManifestPath)) {
-            $generatedArtifacts['Manifest'] = $artifactManifestPath
-        }
+        Assert-RequiredArtifactFile -Label 'Run manifest' -Path $artifactManifestPath
+        $generatedArtifacts['Manifest'] = $artifactManifestPath
     }
     catch {
-        Write-PipelineLog -Type WARNING -Message "Unable to write artifact manifest: $($_.Exception.Message)"
+        $manifestFailureMessage = "Run manifest export failed: $($_.Exception.Message)"
+        Write-PipelineLog -Type ERROR -Message $manifestFailureMessage
+        throw $manifestFailureMessage
     }
 
     return $generatedArtifacts

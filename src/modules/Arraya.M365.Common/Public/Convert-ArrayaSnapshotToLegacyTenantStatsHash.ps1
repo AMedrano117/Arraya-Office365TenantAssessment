@@ -31,7 +31,7 @@ function Convert-ArrayaSnapshotToLegacyTenantStatsHash {
     if ($Snapshot.Contains('Data') -and ($Snapshot['Data'] -is [System.Collections.IDictionary])) {
         $knownDomains = @('Exchange', 'Identity', 'Collaboration', 'Security', 'Governance', 'Tenant', 'Other')
         foreach ($domain in $knownDomains) {
-            if (-not $Snapshot['Data'].Contains($domain)) {
+            if (-not ([System.Collections.IDictionary]$Snapshot['Data']).Contains($domain)) {
                 continue
             }
             $domainValue = $Snapshot['Data'][$domain]
@@ -60,7 +60,7 @@ function Convert-ArrayaSnapshotToLegacyTenantStatsHash {
     if (
         $Snapshot.Contains('Diagnostics') -and
         $Snapshot['Diagnostics'] -is [System.Collections.IDictionary] -and
-        $Snapshot['Diagnostics'].Contains('CollectorStats') -and
+        ([System.Collections.IDictionary]$Snapshot['Diagnostics']).Contains('CollectorStats') -and
         $Snapshot['Diagnostics']['CollectorStats'] -is [System.Collections.IDictionary]
     ) {
         foreach ($entry in $Snapshot['Diagnostics']['CollectorStats'].GetEnumerator()) {
@@ -74,7 +74,7 @@ function Convert-ArrayaSnapshotToLegacyTenantStatsHash {
         -not $legacy.Contains('TenantInfo') -and
         $Snapshot.Contains('Metadata') -and
         $Snapshot['Metadata'] -is [System.Collections.IDictionary] -and
-        $Snapshot['Metadata'].Contains('Tenant') -and
+        ([System.Collections.IDictionary]$Snapshot['Metadata']).Contains('Tenant') -and
         $Snapshot['Metadata']['Tenant'] -is [System.Collections.IDictionary]
     ) {
         $legacy['TenantInfo'] = [PSCustomObject]$Snapshot['Metadata']['Tenant']

@@ -19,7 +19,7 @@ function Invoke-ArrayaGraphCollectionBatch {
     }
 
     if ($Context -and $Context.PSObject.Properties['Runtime'] -and ($Context.Runtime -is [System.Collections.IDictionary])) {
-        if (-not $Context.Runtime.Contains('GraphRequestStats')) {
+        if (-not ([System.Collections.IDictionary]$Context.Runtime).Contains('GraphRequestStats')) {
             $Context.Runtime['GraphRequestStats'] = [ordered]@{
                 Requests = 0
                 CacheHits = 0
@@ -38,7 +38,11 @@ function Invoke-ArrayaGraphCollectionBatch {
             continue
         }
 
-        if ($Context -and $Context.Runtime.Contains('GraphRequestStats')) {
+        if (
+            $Context -and
+            $Context.Runtime -is [System.Collections.IDictionary] -and
+            ([System.Collections.IDictionary]$Context.Runtime).Contains('GraphRequestStats')
+        ) {
             $Context.Runtime['GraphRequestStats']['BatchRequests'] = [int]$Context.Runtime['GraphRequestStats']['BatchRequests'] + 1
         }
 
@@ -82,7 +86,11 @@ function Invoke-ArrayaGraphCollectionBatch {
             }
         }
         catch {
-            if ($Context -and $Context.Runtime.Contains('GraphRequestStats')) {
+            if (
+                $Context -and
+                $Context.Runtime -is [System.Collections.IDictionary] -and
+                ([System.Collections.IDictionary]$Context.Runtime).Contains('GraphRequestStats')
+            ) {
                 $Context.Runtime['GraphRequestStats']['OptionalFailures'] = [int]$Context.Runtime['GraphRequestStats']['OptionalFailures'] + 1
             }
             if (Get-Command -Name Write-Log -ErrorAction SilentlyContinue) {

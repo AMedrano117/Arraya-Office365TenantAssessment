@@ -1,0 +1,110 @@
+{
+  "SchemaVersion": 1,
+  "LastReviewed": "2026-08-14",
+  "ReviewPolicy": "Revalidate product packaging, availability, workload support, licensing, and price with the vendor during solution design and immediately before ordering.",
+  "ShareGate": {
+    "PricingUrl": "https://sharegate.com/pricing",
+    "SubscriptionModel": "Annual flat-rate subscription for the included workloads, based on machine activations.",
+    "Plans": [
+      {
+        "Key": "Essentials",
+        "Name": "ShareGate Migrate Essentials",
+        "MaximumEmployees": 250,
+        "MachineActivations": 1,
+        "StartingPriceUsdPerYear": 5995,
+        "Workloads": [
+          "SharePoint",
+          "Teams",
+          "Planner",
+          "OneDrive",
+          "File shares"
+        ],
+        "Notes": "Best fit for a simple collaboration migration. Exchange Online, Entra ID migration, sensitivity-label migration, and multi-workstation concurrency require Pro or Enterprise."
+      },
+      {
+        "Key": "Pro",
+        "Name": "ShareGate Migrate Pro",
+        "MaximumEmployees": 1000,
+        "MachineActivations": 5,
+        "StartingPriceUsdPerYear": 9995,
+        "Workloads": [
+          "SharePoint",
+          "Teams",
+          "Planner",
+          "OneDrive",
+          "File shares",
+          "Exchange Online",
+          "Google Workspace",
+          "Box",
+          "Entra ID preview",
+          "Microsoft Purview sensitivity labels",
+          "PowerShell automation"
+        ],
+        "Notes": "Best fit for a medium or parallelized project, or when ShareGate will also migrate Exchange Online or other Pro-only workloads."
+      },
+      {
+        "Key": "Enterprise",
+        "Name": "ShareGate Migrate Enterprise",
+        "MinimumEmployees": 1001,
+        "MachineActivations": 25,
+        "StartingPriceUsdPerYear": 17995,
+        "Workloads": [
+          "SharePoint",
+          "Teams",
+          "Planner",
+          "OneDrive",
+          "File shares",
+          "Exchange Online",
+          "Google Workspace",
+          "Box",
+          "Entra ID preview",
+          "Microsoft Purview sensitivity labels",
+          "PowerShell automation"
+        ],
+        "Notes": "Best fit for larger tenants or projects that need up to 25 migration workstations and 24/7 prioritized support."
+      }
+    ]
+  },
+  "Microsoft": {
+    "MigrationOrchestrator": {
+      "Name": "Microsoft 365 Migration Orchestrator",
+      "SourceUrl": "https://learn.microsoft.com/en-us/microsoft-365/migration/migration-orchestrator-1-overview?view=o365-worldwide",
+      "SupportedWorkloads": [
+        "Exchange Online mailboxes",
+        "OneDrive",
+        "Teams chats",
+        "Teams meetings"
+      ],
+      "NotIncluded": [
+        "Identities",
+        "SharePoint sites",
+        "Teams and channel structure",
+        "Microsoft 365 Group shared data"
+      ],
+      "StatusNote": "Verify preview or general-availability status and current workload limitations at project start."
+    },
+    "CrossTenantUserDataMigration": {
+      "Name": "Cross-Tenant User Data Migration",
+      "PurchaseModel": "One-time add-on license per migrating user",
+      "SourceUrl": "https://learn.microsoft.com/en-us/microsoft-365/migration/cross-tenant-mailbox-migration?view=o365-worldwide"
+    },
+    "CrossTenantSharedDataMigration": {
+      "Name": "Cross-Tenant Shared Data Migration",
+      "PurchaseModel": "Separate SharePoint migration SKU sold in 100 GB units; validate current purchasing-channel eligibility",
+      "Availability": "Currently documented for Enterprise Agreement customers",
+      "UnitSizeGB": 100,
+      "SourceUrl": "https://learn.microsoft.com/en-us/microsoft-365/migration/cross-tenant-sharepoint-migration?view=o365-worldwide"
+    },
+    "FastTrack": {
+      "Name": "Microsoft FastTrack cross-tenant migration service",
+      "MinimumUserLicenses": 150,
+      "Availability": "Invitation-only",
+      "SourceUrl": "https://learn.microsoft.com/en-us/microsoft-365/fasttrack/cross-tenant-migration"
+    }
+  },
+  "BitTitan": {
+    "Name": "BitTitan MigrationWiz",
+    "LicenseGuideUrl": "https://help.bittitan.com/hc/en-us/articles/36203678661531-Which-Migration-License-Do-I-Need",
+    "PurchaseModel": "Commercial per-user or per-workload licensing; recalculate after final mailbox, archive, and exception scope is confirmed."
+  }
+}

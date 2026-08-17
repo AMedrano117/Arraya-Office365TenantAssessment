@@ -19,6 +19,8 @@ Describe 'Migration scope reconciliation' {
             'Convert-AssessmentExportSizeToGb'
             'Convert-AssessmentExportByteCountToGb'
             'Convert-DataSizeToBytes'
+            'Convert-AssessmentExportListToArray'
+            'Convert-AssessmentExportListToText'
             'Test-AssessmentMailboxHasArchiveEvidence'
             'Get-AssessmentTeamEnrichmentEvidence'
             'Update-AssessmentTeamEnrichmentEvidenceRows'
@@ -105,6 +107,26 @@ Describe 'Migration scope reconciliation' {
                     New-TestGroupMailbox -Name 'Empty shell group' -Smtp 'group2@contoso.com' -SizeGB 0
                 )
             }
+        }
+    }
+
+    Context 'Graph collection value normalization' {
+        It 'reads identity values from generic AdditionalProperties dictionaries' {
+            $firstAdditionalProperties = [System.Collections.Generic.Dictionary[string, object]]::new()
+            $firstAdditionalProperties['displayName'] = 'Microsoft 365 E3'
+            $secondAdditionalProperties = [System.Collections.Generic.Dictionary[string, object]]::new()
+            $secondAdditionalProperties['displayName'] = 'Power BI Pro'
+            $graphRecords = @(
+                [pscustomobject]@{ AdditionalProperties = $firstAdditionalProperties }
+                [pscustomobject]@{ AdditionalProperties = $secondAdditionalProperties }
+            )
+
+            $result = @(Convert-AssessmentExportListToArray -Value $graphRecords)
+
+            $result.Count | Should -Be 2
+            $result[0] | Should -Be 'Microsoft 365 E3'
+            $result[1] | Should -Be 'Power BI Pro'
+            (Convert-AssessmentExportListToText -Value $graphRecords) | Should -Be 'Microsoft 365 E3; Power BI Pro'
         }
     }
 

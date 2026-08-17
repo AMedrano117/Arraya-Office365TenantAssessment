@@ -792,9 +792,9 @@ function Export-HashTableToExcel {
             'MailboxCalendarDelegatePermissions' = @('MailboxDisplayName', 'MailboxPrimarySmtpAddress', 'MailboxUserPrincipalName', 'RecipientTypeDetails', 'CalendarName', 'CalendarPath', 'PermissionTarget', 'PermissionTargetDisplayName', 'PermissionTargetType', 'AccessRights', 'SharingPermissionFlags', 'Wave', 'Notes')
             'InactiveMailboxDetails'          = @('DisplayName', 'UserPrincipalName', 'PrimarySmtpAddress', 'RecipientTypeDetails', 'IsInactiveMailbox', 'OnPremisesSyncEnabled', 'ExchangeGuid', 'ArchiveGuid', 'OnMicrosoftAlias', 'OnMicrosoftAliases', 'LegacyExchangeDn', 'LegacyExchangeDnX500', 'X500Addresses', 'X400Addresses', 'MailboxSizeGB', 'DeletedItemsGB', 'ArchiveStatus', 'ArchiveSizeGB', 'ArchiveDeletedItemsGB', 'TotalDataToMigrateGB', 'BitTitanLicenseType', 'BitTitanLicenseCount', 'ForwardingAddress', 'ForwardingSmtpAddress', 'DeliverToMailboxAndForward', 'LitigationHoldEnabled', 'RetentionPolicy', 'FullAccessDelegateCount', 'SendAsDelegateCount', 'GrantSendOnBehalfToCount', 'CalendarDelegateCount', 'Wave', 'MigrationState', 'CutoverDate', 'Notes')
             'PublicFolderDetails'             = @('Name', 'Identity', 'Path', 'MailEnabled', 'PrimarySmtpAddress', 'ItemCount', 'FolderCount', 'EntryId', 'Notes')
-            'MailFlowConnectors'              = @('Name', 'Enabled', 'ConnectorType', 'ConnectorSource', 'SenderDomains', 'RecipientDomains', 'SmartHosts', 'TlsSettings', 'Comment', 'Notes')
+            'MailFlowConnectors'              = @('Name', 'Enabled', 'ConnectorDirection', 'ConnectorType', 'ConnectorSource', 'SenderDomains', 'SenderIPAddresses', 'TlsSenderCertificateName', 'RestrictDomainsToIPAddresses', 'RestrictDomainsToCertificate', 'RecipientDomains', 'SmartHosts', 'TlsSettings', 'Comment', 'Notes')
             'RemoteDomains'                   = @('Name', 'DomainName', 'AutoForwardEnabled', 'AllowedOOFType', 'TNEFEnabled', 'TrustedMailOutboundEnabled', 'Notes')
-            'SMTPRelayServiceAccounts'        = @('DisplayName', 'UserPrincipalName', 'PrimarySmtpAddress', 'RecipientTypeDetails', 'IsDirSynced', 'AssignedLicensesFriendly', 'Notes')
+            'SMTPRelayServiceAccounts'        = @('DisplayName', 'UserPrincipalName', 'PrimarySmtpAddress', 'RecipientTypeDetails', 'IsDirSynced', 'AssignedLicensesFriendly', 'SmtpClientAuthenticationDisabled', 'EffectiveSmtpAuthEnabled', 'SmtpAuthSettingSource', 'Notes')
             'AllTeams'                        = @('DisplayName', 'Visibility', 'IsArchived', 'SharePointSiteUrl', 'SiteSize-GB', 'TotalChannels', 'SharedChannelCount', 'SharedChannels', 'ChannelInventoryStatus', 'OwnerCount', 'MemberCount', 'GuestCount', 'MemberInventoryStatus', 'LastActivityDate', 'Notes')
             'SharePoint'                      = @('Title', 'Url', 'Template', 'Owner', 'StorageUsedGB', 'StorageQuota', 'LastContentModifiedDate', 'LockState', 'ArchiveStatus', 'SharingCapability', 'IsTeamsConnected', 'Notes')
             'OneDrive'                        = @('Title', 'Url', 'Template', 'Owner', 'StorageUsedGB', 'StorageQuota', 'LastContentModifiedDate', 'LockState', 'ArchiveStatus', 'SharingCapability', 'IsTeamsConnected', 'Notes')
@@ -1399,6 +1399,7 @@ function Export-HashTableToExcel {
             }
             catch {
                 Write-Log -Type Error -Message "An error occurred in Exporting Hash To Excel for $($table) to '$($ExportDetails)'. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
+                throw
             }
         }
     }
@@ -1415,9 +1416,14 @@ function Export-HashTableToExcel {
                 }
                 catch {
                     Write-Log -Type WARNING -Message "Unable to close Excel package cleanly: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+                    throw
                 }
             }
         }
+    }
+
+    if (-not (Test-Path -LiteralPath $ExportDetails -PathType Leaf)) {
+        throw "Excel export completed without producing the required workbook: $ExportDetails"
     }
 
     Write-Host "The report has been exported to: $($ExportDetails)" -ForegroundColor Green

@@ -1,283 +1,345 @@
-Describe 'Presales migration scope questionnaire' {
+Describe 'Presales migration scope overview' {
     BeforeAll {
         $script:repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
         $script:exporterPath = Join-Path $script:repoRoot 'src\scripts\migrated\legacy\Export-PresalesMigrationScopeQuestionnaireMarkdown.ps1'
         $script:pipelinePath = Join-Path $script:repoRoot 'src\scripts\reporting\Invoke-M365TenantAssessmentExportPipeline.ps1'
+        $script:toolingCatalogPath = Join-Path $script:repoRoot 'src\config\baseline\migration-tooling-options.json'
         . $script:exporterPath
+
+        function Export-TestMigrationOverview {
+            param(
+                [hashtable]$Snapshot,
+                [string]$OutputPath
+            )
+
+            Export-PresalesMigrationScopeQuestionnaireMarkdown `
+                -TenantStatsHash $Snapshot `
+                -Path $OutputPath `
+                -PreparedBy 'Unit Test' `
+                -AsOfDate ([datetime]'2026-08-14')
+            return (Get-Content -LiteralPath $OutputPath -Raw)
+        }
 
         $snapshot = @{
             TenantInfo = [pscustomobject]@{
                 DisplayName   = 'Contoso'
-                TenantId      = 'source-tenant-id'
+                TenantId      = 'INTERNAL-TENANT-ID-MUST-NOT-LEAK'
+                ObjectId      = 'INTERNAL-OBJECT-ID-MUST-NOT-LEAK'
                 DefaultDomain = 'contoso.com'
             }
+            MigrationExecutiveSummary = @(
+                [pscustomobject]@{ Section = 'Tenant'; Metric = 'Enabled member users'; Value = 180 },
+                [pscustomobject]@{ Section = 'Messaging'; Metric = 'Mailboxes'; Value = 160 },
+                [pscustomobject]@{ Section = 'Messaging'; Metric = 'Grand total data to migrate (GB)'; Value = 1500 },
+                [pscustomobject]@{ Section = 'Collaboration'; Metric = 'Teams'; Value = 2 },
+                [pscustomobject]@{ Section = 'Collaboration'; Metric = 'SharePoint sites'; Value = 1 },
+                [pscustomobject]@{ Section = 'Collaboration'; Metric = 'OneDrive sites'; Value = 1 }
+            )
+            MigrationScopeSummary = @(
+                [pscustomobject]@{ Tool = 'BitTitan'; Section = 'Data'; Metric = 'Total mailbox data to migrate (GB)'; Value = 1500 },
+                [pscustomobject]@{ Tool = 'ShareGate'; Section = 'Sites'; Metric = 'SharePoint sites (total)'; Value = 1 },
+                [pscustomobject]@{ Tool = 'ShareGate'; Section = 'Data'; Metric = 'SharePoint storage (GB)'; Value = 18 },
+                [pscustomobject]@{ Tool = 'ShareGate'; Section = 'OneDrive'; Metric = 'OneDrive sites'; Value = 1 },
+                [pscustomobject]@{ Tool = 'ShareGate'; Section = 'OneDrive'; Metric = 'OneDrive storage (GB)'; Value = 10 },
+                [pscustomobject]@{ Tool = 'ShareGate'; Section = 'Teams'; Metric = 'Teams'; Value = 2 },
+                [pscustomobject]@{ Tool = 'ShareGate'; Section = 'Teams'; Metric = 'Microsoft 365 Groups'; Value = 3 }
+            )
+            ShareGateScopeSummary = @(
+                [pscustomobject]@{
+                    Workload = 'All collaboration sites (non-duplicated)'; ObjectCount = 2; TotalStorageGB = 28
+                    LargestObjectName = 'Operations'; LargestObjectSizeGB = 18
+                },
+                [pscustomobject]@{ Workload = 'SharePoint (total)'; ObjectCount = 1; TotalStorageGB = 18 },
+                [pscustomobject]@{ Workload = 'OneDrive'; ObjectCount = 1; TotalStorageGB = 10 }
+            )
             InactiveMailboxDetails = @(
                 [pscustomobject]@{
-                    DisplayName           = 'Inactive With Archive'
-                    PrimarySmtpAddress     = 'archive@contoso.com'
-                    RecipientTypeDetails  = 'InactiveMailbox'
-                    IsInactiveMailbox     = $true
-                    MailboxSizeGB          = 22
-                    DeletedItemsGB         = 3
-                    ArchiveStatus          = 'Active'
-                    ArchiveSizeGB          = 44
-                    ArchiveDeletedItemsGB  = 5
-                    TotalDataToMigrateGB   = 74
-                    LitigationHoldEnabled = $true
-                    RetentionPolicy        = 'Retain'
+                    DisplayName = 'INACTIVE-NAME-MUST-NOT-LEAK'; PrimarySmtpAddress = 'archive-sentinel@contoso.com'
+                    ExchangeGuid = 'INTERNAL-EXCHANGE-GUID-MUST-NOT-LEAK'; ArchiveStatus = 'Active'; ArchiveSizeGB = 44
                 },
-                [pscustomobject]@{
-                    DisplayName          = 'Inactive Unknown Archive'
-                    PrimarySmtpAddress    = 'unknown@contoso.com'
-                    RecipientTypeDetails = 'InactiveMailbox'
-                    IsInactiveMailbox    = $true
-                    MailboxSizeGB         = 8
-                    ArchiveStatus        = 'Unknown'
-                },
-                [pscustomobject]@{
-                    DisplayName          = 'Inactive Unavailable Archive'
-                    PrimarySmtpAddress    = 'unavailable@contoso.com'
-                    RecipientTypeDetails = 'InactiveMailbox'
-                    IsInactiveMailbox    = $true
-                    MailboxSizeGB         = 7
-                    ArchiveStatus        = 'Unavailable'
-                },
-                [pscustomobject]@{
-                    DisplayName          = 'Inactive Blank Archive State'
-                    PrimarySmtpAddress    = 'blank@contoso.com'
-                    RecipientTypeDetails = 'InactiveMailbox'
-                    IsInactiveMailbox    = $true
-                    MailboxSizeGB         = 6
-                },
-                [pscustomobject]@{
-                    DisplayName          = 'Inactive Conflicting Archive Evidence'
-                    PrimarySmtpAddress    = 'conflict@contoso.com'
-                    RecipientTypeDetails = 'InactiveMailbox'
-                    IsInactiveMailbox    = $true
-                    MailboxSizeGB         = 9
-                    HasArchive           = $false
-                    ArchiveStatus        = 'Active'
-                    ArchiveSizeGB        = 12
-                }
+                [pscustomobject]@{ DisplayName = 'Unknown Archive'; PrimarySmtpAddress = 'unknown@contoso.com'; ArchiveStatus = 'Unknown' },
+                [pscustomobject]@{ DisplayName = 'Unavailable Archive'; PrimarySmtpAddress = 'unavailable@contoso.com'; ArchiveStatus = 'Unavailable' },
+                [pscustomobject]@{ DisplayName = 'Blank Archive'; PrimarySmtpAddress = 'blank@contoso.com' },
+                [pscustomobject]@{ DisplayName = 'Conflicting Archive'; PrimarySmtpAddress = 'conflict@contoso.com'; HasArchive = $false; ArchiveStatus = 'Active'; ArchiveSizeGB = 12 }
             )
             BitTitanLicenseSummary = @(
                 [pscustomobject]@{ Section = 'Licensing'; Metric = 'Mailbox Migration licenses'; Value = 12 },
-                [pscustomobject]@{ Section = 'Licensing'; Metric = 'User Migration Bundles'; Value = 3 }
-            )
-            BitTitanLicenseDetail = @(
-                [pscustomobject]@{ ObjectType = 'Mailbox'; Identity = 'user@contoso.com'; BundleEligible = $true }
+                [pscustomobject]@{ Section = 'Licensing'; Metric = 'User Migration Bundles'; Value = 3 },
+                [pscustomobject]@{ Section = 'Counts'; Metric = 'Archive-enabled mailboxes'; Value = 2 },
+                [pscustomobject]@{ Section = 'Counts'; Metric = 'Microsoft 365 Group mailboxes needing evidence'; Value = 2 },
+                [pscustomobject]@{ Section = 'Thresholds'; Metric = 'Mailboxes over 50 GB'; Value = 2 },
+                [pscustomobject]@{ Section = 'Thresholds'; Metric = 'Mailboxes over 100 GB'; Value = 1 },
+                [pscustomobject]@{ Section = 'Thresholds'; Metric = 'Archives over 100 GB'; Value = 1 }
             )
             GroupWorkloadReconciliation = @(
                 [pscustomobject]@{
-                    DisplayName       = 'Operations'
-                    PrimarySmtpAddress = 'operations@contoso.com'
-                    MailboxSizeGB      = 2
-                    SiteStorageGB     = 18
-                    IsTeam            = $true
-                    Classification    = 'Mailbox and site content'
+                    DisplayName = 'GROUP-NAME-MUST-NOT-LEAK'; PrimarySmtpAddress = 'group-sentinel@contoso.com'
+                    DirectoryObjectId = 'INTERNAL-GROUP-ID-MUST-NOT-LEAK'; MailboxSizeGB = 2; MailboxEvidenceStatus = 'Measured data'
+                    SiteStorageGB = 18; IsTeam = $true
                 },
-                [pscustomobject]@{
-                    DisplayName           = 'Unknown Group Mailbox'
-                    PrimarySmtpAddress     = 'unknown-group@contoso.com'
-                    MailboxSizeGB          = $null
-                    MailboxEvidenceStatus  = 'Needs Data'
-                    SiteStorageGB          = 4
-                    IsTeam                 = $false
-                    Classification         = 'Group, site only - mail evidence unavailable'
-                },
-                [pscustomobject]@{
-                    DisplayName       = 'Legacy Snapshot Group'
-                    PrimarySmtpAddress = 'legacy-group@contoso.com'
-                    MailboxSizeGB      = $null
-                    SiteStorageGB      = 0
-                    IsTeam            = $false
-                    Classification    = 'Empty shell'
-                }
+                [pscustomobject]@{ DisplayName = 'Unknown Group One'; MailboxSizeGB = $null; MailboxEvidenceStatus = 'Needs Data' },
+                [pscustomobject]@{ DisplayName = 'Unknown Group Two'; MailboxSizeGB = $null; MailboxEvidenceStatus = 'Needs Data' }
             )
             AllTeams = @(
                 [pscustomobject]@{
-                    DisplayName = 'Operations'; SharedChannelCount = 1; MemberCount = 10
+                    DisplayName = 'Operations'; SharedChannelCount = 1
                     ChannelInventoryStatus = 'Measured data'; MemberInventoryStatus = 'Measured data'
                 },
                 [pscustomobject]@{
-                    DisplayName = 'Legacy Failed Team'; SharedChannelCount = 0; MemberCount = 0
+                    DisplayName = 'Evidence Gap Team'; SharedChannelCount = 0
                     ChannelInventoryStatus = 'Needs Data'; MemberInventoryStatus = 'Needs Data'
                 }
             )
-            SharePoint = @([pscustomobject]@{ Title = 'Operations'; StorageUsedGB = 18 })
-            OneDrive = @([pscustomobject]@{ Title = 'User OneDrive'; StorageUsedGB = 10 })
-            MigrationScopeDecisions = @(
-                [pscustomobject]@{
-                    DecisionKey           = 'BT-06'
-                    CustomerConfirmedValue = 'Evaluate as an alternative'
-                    Status                = 'Open'
-                    InScope               = $true
-                    TargetMapping         = 'Operations Team'
-                    MigrationTool         = 'Optional BitTitan TMB'
-                    DecisionOwner         = 'Solution Engineer'
-                    DueDate               = '2026-08-20'
-                    Notes                 = 'Do not duplicate ShareGate scope.'
-                },
-                [pscustomobject]@{
-                    DecisionKey   = 'GROUP:operations@contoso.com'
-                    Status        = 'Open'
-                    InScope       = $false
-                    TargetMapping = 'Operations-New'
-                    MigrationTool = 'Retain source conversations'
-                    DecisionOwner = 'Messaging Lead'
-                    Notes         = 'Site content remains in ShareGate scope.'
-                },
-                [pscustomobject]@{
-                    DecisionKey           = 'MAILBOX:archive@contoso.com'
-                    CustomerConfirmedValue = 'Restore and migrate primary plus archive'
-                    Status                = 'Approved'
-                    InScope               = $true
-                    TargetMapping         = 'archive@target.example'
-                    MigrationTool         = 'BitTitan MigrationWiz'
-                    DecisionOwner         = 'Compliance Lead'
-                    Notes                 = 'Preserve hold evidence before restoration.'
-                }
+            PublicFolderDetails = @(
+                [pscustomobject]@{ Name = 'PUBLIC-FOLDER-NAME-MUST-NOT-LEAK'; EntryId = 'INTERNAL-PUBLIC-FOLDER-ID-MUST-NOT-LEAK' }
             )
-            MigrationQuoteReadiness = @(
-                [pscustomobject]@{ RowType = 'Summary'; ReadinessLevel = 'ROM'; Status = 'ROM'; DecisionKey = 'QR-01' }
-                [pscustomobject]@{ RowType = 'Check'; Status = 'Blocker'; DecisionKey = 'FLAG:custom-domain-app'; Requirement = 'Custom-domain application dependency' }
+            Domains = @(
+                [pscustomobject]@{ Name = 'contoso.com' },
+                [pscustomobject]@{ Name = 'contoso.onmicrosoft.com' }
             )
             MigrationComplexityFlags = @(
-                [pscustomobject]@{ Status = 'Blocker'; Item = 'Custom-domain application dependency' }
+                [pscustomobject]@{
+                    Status = 'Blocker'; Item = 'Applications with a custom-domain application URI'; Value = 2
+                    Notes = 'A custom domain creates a hard sequencing dependency.'
+                    MigrationAction = 'Sequence domain cutover before application re-registration.'
+                    DecisionKey = 'INTERNAL-COMPLEXITY-KEY-MUST-NOT-LEAK'
+                }
+            )
+            MigrationScopeDecisions = @(
+                [pscustomobject]@{
+                    DecisionKey = 'INTERNAL-DECISION-KEY-MUST-NOT-LEAK'; Status = 'Approved'
+                    CustomerConfirmedValue = 'CUSTOMER-DECISION-MUST-NOT-LEAK'
+                    TargetMapping = 'TARGET-MAPPING-MUST-NOT-LEAK'; DecisionOwner = 'OWNER-MUST-NOT-LEAK'
+                }
+            )
+            MigrationTargetReadiness = @(
+                [pscustomobject]@{ Item = 'TARGET-READINESS-MUST-NOT-LEAK'; Status = 'Blocked' }
+            )
+            MigrationWavePlan = @(
+                [pscustomobject]@{ Wave = 'WAVE-BREAKDOWN-MUST-NOT-LEAK'; CandidateObjectCount = 99 }
             )
         }
 
         $script:outputPath = Join-Path $TestDrive 'Contoso-MigrationScopeQuestionnaire.md'
-        Export-PresalesMigrationScopeQuestionnaireMarkdown -TenantStatsHash $snapshot -Path $script:outputPath -PreparedBy 'Unit Test' -AsOfDate ([datetime]'2026-08-12')
-        $script:content = Get-Content -Raw -Path $script:outputPath
-        $script:pipelineSource = Get-Content -Raw -Path $script:pipelinePath
+        $script:content = Export-TestMigrationOverview -Snapshot $snapshot -OutputPath $script:outputPath
+        $script:pipelineSource = Get-Content -LiteralPath $script:pipelinePath -Raw
     }
 
-    It 'separates discovered evidence from customer decisions and omits pricing' {
+    It 'renders a compact source-only overview instead of an interactive decision register' {
         Test-Path $script:outputPath | Should -BeTrue
-        $script:content | Should -Match 'Discovered value'
-        $script:content | Should -Match 'Customer-confirmed value'
-        $script:content | Should -Match 'Decision status'
-        $script:content | Should -Match 'Current Quote Readiness:\*\* ROM'
-        $script:content | Should -Match 'Pricing is intentionally omitted'
-        $script:content | Should -Not -Match 'Unit Cost|Extended Cost|License Price'
+        $script:content | Should -Match '# Microsoft 365 Migration Scope Overview'
+        $script:content | Should -Match 'source-tenant-only overview'
+        $script:content | Should -Match 'Full object inventories remain in the supporting workbook'
+        $script:content | Should -Not -Match '(?i)Decision status|Decision key|Customer-confirmed value|Current Quote Readiness|Quote-readiness scale|Target readiness|Open readiness items'
     }
 
-    It 'makes inactive mailbox restoration and archive evidence explicit' {
-        $script:content | Should -Match 'inactive mailboxes will be restored or recovered'
-        $script:content | Should -Match 'Inactive mailbox and archive confirmation'
-        $script:content | Should -Match 'Inactive With Archive'
-        $script:content | Should -Match 'archive@contoso\.com'
-        $script:content | Should -Match '\| Yes \| Active \| 44 \| 5 \|'
-        $script:content | Should -Match 'Inactive Unknown Archive'
-        $unknownLine = @($script:content -split '\r?\n' | Where-Object { $_ -match 'unknown@contoso\.com' } | Select-Object -First 1)
-        $unavailableLine = @($script:content -split '\r?\n' | Where-Object { $_ -match 'unavailable@contoso\.com' } | Select-Object -First 1)
-        $blankLine = @($script:content -split '\r?\n' | Where-Object { $_ -match 'blank@contoso\.com' } | Select-Object -First 1)
-        $unknownLine | Should -Match '\| Unknown - validate \| Unknown \|'
-        $unavailableLine | Should -Match '\| Unknown - validate \| Unavailable \|'
-        $blankLine | Should -Match '\| Unknown - validate \|  \|'
-        $conflictLine = @($script:content -split '\r?\n' | Where-Object { $_ -match 'conflict@contoso\.com' } | Select-Object -First 1)
-        $conflictLine | Should -Match '\| Yes \| Active \| 12 \|'
+    It 'shows aggregate workload sizing without exposing tenant or object identifiers' {
+        $script:content | Should -Match '\*\*Client:\*\* Contoso'
+        $script:content | Should -Match '\*\*Source tenant domain:\*\* contoso\.com'
+        $script:content | Should -Match '180 enabled member user\(s\)'
+        $script:content | Should -Match '160 mailbox object\(s\)'
+        $script:content | Should -Match '1\.46 TB known mailbox'
+        $script:content | Should -Match '2 Team\(s\)'
+        $script:content | Should -Match '28\.00 GB known, non-duplicated collaboration data'
+
+        @(
+            'INTERNAL-TENANT-ID-MUST-NOT-LEAK',
+            'INTERNAL-OBJECT-ID-MUST-NOT-LEAK',
+            'INTERNAL-EXCHANGE-GUID-MUST-NOT-LEAK',
+            'INTERNAL-GROUP-ID-MUST-NOT-LEAK',
+            'INTERNAL-PUBLIC-FOLDER-ID-MUST-NOT-LEAK',
+            'INTERNAL-COMPLEXITY-KEY-MUST-NOT-LEAK',
+            'INTERNAL-DECISION-KEY-MUST-NOT-LEAK'
+        ) | ForEach-Object { $script:content | Should -Not -Match ([regex]::Escape($_)) }
     }
 
-    It 'maps inactive mailbox decisions by the object-level MAILBOX key' {
-        $inactiveDecisionLine = @($script:content -split '\r?\n' | Where-Object { $_ -match '^\| MAILBOX:archive@contoso\.com \|' } | Select-Object -First 1)
-        $inactiveDecisionLine | Should -Not -BeNullOrEmpty
-        $inactiveDecisionLine | Should -Match 'Restore and migrate primary plus archive'
-        $inactiveDecisionLine | Should -Match '\| Yes \| Approved \| archive@target\.example \| BitTitan MigrationWiz \|'
-        $inactiveDecisionLine | Should -Match 'Compliance Lead; Preserve hold evidence before restoration\.'
+    It 'summarizes only exceptional mailbox, group, Teams, and public-folder conditions' {
+        $script:content | Should -Match 'Inactive mailboxes and archives'
+        $script:content | Should -Match '5 inactive mailbox\(es\); 2 have archive evidence and 3 have an unknown archive state'
+        $script:content | Should -Match 'Teams shared channels'
+        $script:content | Should -Match 'Incomplete Teams evidence'
+        $script:content | Should -Match 'Group mailbox conversation evidence'
+        $script:content | Should -Match 'Large mailbox content'
+        $script:content | Should -Match 'Public folders'
+        $script:content | Should -Match 'custom-domain application URI'
+
+        @(
+            'INACTIVE-NAME-MUST-NOT-LEAK',
+            'archive-sentinel@contoso.com',
+            'GROUP-NAME-MUST-NOT-LEAK',
+            'group-sentinel@contoso.com',
+            'PUBLIC-FOLDER-NAME-MUST-NOT-LEAK',
+            'CUSTOMER-DECISION-MUST-NOT-LEAK',
+            'TARGET-MAPPING-MUST-NOT-LEAK',
+            'OWNER-MUST-NOT-LEAK',
+            'TARGET-READINESS-MUST-NOT-LEAK',
+            'WAVE-BREAKDOWN-MUST-NOT-LEAK'
+        ) | ForEach-Object { $script:content | Should -Not -Match ([regex]::Escape($_)) }
     }
 
-    It 'includes optional TMB guardrails and current MigrationWiz readiness questions' {
-        $script:content | Should -Match 'Optional Tenant Migration Bundle decision guide'
-        $script:content | Should -Match 'one UMB plus one FCL'
-        $script:content | Should -Match 'one Team or SharePoint library up to 100 GB'
-        $script:content | Should -Match 'TMB does not migrate public folders'
-        $script:content | Should -Match 'Teams Private Chat \(PCH\) uses a separate Collaboration \(Private Chats\) project'
-        $script:content | Should -Match 'validate current capability, limitations, and licensing entitlement'
-        $script:content | Should -Match 'rather than assuming TMB/UMB inclusion or exclusion'
-        $script:content | Should -Match '25603590557979-Teams-Private-Chat-Migration-Guide'
-        $script:content | Should -Match 'ShareGate remains the default tool'
-        $script:content | Should -Match 'EWSAllowedAppIDs'
-        $script:content | Should -Match '2026-10-01'
-        $script:content | Should -Match '2027-04-01'
+    It 'keeps every Markdown table to three columns or fewer' {
+        $tableLines = @($script:content -split '\r?\n' | Where-Object { $_ -match '^\|' })
+        $tableLines.Count | Should -BeGreaterThan 0
+        foreach ($line in $tableLines) {
+            @($line.ToCharArray() | Where-Object { $_ -eq '|' }).Count | Should -BeLessOrEqual 4
+        }
     }
 
-    It 'does not treat failed Team channel or member enrichment as measured zero' {
-        $sg03Line = @($script:content -split '\r?\n' | Where-Object { $_ -match '^\| SG-03 \|' } | Select-Object -First 1)
-        $sg03Line | Should -Match 'Needs Data: channel inventory unavailable for 1 of 2 Team\(s\)'
-        $sg03Line | Should -Match 'member/guest inventory unavailable for 1'
-        $sg03Line | Should -Match '\| Medium \|'
-        $sg03Line | Should -Not -Match '0 Team/group row\(s\) have a shared-channel signal'
+    It 'recommends phased delivery only as an overview when source sequencing makes it beneficial' {
+        $script:content | Should -Match 'Recommended planning baseline:\*\* Phased migration'
+        $script:content | Should -Match 'Why phased delivery may help'
+        $script:content | Should -Match 'does not manufacture wave counts or memberships'
+        $script:content | Should -Match 'Production batch acceptance'
+        $script:content | Should -Not -Match 'WAVE-BREAKDOWN-MUST-NOT-LEAK'
     }
 
-    It 'maps ShareGate endpoint readiness to the SG-04 blocker decision key' {
-        $sg04Line = @($script:content -split '\r?\n' | Where-Object { $_ -match '^\| SG-04 \|' } | Select-Object -First 1)
-        $sg04Line | Should -Not -BeNullOrEmpty
-        $sg04Line | Should -Match 'source and destination connectivity'
-        $sg04Line | Should -Match 'admin roles'
-        $sg04Line | Should -Match 'application consent'
-        $sg04Line | Should -Match 'representative test access'
-    }
-
-    It 'merges customer decisions by DecisionKey without replacing discovered evidence' {
-        $script:content | Should -Match '\| BT-06 \|'
-        $script:content | Should -Match 'Evaluate as an alternative'
-        $script:content | Should -Match 'Optional BitTitan TMB'
-        $script:content | Should -Match 'Solution Engineer'
-        $script:content | Should -Match 'Do not duplicate ShareGate scope'
-    }
-
-    It 'does not double-count complexity blockers already projected into quote readiness' {
-        $qrLine = @($script:content -split '\r?\n' | Where-Object { $_ -match '^\| QR-01 \|' } | Select-Object -First 1)
-        $qrLine | Should -Match 'blocker or missing-data rows: 1;'
-    }
-
-    It 'summarizes reconciled group mailbox evidence even without a separate GroupMailboxes table' {
-        $bt04Line = @($script:content -split '\r?\n' | Where-Object { $_ -match '^\| BT-04 \|' } | Select-Object -First 1)
-        $bt04Line | Should -Match 'measured mail data: 1; measured empty: 0; needs data: 2'
-        $bt04Line | Should -Not -Match '0 group mailbox inventory row'
-    }
-
-    It 'uses the seeded DecisionPrompt as the cross-artifact question contract' {
-        $contractPath = Join-Path $TestDrive 'canonical-decision-contract.md'
-        Export-PresalesMigrationScopeQuestionnaireMarkdown -TenantStatsHash @{
-            TenantInfo = [pscustomobject]@{ DisplayName = 'Contract Test'; TenantId = 'source-id' }
-            MigrationScopeDecisions = @(
-                [pscustomobject]@{
-                    DecisionKey = 'BT-07'; DecisionPrompt = 'Canonical BT-07 prompt supplied by the planning register.'; Status = 'Needs Input'
-                }
+    It 'recommends a pilot plus single cutover for a small simple source and ignores seeded wave rows' {
+        $simplePath = Join-Path $TestDrive 'simple-overview.md'
+        $simpleContent = Export-TestMigrationOverview -Snapshot @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Simple Tenant'; DefaultDomain = 'simple.example' }
+            MigrationExecutiveSummary = @(
+                [pscustomobject]@{ Metric = 'Enabled member users'; Value = 100 },
+                [pscustomobject]@{ Metric = 'Mailboxes'; Value = 100 },
+                [pscustomobject]@{ Metric = 'Grand total data to migrate (GB)'; Value = 500 },
+                [pscustomobject]@{ Metric = 'Teams'; Value = 10 },
+                [pscustomobject]@{ Metric = 'SharePoint sites'; Value = 20 },
+                [pscustomobject]@{ Metric = 'OneDrive sites'; Value = 100 }
             )
-        } -Path $contractPath -PreparedBy 'Unit Test' -AsOfDate ([datetime]'2026-08-12')
+            MigrationScopeSummary = @(
+                [pscustomobject]@{ Metric = 'SharePoint storage (GB)'; Value = 200 },
+                [pscustomobject]@{ Metric = 'OneDrive storage (GB)'; Value = 200 }
+            )
+            ShareGateScopeSummary = @(
+                [pscustomobject]@{ Workload = 'All collaboration sites (non-duplicated)'; ObjectCount = 120; TotalStorageGB = 400 }
+            )
+            MigrationWavePlan = @([pscustomobject]@{ Wave = 'SEEDED-WAVE-MUST-NOT-APPEAR'; CandidateObjectCount = 100 })
+        } -OutputPath $simplePath
 
-        $contractContent = Get-Content -LiteralPath $contractPath -Raw
-        $bt07Line = @($contractContent -split '\r?\n' | Where-Object { $_ -match '^\| BT-07 \|' } | Select-Object -First 1)
-        $bt07Line | Should -Match 'Canonical BT-07 prompt supplied by the planning register\.'
-        $bt07Line | Should -Not -Match 'If TMB is selected'
+        $simpleContent | Should -Match 'Recommended planning baseline:\*\* Technical pilot followed by a single production cutover'
+        $simpleContent | Should -Match 'Production cutover acceptance'
+        $simpleContent | Should -Not -Match 'Why phased delivery may help|Production batch acceptance|SEEDED-WAVE-MUST-NOT-APPEAR'
+        $simpleContent | Should -Match 'ShareGate Migrate Essentials'
     }
 
-    It 'provides an object-level group mailbox conversation disposition register' {
-        $script:content | Should -Match 'Group mailbox conversation disposition'
-        $script:content | Should -Match 'Report only / customer decision'
-        $script:content | Should -Match 'GROUP:operations@contoso\.com'
-        $script:content | Should -Match 'operations@contoso\.com'
-        $script:content | Should -Match 'Mailbox and site content'
-        $script:content | Should -Match 'Operations-New'
-        $script:content | Should -Match 'Retain source conversations'
-        $script:content | Should -Match 'Site content remains in ShareGate scope'
+    It 'selects ShareGate Pro or Enterprise from source scale without emitting a detailed wave plan' {
+        $proPath = Join-Path $TestDrive 'pro-overview.md'
+        $proContent = Export-TestMigrationOverview -Snapshot @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Medium Tenant'; DefaultDomain = 'medium.example' }
+            MigrationExecutiveSummary = @(
+                [pscustomobject]@{ Metric = 'Enabled member users'; Value = 600 },
+                [pscustomobject]@{ Metric = 'Mailboxes'; Value = 580 },
+                [pscustomobject]@{ Metric = 'Teams'; Value = 20 },
+                [pscustomobject]@{ Metric = 'SharePoint sites'; Value = 80 },
+                [pscustomobject]@{ Metric = 'OneDrive sites'; Value = 600 }
+            )
+            MigrationScopeSummary = @([pscustomobject]@{ Metric = 'SharePoint storage (GB)'; Value = 500 })
+            MigrationWavePlan = @([pscustomobject]@{ Wave = 'PRO-WAVE-DETAIL-MUST-NOT-APPEAR' })
+        } -OutputPath $proPath
+
+        $enterprisePath = Join-Path $TestDrive 'enterprise-overview.md'
+        $enterpriseContent = Export-TestMigrationOverview -Snapshot @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Large Tenant'; DefaultDomain = 'large.example' }
+            MigrationExecutiveSummary = @(
+                [pscustomobject]@{ Metric = 'Enabled member users'; Value = 1201 },
+                [pscustomobject]@{ Metric = 'Mailboxes'; Value = 1150 },
+                [pscustomobject]@{ Metric = 'Teams'; Value = 100 },
+                [pscustomobject]@{ Metric = 'SharePoint sites'; Value = 400 },
+                [pscustomobject]@{ Metric = 'OneDrive sites'; Value = 1201 }
+            )
+            MigrationScopeSummary = @([pscustomobject]@{ Metric = 'SharePoint storage (GB)'; Value = 3000 })
+            MigrationWavePlan = @([pscustomobject]@{ Wave = 'ENTERPRISE-WAVE-DETAIL-MUST-NOT-APPEAR' })
+        } -OutputPath $enterprisePath
+
+        $proContent | Should -Match 'ShareGate Migrate Pro'
+        $proContent | Should -Match 'Recommended planning baseline:\*\* Phased migration'
+        $proContent | Should -Not -Match 'PRO-WAVE-DETAIL-MUST-NOT-APPEAR'
+        $enterpriseContent | Should -Match 'ShareGate Migrate Enterprise'
+        $enterpriseContent | Should -Match 'Recommended planning baseline:\*\* Phased migration'
+        $enterpriseContent | Should -Not -Match 'ENTERPRISE-WAVE-DETAIL-MUST-NOT-APPEAR'
     }
 
-    It 'does not treat missing group mailbox size evidence as an empty mailbox' {
-        $explicitUnknownLine = @($script:content -split '\r?\n' | Where-Object { $_ -match 'unknown-group@contoso\.com' } | Select-Object -First 1)
-        $legacyUnknownLine = @($script:content -split '\r?\n' | Where-Object { $_ -match 'legacy-group@contoso\.com' } | Select-Object -First 1)
-        $explicitUnknownLine | Should -Match '\| Unknown / needs data \| Needs Data \|'
-        $explicitUnknownLine | Should -Match 'Group, site only - mail evidence unavailable'
-        $explicitUnknownLine | Should -Not -Match 'mail evidence unavailable \(mailbox evidence unknown\)'
-        $legacyUnknownLine | Should -Match '\| Unknown / needs data \| Unknown / needs data \|'
-        $legacyUnknownLine | Should -Match 'Empty shell \(mailbox evidence unknown\)'
+    It 'defers the production method when aggregate sizing evidence is absent' {
+        $unknownPath = Join-Path $TestDrive 'unknown-overview.md'
+        $unknownContent = Export-TestMigrationOverview -Snapshot @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Unknown Scope'; DefaultDomain = 'unknown.example' }
+            MigrationWavePlan = @([pscustomobject]@{ Wave = 'FABRICATED-WAVE-MUST-NOT-APPEAR' })
+        } -OutputPath $unknownPath
+
+        $unknownContent | Should -Match 'Recommended planning baseline:\*\* Select the method during solution design'
+        $unknownContent | Should -Match 'does not contain enough population or data-volume evidence'
+        $unknownContent | Should -Match 'Production execution acceptance'
+        $unknownContent | Should -Not -Match 'Production cutover acceptance|Production batch acceptance|FABRICATED-WAVE-MUST-NOT-APPEAR'
     }
 
-    It 'routes only the Presales policy to the new artifact and retains the legacy exporter' {
+    It 'identifies current tool choices, purchase categories, and the best-fit ShareGate tier' {
+        $script:content | Should -Match 'Tooling and additional purchasing'
+        $script:content | Should -Match 'Best-fit ShareGate tier from the source-only sizing proxy:\*\* ShareGate Migrate Essentials'
+        $script:content | Should -Match 'Annual commercial subscription'
+        $script:content | Should -Match 'Cross-Tenant User Data Migration add-on'
+        $script:content | Should -Match 'Cross-Tenant Shared Data Migration SKU in 100 GB units'
+        $script:content | Should -Match 'Currently documented for Enterprise Agreement customers'
+        $script:content | Should -Match 'Microsoft-plus-ShareGate hybrid design'
+        $script:content | Should -Match '12 mailbox license unit\(s\) and 3 User Migration Bundle unit\(s\)'
+        $script:content | Should -Match 'Microsoft FastTrack cross-tenant service'
+        $script:content | Should -Match 'ShareGate Protect is a separate governance/security product'
+        $script:content | Should -Match 'sharegate\.com/pricing'
+        $script:content | Should -Match 'migration-orchestrator-1-overview'
+        $script:content | Should -Match 'Vendor-listed starting price: USD 5,995/year \(catalog reviewed 2026-08-14\)'
+        $script:content | Should -Match 'Tooling catalog last reviewed: 2026-08-14'
+    }
+
+    It 'keeps reviewed vendor tiers and source links in a versioned tooling catalog' {
+        Test-Path -LiteralPath $script:toolingCatalogPath | Should -BeTrue
+        $catalog = Get-Content -LiteralPath $script:toolingCatalogPath -Raw | ConvertFrom-Json
+        $catalog.SchemaVersion | Should -Be 1
+        $catalog.LastReviewed | Should -Be '2026-08-14'
+        (@($catalog.ShareGate.Plans | Select-Object -ExpandProperty Name) -join '|') | Should -Be 'ShareGate Migrate Essentials|ShareGate Migrate Pro|ShareGate Migrate Enterprise'
+        (@($catalog.ShareGate.Plans | Select-Object -ExpandProperty StartingPriceUsdPerYear) -join '|') | Should -Be '5995|9995|17995'
+        $catalog.ShareGate.PricingUrl | Should -Be 'https://sharegate.com/pricing'
+        $catalog.Microsoft.MigrationOrchestrator.SourceUrl | Should -Match 'learn\.microsoft\.com'
+    }
+
+    It 'presents billable milestones without pretending the script collected progress input' {
+        $script:content | Should -Match 'Suggested project milestones'
+        $script:content | Should -Match 'suggested billable outcome points, not progress states inferred by the assessment script'
+        $script:content | Should -Match 'Assessment readout and approach selection'
+        $script:content | Should -Match 'Solution design and tooling procurement'
+        $script:content | Should -Match 'Target foundation and cutover preparation'
+        $script:content | Should -Match 'Pilot migration and acceptance'
+        $script:content | Should -Match 'Post-migration validation and hypercare exit'
+        $script:content | Should -Match 'Source decommission and compliance closeout'
+    }
+
+    It 'does not grow linearly or expose names when full object inventories are supplied' {
+        $oneMailbox = @([pscustomobject]@{ DisplayName = 'Inventory Sentinel 1'; PrimarySmtpAddress = 'sentinel1@example.com'; MailboxSizeGB = 1 })
+        $manyMailboxes = @(1..200 | ForEach-Object {
+                [pscustomobject]@{ DisplayName = "Inventory Sentinel $_"; PrimarySmtpAddress = "sentinel$_@example.com"; MailboxSizeGB = 1 }
+            })
+        $oneGroup = @([pscustomobject]@{ DisplayName = 'Group Inventory Sentinel 1'; MailboxSizeGB = 1; MailboxEvidenceStatus = 'Measured data' })
+        $manyGroups = @(1..200 | ForEach-Object {
+                [pscustomobject]@{ DisplayName = "Group Inventory Sentinel $_"; MailboxSizeGB = 1; MailboxEvidenceStatus = 'Measured data' }
+            })
+
+        $singleContent = Export-TestMigrationOverview -Snapshot @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Single Inventory'; DefaultDomain = 'single.example' }
+            MigrationExecutiveSummary = @([pscustomobject]@{ Metric = 'Enabled member users'; Value = 100 })
+            AllMailboxes = $oneMailbox
+            GroupWorkloadReconciliation = $oneGroup
+        } -OutputPath (Join-Path $TestDrive 'single-inventory.md')
+        $manyContent = Export-TestMigrationOverview -Snapshot @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Many Inventory'; DefaultDomain = 'many.example' }
+            MigrationExecutiveSummary = @([pscustomobject]@{ Metric = 'Enabled member users'; Value = 100 })
+            AllMailboxes = $manyMailboxes
+            GroupWorkloadReconciliation = $manyGroups
+        } -OutputPath (Join-Path $TestDrive 'many-inventory.md')
+
+        $singleLineCount = @($singleContent -split '\r?\n').Count
+        $manyLineCount = @($manyContent -split '\r?\n').Count
+        [math]::Abs($manyLineCount - $singleLineCount) | Should -BeLessOrEqual 2
+        $manyContent | Should -Not -Match 'Inventory Sentinel 199|sentinel199@example\.com|Group Inventory Sentinel 199'
+    }
+
+    It 'routes only the Presales policy to this artifact and retains the legacy exporter' {
         $script:pipelineSource | Should -Match '\$isPresalesScopeQuestionnaire'
         $script:pipelineSource | Should -Match 'Export-PresalesMigrationScopeQuestionnaireMarkdown'
         $script:pipelineSource | Should -Match '-MigrationScopeQuestionnaire\.md'

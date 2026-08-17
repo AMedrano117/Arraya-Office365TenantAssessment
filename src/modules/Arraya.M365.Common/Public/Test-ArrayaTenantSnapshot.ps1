@@ -46,7 +46,7 @@ function Test-ArrayaTenantSnapshot {
             if ($Snapshot.Contains('Data') -and ($Snapshot['Data'] -is [System.Collections.IDictionary])) {
                 $requiredDataDomains = @('Exchange', 'Identity', 'Collaboration', 'Security', 'Tenant', 'Governance', 'Other')
                 foreach ($domain in $requiredDataDomains) {
-                    if (-not $Snapshot['Data'].Contains($domain)) {
+                    if (-not ([System.Collections.IDictionary]$Snapshot['Data']).Contains($domain)) {
                         $warnings.Add("Data domain '$domain' is not present. Exporters may emit partial output.")
                     }
                 }
@@ -54,9 +54,9 @@ function Test-ArrayaTenantSnapshot {
 
             if ($Purpose -eq 'ImprovementPlan') {
                 $derived = $Snapshot['Derived']
-                $hasFindings = $derived -and (
-                    $derived.Contains('Findings') -or
-                    $derived.Contains('BestPracticeFindings')
+                $hasFindings = $derived -is [System.Collections.IDictionary] -and (
+                    ([System.Collections.IDictionary]$derived).Contains('Findings') -or
+                    ([System.Collections.IDictionary]$derived).Contains('BestPracticeFindings')
                 )
                 if (-not $hasFindings) {
                     $warnings.Add("Derived findings were not found for improvement-plan generation. Rule-engine fallback will be used.")

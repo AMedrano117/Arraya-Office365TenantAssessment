@@ -1,11 +1,13 @@
 Describe 'Solutions Engineer evidence coverage validator' {
     BeforeAll {
         $script:repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+        $script:commonManifest = Join-Path $script:repoRoot 'src\modules\Arraya.M365.Common\Arraya.M365.Common.psd1'
         $script:validatorPath = Join-Path $script:repoRoot 'src\scripts\reporting\Test-SolutionsEngineerAssessmentEvidence.ps1'
         $script:exportPipelinePath = Join-Path $script:repoRoot 'src\scripts\reporting\Invoke-M365TenantAssessmentExportPipeline.ps1'
         $script:manifestWriterPath = Join-Path $script:repoRoot 'src\modules\Arraya.M365.Common\Public\Write-ArrayaAssessmentArtifactManifest.ps1'
         $script:matrixPath = Join-Path $script:repoRoot 'src\config\baseline\solutions-engineer-assessment-objectives.json'
         $script:matrix = Get-Content -Raw -Path $script:matrixPath | ConvertFrom-Json -Depth 100
+        Import-Module -Name $script:commonManifest -Force -WarningAction SilentlyContinue -DisableNameChecking
 
         function New-TestEvidenceSnapshotObject {
             param(

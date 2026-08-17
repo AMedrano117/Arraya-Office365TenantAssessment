@@ -44,6 +44,160 @@ Describe 'Arraya.M365.Reporting' {
         $matches | Should -BeNullOrEmpty
     }
 
+    It 'analyzes generic and concurrent summary dictionaries with present and missing keys' {
+        Import-Module $script:manifestPath -Force -ErrorAction Stop
+
+        $emailSummary = [System.Collections.Generic.Dictionary[string, object]]::new()
+        $emailSummary['ReportRows'] = 7
+        $emailSummary['ActiveUsers'] = 3
+        $emailSummary['PeriodDuration'] = 'D30'
+
+        $employeeSummary = [System.Collections.Concurrent.ConcurrentDictionary[string, object]]::new()
+        $employeeSummary['TeamsReportRows'] = 2
+
+        $authConfig = [System.Collections.Concurrent.ConcurrentDictionary[string, object]]::new()
+        $authConfig['MFAEnabled'] = $true
+
+        $result = Get-ArrayaEmployeeExperienceInsightsAnalysis `
+            -EmailActivitySummary $emailSummary `
+            -EmployeeExperienceInsightsSummary $employeeSummary `
+            -AuthConfig $authConfig `
+            -TotalUsers 10
+
+        $result | Should -BeOfType ([hashtable])
+        $result.ContainsKey('Findings') | Should -BeTrue
+        @($result.Findings).Count | Should -BeGreaterThan 0
+        @($result.Findings | ForEach-Object { $_.Category }) | Should -Contain 'Conditional Access Enforcement'
+        @($result.Findings | ForEach-Object { $_.Category }) | Should -Contain 'MFA Coverage'
+    }
+
+    It 'classifies lowercase generic-dictionary report-only MFA policies as staged rather than enabled' {
+        Import-Module $script:manifestPath -Force -ErrorAction Stop
+
+        $grantControls = [System.Collections.Generic.Dictionary[string, object]]::new()
+        $grantControls['builtInControls'] = @('mfa')
+
+        $reportOnlyPolicy = [System.Collections.Generic.Dictionary[string, object]]::new()
+        $reportOnlyPolicy['displayName'] = 'Report-only MFA pilot'
+        $reportOnlyPolicy['state'] = 'enabledForReportingButNotEnforced'
+        $reportOnlyPolicy['grantControls'] = $grantControls
+
+        $result = Get-ArrayaEmployeeExperienceInsightsAnalysis -ConditionalAccessPolicies @($reportOnlyPolicy)
+        $enabledFindings = @($result.Findings | Where-Object { $_.Category -eq 'Conditional Access Enforcement' })
+        $stagingFindings = @($result.Findings | Where-Object { $_.Category -eq 'Conditional Access Staging' })
+        $mfaFindings = @($result.Findings | Where-Object { $_.Category -eq 'MFA Coverage' })
+
+        $enabledFindings.Count | Should -Be 1
+        $enabledFindings[0].Message | Should -Match 'none are in an enabled state'
+        $enabledFindings[0].Message | Should -Not -Match 'enabled policies detected: 1'
+        $stagingFindings.Count | Should -Be 1
+        $stagingFindings[0].Message | Should -Match '^1 Conditional Access policy/policies are in report-only state'
+        $mfaFindings.Count | Should -Be 1
+        $mfaFindings[0].Message | Should -Match '^1 MFA-grant Conditional Access policy/policies are report-only'
+        $mfaFindings[0].Message | Should -Match 'enabled MFA Conditional Access enforcement evidence was not detected'
+    }
+
+    It 'counts the normalized Graph report-only state separately in Conditional Access KPIs' {
+        . (Join-Path $script:repoRoot 'src\scripts\assessments\HTML Scripts\Invoke-HTMLHelperFunctions.ps1')
+
+        $reportOnlyGrantControls = [System.Collections.Generic.Dictionary[string, object]]::new()
+        $reportOnlyGrantControls['builtInControls'] = @('mfa')
+        $reportOnlyPolicy = [System.Collections.Generic.Dictionary[string, object]]::new()
+        $reportOnlyPolicy['state'] = 'enabledForReportingButNotEnforced'
+        $reportOnlyPolicy['grantControls'] = $reportOnlyGrantControls
+
+        $policies = @(
+            [pscustomobject]@{ State = 'enabled'; GrantControls_BuiltInControls = 'compliantDevice' }
+            $reportOnlyPolicy
+            [pscustomobject]@{ State = 'disabled'; GrantControls_BuiltInControls = 'mfa' }
+        )
+        $html = Build-ConditionalAccessMfaSection `
+            -ConditionalAccessPolicies $policies `
+            -AuthConfig ([pscustomobject]@{ MFAEnabled = $true; MFAMethods = @('email') }) `
+            -Users @() `
+            -MfaRegistrationSummary $null
+
+        $html | Should -Match '(?s)<div class="kpi-title">CA Policies</div>\s*<div class="kpi-value">3\s*</div>'
+        $html | Should -Match '(?s)<div class="kpi-title">Enabled</div>\s*<div class="kpi-value">1\s*</div>'
+        $html | Should -Match '(?s)<div class="kpi-title">Report-Only</div>\s*<div class="kpi-value">1\s*</div>'
+        $html | Should -Match '(?s)<div class="kpi-title">MFA CA Enforcement</div>\s*<div class="kpi-value">Not Evidenced\s*</div>'
+    }
+
+    It 'does not treat a disabled MFA-grant Conditional Access policy as enforcement evidence' {
+        . (Join-Path $script:repoRoot 'src\scripts\assessments\HTML Scripts\Invoke-HTMLHelperFunctions.ps1')
+
+        $analysis = Get-ConditionalAccessMfaAnalysis `
+            -ConditionalAccessPolicies @([pscustomobject]@{
+                    State = 'disabled'
+                    GrantControls_BuiltInControls = 'mfa'
+                }) `
+            -AuthConfig $null `
+            -TotalUsers 1
+
+        $mfaFindings = @($analysis.Findings | Where-Object { $_.Category -eq 'MFA Enforcement' })
+        $mfaFindings.Count | Should -Be 1
+        $mfaFindings[0].Message | Should -Match 'No enabled Conditional Access MFA-enforcement evidence'
+    }
+
+    It 'does not infer MFA CA enforcement from an unrelated enabled authentication method' {
+        . (Join-Path $script:repoRoot 'src\scripts\assessments\HTML Scripts\Invoke-HTMLHelperFunctions.ps1')
+
+        $authConfig = [pscustomobject]@{
+            MFAEnabled = $true
+            MFAMethods = @('email')
+        }
+        $enabledNonMfaPolicy = [pscustomobject]@{
+            State = 'enabled'
+            GrantControls_BuiltInControls = 'compliantDevice'
+        }
+        $analysis = Get-ConditionalAccessMfaAnalysis -ConditionalAccessPolicies @($enabledNonMfaPolicy) -AuthConfig $authConfig -TotalUsers 1
+        $html = Build-ConditionalAccessMfaSection -ConditionalAccessPolicies @($enabledNonMfaPolicy) -AuthConfig $authConfig -Users @() -MfaRegistrationSummary $null
+
+        @($analysis.Findings | Where-Object { $_.Category -eq 'MFA Enforcement' }).Count | Should -Be 1
+        $html | Should -Match '(?s)<div class="kpi-title">MFA CA Enforcement</div>\s*<div class="kpi-value">Not Evidenced\s*</div>'
+        $html | Should -Match 'Authentication Methods Available'
+        $html | Should -Not -Match '<div class="kpi-title">MFA Enforced</div>'
+    }
+
+    It 'asserts MFA CA enforcement only for an enabled MFA-grant policy' {
+        . (Join-Path $script:repoRoot 'src\scripts\assessments\HTML Scripts\Invoke-HTMLHelperFunctions.ps1')
+
+        $enabledMfaPolicy = [pscustomobject]@{
+            State = 'enabled'
+            GrantControls_BuiltInControls = 'mfa'
+        }
+        $analysis = Get-ConditionalAccessMfaAnalysis -ConditionalAccessPolicies @($enabledMfaPolicy) -AuthConfig $null -TotalUsers 1
+        $html = Build-ConditionalAccessMfaSection -ConditionalAccessPolicies @($enabledMfaPolicy) -AuthConfig $null -Users @() -MfaRegistrationSummary $null
+
+        @($analysis.Findings | Where-Object { $_.Category -eq 'MFA Enforcement' }).Count | Should -Be 0
+        $html | Should -Match '(?s)<div class="kpi-title">MFA CA Enforcement</div>\s*<div class="kpi-value">Evidenced\s*</div>'
+    }
+
+    It 'reads generic and concurrent dictionary values through HTML helpers' {
+        . (Join-Path $script:repoRoot 'src\scripts\assessments\HTML Scripts\Invoke-HTMLHelperFunctions.ps1')
+
+        $genericRecord = [System.Collections.Generic.Dictionary[string, object]]::new()
+        $genericRecord['DisplayName'] = 'Generic tenant'
+
+        Get-RecordValue -Record $genericRecord -Key 'DisplayName' | Should -Be 'Generic tenant'
+        Get-RecordValue -Record $genericRecord -Key 'Missing' | Should -BeNullOrEmpty
+
+        $licenseState = [System.Collections.Generic.Dictionary[string, object]]::new()
+        $licenseState['SkuId'] = 'sku-1'
+        $licenseState['State'] = 'Active'
+
+        $concurrentUser = [System.Collections.Concurrent.ConcurrentDictionary[string, object]]::new()
+        $concurrentUser['LicenseAssignmentStates'] = $licenseState
+
+        Get-AssessmentRuleValue -Record $concurrentUser -Names @('LicenseAssignmentStates') | Should -Be $licenseState
+        Get-AssessmentRuleValue -Record $concurrentUser -Names @('Missing') | Should -BeNullOrEmpty
+
+        $assignmentRows = @(Get-AssessmentUserLicenseAssignmentRows -User $concurrentUser)
+        $assignmentRows.Count | Should -Be 1
+        $assignmentRows[0].SkuId | Should -Be 'sku-1'
+        $assignmentRows[0].State | Should -Be 'Active'
+    }
+
     It 'renders absent Presales readiness tables as warning Needs Data values instead of green zeros' {
         Import-Module (Join-Path $script:repoRoot 'src\modules\Arraya.M365.Common\Arraya.M365.Common.psd1') -Force -ErrorAction Stop
         . (Join-Path $script:repoRoot 'src\scripts\assessments\HTML Scripts\Invoke-HTMLHelperFunctions.ps1')

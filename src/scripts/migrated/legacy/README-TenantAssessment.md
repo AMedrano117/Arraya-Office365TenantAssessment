@@ -8,7 +8,7 @@ Run one script and choose from the menu:
 ```
 
 Users do not need to import any module manually. The launcher imports the local runner module automatically.
-The runner module then loads the local `Office365Custom` module (latest version folder) only if it is not already imported.
+The runner module loads the pinned local `Office365Custom` version `1.2.1`.
 
 ## Auth Modes
 - `Delegated`: interactive sign-in for full module compatibility.
@@ -73,7 +73,7 @@ Runner commands are in:
 
 Shared helper functions (such as `Write-ProgressHelper`) are sourced from:
 
-`src\vendor\Office365Custom\<version>\`
+`src\vendor\Office365Custom\1.2.1\`
 
 The core M365 assessment engine is:
 

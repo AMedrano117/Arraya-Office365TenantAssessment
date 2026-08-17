@@ -29,7 +29,7 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
         }
 
         foreach ($name in $Names) {
-            if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($name)) {
+            if ($Object -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$Object).Contains($name)) {
                 return $Object[$name]
             }
             if ($Object.PSObject -and $Object.PSObject.Properties[$name]) {
@@ -38,6 +38,21 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
         }
 
         return $null
+    }
+
+    $testObjectProperty = {
+        param(
+            $Object,
+            [string]$Name
+        )
+
+        if ($null -eq $Object) {
+            return $false
+        }
+        if ($Object -is [System.Collections.IDictionary]) {
+            return ([System.Collections.IDictionary]$Object).Contains($Name)
+        }
+        return [bool]($Object.PSObject -and $null -ne $Object.PSObject.Properties[$Name])
     }
 
     $toBoolean = {
@@ -138,9 +153,36 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
     }
 
     if (-not $normalizedTenantStatsHash.ContainsKey('SMTPRelayServiceAccounts') -and $allMailboxRows.Count -gt 0) {
+        $smtpRelayConfigRecord = $null
+        if ($normalizedTenantStatsHash.ContainsKey('SMTPRelayConfig') -and $normalizedTenantStatsHash['SMTPRelayConfig']) {
+            $smtpRelayConfigRoot = $normalizedTenantStatsHash['SMTPRelayConfig']
+            $smtpRelayConfigRecord = & $getObjectValue $smtpRelayConfigRoot @('Configuration', 'Summary')
+            if ($null -eq $smtpRelayConfigRecord) {
+                $smtpRelayConfigRecord = $smtpRelayConfigRoot
+            }
+        }
+        $hasTenantSmtpAuthSetting = & $testObjectProperty $smtpRelayConfigRecord 'SmtpClientAuthenticationDisabled'
+        $tenantSmtpAuthDisabled = if ($hasTenantSmtpAuthSetting) {
+            & $toBoolean (& $getObjectValue $smtpRelayConfigRecord @('SmtpClientAuthenticationDisabled'))
+        }
+        else {
+            $null
+        }
+
         $smtpAuthMailboxes = @(
             $allMailboxRows | Where-Object {
-                (& $toBoolean (& $getObjectValue $_ @('SmtpClientAuthenticationDisabled'))) -eq $false
+                if (-not (& $testObjectProperty $_ 'SmtpClientAuthenticationDisabled')) {
+                    return $false
+                }
+
+                $rawMailboxSmtpAuthSetting = & $getObjectValue $_ @('SmtpClientAuthenticationDisabled')
+                $mailboxSmtpAuthDisabled = & $toBoolean $rawMailboxSmtpAuthSetting
+                if ($null -ne $mailboxSmtpAuthDisabled) {
+                    return $mailboxSmtpAuthDisabled -eq $false
+                }
+
+                $isInheritedSetting = $null -eq $rawMailboxSmtpAuthSetting -or [string]::IsNullOrWhiteSpace([string]$rawMailboxSmtpAuthSetting)
+                return $isInheritedSetting -and $hasTenantSmtpAuthSetting -and $tenantSmtpAuthDisabled -eq $false
             }
         )
 
@@ -198,6 +240,15 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
                     PrimarySmtpAddress = if ([string]::IsNullOrWhiteSpace($primarySmtpAddress)) { $null } else { $primarySmtpAddress }
                     SendCount          = & $getObjectValue $senderRow @('SendCount', 'MessageCount')
                     LastActivityDate   = & $getObjectValue $senderRow @('LastActivityDate', 'LastActivityDateTime')
+                    Notes              = $(
+                        $rawMailboxSetting = & $getObjectValue $mailbox @('SmtpClientAuthenticationDisabled')
+                        if ($null -eq $rawMailboxSetting -or [string]::IsNullOrWhiteSpace([string]$rawMailboxSetting)) {
+                            'SMTP AUTH is enabled through the inherited tenant setting; validate actual application or device usage.'
+                        }
+                        else {
+                            'SMTP AUTH is enabled through an explicit mailbox override; validate actual application or device usage.'
+                        }
+                    )
                 }
             }
 
@@ -322,7 +373,7 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
             if ($tenantInfo.PSObject.Properties[$name]) {
                 $snapshot['Metadata']['Tenant'][$name] = $tenantInfo.$name
             }
-            elseif ($tenantInfo -is [System.Collections.IDictionary] -and $tenantInfo.Contains($name)) {
+            elseif ($tenantInfo -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$tenantInfo).Contains($name)) {
                 $snapshot['Metadata']['Tenant'][$name] = $tenantInfo[$name]
             }
         }

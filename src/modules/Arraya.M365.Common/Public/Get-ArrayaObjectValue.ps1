@@ -14,7 +14,7 @@ function Get-ArrayaObjectValue {
     $normalizedLookup = $null
 
     foreach ($name in $Names) {
-        if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($name)) {
+        if ($Object -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$Object).Contains($name)) {
             return $Object[$name]
         }
 

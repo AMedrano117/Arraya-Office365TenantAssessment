@@ -55,7 +55,7 @@ Use this checklist before and during a customer assessment engagement.
 
 ## References
 
-- [Tenant Assessment Quick Start](tenant-assessment-quick-start.md)
+- [Repository Quick Start](../../README.md#quick-start)
 - [RUN.md](../../RUN.md)
 - [App Registration Setup](app-registration-setup.md)
 - [Certificate Auth Setup](certificate-auth-setup.md)

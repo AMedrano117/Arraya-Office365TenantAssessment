@@ -19,7 +19,10 @@ function Export-ArrayaTenantToTenantCutoverPack {
             return $null
         }
 
-        if ($Container -is [System.Collections.IDictionary] -and $Container.Contains($Name)) {
+        if (
+            $Container -is [System.Collections.IDictionary] -and
+            ([System.Collections.IDictionary]$Container).Contains($Name)
+        ) {
             return $Container[$Name]
         }
 
@@ -291,7 +294,7 @@ function Export-ArrayaTenantToTenantCutoverPack {
                 continue
             }
 
-            if ($Lookup.Contains($candidateKey)) {
+            if (([System.Collections.IDictionary]$Lookup).Contains($candidateKey)) {
                 return [string]$Lookup[$candidateKey]
             }
         }

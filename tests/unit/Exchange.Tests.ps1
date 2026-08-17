@@ -9,6 +9,10 @@ Describe 'Arraya.M365.Exchange' {
         $script:mailboxSource = Get-Content -Raw -Path $script:mailboxPath
         $script:mailboxStatHelperPath = Join-Path $script:moduleRoot 'Private\Invoke-ExchangeMailboxStatHelpers.ps1'
         $script:mailboxStatHelperSource = Get-Content -Raw -Path $script:mailboxStatHelperPath
+        $script:smtpRelayPath = Join-Path $script:moduleRoot 'Public\Get-SMTPRelayConfiguration.ps1'
+        $script:smtpRelaySource = Get-Content -Raw -Path $script:smtpRelayPath
+        $script:mailFlowPath = Join-Path $script:moduleRoot 'Public\Get-MailFlowRulesandConnectors.ps1'
+        $script:mailFlowSource = Get-Content -Raw -Path $script:mailFlowPath
         $script:expectedExports = @(
             'Get-AllExchangeMailboxDetails'
             'Get-AllPublicFolderDetails'
@@ -128,5 +132,181 @@ Describe 'Arraya.M365.Exchange' {
         $script:mailboxStatHelperSource | Should -Match 'GraphActivityReport:Office365GroupsActivity:D180'
         $script:mailboxStatHelperSource | Should -Match 'Get-ArrayaCollectorCacheValue -Context \$Context -Key \$reportCacheKey'
         $script:mailboxStatHelperSource | Should -Match 'Set-ArrayaCollectorCacheValue -Context \$Context -Key \$reportCacheKey -Value \$rows'
+    }
+
+    It 'collects and retains SMTP AUTH and inbound relay authentication evidence for migration profiles' {
+        $script:mailboxSource | Should -Match "detailLevel -in @\('all', 'geek'\)"
+        $script:mailboxSource | Should -Match 'Get-EXOCASMailbox -ResultSize Unlimited -Properties SmtpClientAuthenticationDisabled'
+        $script:mailboxSource | Should -Match 'Add-ArrayaMailboxSmtpAuthSetting -Mailboxes \$exoMailboxes'
+        $script:mailFlowSource | Should -Match "'TlsSenderCertificateName'"
+        $script:mailFlowSource | Should -Match "'RestrictDomainsToCertificate'"
+        $script:mailFlowSource | Should -Match "'RestrictDomainsToIPAddresses'"
+        $script:smtpRelaySource | Should -Match "ConnectorType -ine 'OnPremises'"
+        $script:smtpRelaySource | Should -Match "ConnectorDirection', 'Direction'"
+    }
+
+    Context 'SMTP relay evidence classification' {
+        BeforeAll {
+            Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+            $script:newSmtpRelayTestContext = {
+                param(
+                    [System.Collections.IDictionary]$TenantStats
+                )
+
+                [pscustomobject]@{
+                    TenantStats        = $TenantStats
+                    ExportFileLocation = $null
+                    Policies           = [ordered]@{}
+                    Runtime            = [ordered]@{}
+                    Metadata           = [ordered]@{ StartedAt = Get-Date }
+                }
+            }
+        }
+
+        BeforeEach {
+            Mock -CommandName Get-ArrayaSmtpRelayTransportConfig -ModuleName Arraya.M365.Exchange -MockWith {
+                [pscustomobject]@{ SmtpClientAuthenticationDisabled = $true }
+            }
+            Mock -CommandName Get-ArrayaSmtpRelayAcceptedDomain -ModuleName Arraya.M365.Exchange -MockWith { @() }
+        }
+
+        It 'projects CAS mailbox settings onto matching mailbox inventory records' {
+            $mailboxes = @(
+                [pscustomobject]@{ ExternalDirectoryObjectId = 'object-1'; UserPrincipalName = 'relay@contoso.com' },
+                [pscustomobject]@{ ExternalDirectoryObjectId = 'object-2'; UserPrincipalName = 'unmatched@contoso.com' }
+            )
+            $casSettings = @(
+                [pscustomobject]@{
+                    ExternalDirectoryObjectId          = 'object-1'
+                    UserPrincipalName                  = 'relay@contoso.com'
+                    SmtpClientAuthenticationDisabled  = $false
+                }
+            )
+
+            $module = Get-Module -Name Arraya.M365.Exchange
+            $projection = & $module {
+                param($MailboxRows, $SettingRows)
+                Add-ArrayaMailboxSmtpAuthSetting -Mailboxes $MailboxRows -CasMailboxSettings $SettingRows
+            } $mailboxes $casSettings
+
+            $projection.MatchedMailboxCount | Should -Be 1
+            $mailboxes[0].SmtpClientAuthenticationDisabled | Should -BeFalse
+            $mailboxes[1].PSObject.Properties['SmtpClientAuthenticationDisabled'] | Should -BeNullOrEmpty
+        }
+
+        It 'resolves explicit and inherited effective SMTP AUTH settings into service-account evidence' {
+            Mock -CommandName Get-ArrayaSmtpRelayTransportConfig -ModuleName Arraya.M365.Exchange -MockWith {
+                [pscustomobject]@{ SmtpClientAuthenticationDisabled = $false }
+            }
+            $tenantStats = [ordered]@{
+                AllMailboxes = [ordered]@{
+                    explicit = [pscustomobject]@{
+                        DisplayName                      = 'Explicit Relay'
+                        UserPrincipalName                = 'explicit-relay@contoso.com'
+                        PrimarySmtpAddress               = 'explicit-relay@contoso.com'
+                        SmtpClientAuthenticationDisabled = $false
+                    }
+                    inherited = [pscustomobject]@{
+                        DisplayName                      = 'Inherited Relay'
+                        UserPrincipalName                = 'inherited-relay@contoso.com'
+                        PrimarySmtpAddress               = 'inherited-relay@contoso.com'
+                        SmtpClientAuthenticationDisabled = $null
+                    }
+                }
+                MailFlowConnectors = [ordered]@{}
+            }
+            $context = & $script:newSmtpRelayTestContext $tenantStats
+
+            Get-SMTPRelayConfiguration -Context $context
+
+            $config = $tenantStats['SMTPRelayConfig']['Configuration']
+            $config.SMTPAuthEnabled | Should -BeTrue
+            $config.SMTPAuthUsers | Should -Be 2
+            $config.SMTPAuthExplicitlyEnabledUsers | Should -Be 1
+            $config.SMTPAuthInheritedEnabledUsers | Should -Be 1
+            $config.SMTPAuthEvidenceState | Should -Be 'Complete'
+            $tenantStats['SMTPRelayServiceAccounts'].Count | Should -Be 2
+        }
+
+        It 'keeps a missing mailbox SMTP AUTH property unknown instead of treating it as enabled' {
+            Mock -CommandName Get-ArrayaSmtpRelayTransportConfig -ModuleName Arraya.M365.Exchange -MockWith {
+                [pscustomobject]@{ SmtpClientAuthenticationDisabled = $false }
+            }
+            $tenantStats = [ordered]@{
+                AllMailboxes = [ordered]@{
+                    missing = [pscustomobject]@{
+                        DisplayName       = 'Uncollected Setting'
+                        UserPrincipalName = 'unknown@contoso.com'
+                    }
+                }
+                MailFlowConnectors = [ordered]@{}
+            }
+            $context = & $script:newSmtpRelayTestContext $tenantStats
+
+            Get-SMTPRelayConfiguration -Context $context
+
+            $config = $tenantStats['SMTPRelayConfig']['Configuration']
+            $config.SMTPAuthEnabled | Should -BeNullOrEmpty
+            $config.SMTPAuthUsers | Should -Be 0
+            $config.SMTPAuthMailboxSettingsMissing | Should -Be 1
+            $config.SMTPAuthMailboxStateUnknown | Should -Be 1
+            $config.SMTPAuthUsersIsMinimum | Should -BeTrue
+            $config.SMTPAuthEvidenceState | Should -Be 'Partial'
+            $tenantStats['SMTPRelayServiceAccounts'].Count | Should -Be 0
+        }
+
+        It 'detects enabled OnPremises inbound relay connectors authenticated by IP or certificate' {
+            $tenantStats = [ordered]@{
+                AllMailboxes = [ordered]@{}
+                MailFlowConnectors = [ordered]@{
+                    ipRelay = [pscustomobject]@{
+                        Id                    = 'IP relay'
+                        ConnectorDirection    = 'Inbound'
+                        ConnectorType         = 'OnPremises'
+                        Enabled               = $true
+                        TestMode              = $false
+                        SenderIPAddresses     = @('203.0.113.10')
+                    }
+                    certificateRelay = [pscustomobject]@{
+                        Id                       = 'Certificate relay'
+                        ConnectorDirection       = 'Inbound'
+                        ConnectorType            = 'OnPremises'
+                        Enabled                  = $true
+                        TestMode                 = $false
+                        TlsSenderCertificateName = 'smtp.contoso.com'
+                    }
+                }
+            }
+            $context = & $script:newSmtpRelayTestContext $tenantStats
+
+            Get-SMTPRelayConfiguration -Context $context
+
+            $config = $tenantStats['SMTPRelayConfig']['Configuration']
+            $config.ConnectorBasedRelay | Should -BeTrue
+            $config.RelayConnectorEvidenceState | Should -Be 'Complete'
+            @($config.RelayConnectors).Count | Should -Be 2
+            @($config.RelayConnectors.ConnectorName) | Should -Contain 'IP relay'
+            @($config.RelayConnectors.ConnectorName) | Should -Contain 'Certificate relay'
+        }
+
+        It 'does not classify outbound, partner, disabled, test-mode, or unauthenticated connectors as relay evidence' {
+            $tenantStats = [ordered]@{
+                AllMailboxes = [ordered]@{}
+                MailFlowConnectors = [ordered]@{
+                    outbound = [pscustomobject]@{ Id = 'Outbound'; ConnectorDirection = 'Outbound'; ConnectorType = 'OnPremises'; Enabled = $true; SenderIPAddresses = '203.0.113.11' }
+                    partner = [pscustomobject]@{ Id = 'Partner'; ConnectorDirection = 'Inbound'; ConnectorType = 'Partner'; Enabled = $true; SenderIPAddresses = '203.0.113.12' }
+                    disabled = [pscustomobject]@{ Id = 'Disabled'; ConnectorDirection = 'Inbound'; ConnectorType = 'OnPremises'; Enabled = $false; SenderIPAddresses = '203.0.113.13' }
+                    testMode = [pscustomobject]@{ Id = 'Test'; ConnectorDirection = 'Inbound'; ConnectorType = 'OnPremises'; Enabled = $true; TestMode = $true; SenderIPAddresses = '203.0.113.14' }
+                    noAuthentication = [pscustomobject]@{ Id = 'No auth'; ConnectorDirection = 'Inbound'; ConnectorType = 'OnPremises'; Enabled = $true; SenderDomains = '*' }
+                }
+            }
+            $context = & $script:newSmtpRelayTestContext $tenantStats
+
+            Get-SMTPRelayConfiguration -Context $context
+
+            $config = $tenantStats['SMTPRelayConfig']['Configuration']
+            $config.ConnectorBasedRelay | Should -BeFalse
+            @($config.RelayConnectors).Count | Should -Be 0
+        }
     }
 }

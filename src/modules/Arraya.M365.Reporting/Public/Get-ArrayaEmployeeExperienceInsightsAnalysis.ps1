@@ -28,15 +28,18 @@ function Get-ArrayaEmployeeExperienceInsightsAnalysis {
             [AllowNull()]
             $Record,
             [Parameter(Mandatory)]
-            [string]$Key,
+            [string[]]$Key,
             [AllowNull()]
             $Default = $null
         )
 
         if ($null -eq $Record) { return $Default }
-        if ($Record -is [System.Collections.IDictionary] -and $Record.Contains($Key)) { return $Record[$Key] }
-        if ($Record -is [System.Collections.Specialized.OrderedDictionary] -and $Record.Contains($Key)) { return $Record[$Key] }
-        if ($Record.PSObject -and $Record.PSObject.Properties[$Key]) { return $Record.$Key }
+        foreach ($candidateKey in @($Key)) {
+            if ([string]::IsNullOrWhiteSpace($candidateKey)) { continue }
+            if ($Record -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$Record).Contains($candidateKey)) { return $Record[$candidateKey] }
+            if ($Record -is [System.Collections.Specialized.OrderedDictionary] -and $Record.Contains($candidateKey)) { return $Record[$candidateKey] }
+            if ($Record.PSObject -and $Record.PSObject.Properties[$candidateKey]) { return $Record.PSObject.Properties[$candidateKey].Value }
+        }
         return $Default
     }
 
@@ -66,6 +69,8 @@ function Get-ArrayaEmployeeExperienceInsightsAnalysis {
         }
     }
 
+    $findings = New-Object 'System.Collections.Generic.List[object]'
+
     function Add-Finding {
         param(
             [Parameter(Mandatory)]
@@ -78,16 +83,106 @@ function Get-ArrayaEmployeeExperienceInsightsAnalysis {
             [int]$Priority = 3
         )
 
-        $findings += @{
+        [void]$findings.Add(@{
             Type     = $Type
             Category = $Category
             Message  = $Message
             Anchor   = 'employee-experience-insights'
             Priority = $Priority
+        })
+    }
+
+    function Get-ConditionalAccessPolicyState {
+        param(
+            [AllowNull()]
+            $Policy
+        )
+
+        $state = [string](Get-SummaryValue -Record $Policy -Key @('State', 'state', 'PolicyState', 'policyState') -Default '')
+        switch ($state.Trim().ToLowerInvariant()) {
+            'enabled'                           { return 'enabled' }
+            'enabledforreportingbutnotenforced' { return 'enabledForReportingButNotEnforced' }
+            'reportonly'                        { return 'enabledForReportingButNotEnforced' }
+            'report-only'                       { return 'enabledForReportingButNotEnforced' }
+            'disabled'                          { return 'disabled' }
+            default                             { return 'unknown' }
         }
     }
 
-    $findings = @()
+    function Convert-ToBoolean {
+        param(
+            [AllowNull()]
+            $Value
+        )
+
+        if ($null -eq $Value) { return $null }
+        if ($Value -is [bool]) { return [bool]$Value }
+
+        switch (([string]$Value).Trim().ToLowerInvariant()) {
+            { $_ -in @('true', 'yes', 'enabled', 'on', '1') } { return $true }
+            { $_ -in @('false', 'no', 'disabled', 'off', '0') } { return $false }
+            default { return $null }
+        }
+    }
+
+    function Convert-ToStringArray {
+        param(
+            [AllowNull()]
+            $Value
+        )
+
+        if ($null -eq $Value) { return @() }
+        if ($Value -is [string]) {
+            return @(
+                $Value -split '[,;|]' |
+                    ForEach-Object { $_.Trim() } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+        }
+        if ($Value -is [System.Collections.IEnumerable]) {
+            return @(
+                $Value |
+                    ForEach-Object { [string]$_ } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+        }
+        return @([string]$Value)
+    }
+
+    function Test-ConditionalAccessPolicyRequiresMfa {
+        param(
+            [AllowNull()]
+            $Policy
+        )
+
+        if ($null -eq $Policy) { return $false }
+
+        $explicitRequirement = Convert-ToBoolean -Value (Get-SummaryValue -Record $Policy -Key @('RequiresMfaEnforcement', 'requiresMfaEnforcement', 'RequiresMfa', 'requiresMfa') -Default $null)
+        if ($explicitRequirement -eq $true) { return $true }
+
+        $grantControls = Get-SummaryValue -Record $Policy -Key @('GrantControls', 'grantControls') -Default $null
+        $builtInControls = Get-SummaryValue -Record $Policy -Key @('GrantControls_BuiltInControls', 'grantControls_BuiltInControls', 'BuiltInControls', 'builtInControls') -Default $null
+        if ($null -eq $builtInControls -and $null -ne $grantControls) {
+            $builtInControls = Get-SummaryValue -Record $grantControls -Key @('BuiltInControls', 'builtInControls') -Default $null
+        }
+        if (@(Convert-ToStringArray -Value $builtInControls | Where-Object { $_ -match '^(?i:mfa|multiFactorAuthentication)$' }).Count -gt 0) {
+            return $true
+        }
+
+        $usesAuthenticationStrength = Convert-ToBoolean -Value (Get-SummaryValue -Record $Policy -Key @('UsesAuthenticationStrengthForMfa', 'usesAuthenticationStrengthForMfa') -Default $null)
+        if ($usesAuthenticationStrength -eq $true) { return $true }
+
+        $authenticationStrength = Get-SummaryValue -Record $Policy -Key @('GrantControls_AuthenticationStrength', 'grantControls_AuthenticationStrength', 'AuthenticationStrength', 'authenticationStrength') -Default $null
+        if ($null -eq $authenticationStrength -and $null -ne $grantControls) {
+            $authenticationStrength = Get-SummaryValue -Record $grantControls -Key @('AuthenticationStrength', 'authenticationStrength') -Default $null
+        }
+        if ($null -eq $authenticationStrength) { return $false }
+        if ($authenticationStrength -is [System.Collections.IDictionary]) { return ([System.Collections.IDictionary]$authenticationStrength).Count -gt 0 }
+        if ($authenticationStrength.PSObject -and @($authenticationStrength.PSObject.Properties).Count -gt 0 -and -not ($authenticationStrength -is [string])) { return $true }
+
+        $authenticationStrengthText = ([string]$authenticationStrength).Trim()
+        return (-not [string]::IsNullOrWhiteSpace($authenticationStrengthText) -and $authenticationStrengthText -notin @('{}', 'null'))
+    }
 
     $summaryRecord = $EmailActivitySummary
     if ($summaryRecord -is [array]) {
@@ -149,11 +244,15 @@ function Get-ArrayaEmployeeExperienceInsightsAnalysis {
         Add-Finding -Type Info -Category 'Report Identity Visibility' -Priority 3 -Message 'Microsoft 365 usage reports are configured to show identifiable names for authorized security and operations analysis.'
     }
 
-    $allPolicies = @($ConditionalAccessPolicies)
+    $allPolicies = @($ConditionalAccessPolicies | Where-Object { $null -ne $_ })
     $enabledPolicies = @(
         $allPolicies | Where-Object {
-            $state = [string](Get-SummaryValue -Record $_ -Key 'State' -Default (Get-SummaryValue -Record $_ -Key 'PolicyState' -Default ''))
-            $state -match '(?i)enabled'
+            (Get-ConditionalAccessPolicyState -Policy $_) -eq 'enabled'
+        }
+    )
+    $reportOnlyPolicies = @(
+        $allPolicies | Where-Object {
+            (Get-ConditionalAccessPolicyState -Policy $_) -eq 'enabledForReportingButNotEnforced'
         }
     )
 
@@ -167,31 +266,25 @@ function Get-ArrayaEmployeeExperienceInsightsAnalysis {
         Add-Finding -Type Info -Category 'Conditional Access Enforcement' -Priority 3 -Message "Conditional Access enabled policies detected: $($enabledPolicies.Count) of $($allPolicies.Count) collected."
     }
 
-    $mfaNamedPolicies = @(
-        $enabledPolicies | Where-Object {
-            $displayName = [string](Get-SummaryValue -Record $_ -Key 'DisplayName' -Default '')
-            $grantControls = [string](Get-SummaryValue -Record $_ -Key 'GrantControls' -Default '')
-            $displayName -match '(?i)mfa|multi[- ]?factor|authentication strength|auth strength|phishing-resistant' -or
-            $grantControls -match '(?i)mfa|authenticationstrength|phishing'
-        }
+    if ($reportOnlyPolicies.Count -gt 0) {
+        Add-Finding -Type Warning -Category 'Conditional Access Staging' -Priority 2 -Message "$($reportOnlyPolicies.Count) Conditional Access policy/policies are in report-only state and do not currently enforce access controls."
+    }
+
+    $enabledMfaPolicies = @(
+        $enabledPolicies | Where-Object { Test-ConditionalAccessPolicyRequiresMfa -Policy $_ }
     )
-    if ($enabledPolicies.Count -gt 0 -and $mfaNamedPolicies.Count -eq 0) {
-        Add-Finding -Type Warning -Category 'MFA Coverage' -Priority 2 -Message 'Enabled Conditional Access policies were found, but none were clearly identified as MFA/authentication-strength enforcement policies.'
-    }
+    $reportOnlyMfaPolicies = @(
+        $reportOnlyPolicies | Where-Object { Test-ConditionalAccessPolicyRequiresMfa -Policy $_ }
+    )
 
-    $mfaEnabled = $null
-    if ($AuthConfig) {
-        $rawMfaEnabled = Get-SummaryValue -Record $AuthConfig -Key 'MFAEnabled' -Default $null
-        if ($null -ne $rawMfaEnabled -and -not [string]::IsNullOrWhiteSpace([string]$rawMfaEnabled)) {
-            try { $mfaEnabled = [bool]$rawMfaEnabled } catch { $mfaEnabled = $null }
-        }
+    if ($enabledMfaPolicies.Count -gt 0) {
+        Add-Finding -Type Info -Category 'MFA Coverage' -Priority 3 -Message "Active MFA enforcement is signaled by $($enabledMfaPolicies.Count) enabled Conditional Access policy/policies with an MFA or authentication-strength grant."
     }
-
-    if ($mfaEnabled -eq $false) {
-        Add-Finding -Type Risk -Category 'MFA Coverage' -Priority 1 -Message 'MFA is not enabled in the collected authentication summary. This is a high-priority gap for zero-trust posture.'
+    elseif ($reportOnlyMfaPolicies.Count -gt 0) {
+        Add-Finding -Type Warning -Category 'MFA Coverage' -Priority 1 -Message "$($reportOnlyMfaPolicies.Count) MFA-grant Conditional Access policy/policies are report-only. Authentication methods may be available, but enabled MFA Conditional Access enforcement evidence was not detected."
     }
-    elseif ($mfaEnabled -eq $true) {
-        Add-Finding -Type Info -Category 'MFA Coverage' -Priority 3 -Message 'MFA is enabled in the collected authentication summary.'
+    else {
+        Add-Finding -Type Warning -Category 'MFA Coverage' -Priority 2 -Message 'No enabled Conditional Access policy with an MFA or authentication-strength grant was detected. Authentication-method availability does not establish enforcement; validate Security Defaults or other enforcement evidence separately.'
     }
 
     $passwordlessMethods = @()
@@ -238,6 +331,6 @@ function Get-ArrayaEmployeeExperienceInsightsAnalysis {
     }
 
     return @{
-        Findings = @($findings)
+        Findings = @($findings.ToArray())
     }
 }

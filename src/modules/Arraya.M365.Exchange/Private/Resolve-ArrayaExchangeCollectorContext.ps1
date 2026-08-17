@@ -67,13 +67,13 @@ function Resolve-ArrayaExchangeCollectorContext {
         $Context | Add-Member -NotePropertyName ExportFileLocation -NotePropertyValue $null -Force
     }
 
-    if (-not $Context.Policies.Contains('ReportingMode')) {
+    if (-not ([System.Collections.IDictionary]$Context.Policies).Contains('ReportingMode')) {
         $Context.Policies['ReportingMode'] = $resolvedMode
     }
-    if (-not $Context.Policies.Contains('CollectionDepth')) {
+    if (-not ([System.Collections.IDictionary]$Context.Policies).Contains('CollectionDepth')) {
         $Context.Policies['CollectionDepth'] = Get-ArrayaExchangeCollectionDepthPolicy -ReportingMode ([string]$Context.Policies['ReportingMode'])
     }
-    if (-not $Context.Metadata.Contains('StartedAt')) {
+    if (-not ([System.Collections.IDictionary]$Context.Metadata).Contains('StartedAt')) {
         $Context.Metadata['StartedAt'] = Get-Date
     }
 
@@ -87,7 +87,10 @@ function Get-ArrayaExchangeCollectorStartTime {
         $Context
     )
 
-    if ($Context.Metadata -is [System.Collections.IDictionary] -and $Context.Metadata.Contains('StartedAt')) {
+    if (
+        $Context.Metadata -is [System.Collections.IDictionary] -and
+        ([System.Collections.IDictionary]$Context.Metadata).Contains('StartedAt')
+    ) {
         return [datetime]$Context.Metadata['StartedAt']
     }
 

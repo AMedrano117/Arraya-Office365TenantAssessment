@@ -21,7 +21,7 @@ function Invoke-ArrayaGraphCollectionRequest {
     )
 
     if ($null -ne $Context -and $Context.PSObject.Properties['Runtime'] -and ($Context.Runtime -is [System.Collections.IDictionary])) {
-        if (-not $Context.Runtime.Contains('GraphRequestStats')) {
+        if (-not ([System.Collections.IDictionary]$Context.Runtime).Contains('GraphRequestStats')) {
             $Context.Runtime['GraphRequestStats'] = [ordered]@{
                 Requests = 0
                 CacheHits = 0
@@ -35,14 +35,22 @@ function Invoke-ArrayaGraphCollectionRequest {
 
     $headerKey = ''
     if ($Headers) {
-        $headerKey = @($Headers.GetEnumerator() | Sort-Object Name | ForEach-Object { '{0}={1}' -f $_.Name, $_.Value }) -join ';'
+        $headerKey = @(
+            $Headers.GetEnumerator() |
+                Where-Object { ([string]$_.Key) -ine 'Authorization' } |
+                Sort-Object Name |
+                ForEach-Object { '{0}={1}' -f $_.Name, $_.Value }
+        ) -join ';'
     }
     $cacheKey = 'Graph:{0}:{1}:{2}:{3}' -f $Method.ToUpperInvariant(), $GraphMode, $Uri, $headerKey
 
     if (-not $NoCache -and $null -ne $Context) {
         $cachedValue = Get-ArrayaCollectorCacheValue -Context $Context -Key $cacheKey
         if ($null -ne $cachedValue) {
-            if ($Context.Runtime.Contains('GraphRequestStats')) {
+            if (
+                $Context.Runtime -is [System.Collections.IDictionary] -and
+                ([System.Collections.IDictionary]$Context.Runtime).Contains('GraphRequestStats')
+            ) {
                 $Context.Runtime['GraphRequestStats']['CacheHits'] = [int]$Context.Runtime['GraphRequestStats']['CacheHits'] + 1
             }
             return $cachedValue
@@ -53,14 +61,22 @@ function Invoke-ArrayaGraphCollectionRequest {
         $value = & $ScriptBlock
         if (-not $NoCache -and $null -ne $Context) {
             Set-ArrayaCollectorCacheValue -Context $Context -Key $cacheKey -Value $value | Out-Null
-            if ($Context.Runtime.Contains('GraphRequestStats')) {
+            if (
+                $Context.Runtime -is [System.Collections.IDictionary] -and
+                ([System.Collections.IDictionary]$Context.Runtime).Contains('GraphRequestStats')
+            ) {
                 $Context.Runtime['GraphRequestStats']['CacheWrites'] = [int]$Context.Runtime['GraphRequestStats']['CacheWrites'] + 1
             }
         }
         return $value
     }
     catch {
-        if ($null -ne $Context -and $Context.PSObject.Properties['Runtime'] -and $Context.Runtime.Contains('GraphRequestStats')) {
+        if (
+            $null -ne $Context -and
+            $Context.PSObject.Properties['Runtime'] -and
+            $Context.Runtime -is [System.Collections.IDictionary] -and
+            ([System.Collections.IDictionary]$Context.Runtime).Contains('GraphRequestStats')
+        ) {
             $Context.Runtime['GraphRequestStats']['OptionalFailures'] = [int]$Context.Runtime['GraphRequestStats']['OptionalFailures'] + 1
         }
         throw

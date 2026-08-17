@@ -135,7 +135,7 @@ function Get-AllExchangeMailboxDetails {
         }
 
         if ($Dictionary -is [System.Collections.IDictionary]) {
-            return [bool]$Dictionary.Contains($Key)
+            return [bool]([System.Collections.IDictionary]$Dictionary).Contains($Key)
         }
 
         return $false
@@ -362,7 +362,7 @@ function Get-AllExchangeMailboxDetails {
                 if (
                     $TenantStatsHash.ContainsKey($lookupName) -and
                     $TenantStatsHash[$lookupName] -is [System.Collections.IDictionary] -and
-                    $TenantStatsHash[$lookupName].Contains($candidate)
+                    ([System.Collections.IDictionary]$TenantStatsHash[$lookupName]).Contains($candidate)
                 ) {
                     return $TenantStatsHash[$lookupName][$candidate]
                 }
@@ -655,7 +655,7 @@ function Get-AllExchangeMailboxDetails {
             if (
                 $TenantStatsHash.ContainsKey('AllRecipients') -and
                 $TenantStatsHash['AllRecipients'] -is [System.Collections.IDictionary] -and
-                $TenantStatsHash['AllRecipients'].Contains($candidate)
+                ([System.Collections.IDictionary]$TenantStatsHash['AllRecipients']).Contains($candidate)
             ) {
                 return $TenantStatsHash['AllRecipients'][$candidate]
             }
@@ -1025,13 +1025,13 @@ function Get-AllExchangeMailboxDetails {
     $exportDetails = $Context.ExportFileLocation
     $collectionDepthPolicy = $Context.Policies['CollectionDepth']
     $initialStart = Get-ArrayaExchangeCollectorStartTime -Context $Context
-    if (-not $Context.Runtime.Contains('MailboxUsageGraphLookup') -or -not ($Context.Runtime['MailboxUsageGraphLookup'] -is [System.Collections.IDictionary])) {
+    if (-not ([System.Collections.IDictionary]$Context.Runtime).Contains('MailboxUsageGraphLookup') -or -not ($Context.Runtime['MailboxUsageGraphLookup'] -is [System.Collections.IDictionary])) {
         $Context.Runtime['MailboxUsageGraphLookup'] = @{}
     }
-    if (-not $Context.Runtime.Contains('UnifiedGroupsInventoryCache')) {
+    if (-not ([System.Collections.IDictionary]$Context.Runtime).Contains('UnifiedGroupsInventoryCache')) {
         $Context.Runtime['UnifiedGroupsInventoryCache'] = @()
     }
-    if (-not $Context.Runtime.Contains('Office365GroupsActivityMailboxLookup')) {
+    if (-not ([System.Collections.IDictionary]$Context.Runtime).Contains('Office365GroupsActivityMailboxLookup')) {
         $Context.Runtime['Office365GroupsActivityMailboxLookup'] = $null
     }
     $mailboxUsageGraphLookup = $Context.Runtime['MailboxUsageGraphLookup']
@@ -1140,6 +1140,47 @@ function Get-AllExchangeMailboxDetails {
                 }
             }
         }
+
+        # SMTP AUTH is a Client Access mailbox setting and is not part of the
+        # Get-EXOMailbox property projection. Collect it once for migration-depth
+        # profiles, then stamp the value (including a meaningful $null/inherited
+        # value) onto the matching mailbox record.
+        if ($detailLevel -in @('all', 'geek')) {
+            try {
+                $smtpAuthMailboxSettings = @()
+                $exoCasMailboxCommand = Get-Command -Name 'Get-EXOCASMailbox' -ErrorAction Ignore
+                $casMailboxCommand = Get-Command -Name 'Get-CASMailbox' -ErrorAction Ignore
+
+                if ($exoCasMailboxCommand) {
+                    $smtpAuthMailboxSettings = @(
+                        Invoke-QuietCommand -ScriptBlock {
+                            Get-EXOCASMailbox -ResultSize Unlimited -Properties SmtpClientAuthenticationDisabled -ErrorAction Stop |
+                                Select-Object ExternalDirectoryObjectId, UserPrincipalName, PrimarySmtpAddress, Identity, Guid, SmtpClientAuthenticationDisabled
+                        }
+                    )
+                }
+                elseif ($casMailboxCommand) {
+                    $smtpAuthMailboxSettings = @(
+                        Invoke-QuietCommand -ScriptBlock {
+                            Get-CASMailbox -ResultSize Unlimited -ErrorAction Stop |
+                                Select-Object ExternalDirectoryObjectId, UserPrincipalName, PrimarySmtpAddress, Identity, Guid, SmtpClientAuthenticationDisabled
+                        }
+                    )
+                }
+
+                if ($smtpAuthMailboxSettings.Count -gt 0) {
+                    $smtpAuthProjection = Add-ArrayaMailboxSmtpAuthSetting -Mailboxes $exoMailboxes -CasMailboxSettings $smtpAuthMailboxSettings
+                    Write-Log -Type INFO -Message ("[Get-AllExchangeMailboxDetails] Collected SMTP AUTH mailbox settings for {0} of {1} mailboxes." -f $smtpAuthProjection.MatchedMailboxCount, $smtpAuthProjection.MailboxCount) -ExportFileLocation $exportDetails
+                }
+                else {
+                    Write-Log -Type WARNING -Message '[Get-AllExchangeMailboxDetails] SMTP AUTH mailbox settings were not collected; effective per-mailbox SMTP AUTH state will be reported as incomplete.' -ExportFileLocation $exportDetails
+                }
+            }
+            catch {
+                Write-Log -Type WARNING -Message "[Get-AllExchangeMailboxDetails] Unable to collect SMTP AUTH mailbox settings: $($_.Exception.Message)" -ExportFileLocation $exportDetails
+            }
+        }
+
         Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Gathering all mailboxes (Get-EXOMailbox) including Inactive Mailboxes" -ExportFileLocation $exportDetails
         
         $tenantStatsHash["AllMailboxes"] = @{}
@@ -1347,8 +1388,9 @@ function Get-AllExchangeMailboxDetails {
 
             $graphReportCacheKey = 'GraphActivityReport:MailboxUsage:D180'
             if (
-                $Context.Runtime.Contains('CollectorCache') -and
-                $Context.Runtime['CollectorCache'].Contains($graphReportCacheKey)
+                ([System.Collections.IDictionary]$Context.Runtime).Contains('CollectorCache') -and
+                $Context.Runtime['CollectorCache'] -is [System.Collections.IDictionary] -and
+                ([System.Collections.IDictionary]$Context.Runtime['CollectorCache']).Contains($graphReportCacheKey)
             ) {
                 $graphReportData = @(Get-ArrayaCollectorCacheValue -Context $Context -Key $graphReportCacheKey)
             }

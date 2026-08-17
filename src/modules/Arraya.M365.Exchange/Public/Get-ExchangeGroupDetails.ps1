@@ -34,7 +34,10 @@ function Get-ExchangeGroupDetails {
                 $cachedUnifiedGroupsByAddress[$smtp.ToLowerInvariant()] = $entry.Value
             }
         }
-        if ($Context.Runtime.Contains('UnifiedGroupsInventoryCache') -and $Context.Runtime['UnifiedGroupsInventoryCache']) {
+        if (
+            ([System.Collections.IDictionary]$Context.Runtime).Contains('UnifiedGroupsInventoryCache') -and
+            $Context.Runtime['UnifiedGroupsInventoryCache']
+        ) {
             foreach ($group in @($Context.Runtime['UnifiedGroupsInventoryCache'])) {
                 if (-not $group -or -not $group.PSObject.Properties['PrimarySmtpAddress']) {
                     continue

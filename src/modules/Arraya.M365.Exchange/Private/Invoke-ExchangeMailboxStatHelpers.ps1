@@ -117,9 +117,16 @@ function Test-MailboxStatCached {
             continue
         }
 
+        if ($StatsHash.PSObject.Methods['ContainsKey']) {
+            if ($StatsHash.ContainsKey($key)) {
+                return $true
+            }
+            continue
+        }
+
         if (
-            ($StatsHash.PSObject.Methods['ContainsKey'] -and $StatsHash.ContainsKey($key)) -or
-            ($StatsHash -is [System.Collections.IDictionary] -and $StatsHash.Contains($key))
+            $StatsHash -is [System.Collections.IDictionary] -and
+            ([System.Collections.IDictionary]$StatsHash).Contains($key)
         ) {
             return $true
         }
@@ -141,7 +148,7 @@ function Test-ShouldCollectUnifiedGroupMailboxStats {
         $Context = Resolve-ArrayaExchangeCollectorContext -Context $Context -DetailLevel $DetailLevel
     }
 
-    $depthPolicy = if ($Context -and $Context.Policies.Contains('CollectionDepth')) {
+    $depthPolicy = if ($Context -and ([System.Collections.IDictionary]$Context.Policies).Contains('CollectionDepth')) {
         $Context.Policies['CollectionDepth']
     }
     else {
@@ -179,7 +186,7 @@ function Get-Office365GroupsActivityMailboxLookup {
     $exportDetails = $Context.ExportFileLocation
 
     if (
-        $runtime.Contains('Office365GroupsActivityMailboxLookup') -and
+        ([System.Collections.IDictionary]$runtime).Contains('Office365GroupsActivityMailboxLookup') -and
         $runtime['Office365GroupsActivityMailboxLookup'] -and
         $runtime['Office365GroupsActivityMailboxLookup'].PSObject.Properties['ByGroupId'] -and
         $runtime['Office365GroupsActivityMailboxLookup'].PSObject.Properties['ByPrimarySmtpAddress']

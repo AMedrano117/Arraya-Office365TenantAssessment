@@ -24,7 +24,7 @@ function Resolve-ArrayaReportingCollectorContext {
     if (-not $Context.PSObject.Properties['ExportFileLocation']) {
         $Context | Add-Member -NotePropertyName ExportFileLocation -NotePropertyValue $null -Force
     }
-    if (-not $Context.Metadata.Contains('StartedAt')) {
+    if (-not ([System.Collections.IDictionary]$Context.Metadata).Contains('StartedAt')) {
         $Context.Metadata['StartedAt'] = Get-Date
     }
 
@@ -38,7 +38,10 @@ function Get-ArrayaReportingCollectorStartTime {
         $Context
     )
 
-    if ($Context.Metadata -is [System.Collections.IDictionary] -and $Context.Metadata.Contains('StartedAt')) {
+    if (
+        $Context.Metadata -is [System.Collections.IDictionary] -and
+        ([System.Collections.IDictionary]$Context.Metadata).Contains('StartedAt')
+    ) {
         return [datetime]$Context.Metadata['StartedAt']
     }
 

@@ -215,14 +215,18 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Not -Match '\$usedSpoFallback'
     }
 
-    It 'requires the assessment snapshot JSON before allowing the export stage to finish' {
+    It 'requires profile-selected deliverables, the run manifest, and snapshot JSON before allowing export to finish' {
+        $script:collectorSource | Should -Match '\$requiredProfileArtifacts'
+        $script:collectorSource | Should -Match "Label = 'assessment workbook'; Keys = @\('Workbook'\)"
+        $script:collectorSource | Should -Match "Label = 'tenant-to-tenant cutover pack workbook'; Keys = @\('T2T Cutover Pack Workbook'\)"
+        $script:collectorSource | Should -Match "Label = 'questionnaire'; Keys = @\('Questionnaire'\)"
+        $script:collectorSource | Should -Match "Label = 'technical HTML report'; Keys = @\('Full HTML'\)"
+        $script:collectorSource | Should -Match "Label = 'run manifest'; Keys = @\('Manifest'\)"
+        $script:collectorSource | Should -Match 'The selected output profile requires the \{0\}, but that artifact was not produced'
         $script:collectorSource | Should -Match '\$requiresAssessmentSnapshotArtifact = \(-not \$effectiveSkipJsonReport\)'
         $script:collectorSource | Should -Match "'Assessment Snapshot JSON', 'JSON'"
         $script:collectorSource | Should -Match 'The assessment workbook export completed, but the required assessment snapshot JSON was not produced'
         $script:collectorSource | Should -Match 'Improve, export replay, and manifest-based follow-up cannot continue without that snapshot'
-        $script:collectorSource | Should -Match '\$generatedArtifacts\.Contains\(''Manifest''\)'
-        $script:collectorSource | Should -Match 'The assessment snapshot JSON was produced, but the required run manifest was not produced'
-        $script:collectorSource | Should -Match 'Improve and manifest-based follow-up cannot continue without the manifest'
         $script:collectorSource | Should -Match 'if \(\$requiresAssessmentSnapshotArtifact\)'
         $script:collectorSource | Should -Match 'throw \('
     }
@@ -363,6 +367,10 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Mail flow connectors'
         $script:collectorSource | Should -Match 'Remote domains allowing auto-forwarding'
         $script:collectorSource | Should -Match 'SMTP relay service accounts'
+        $script:collectorSource | Should -Match 'Microsoft 365 SMTP relay connectors'
+        $script:collectorSource | Should -Match 'SMTPAuthEvidenceState'
+        $script:collectorSource | Should -Match 'RelayConnectorEvidenceState'
+        $script:collectorSource | Should -Match 'elseif \(\$smtpAuthEvidenceState -ne ''Complete''\) \{ ''Needs Data'' \}'
         $script:collectorSource | Should -Match 'Mailbox routing and proxy attributes'
         $script:collectorSource | Should -Match 'Mailbox delegate reapplication'
         $script:collectorSource | Should -Match 'Oversized mailbox batches'

@@ -55,7 +55,7 @@ function Resolve-ArrayaGraphCollectorContext {
         $Context | Add-Member -NotePropertyName Metadata -NotePropertyValue ([ordered]@{}) -Force
     }
 
-    $resolvedMode = if ($Context.Policies.Contains('ReportingMode')) {
+    $resolvedMode = if (([System.Collections.IDictionary]$Context.Policies).Contains('ReportingMode')) {
         [string]$Context.Policies['ReportingMode']
     }
     else {
@@ -66,10 +66,10 @@ function Resolve-ArrayaGraphCollectorContext {
     }
     $Context.Policies['ReportingMode'] = $resolvedMode
 
-    if (-not $Context.Policies.Contains('CollectionDepth')) {
+    if (-not ([System.Collections.IDictionary]$Context.Policies).Contains('CollectionDepth')) {
         $Context.Policies['CollectionDepth'] = Get-ArrayaGraphCollectionDepthPolicy -ReportingMode $resolvedMode
     }
-    if (-not $Context.Metadata.Contains('StartedAt')) {
+    if (-not ([System.Collections.IDictionary]$Context.Metadata).Contains('StartedAt')) {
         $Context.Metadata['StartedAt'] = Get-Date
     }
 

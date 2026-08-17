@@ -238,7 +238,10 @@ function Get-ImprovementUserLicenseAssignmentRows {
     $stateValue = Get-ArrayaObjectValue -Object $User -Names @('LicenseAssignmentStates', 'licenseAssignmentStates')
     $stateRows = @()
     if ($stateValue) {
-        if ($stateValue -is [System.Collections.IDictionary] -and $stateValue.Contains('SkuId')) {
+        if (
+            $stateValue -is [System.Collections.IDictionary] -and
+            ([System.Collections.IDictionary]$stateValue).Contains('SkuId')
+        ) {
             $stateRows = @($stateValue)
         }
         else {
