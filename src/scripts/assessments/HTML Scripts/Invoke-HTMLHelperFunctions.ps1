@@ -286,7 +286,7 @@ function Resolve-LicenseInventoryRecord {
         )
 
         foreach ($name in $Names) {
-            if ($Record -is [System.Collections.IDictionary] -and $Record.Contains($name)) {
+            if ($Record -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$Record).Contains($name)) {
                 return $Record[$name]
             }
             if ($Record.PSObject -and $Record.PSObject.Properties[$name]) {
@@ -2000,6 +2000,22 @@ function Get-ExchangeHybridAnalysis {
             Anchor = 'exchange-hybrid'
             Priority = 2
         }
+    } elseif ($HybridInfo.HybridStatus -in @('Unknown', 'PermissionDenied')) {
+        # One or more hybrid probes did not answer, so we cannot report "not hybrid" here.
+        $probeDetail = if ($HybridInfo.UnansweredProbes) { " Unanswered probes: $($HybridInfo.UnansweredProbes)." } else { '' }
+        $reason = if ($HybridInfo.HybridStatus -eq 'PermissionDenied') {
+            'the account used for collection lacked permission to read the relevant Exchange configuration'
+        } else {
+            'one or more Exchange hybrid queries did not complete'
+        }
+
+        $findings += @{
+            Type = 'Warning'
+            Category = 'Exchange Hybrid'
+            Message = "Exchange hybrid state could not be determined because $reason. This is not the same as confirming the tenant is not hybrid; re-run with sufficient permissions before relying on this section.$probeDetail"
+            Anchor = 'exchange-hybrid'
+            Priority = 2
+        }
     }
     
     return @{
@@ -2355,9 +2371,10 @@ function Get-ConditionalAccessMfaAnalysis {
     )
     
     $findings = @()
-    $enabledPolicies = $ConditionalAccessPolicies | Where-Object { $_.State -eq 'enabled' }
-    $mfaPolicies = $enabledPolicies | Where-Object { $_.GrantControls_BuiltInControls -match '(?i)mfa' }
-    $mfaEnabled = ($mfaPolicies.Count -gt 0) -or ($AuthConfig -and $AuthConfig.MFAEnabled -eq $true)
+    $policyRows = @($ConditionalAccessPolicies | Where-Object { $null -ne $_ })
+    $enabledPolicies = @($policyRows | Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'enabled' })
+    $mfaPolicies = @($enabledPolicies | Where-Object { Test-AssessmentConditionalAccessPolicyRequiresMfa -Policy $_ })
+    $mfaEnforced = $mfaPolicies.Count -gt 0
     
     if ($enabledPolicies.Count -eq 0) {
         $findings += @{
@@ -2369,11 +2386,11 @@ function Get-ConditionalAccessMfaAnalysis {
         }
     }
     
-    if (-not $mfaEnabled) {
+    if (-not $mfaEnforced) {
         $findings += @{
             Type = 'Warning'
             Category = 'MFA Enforcement'
-            Message = "No active MFA enforcement detected (no enabled MFA CA policies)"
+            Message = "No enabled Conditional Access MFA-enforcement evidence was detected; validate Security Defaults or other enforcement evidence separately"
             Anchor = 'conditional-access-mfa'
             Priority = 2
         }
@@ -2662,7 +2679,7 @@ function Get-RecordValue {
         return $null
     }
 
-    if ($Record -is [System.Collections.IDictionary] -and $Record.Contains($Key)) {
+    if ($Record -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$Record).Contains($Key)) {
         return $Record[$Key]
     }
     if ($Record -is [System.Collections.Specialized.OrderedDictionary] -and $Record.Contains($Key)) {
@@ -2743,7 +2760,7 @@ function Get-MailboxStatForRecord {
             return $null
         }
 
-        if ($Container -is [System.Collections.IDictionary] -and $Container.Contains($Key)) {
+        if ($Container -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$Container).Contains($Key)) {
             return $Container[$Key]
         }
 
@@ -2976,7 +2993,7 @@ function Get-TenantAssessmentContext {
             return $null
         }
 
-        if ($Container -is [System.Collections.IDictionary] -and $Container.Contains($Name)) {
+        if ($Container -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$Container).Contains($Name)) {
             return $Container[$Name]
         }
 
@@ -3078,7 +3095,7 @@ function Get-TenantAssessmentContext {
 
         $summaryValue = $null
         if ($Container -is [System.Collections.IDictionary]) {
-            if ($Container.Contains('Summary')) {
+            if (([System.Collections.IDictionary]$Container).Contains('Summary')) {
                 $summaryValue = $Container['Summary']
             }
             else {
@@ -3167,10 +3184,10 @@ function Get-TenantAssessmentContext {
     $emailActivityContainer = Resolve-ContextValue -Key 'EmailActivitySummary'
     if ($emailActivityContainer) {
         $emailActivitySummary = Resolve-ContextSummaryRecord -Container $emailActivityContainer
-        if ($emailActivityContainer -is [System.Collections.IDictionary] -and $emailActivityContainer.Contains('AdminReportSettings')) {
+        if ($emailActivityContainer -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$emailActivityContainer).Contains('AdminReportSettings')) {
             $adminReportSettings = Resolve-ContextSummaryRecord -Container $emailActivityContainer['AdminReportSettings']
         }
-        elseif ($emailActivitySummary -is [System.Collections.IDictionary] -and $emailActivitySummary.Contains('AdminReportSettings')) {
+        elseif ($emailActivitySummary -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$emailActivitySummary).Contains('AdminReportSettings')) {
             $adminReportSettings = Resolve-ContextSummaryRecord -Container $emailActivitySummary['AdminReportSettings']
         }
         elseif ($emailActivitySummary -and $emailActivitySummary.PSObject.Properties['AdminReportSettings']) {
@@ -3188,7 +3205,7 @@ function Get-TenantAssessmentContext {
     if (-not $primaryMailboxStatsCollectionSummary) {
         $primaryMailboxSourceCoverage = Resolve-ContextSummaryRecord -Container (Resolve-ContextValue -Key 'PrimaryMailboxStats')
         $hasSummaryShape = $false
-        if ($primaryMailboxSourceCoverage -is [System.Collections.IDictionary] -and $primaryMailboxSourceCoverage.Contains('TotalMailboxes')) {
+        if ($primaryMailboxSourceCoverage -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$primaryMailboxSourceCoverage).Contains('TotalMailboxes')) {
             $hasSummaryShape = $true
         }
         elseif ($primaryMailboxSourceCoverage.PSObject -and $primaryMailboxSourceCoverage.PSObject.Properties['TotalMailboxes']) {
@@ -3313,7 +3330,7 @@ function Get-TenantIdentityDetails {
         }
 
         foreach ($name in $Names) {
-            if ($Record -is [System.Collections.IDictionary] -and $Record.Contains($name)) {
+            if ($Record -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$Record).Contains($name)) {
                 $value = $Record[$name]
                 if ($null -ne $value -and -not [string]::IsNullOrWhiteSpace([string]$value)) {
                     return [string]$value
@@ -3338,7 +3355,7 @@ function Get-TenantIdentityDetails {
     $tenantInfoSummaryRecord = $null
     if ($TenantStatsHash.ContainsKey('TenantInfoSummary') -and $TenantStatsHash['TenantInfoSummary']) {
         $summaryContainer = $TenantStatsHash['TenantInfoSummary']
-        if ($summaryContainer -is [System.Collections.IDictionary] -and $summaryContainer.Contains('Summary')) {
+        if ($summaryContainer -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$summaryContainer).Contains('Summary')) {
             $tenantInfoSummaryRecord = $summaryContainer['Summary']
         }
         elseif ($summaryContainer.PSObject -and $summaryContainer.PSObject.Properties['Summary']) {
@@ -3402,7 +3419,7 @@ function Get-AssessmentRuleValue {
         if ([string]::IsNullOrWhiteSpace($name)) {
             continue
         }
-        if ($Record -is [System.Collections.IDictionary] -and $Record.Contains($name)) {
+        if ($Record -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$Record).Contains($name)) {
             return $Record[$name]
         }
         if ($Record -is [System.Collections.Specialized.OrderedDictionary] -and $Record.Contains($name)) {
@@ -3474,6 +3491,62 @@ function Convert-AssessmentRuleValueToStringList {
     )
 }
 
+function Get-AssessmentConditionalAccessPolicyState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Policy
+    )
+
+    $rawState = [string](Get-AssessmentRuleValue -Record $Policy -Names @('State', 'state', 'PolicyState', 'policyState'))
+    switch ($rawState.Trim().ToLowerInvariant()) {
+        'enabled'                           { return 'enabled' }
+        'enabledforreportingbutnotenforced' { return 'enabledForReportingButNotEnforced' }
+        'reportonly'                        { return 'enabledForReportingButNotEnforced' }
+        'report-only'                       { return 'enabledForReportingButNotEnforced' }
+        'disabled'                          { return 'disabled' }
+        default                             { return 'unknown' }
+    }
+}
+
+function Test-AssessmentConditionalAccessPolicyRequiresMfa {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Policy
+    )
+
+    if ($null -eq $Policy) { return $false }
+
+    $explicitRequirement = Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $Policy -Names @('RequiresMfaEnforcement', 'requiresMfaEnforcement', 'RequiresMfa', 'requiresMfa'))
+    if ($explicitRequirement -eq $true) { return $true }
+
+    $grantControls = Get-AssessmentRuleValue -Record $Policy -Names @('GrantControls', 'grantControls')
+    $builtInControls = Get-AssessmentRuleValue -Record $Policy -Names @('GrantControls_BuiltInControls', 'grantControls_BuiltInControls', 'BuiltInControls', 'builtInControls')
+    if ($null -eq $builtInControls -and $null -ne $grantControls) {
+        $builtInControls = Get-AssessmentRuleValue -Record $grantControls -Names @('BuiltInControls', 'builtInControls')
+    }
+    if (@(Convert-AssessmentRuleValueToStringList -Value $builtInControls | Where-Object { $_ -match '^(?i:mfa|multiFactorAuthentication)$' }).Count -gt 0) {
+        return $true
+    }
+
+    $usesAuthenticationStrength = Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $Policy -Names @('UsesAuthenticationStrengthForMfa', 'usesAuthenticationStrengthForMfa'))
+    if ($usesAuthenticationStrength -eq $true) { return $true }
+
+    $authenticationStrength = Get-AssessmentRuleValue -Record $Policy -Names @('GrantControls_AuthenticationStrength', 'grantControls_AuthenticationStrength', 'AuthenticationStrength', 'authenticationStrength')
+    if ($null -eq $authenticationStrength -and $null -ne $grantControls) {
+        $authenticationStrength = Get-AssessmentRuleValue -Record $grantControls -Names @('AuthenticationStrength', 'authenticationStrength')
+    }
+    if ($null -eq $authenticationStrength) { return $false }
+    if ($authenticationStrength -is [System.Collections.IDictionary]) { return ([System.Collections.IDictionary]$authenticationStrength).Count -gt 0 }
+    if ($authenticationStrength.PSObject -and @($authenticationStrength.PSObject.Properties).Count -gt 0 -and -not ($authenticationStrength -is [string])) { return $true }
+
+    $authenticationStrengthText = ([string]$authenticationStrength).Trim()
+    return (-not [string]::IsNullOrWhiteSpace($authenticationStrengthText) -and $authenticationStrengthText -notin @('{}', 'null'))
+}
+
 function Get-AssessmentLicenseSkuLookup {
     [CmdletBinding()]
     param([Parameter(Mandatory = $false)][object[]]$Licenses = @())
@@ -3530,7 +3603,7 @@ function Get-AssessmentUserLicenseAssignmentRows {
     $stateValue = Get-AssessmentRuleValue -Record $User -Names @('LicenseAssignmentStates', 'licenseAssignmentStates')
     $stateRows = @()
     if ($stateValue) {
-        if ($stateValue -is [System.Collections.IDictionary] -and $stateValue.Contains('SkuId')) {
+        if ($stateValue -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$stateValue).Contains('SkuId')) {
             $stateRows = @($stateValue)
         }
         else {
@@ -3655,18 +3728,15 @@ function New-AssessmentConditionalAccessOptimizationRows {
 
     function Test-PolicyEnabled {
         param($Policy)
-        return ([string](Get-AssessmentRuleValue -Record $Policy -Names @('State', 'state'))).ToLowerInvariant() -eq 'enabled'
+        return (Get-AssessmentConditionalAccessPolicyState -Policy $Policy) -eq 'enabled'
     }
     function Test-PolicyReportOnly {
         param($Policy)
-        return ([string](Get-AssessmentRuleValue -Record $Policy -Names @('State', 'state'))).ToLowerInvariant() -match 'report'
+        return (Get-AssessmentConditionalAccessPolicyState -Policy $Policy) -eq 'enabledForReportingButNotEnforced'
     }
     function Test-PolicyRequiresMfa {
         param($Policy)
-        $explicit = Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $Policy -Names @('RequiresMfaEnforcement', 'RequiresMfa', 'UsesAuthenticationStrengthForMfa'))
-        if ($explicit -eq $true) { return $true }
-        $text = ($Policy | ConvertTo-Json -Depth 8 -Compress)
-        return ($text -match '(?i)mfa|multiFactorAuthentication|authenticationStrength')
+        return Test-AssessmentConditionalAccessPolicyRequiresMfa -Policy $Policy
     }
     function Test-PolicySignal {
         param($Policy, [string[]]$BooleanNames, [string]$Regex)
@@ -3705,7 +3775,7 @@ function New-AssessmentConditionalAccessOptimizationRows {
 
     $enabledPolicies = @($policyRows | Where-Object { Test-PolicyEnabled -Policy $_ })
     $reportOnlyPolicies = @($policyRows | Where-Object { Test-PolicyReportOnly -Policy $_ })
-    $disabledPolicies = @($policyRows | Where-Object { ([string](Get-AssessmentRuleValue -Record $_ -Names @('State', 'state'))).ToLowerInvariant() -eq 'disabled' })
+    $disabledPolicies = @($policyRows | Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'disabled' })
     $adminMfaPolicies = @($enabledPolicies | Where-Object { (Test-PolicyRequiresMfa -Policy $_) -and (Test-PolicySignal -Policy $_ -BooleanNames @('TargetsPrivilegedRoles') -Regex '(?i)admin|privileged|global administrator|directoryRole') })
     $legacyPolicies = @($enabledPolicies | Where-Object { Test-PolicySignal -Policy $_ -BooleanNames @('BlocksLegacyAuth') -Regex '(?i)legacy|exchangeActiveSync|other clients|clientAppTypes' })
     $guestPolicies = @($enabledPolicies | Where-Object { Test-PolicySignal -Policy $_ -BooleanNames @('TargetsGuestsOrExternalUsers') -Regex '(?i)guest|external|b2b|includeGuestsOrExternalUsers' })
@@ -6166,7 +6236,7 @@ function Build-MailboxesSection {
         if ($null -eq $Record) { return $Default }
 
         $value = $null
-        if ($Record -is [System.Collections.IDictionary] -and $Record.Contains($Key)) {
+        if ($Record -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$Record).Contains($Key)) {
             $value = $Record[$Key]
         }
         elseif ($Record.PSObject -and $Record.PSObject.Properties[$Key]) {
@@ -6443,7 +6513,7 @@ function Build-EmailActivitySection {
         if ($null -eq $Record) {
             return $Default
         }
-        if ($Record -is [System.Collections.IDictionary] -and $Record.Contains($Key)) {
+        if ($Record -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$Record).Contains($Key)) {
             return $Record[$Key]
         }
         if ($Record -is [System.Collections.Specialized.OrderedDictionary] -and $Record.Contains($Key)) {
@@ -7621,9 +7691,9 @@ function Build-TenantOverviewSection {
     $signOnProvider = if ($federatedDomains.Count -gt 0) { "Federated (ADFS/3rd-party IdP)" } else { "Entra ID (cloud)" }
     $dirSyncEnabled = if ($AdConnect -and $AdConnect.Summary) { if ($AdConnect.Summary.OnPremisesSyncEnabled -eq $true) { "Yes" } else { "No" } } else { "Unknown" }
     $ssprWriteback = "Not collected"
-    $mfaProvider = if ($AuthConfig -and $AuthConfig.MFAEnabled -eq $true) {
-        $methods = if ($AuthConfig.MFAMethods -and $AuthConfig.MFAMethods.Count -gt 0) { $AuthConfig.MFAMethods -join ", " } else { "Methods not listed" }
-        "Entra ID MFA ($methods)"
+    $availableAuthenticationMethods = @(Convert-AssessmentRuleValueToStringList -Value (Get-AssessmentRuleValue -Record $AuthConfig -Names @('MFAMethods', 'mfaMethods')))
+    $mfaProvider = if ($availableAuthenticationMethods.Count -gt 0) {
+        "Entra ID authentication methods available ($($availableAuthenticationMethods -join ', '))"
     } else { "Not detected" }
     $ssoAppsCount = if ($AuthConfig -and $AuthConfig.SSOApplications) { $AuthConfig.SSOApplications.Count } else { 0 }
     $enterpriseSso = if ($AuthConfig -and $AuthConfig.SSOEnabled -eq $true) { "Yes ($ssoAppsCount apps)" } else { "No" }
@@ -7636,7 +7706,7 @@ function Build-TenantOverviewSection {
     $kpiHtml = "<div class='kpi-grid'>"
     $kpiHtml += New-KpiCard -Title "Sign-On Provider" -Value $signOnProvider
     $kpiHtml += New-KpiCard -Title "DirSync Enabled" -Value $dirSyncEnabled -Theme ($(if ($dirSyncEnabled -eq 'Yes') { 'success' } elseif ($dirSyncEnabled -eq 'No') { 'warning' } else { 'default' }))
-    $kpiHtml += New-KpiCard -Title "MFA" -Value $(if ($AuthConfig -and $AuthConfig.MFAEnabled) { 'Enabled' } else { 'Not Detected' }) -Theme ($(if ($AuthConfig -and $AuthConfig.MFAEnabled) { 'success' } else { 'warning' }))
+    $kpiHtml += New-KpiCard -Title "Authentication Methods" -Value $(if ($availableAuthenticationMethods.Count -gt 0) { 'Available' } else { 'Not Detected' }) -Theme 'default'
     $kpiHtml += New-KpiCard -Title "Conditional Access" -Value $conditionalAccessAnswer -Theme ($(if ($caCount -gt 0) { 'success' } else { 'warning' }))
     $kpiHtml += "</div>"
 
@@ -7644,7 +7714,7 @@ function Build-TenantOverviewSection {
         [PSCustomObject]@{ Topic = "Sign-on provider"; Answer = $signOnProvider; Notes = if ($federatedDomains.Count -gt 0) { "Federated domains: $($federatedDomains -join ', ')" } else { "No federated domains detected" } }
         [PSCustomObject]@{ Topic = "Directory sync from on-prem AD"; Answer = $dirSyncEnabled; Notes = if ($AdConnect -and $AdConnect.Summary) { "Last sync: $($AdConnect.Summary.OnPremisesLastSyncDateTime)" } else { "No sync data available" } }
         [PSCustomObject]@{ Topic = "SSPR / Password writeback"; Answer = $ssprWriteback; Notes = "Not collected in this report" }
-        [PSCustomObject]@{ Topic = "MFA provider"; Answer = $mfaProvider; Notes = if ($AuthConfig -and $AuthConfig.MFAMethods) { "Methods: $($AuthConfig.MFAMethods -join ', ')" } else { "No MFA method data found" } }
+        [PSCustomObject]@{ Topic = "Authentication method availability"; Answer = $mfaProvider; Notes = if ($availableAuthenticationMethods.Count -gt 0) { "Methods: $($availableAuthenticationMethods -join ', ')" } else { "No authentication method data found; availability does not establish MFA enforcement" } }
         [PSCustomObject]@{ Topic = "Enterprise SSO to SaaS apps"; Answer = $enterpriseSso; Notes = if ($ssoAppsCount -gt 0) { "Provide app list spreadsheet (separately)" } else { "No SSO apps detected" } }
         [PSCustomObject]@{ Topic = "Conditional Access"; Answer = $conditionalAccessAnswer; Notes = if ($caCount -gt 0) { "Policies detected in tenant" } else { "No policies detected" } }
         [PSCustomObject]@{ Topic = "Entra App Proxy"; Answer = $appProxy; Notes = "Not collected in this report" }
@@ -7673,20 +7743,27 @@ function Build-ConditionalAccessMfaSection {
     )
     
     $totalUsers = $Users.Count
-    $enabledPolicies = @($ConditionalAccessPolicies | Where-Object { $_.State -eq 'enabled' })
-    $reportOnlyPolicies = @($ConditionalAccessPolicies | Where-Object { $_.State -eq 'reportOnly' })
-    $disabledPolicies = @($ConditionalAccessPolicies | Where-Object { $_.State -eq 'disabled' })
-    $mfaPolicies = @($enabledPolicies | Where-Object { $_.GrantControls_BuiltInControls -match '(?i)mfa' })
-    $mfaEnabled = ($mfaPolicies.Count -gt 0) -or ($AuthConfig -and $AuthConfig.MFAEnabled -eq $true)
+    $policyRows = @($ConditionalAccessPolicies | Where-Object { $null -ne $_ })
+    $enabledPolicies = @($policyRows | Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'enabled' })
+    $reportOnlyPolicies = @($policyRows | Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'enabledForReportingButNotEnforced' })
+    $disabledPolicies = @($policyRows | Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'disabled' })
+    $mfaPolicies = @($enabledPolicies | Where-Object { Test-AssessmentConditionalAccessPolicyRequiresMfa -Policy $_ })
+    $mfaEnforced = $mfaPolicies.Count -gt 0
     
-    $mfaMethods = if ($AuthConfig -and $AuthConfig.MFAMethods) { ($AuthConfig.MFAMethods -join ', ') } else { 'Not available' }
-    $passwordlessMethods = if ($AuthConfig -and $AuthConfig.PasswordlessMethods) { ($AuthConfig.PasswordlessMethods -join ', ') } else { 'Not available' }
+    $mfaMethodValues = @(Convert-AssessmentRuleValueToStringList -Value (Get-AssessmentRuleValue -Record $AuthConfig -Names @('MFAMethods', 'mfaMethods')))
+    $passwordlessMethodValues = @(Convert-AssessmentRuleValueToStringList -Value (Get-AssessmentRuleValue -Record $AuthConfig -Names @('PasswordlessMethods', 'passwordlessMethods')))
+    $mfaMethods = if ($mfaMethodValues.Count -gt 0) { $mfaMethodValues -join ', ' } else { 'Not available' }
+    $passwordlessMethods = if ($passwordlessMethodValues.Count -gt 0) { $passwordlessMethodValues -join ', ' } else { 'Not available' }
     
     $mfaAllUsers = $false
     foreach ($policy in $enabledPolicies) {
-        $includesAll = ($policy.IncludedUsersCount -eq 'All') -or ($policy.IncludedUsers -eq 'All')
-        $excludesNone = ($policy.ExcludedUsersCount -eq 0 -or [string]::IsNullOrWhiteSpace($policy.ExcludedUsers))
-        $requiresMfa = ($policy.GrantControls_BuiltInControls -match '(?i)mfa')
+        $includedUsersCount = Get-AssessmentRuleValue -Record $policy -Names @('IncludedUsersCount', 'includedUsersCount')
+        $includedUsers = Get-AssessmentRuleValue -Record $policy -Names @('IncludedUsers', 'includedUsers')
+        $excludedUsersCount = Get-AssessmentRuleValue -Record $policy -Names @('ExcludedUsersCount', 'excludedUsersCount')
+        $excludedUsers = Get-AssessmentRuleValue -Record $policy -Names @('ExcludedUsers', 'excludedUsers')
+        $includesAll = ($includedUsersCount -eq 'All') -or ($includedUsers -eq 'All')
+        $excludesNone = ($excludedUsersCount -eq 0 -or [string]::IsNullOrWhiteSpace([string]$excludedUsers))
+        $requiresMfa = Test-AssessmentConditionalAccessPolicyRequiresMfa -Policy $policy
         if ($includesAll -and $excludesNone -and $requiresMfa) {
             $mfaAllUsers = $true
             break
@@ -7695,8 +7772,12 @@ function Build-ConditionalAccessMfaSection {
     
     $caAllUsers = $false
     foreach ($policy in $enabledPolicies) {
-        $includesAll = ($policy.IncludedUsersCount -eq 'All') -or ($policy.IncludedUsers -eq 'All')
-        $excludesNone = ($policy.ExcludedUsersCount -eq 0 -or [string]::IsNullOrWhiteSpace($policy.ExcludedUsers))
+        $includedUsersCount = Get-AssessmentRuleValue -Record $policy -Names @('IncludedUsersCount', 'includedUsersCount')
+        $includedUsers = Get-AssessmentRuleValue -Record $policy -Names @('IncludedUsers', 'includedUsers')
+        $excludedUsersCount = Get-AssessmentRuleValue -Record $policy -Names @('ExcludedUsersCount', 'excludedUsersCount')
+        $excludedUsers = Get-AssessmentRuleValue -Record $policy -Names @('ExcludedUsers', 'excludedUsers')
+        $includesAll = ($includedUsersCount -eq 'All') -or ($includedUsers -eq 'All')
+        $excludesNone = ($excludedUsersCount -eq 0 -or [string]::IsNullOrWhiteSpace([string]$excludedUsers))
         if ($includesAll -and $excludesNone) {
             $caAllUsers = $true
             break
@@ -7706,22 +7787,22 @@ function Build-ConditionalAccessMfaSection {
     $pctNotMfa = if ($mfaAllUsers) { '0%' } else { 'Unknown' }
     $pctNotCA = if ($caAllUsers) { '0%' } else { 'Unknown' }
     
-    $mfaEnforcedValue = if ($mfaEnabled) { 'Yes' } else { 'No' }
-    $mfaEnforcedTheme = if ($mfaEnabled) { 'success' } else { 'warning' }
+    $mfaEnforcedValue = if ($mfaEnforced) { 'Evidenced' } else { 'Not Evidenced' }
+    $mfaEnforcedTheme = if ($mfaEnforced) { 'success' } else { 'warning' }
     
     $kpiHtml = "<div class='kpi-grid'>"
-    $kpiHtml += New-KpiCard -Title "CA Policies" -Value (Format-AssessmentHtmlNumber $ConditionalAccessPolicies.Count)
+    $kpiHtml += New-KpiCard -Title "CA Policies" -Value (Format-AssessmentHtmlNumber $policyRows.Count)
     $kpiHtml += New-KpiCard -Title "Enabled" -Value (Format-AssessmentHtmlNumber $enabledPolicies.Count)
     $kpiHtml += New-KpiCard -Title "Report-Only" -Value (Format-AssessmentHtmlNumber $reportOnlyPolicies.Count)
-    $kpiHtml += New-KpiCard -Title "MFA Enforced" -Value $mfaEnforcedValue -Theme $mfaEnforcedTheme
+    $kpiHtml += New-KpiCard -Title "MFA CA Enforcement" -Value $mfaEnforcedValue -Theme $mfaEnforcedTheme
     $kpiHtml += "</div>"
     
     $summaryRows = @(
         [PSCustomObject]@{ Metric = 'MFA CA Policies Enabled'; Value = $mfaPolicies.Count },
-        [PSCustomObject]@{ Metric = 'MFA Methods (Policy)'; Value = $mfaMethods },
+        [PSCustomObject]@{ Metric = 'Authentication Methods Available'; Value = $mfaMethods },
         [PSCustomObject]@{ Metric = 'Passwordless Methods'; Value = $passwordlessMethods },
         [PSCustomObject]@{ Metric = '% Users Not Covered by CA'; Value = $pctNotCA },
-        [PSCustomObject]@{ Metric = '% Users Not Enforced with MFA'; Value = $pctNotMfa },
+        [PSCustomObject]@{ Metric = '% Users Not Covered by Enabled MFA CA'; Value = $pctNotMfa },
         [PSCustomObject]@{ Metric = 'Default User Can Create Apps'; Value = $(if ($AuthConfig -and $AuthConfig.PSObject.Properties['DefaultUserCanCreateApps']) { $AuthConfig.DefaultUserCanCreateApps } else { 'Not available' }) },
         [PSCustomObject]@{ Metric = 'Permission Grant Policies'; Value = $(if ($AuthConfig -and $AuthConfig.PSObject.Properties['PermissionGrantPoliciesAssigned']) { (@($AuthConfig.PermissionGrantPoliciesAssigned) -join ', ') } elseif ($AuthConfig -and $AuthConfig.PSObject.Properties['PermissionGrantPolicies']) { [string]$AuthConfig.PermissionGrantPolicies } else { 'Not available' }) },
         [PSCustomObject]@{ Metric = 'Admin Consent Workflow'; Value = $(if ($AuthConfig -and $AuthConfig.PSObject.Properties['AdminConsentWorkflowEnabled']) { $AuthConfig.AdminConsentWorkflowEnabled } else { 'Not available' }) }
@@ -7758,7 +7839,7 @@ function Build-ConditionalAccessMfaSection {
     $footerHtml = @"
 <div class='section-footer'>
     <h3>What This Means</h3>
-    <p>This summarizes conditional access policies and MFA enforcement signals. Per-user registration/enforcement data is not collected in this report.</p>
+    <p>This summarizes conditional access policies and MFA enforcement signals. Authentication-method availability and registration are separate from enforcement; only enabled Conditional Access policies with an MFA or authentication-strength grant are counted as MFA enforcement here. Per-user registration/enforcement data is not collected in this report.</p>
     <h3>Recommended Next Steps</h3>
     <p>Ensure MFA is enforced for all users via Conditional Access, review report-only policies, and validate registration methods in your authentication policy.</p>
 </div>
@@ -10183,7 +10264,7 @@ function New-TenantAssessmentHtmlReport {
             if ($null -eq $Container -or [string]::IsNullOrWhiteSpace($Name)) {
                 return $null
             }
-            if ($Container -is [System.Collections.IDictionary] -and $Container.Contains($Name)) {
+            if ($Container -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$Container).Contains($Name)) {
                 return $Container[$Name]
             }
             if ($Container.PSObject -and $Container.PSObject.Properties[$Name]) {

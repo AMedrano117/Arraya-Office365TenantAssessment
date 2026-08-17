@@ -15,6 +15,11 @@ function New-ArrayaCollectorStep {
         [string[]]$Produces = @(),
         [Parameter(Mandatory = $false)]
         [string[]]$DependsOn = @(),
+        # Marks a collector whose data the deliverables cannot be trusted without. A required
+        # step that FAILS degrades the whole run to Failed; a required step that is skipped
+        # because the profile disabled it does not, since that is a deliberate choice.
+        [Parameter(Mandatory = $false)]
+        [bool]$Required = $false,
         [Parameter(Mandatory = $true)]
         [scriptblock]$ScriptBlock
     )
@@ -27,6 +32,7 @@ function New-ArrayaCollectorStep {
         SkipReason  = $SkipReason
         Produces    = @($Produces)
         DependsOn   = @($DependsOn)
+        Required    = [bool]$Required
         ScriptBlock = $ScriptBlock
     }
 }

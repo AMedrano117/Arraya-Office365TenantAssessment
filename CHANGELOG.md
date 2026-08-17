@@ -7,6 +7,7 @@ All notable changes to this repository are tracked here. The detailed commit led
 ### Collector Runtime And Performance
 - Added a shared collector runtime context, run-scoped cache helpers, and collector step result tracking for clearer live collection diagnostics.
 - Replaced the hardcoded live collector sequence with a plan-driven six-section flow: Tenant Overview, Identity, Exchange, Collaboration, Endpoint, and Governance.
+- Hardened polymorphic dictionary lookups across shared helpers, snapshot conversion, collector contexts and caches, Exchange shaping, reporting/HTML, and legacy export paths so generic and concurrent Graph-style dictionaries no longer bind to an incompatible `Contains` overload.
 - Added cache-first collection paths for repeated Graph, Exchange, and report CSV calls, including mailbox stats, unified groups, report lookups, service principal/resource lookups, and tenant metadata.
 - Routed report and high-volume Graph calls through shared collection helpers to avoid duplicate requests within a run.
 - Cached collector report lookups and reused populated runtime caches during snapshot creation/export.
@@ -57,6 +58,8 @@ All notable changes to this repository are tracked here. The detailed commit led
 ### Tenant-To-Tenant And Migration Outputs
 - Added and refined tenant-to-tenant migration readiness outputs, cutover checklist data, mailbox migration columns, and reduced-scope T2T reporting.
 - Added migration-focused workbook/export behavior and clearer not-collected guidance for reduced profiles.
+- Fixed tenant-to-tenant export shaping when live Microsoft Graph objects expose `AdditionalProperties` as a generic dictionary, avoiding the `Contains` overload failure seen during workbook and cutover preparation.
+- Reworked the Presales migration scope questionnaire into a compact source-only overview: aggregate workload sizing, exceptional complexity callouts, conditional single-event versus phased guidance, current Microsoft/ShareGate/BitTitan purchasing options, ShareGate tier fit, and suggested billable project milestones. Removed tenant IDs, target-readiness and decision-status fields, preset wave tables, and mailbox/group inventory dumps from the customer-facing Markdown.
 
 ### Governance, Identity, And Security Collection
 - Expanded MFA registration/enforcement reporting, admin MFA assessments, Conditional Access role expansion, and guest MFA reporting.
@@ -74,6 +77,25 @@ All notable changes to this repository are tracked here. The detailed commit led
 - Joined the usage reports on the SharePoint Online fallback path, which previously downloaded them and then discarded them, and enriched site rows with file counts, page views, activity state, geo location, sensitivity label, and migration notes.
 - Backfilled site owners for group-connected sites from the Microsoft 365 group inventory, recording provenance in `OwnerSource`.
 - Clarified that Graph `getAllSites` is application-permission only, so the 403 on interactive runs is expected and logged as informational rather than a warning.
+
+### Run Status And Failure Visibility
+- Collector plan results are no longer discarded after collection. The run is now judged before export and reported as `Passed`, `Degraded`, or `Failed`.
+- Added `Get-ArrayaCollectorPlanStatus` and a `-Required` flag on `New-ArrayaCollectorStep` to distinguish collectors whose failure invalidates the deliverables from those that merely leave a gap. `Tenant overview`, `Users`, and `Exchange mailboxes` are marked required.
+- A required-collector failure now returns exit code 2 and prints an explicit warning that the deliverables are incomplete. Clean and degraded runs return 0 as before, so interactive use is unchanged.
+- The collection status is written to the run log and carried in `CollectionStatus` so it travels with the deliverables instead of living only in console output.
+- Exchange hybrid detection no longer infers "not hybrid" from queries that failed. Each probe records whether it answered, and unanswered probes yield `Unknown` or `PermissionDenied` with a null `IsHybridConfigured` rather than a confident `None`.
+- Positive hybrid evidence still classifies as `Hybrid` even when unrelated probes fail, since found evidence stands on its own.
+- HTML reporting raises a finding when hybrid state could not be determined, stating that this is not the same as confirming the tenant is not hybrid.
+
+### Build, CI, And Dependencies
+- CI now runs under PowerShell 7 (`pwsh`) instead of Windows PowerShell 5.1, matching the `PowerShellVersion = '7.0'` all module manifests declare, and asserts the runtime before running anything.
+- `tools/run-pester.ps1` no longer passes on `FailedCount` alone. It now requires an overall `Passed` result, zero failed containers, and a minimum test count, so discovery failures and empty runs can no longer report success.
+- Added an optional coverage floor to the Pester wrapper, reporting-only by default, to support ratcheting coverage over time.
+- Added `dependencies.psd1`, a single versioned manifest declaring every required module with a bounded version range, scope, and reason.
+- Added `tools/install-dependencies.ps1` to install or validate against the manifest. `install-microsoft-modules.ps1` and `install-required-modules.ps1` are now deprecated shims that delegate to it.
+- Fixed onboarding failing on a clean machine: the installer previously shipped only `Microsoft.Graph.Authentication` while app registration requires the Applications and Identity.Governance submodules.
+- Added a clean-machine CI job that provisions from the manifest, verifies it, and imports every project module.
+- Added anchored `.gitignore` rules for `runs/`, root-level `TestResults.xml` and `CoverageResults.xml`, Python tooling output, and machine-local agent state.
 
 ### Test And Maintenance
 - Added focused routing tests for preflight-only, collect-only, export-only, existing-connection mode, and targeted collector filters.

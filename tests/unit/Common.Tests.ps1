@@ -31,6 +31,7 @@ Describe 'Arraya.M365.Common' {
             'Get-ArrayaBitTitanLicenseEstimate'
             'Get-ArrayaBitTitanLicenseModel'
             'Get-ArrayaCollectorCacheValue'
+            'Get-ArrayaCollectorPlanStatus'
             'Get-ArrayaObjectValue'
             'Get-ArrayaTenantSnapshotMetricSet'
             'Get-ArrayaTenantSnapshotMetricSetFromContext'
@@ -690,6 +691,125 @@ Describe 'Arraya.M365.Common' {
         (Convert-MailboxSizeToGB -SizeValue $wrappedSize) | Should -BeGreaterOrEqual 0
     }
 
+    Context 'IDictionary compatibility' {
+        It 'reads present and missing keys from common and generic dictionary implementations' {
+            Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+            $hashtableValue = @{ Present = 'Hashtable' }
+            $orderedValue = [ordered]@{ Present = 'OrderedDictionary' }
+            $genericValue = [System.Collections.Generic.Dictionary[string, object]]::new()
+            $genericValue['Present'] = 'GenericDictionary'
+            $concurrentValue = [System.Collections.Concurrent.ConcurrentDictionary[string, object]]::new()
+            $concurrentValue['Present'] = 'ConcurrentDictionary'
+
+            $cases = @(
+                [pscustomobject]@{ Value = $hashtableValue; Expected = 'Hashtable' }
+                [pscustomobject]@{ Value = $orderedValue; Expected = 'OrderedDictionary' }
+                [pscustomobject]@{ Value = $genericValue; Expected = 'GenericDictionary' }
+                [pscustomobject]@{ Value = $concurrentValue; Expected = 'ConcurrentDictionary' }
+            )
+
+            foreach ($case in $cases) {
+                { Get-ArrayaObjectValue -Object $case.Value -Names @('Missing', 'Present') } | Should -Not -Throw
+                Get-ArrayaObjectValue -Object $case.Value -Names @('Missing', 'Present') | Should -Be $case.Expected
+                Get-ArrayaObjectValue -Object $case.Value -Names @('Missing') | Should -BeNullOrEmpty
+            }
+        }
+
+        It 'converts generic nested legacy records without a Contains overload failure' {
+            Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+            $mailbox = [System.Collections.Generic.Dictionary[string, object]]::new()
+            $mailbox['DisplayName'] = 'Retention Mailbox'
+            $mailbox['UserPrincipalName'] = 'retention@contoso.com'
+            $mailbox['RetentionPolicy'] = 'Finance Hold'
+            $mailbox['LitigationHoldEnabled'] = $true
+            $mailbox['SmtpClientAuthenticationDisabled'] = $true
+
+            $tenantInfo = [System.Collections.Concurrent.ConcurrentDictionary[string, object]]::new()
+            $tenantInfo['TenantId'] = '11111111-1111-1111-1111-111111111111'
+            $tenantInfo['DisplayName'] = 'Contoso'
+
+            $legacyTenantStats = @{
+                AllMailboxes = @($mailbox)
+                TenantInfo   = $tenantInfo
+            }
+
+            { Convert-ArrayaLegacyTenantStatsToSnapshot -TenantStatsHash $legacyTenantStats } | Should -Not -Throw
+            $snapshot = Convert-ArrayaLegacyTenantStatsToSnapshot -TenantStatsHash $legacyTenantStats
+
+            $snapshot.Data.Governance.RetentionPolicies['Finance Hold'].MailboxCount | Should -Be 1
+            $snapshot.Metadata.Tenant.TenantId | Should -Be '11111111-1111-1111-1111-111111111111'
+            $snapshot.Metadata.Tenant.DisplayName | Should -Be 'Contoso'
+        }
+
+        It 'flattens generic nested v2 snapshot sections without a Contains overload failure' {
+            Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+            $exchange = [System.Collections.Concurrent.ConcurrentDictionary[string, object]]::new()
+            $exchange['Users'] = @([pscustomobject]@{ UserPrincipalName = 'user@contoso.com' })
+
+            $data = [System.Collections.Generic.Dictionary[string, object]]::new()
+            $data['Exchange'] = $exchange
+
+            $derived = [System.Collections.Concurrent.ConcurrentDictionary[string, object]]::new()
+            $derived['Findings'] = @([pscustomobject]@{ Title = 'Finding' })
+
+            $collectorStats = [System.Collections.Concurrent.ConcurrentDictionary[string, object]]::new()
+            $collectorStats['CollectorInventory'] = @([pscustomobject]@{ Name = 'Users' })
+            $diagnostics = [System.Collections.Generic.Dictionary[string, object]]::new()
+            $diagnostics['CollectorStats'] = $collectorStats
+
+            $tenant = [System.Collections.Generic.Dictionary[string, object]]::new()
+            $tenant['DisplayName'] = 'Contoso'
+            $metadata = [System.Collections.Concurrent.ConcurrentDictionary[string, object]]::new()
+            $metadata['Tenant'] = $tenant
+
+            $snapshot = @{
+                SchemaVersion  = 2
+                Metadata       = $metadata
+                CollectionPlan = @{}
+                Data           = $data
+                Derived        = $derived
+                Diagnostics    = $diagnostics
+            }
+
+            { Convert-ArrayaSnapshotToLegacyTenantStatsHash -Snapshot $snapshot } | Should -Not -Throw
+            $legacy = Convert-ArrayaSnapshotToLegacyTenantStatsHash -Snapshot $snapshot
+
+            $legacy.Users[0].UserPrincipalName | Should -Be 'user@contoso.com'
+            $legacy.Findings[0].Title | Should -Be 'Finding'
+            $legacy.CollectorInventory[0].Name | Should -Be 'Users'
+            $legacy.TenantInfo.DisplayName | Should -Be 'Contoso'
+        }
+
+        It 'validates generic nested snapshot sections and reports missing domains' {
+            Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+            $data = [System.Collections.Concurrent.ConcurrentDictionary[string, object]]::new()
+            $data['Exchange'] = [System.Collections.Generic.Dictionary[string, object]]::new()
+
+            $derived = [System.Collections.Generic.Dictionary[string, object]]::new()
+            $derived['BestPracticeFindings'] = @([pscustomobject]@{ Title = 'Finding' })
+
+            $snapshot = @{
+                SchemaVersion  = 2
+                Metadata       = [ordered]@{}
+                CollectionPlan = @{}
+                Data           = $data
+                Derived        = $derived
+                Diagnostics    = [System.Collections.Concurrent.ConcurrentDictionary[string, object]]::new()
+            }
+
+            { Test-ArrayaTenantSnapshot -Snapshot $snapshot -Purpose ImprovementPlan } | Should -Not -Throw
+            $result = Test-ArrayaTenantSnapshot -Snapshot $snapshot -Purpose ImprovementPlan
+
+            $result.Valid | Should -BeTrue
+            ($result.Warnings -join ' ') | Should -Match "Data domain 'Identity' is not present"
+            ($result.Warnings -join ' ') | Should -Not -Match 'Derived findings were not found'
+        }
+    }
+
     It 'maps governance and password lifecycle signals into the snapshot domains' {
         Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
 
@@ -736,6 +856,53 @@ Describe 'Arraya.M365.Common' {
         $snapshot.Data.Governance.PasswordLifecycleSummary.PasswordWritebackEnabled | Should -BeTrue
         $snapshot.Data.Governance.PasswordLifecycleSummary.SelfServicePasswordResetEnabled | Should -BeTrue
         $snapshot.Data.Security.SMTPRelayServiceAccounts.Keys.Count | Should -Be 1
+    }
+
+    It 'derives SMTP AUTH candidates only from collected mailbox settings and honors tenant inheritance' {
+        Import-Module -Name $script:manifestPath -Force -ErrorAction Stop
+
+        $missingPropertySnapshot = Convert-ArrayaLegacyTenantStatsToSnapshot -TenantStatsHash @{
+            AllMailboxes = @(
+                [pscustomobject]@{
+                    DisplayName       = 'Missing SMTP AUTH evidence'
+                    UserPrincipalName = 'missing@contoso.com'
+                }
+            )
+            SMTPRelayConfig = @{
+                Configuration = [pscustomobject]@{ SmtpClientAuthenticationDisabled = $false }
+            }
+        }
+        ([System.Collections.IDictionary]$missingPropertySnapshot.Data.Security).Contains('SMTPRelayServiceAccounts') | Should -BeFalse
+
+        $inheritedEnabledSnapshot = Convert-ArrayaLegacyTenantStatsToSnapshot -TenantStatsHash @{
+            AllMailboxes = @(
+                [pscustomobject]@{
+                    DisplayName                      = 'Inherited SMTP AUTH'
+                    UserPrincipalName                = 'inherited@contoso.com'
+                    PrimarySmtpAddress               = 'inherited@contoso.com'
+                    SmtpClientAuthenticationDisabled = $null
+                }
+            )
+            SMTPRelayConfig = @{
+                Configuration = [pscustomobject]@{ SmtpClientAuthenticationDisabled = $false }
+            }
+        }
+        $inheritedEnabledSnapshot.Data.Security.SMTPRelayServiceAccounts.Keys.Count | Should -Be 1
+        $inheritedEnabledSnapshot.Data.Security.SMTPRelayServiceAccounts['inherited@contoso.com'].Notes | Should -Match 'inherited tenant setting'
+
+        $inheritedDisabledSnapshot = Convert-ArrayaLegacyTenantStatsToSnapshot -TenantStatsHash @{
+            AllMailboxes = @(
+                [pscustomobject]@{
+                    DisplayName                      = 'Inherited disabled SMTP AUTH'
+                    UserPrincipalName                = 'disabled@contoso.com'
+                    SmtpClientAuthenticationDisabled = $null
+                }
+            )
+            SMTPRelayConfig = @{
+                Configuration = [pscustomobject]@{ SmtpClientAuthenticationDisabled = $true }
+            }
+        }
+        ([System.Collections.IDictionary]$inheritedDisabledSnapshot.Data.Security).Contains('SMTPRelayServiceAccounts') | Should -BeFalse
     }
 
     It 'maps external sharing and guest access signals into the snapshot domains' {
@@ -1518,9 +1685,9 @@ Describe 'Arraya.M365.Common' {
             MailboxCalendarDelegatePermissions = @([pscustomobject]@{ MailboxPrimarySmtpAddress = 'user1@contoso.com'; PermissionTarget = 'delegate@contoso.com'; AccessRights = 'Editor' })
             InactiveMailboxDetails = @([pscustomobject]@{ DisplayName = 'Former User'; UserPrincipalName = 'former@contoso.com'; PrimarySmtpAddress = 'former@contoso.com'; RecipientTypeDetails = 'InactiveMailbox'; IsInactiveMailbox = $true; MailboxSizeGB = 12.1; TotalDataToMigrateGB = 12.1 })
             PublicFolderDetails = @([pscustomobject]@{ Name = 'PF Root' })
-            MailFlowConnectors = @([pscustomobject]@{ Name = 'Inbound Connector' })
+            MailFlowConnectors = @([pscustomobject]@{ Name = 'Inbound Connector'; ConnectorDirection = 'Inbound'; ConnectorType = 'OnPremises'; SenderIPAddresses = '203.0.113.10'; TlsSenderCertificateName = 'smtp.contoso.com' })
             RemoteDomains = @([pscustomobject]@{ Name = 'partner.com' })
-            SMTPRelayServiceAccounts = @([pscustomobject]@{ UserPrincipalName = 'relay@contoso.com' })
+            SMTPRelayServiceAccounts = @([pscustomobject]@{ UserPrincipalName = 'relay@contoso.com'; SmtpClientAuthenticationDisabled = $false; EffectiveSmtpAuthEnabled = $true; SmtpAuthSettingSource = 'Explicit mailbox override' })
             AllTeams = @([pscustomobject]@{ DisplayName = 'Projects Team'; Visibility = 'Private'; IsArchived = $false; SharePointSiteUrl = 'https://contoso.sharepoint.com/sites/projects'; 'SiteSize-GB' = 44.5; TotalChannels = 12; SharedChannelCount = 2; SharedChannels = 'Vendors; Program Office'; ChannelInventoryStatus = 'Measured data'; OwnerCount = 2; MemberCount = 16; GuestCount = 1; MemberInventoryStatus = 'Measured data'; LastActivityDate = '2026-04-01' })
             SharePoint = @([pscustomobject]@{ Title = 'Projects'; Url = 'https://contoso.sharepoint.com/sites/projects'; Template = 'TEAMSITE'; Owner = 'owner@contoso.com'; StorageUsedGB = 44.5; StorageQuota = 1024; LastContentModifiedDate = '2026-04-01'; LockState = 'Unlock'; ArchiveStatus = 'NotArchived'; SharingCapability = 'ExternalUserAndGuestSharing'; IsTeamsConnected = $true })
             OneDrive = @([pscustomobject]@{ Title = 'User One OneDrive'; Url = 'https://contoso-my.sharepoint.com/personal/user1_contoso_com'; Template = 'SPSPERS'; Owner = 'user1@contoso.com'; StorageUsedGB = 18.4; StorageQuota = 1024; LastContentModifiedDate = '2026-04-02'; LockState = 'Unlock'; ArchiveStatus = 'NotArchived'; SharingCapability = 'Disabled'; IsTeamsConnected = $false })
@@ -1569,6 +1736,15 @@ Describe 'Arraya.M365.Common' {
         $domainSheet = @(Import-Excel -Path $exportPath -WorksheetName 'Domains')
         $domainSheet[0].PSObject.Properties.Name | Should -Contain 'MXRecords'
         $domainSheet[0].MXRecords | Should -Be 'mail.protection.outlook.com'
+
+        $connectorSheet = @(Import-Excel -Path $exportPath -WorksheetName 'MailFlowConnectors')
+        $connectorSheet[0].PSObject.Properties.Name | Should -Contain 'ConnectorDirection'
+        $connectorSheet[0].PSObject.Properties.Name | Should -Contain 'SenderIPAddresses'
+        $connectorSheet[0].PSObject.Properties.Name | Should -Contain 'TlsSenderCertificateName'
+
+        $smtpRelayAccountSheet = @(Import-Excel -Path $exportPath -WorksheetName 'SMTPRelayServiceAccounts')
+        $smtpRelayAccountSheet[0].PSObject.Properties.Name | Should -Contain 'EffectiveSmtpAuthEnabled'
+        $smtpRelayAccountSheet[0].PSObject.Properties.Name | Should -Contain 'SmtpAuthSettingSource'
 
         $teamsSheet = @(Import-Excel -Path $exportPath -WorksheetName 'AllTeams')
         $teamsSheet[0].PSObject.Properties.Name | Should -Contain 'SharedChannelCount'
@@ -1815,7 +1991,13 @@ Describe 'Arraya.M365.Common' {
         $hybridSource = Get-Content -Raw -Path $hybridPath
         $mailFlowSource = Get-Content -Raw -Path $mailFlowPath
 
-        $hybridSource | Should -Match "Get-Command -Name 'Get-HybridConfiguration' -ErrorAction Ignore"
+        # The hybrid collector now guards cmdlet availability through the probe helper's
+        # -RequiresCommand parameter, which reports an Unavailable probe instead of silently
+        # treating a missing cmdlet as absence of evidence.
+        $hybridSource | Should -Match "-RequiresCommand 'Get-HybridConfiguration'"
+        $probeSource = Get-Content -Raw -Path (Join-Path $script:repoRoot 'src\modules\Arraya.M365.Exchange\Private\Invoke-ArrayaExchangeHybridProbe.ps1')
+        $probeSource | Should -Match 'Get-Command -Name \$RequiresCommand -ErrorAction Ignore'
+
         $mailFlowSource | Should -Match "Get-Command -Name 'Get-TransportRule' -ErrorAction Ignore"
         $mailFlowSource | Should -Match 'Parameters\.ContainsKey\(''IncludeTestModeConnectors''\)'
         $mailFlowSource | Should -Match "Get-Command -Name 'Get-OutboundConnector' -ErrorAction Ignore"

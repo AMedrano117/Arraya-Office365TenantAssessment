@@ -348,6 +348,7 @@ $requiredCommonCommands = @(
     'Write-ArrayaAssessmentArtifactManifest',
     'New-ArrayaCollectorStep',
     'Invoke-ArrayaCollectorPlan',
+    'Get-ArrayaCollectorPlanStatus',
     'Get-ArrayaCollectorCacheValue',
     'Set-ArrayaCollectorCacheValue',
     'Invoke-ArrayaGraphCollectionRequest',
@@ -702,7 +703,7 @@ function Get-AssessmentGraphScopePlanFlag {
     }
 
     if ($GraphScopePlan -is [System.Collections.IDictionary]) {
-        if ($GraphScopePlan.Contains($Name)) {
+        if (([System.Collections.IDictionary]$GraphScopePlan).Contains($Name)) {
             return [bool]$GraphScopePlan[$Name]
         }
         return $Default
@@ -3369,7 +3370,7 @@ function Get-ArrayaGraphAdminReportSettings {
     }
 
     $displayConcealedNames = $null
-    if ($response -is [System.Collections.IDictionary] -and $response.Contains('displayConcealedNames')) {
+    if ($response -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$response).Contains('displayConcealedNames')) {
         try { $displayConcealedNames = [bool]$response['displayConcealedNames'] } catch { $displayConcealedNames = $null }
     }
     elseif ($response.PSObject -and $response.PSObject.Properties['displayConcealedNames']) {
@@ -4069,32 +4070,127 @@ function Test-AssessmentConditionalAccessRequiresMfa {
         return $false
     }
 
-    $precomputedRequiresMfa = Convert-ToAssessmentBoolean (Get-ArrayaObjectValue -Object $Policy -Names @('RequiresMfaEnforcement'))
+    $precomputedRequiresMfa = Convert-ToAssessmentBoolean (Get-ArrayaObjectValue -Object $Policy -Names @('RequiresMfaEnforcement', 'requiresMfaEnforcement', 'RequiresMfa', 'requiresMfa'))
     if ($precomputedRequiresMfa -eq $true) {
         return $true
     }
 
-    $grantControls = Get-ArrayaObjectValue -Object $Policy -Names @('GrantControls')
-    $builtInControls = Convert-ToAssessmentStringArray -Value (Get-ArrayaObjectValue -Object $Policy -Names @('GrantControls_BuiltInControls'))
+    $grantControls = Get-ArrayaObjectValue -Object $Policy -Names @('GrantControls', 'grantControls')
+    $builtInControls = Convert-ToAssessmentStringArray -Value (Get-ArrayaObjectValue -Object $Policy -Names @('GrantControls_BuiltInControls', 'grantControls_BuiltInControls', 'BuiltInControls', 'builtInControls'))
     if ($builtInControls.Count -eq 0 -and $grantControls) {
-        $builtInControls = Convert-ToAssessmentStringArray -Value (Get-ArrayaObjectValue -Object $grantControls -Names @('BuiltInControls'))
+        $builtInControls = Convert-ToAssessmentStringArray -Value (Get-ArrayaObjectValue -Object $grantControls -Names @('BuiltInControls', 'builtInControls'))
     }
 
-    if (@($builtInControls | Where-Object { $_ -match '^(?i)mfa$' }).Count -gt 0) {
+    if (@($builtInControls | Where-Object { $_ -match '^(?i:mfa|multiFactorAuthentication)$' }).Count -gt 0) {
         return $true
     }
 
-    $usesAuthenticationStrengthForMfa = Convert-ToAssessmentBoolean (Get-ArrayaObjectValue -Object $Policy -Names @('UsesAuthenticationStrengthForMfa'))
+    $usesAuthenticationStrengthForMfa = Convert-ToAssessmentBoolean (Get-ArrayaObjectValue -Object $Policy -Names @('UsesAuthenticationStrengthForMfa', 'usesAuthenticationStrengthForMfa'))
     if ($usesAuthenticationStrengthForMfa -eq $true) {
         return $true
     }
 
-    $authenticationStrength = Get-ArrayaObjectValue -Object $Policy -Names @('GrantControls_AuthenticationStrength', 'AuthenticationStrength')
+    $authenticationStrength = Get-ArrayaObjectValue -Object $Policy -Names @('GrantControls_AuthenticationStrength', 'grantControls_AuthenticationStrength', 'AuthenticationStrength', 'authenticationStrength')
     if ($null -eq $authenticationStrength -and $grantControls) {
-        $authenticationStrength = Get-ArrayaObjectValue -Object $grantControls -Names @('AuthenticationStrength')
+        $authenticationStrength = Get-ArrayaObjectValue -Object $grantControls -Names @('AuthenticationStrength', 'authenticationStrength')
     }
 
     return (Test-AssessmentMeaningfulNestedValue -Value $authenticationStrength)
+}
+
+function Get-AssessmentConditionalAccessPolicyState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Policy
+    )
+
+    $rawState = [string](Get-ArrayaObjectValue -Object $Policy -Names @('State', 'state', 'PolicyState', 'policyState'))
+    if ([string]::IsNullOrWhiteSpace($rawState)) {
+        return 'unknown'
+    }
+
+    switch ($rawState.Trim().ToLowerInvariant()) {
+        'enabled' { return 'enabled' }
+        'enabledforreportingbutnotenforced' { return 'enabledForReportingButNotEnforced' }
+        'reportonly' { return 'enabledForReportingButNotEnforced' }
+        'report-only' { return 'enabledForReportingButNotEnforced' }
+        'disabled' { return 'disabled' }
+        default { return 'unknown' }
+    }
+}
+
+function Get-AssessmentEnabledAuthenticationMethodNames {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $AuthenticationMethodConfigurations = @()
+    )
+
+    $methodNames = New-Object System.Collections.Generic.List[string]
+    foreach ($method in @($AuthenticationMethodConfigurations)) {
+        $methodState = [string](Get-ArrayaObjectValue -Object $method -Names @('State', 'state'))
+        if ($methodState.Trim().ToLowerInvariant() -ne 'enabled') {
+            continue
+        }
+
+        $odataType = [string](Get-ArrayaObjectValue -Object $method -Names @('@odata.type', '@odataType', 'OdataType', 'odataType'))
+        $methodName = ($odataType -replace '(?i)^#microsoft\.graph\.', '').Trim()
+        if (-not [string]::IsNullOrWhiteSpace($methodName)) {
+            [void]$methodNames.Add($methodName)
+        }
+    }
+
+    return @($methodNames | Sort-Object -Unique)
+}
+
+function Get-AssessmentMfaEnforcementEvidence {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $AuthenticationMethods = @(),
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $ConditionalAccessPolicies = @(),
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [Nullable[bool]]$SecurityDefaultsEnabled = $null
+    )
+
+    $availableAuthenticationMethods = @(
+        Convert-ToAssessmentStringArray -Value $AuthenticationMethods |
+            Sort-Object -Unique
+    )
+    $mfaPolicies = @(
+        @($ConditionalAccessPolicies) |
+            Where-Object { Test-AssessmentConditionalAccessRequiresMfa -Policy $_ }
+    )
+    $enabledMfaPolicies = @(
+        $mfaPolicies |
+            Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'enabled' }
+    )
+    $reportOnlyMfaPolicies = @(
+        $mfaPolicies |
+            Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'enabledForReportingButNotEnforced' }
+    )
+
+    $conditionalAccessEnforced = $enabledMfaPolicies.Count -gt 0
+    $securityDefaultsEnforced = $SecurityDefaultsEnabled -eq $true
+    $enforcementEvidenced = $conditionalAccessEnforced -or $securityDefaultsEnforced
+
+    return [pscustomobject]@{
+        AuthenticationMethodsAvailable               = $availableAuthenticationMethods.Count -gt 0
+        AuthenticationMethodCount                    = $availableAuthenticationMethods.Count
+        EnabledMfaConditionalAccessPolicyCount        = $enabledMfaPolicies.Count
+        ReportOnlyMfaConditionalAccessPolicyCount     = $reportOnlyMfaPolicies.Count
+        MfaConditionalAccessEnforced                  = $conditionalAccessEnforced
+        SecurityDefaultsEnabled                       = $SecurityDefaultsEnabled
+        MfaEnforcementEvidenced                       = $enforcementEvidenced
+        MFAEnabled                                    = $enforcementEvidenced
+    }
 }
 
 function Convert-ToAssessmentBoolean {
@@ -6298,7 +6394,7 @@ function New-AssessmentLiveCollectorPlan {
     }
 
     $steps = New-Object System.Collections.Generic.List[object]
-    $steps.Add((New-ArrayaCollectorStep -Name 'Tenant overview' -Section 'Tenant Overview' -Workload 'Tenant' -Produces @('TenantInfo') -ScriptBlock { Get-TenantOverviewInfo })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Tenant overview' -Section 'Tenant Overview' -Workload 'Tenant' -Required $true -Produces @('TenantInfo') -ScriptBlock { Get-TenantOverviewInfo })) | Out-Null
     if ($GraphMode -eq 'REST') {
         $steps.Add((New-ArrayaCollectorStep -Name 'License SKUs' -Section 'Tenant Overview' -Workload 'Identity' -Enabled $false -SkipReason 'Requires Microsoft Graph SDK collection mode' -Produces @('LicenseSKUs') -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' })) | Out-Null
     }
@@ -6308,7 +6404,7 @@ function New-AssessmentLiveCollectorPlan {
     $steps.Add((New-ArrayaCollectorStep -Name 'AD Connect sync details' -Section 'Tenant Overview' -Workload 'Tenant' -Produces @('AdConnectConfiguration') -ScriptBlock { Get-AdConnectSyncDetails })) | Out-Null
 
     if ($GraphMode -eq 'REST') {
-        $steps.Add((New-ArrayaCollectorStep -Name 'Users' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectUsers) -SkipReason 'User inventory is disabled for this profile.' -Produces @('Users') -ScriptBlock { Get-GraphUserStats -Context $script:AssessmentContext })) | Out-Null
+        $steps.Add((New-ArrayaCollectorStep -Name 'Users' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectUsers) -Required $true -SkipReason 'User inventory is disabled for this profile.' -Produces @('Users') -ScriptBlock { Get-GraphUserStats -Context $script:AssessmentContext })) | Out-Null
         $steps.Add((New-ArrayaCollectorStep -Name 'Admins' -Section 'Identity' -Workload 'Identity' -Enabled $false -SkipReason 'Requires Microsoft Graph SDK collection mode' -Produces @('Admins') -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' })) | Out-Null
         $steps.Add((New-ArrayaCollectorStep -Name 'Entra groups' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectEntraGroups) -SkipReason 'Entra group inventory is disabled for this profile.' -Produces @('EntraIDGroups') -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType REST -Context $script:AssessmentContext })) | Out-Null
         $steps.Add((New-ArrayaCollectorStep -Name 'Domains' -Section 'Identity' -Workload 'Identity' -Enabled $false -SkipReason 'Requires Microsoft Graph SDK collection mode' -Produces @('Domains') -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' })) | Out-Null
@@ -6318,7 +6414,7 @@ function New-AssessmentLiveCollectorPlan {
         $steps.Add((New-ArrayaCollectorStep -Name 'MFA registration details' -Section 'Identity' -Workload 'Identity' -Enabled $false -SkipReason 'Requires Microsoft Graph SDK collection mode' -Produces @('MfaRegistrationDetails') -ScriptBlock { New-AssessmentStepResult -Status Skipped -Message 'Requires Microsoft Graph SDK collection mode' })) | Out-Null
     }
     else {
-        $steps.Add((New-ArrayaCollectorStep -Name 'Users' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectUsers) -SkipReason 'User inventory is disabled for this profile.' -Produces @('Users') -ScriptBlock { Get-AllUserDetails -detailLevel $reportingMode })) | Out-Null
+        $steps.Add((New-ArrayaCollectorStep -Name 'Users' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectUsers) -Required $true -SkipReason 'User inventory is disabled for this profile.' -Produces @('Users') -ScriptBlock { Get-AllUserDetails -detailLevel $reportingMode })) | Out-Null
         $steps.Add((New-ArrayaCollectorStep -Name 'Admins' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectAdmins) -SkipReason 'Admin inventory is disabled for this profile.' -Produces @('Admins') -ScriptBlock { Get-AllOffice365Admins })) | Out-Null
         $steps.Add((New-ArrayaCollectorStep -Name 'Entra groups' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectEntraGroups) -SkipReason 'Entra group inventory is disabled for this profile.' -Produces @('EntraIDGroups') -ScriptBlock { Get-EntraIDGroups -detailLevel $reportingMode -GraphAuthType SDK -Context $script:AssessmentContext })) | Out-Null
         $steps.Add((New-ArrayaCollectorStep -Name 'Domains' -Section 'Identity' -Workload 'Identity' -Enabled ([bool]$script:ProfileCollectionPlan.CollectDomains) -SkipReason 'Domain inventory is disabled for this profile.' -Produces @('Domains') -ScriptBlock { Get-AllOffice365Domains })) | Out-Null
@@ -6329,14 +6425,14 @@ function New-AssessmentLiveCollectorPlan {
     }
 
     $steps.Add((New-ArrayaCollectorStep -Name 'Exchange recipients' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectExchangeRecipients) -SkipReason 'Not required for this profile output.' -Produces @('AllRecipients') -ScriptBlock { Get-AllRecipientDetails -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
-    $steps.Add((New-ArrayaCollectorStep -Name 'Exchange mailboxes' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectExchangeMailboxes) -SkipReason 'Exchange mailbox inventory is disabled for this profile.' -Produces @('AllMailboxes', 'PrimaryMailboxStats', 'InactiveMailboxDetails') -ScriptBlock { Get-AllExchangeMailboxDetails -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Exchange mailboxes' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectExchangeMailboxes) -Required $true -SkipReason 'Exchange mailbox inventory is disabled for this profile.' -Produces @('AllMailboxes', 'PrimaryMailboxStats', 'InactiveMailboxDetails') -ScriptBlock { Get-AllExchangeMailboxDetails -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name 'Exchange groups' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectExchangeGroups) -SkipReason 'Not required for this profile output.' -Produces @('ExchangeGroups') -ScriptBlock { Get-ExchangeGroupDetails -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name 'Public folders' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectPublicFolders) -SkipReason 'Not required for this profile output.' -Produces @('PublicFolderDetails') -ScriptBlock { Get-AllPublicFolderDetails -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name 'Exchange hybrid configuration' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectHybridConfiguration) -SkipReason 'Exchange hybrid collection is disabled for this profile.' -Produces @('HybridConfiguration') -ScriptBlock { Get-ExchangeHybridConfiguration -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name 'Mail flow rules/connectors' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectMailFlowRulesConnectors) -SkipReason 'Skipped in best-practices-only profile to reduce runtime.' -Produces @('MailFlowRules', 'MailFlowConnectors', 'RemoteDomains') -ScriptBlock { Get-MailFlowRulesandConnectors -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name 'Email activity insights' -Section 'Exchange' -Workload 'Reports' -Enabled ([bool]$script:ProfileCollectionPlan.CollectEmailActivityDetails) -SkipReason 'Not required for this profile output.' -Produces @('EmailActivityTopSenders', 'EmailActivityTopReceivers') -ScriptBlock { Get-EmailActivityInsights -detailLevel $reportingMode })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name 'Third-party spam filtering configuration' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectThirdPartySpamFiltering) -SkipReason 'Requires mail flow connector/rule collection, which is disabled for this profile.' -Produces @('ThirdPartySpamFiltering') -ScriptBlock { Get-ThirdPartySpamFilteringConfig -Context $script:AssessmentContext })) | Out-Null
-    $steps.Add((New-ArrayaCollectorStep -Name 'SMTP relay configuration' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectSmtpRelayConfiguration) -SkipReason 'Requires mail flow connector collection, which is disabled for this profile.' -Produces @('SMTPRelayConfiguration', 'SMTPRelayServiceAccounts') -ScriptBlock { Get-SMTPRelayConfiguration -Context $script:AssessmentContext })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'SMTP relay configuration' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectSmtpRelayConfiguration) -SkipReason 'Requires mail flow connector collection, which is disabled for this profile.' -Produces @('SMTPRelayConfig', 'SMTPRelayServiceAccounts') -ScriptBlock { Get-SMTPRelayConfiguration -Context $script:AssessmentContext })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name 'Exchange governance summaries' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.BuildExchangeGovernanceTables) -SkipReason 'Exchange governance enrichment is disabled for this profile; per-mailbox inbox-rule inspection is not required for migration sizing.' -Produces @('ExchangeGovernanceSummary') -ScriptBlock { Update-ExchangeGovernanceTables -TenantStatsHash $script:tenantStatsHash -DetailLevel $reportingMode })) | Out-Null
 
     $steps.Add((New-ArrayaCollectorStep -Name 'Unified groups' -Section 'Collaboration' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectUnifiedGroups) -SkipReason 'Not required for this profile output.' -Produces @('UnifiedGroups') -ScriptBlock { Get-AllUnifiedGroups -detailLevel $reportingMode })) | Out-Null
@@ -6398,6 +6494,67 @@ function Test-ShowCollectorDiagnostics {
         $DebugPreference -ne [System.Management.Automation.ActionPreference]::SilentlyContinue -or
         $VerbosePreference -ne [System.Management.Automation.ActionPreference]::SilentlyContinue
     )
+}
+
+function Write-AssessmentCollectorStatusSummary {
+    <#
+    .SYNOPSIS
+        Surfaces the overall collector outcome to console, log, and tenant stats.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        $Status,
+        [Parameter(Mandatory = $false)]
+        [string]$ExportFileLocation
+    )
+
+    if (-not $Status) {
+        return
+    }
+
+    $statusText = [string]$Status.Status
+    $color = switch ($statusText) {
+        'Failed' { 'Red' }
+        'Degraded' { 'Yellow' }
+        default { 'Green' }
+    }
+
+    Write-Host ""
+    Write-Host ("Collection status: {0}" -f $statusText) -ForegroundColor $color
+    Write-Host ("  {0}" -f [string]$Status.Summary) -ForegroundColor $color
+    Write-Host ("  Steps: {0} completed, {1} skipped, {2} failed (of {3})" -f $Status.CompletedCount, $Status.SkippedCount, $Status.FailedCount, $Status.TotalSteps) -ForegroundColor DarkGray
+
+    $logType = switch ($statusText) {
+        'Failed' { 'ERROR' }
+        'Degraded' { 'WARNING' }
+        default { 'INFO' }
+    }
+    Write-Log -Type $logType -Message ("[CollectorStatus] Status={0} Completed={1} Skipped={2} Failed={3} RequiredFailed={4} Summary={5}" -f $statusText, $Status.CompletedCount, $Status.SkippedCount, $Status.FailedCount, $Status.RequiredFailedCount, [string]$Status.Summary) -ExportFileLocation $ExportFileLocation
+
+    foreach ($failure in @($Status.FailedSteps)) {
+        $scope = if ([bool]$failure.Required) { 'REQUIRED' } else { 'optional' }
+        Write-Host ("  [{0}] {1} ({2}): {3}" -f $scope, [string]$failure.Name, [string]$failure.Section, [string]$failure.Message) -ForegroundColor $color
+        Write-Log -Type $logType -Message ("[CollectorStatus][{0}] Step='{1}' Section='{2}' Workload='{3}' Message={4}" -f $scope, [string]$failure.Name, [string]$failure.Section, [string]$failure.Workload, [string]$failure.Message) -ExportFileLocation $ExportFileLocation
+    }
+
+    if ($statusText -eq 'Failed') {
+        Write-Host "  Deliverables generated from this run are missing required data. Treat them as incomplete." -ForegroundColor Red
+    }
+
+    # Carried into the snapshot/workbook so the status travels with the deliverables rather
+    # than living only in console scrollback.
+    $script:tenantStatsHash['CollectionStatus'] = [pscustomobject][ordered]@{
+        Status              = $statusText
+        Summary             = [string]$Status.Summary
+        TotalSteps          = $Status.TotalSteps
+        CompletedCount      = $Status.CompletedCount
+        SkippedCount        = $Status.SkippedCount
+        FailedCount         = $Status.FailedCount
+        RequiredFailedCount = $Status.RequiredFailedCount
+        RequiredFailedSteps = (@($Status.RequiredFailedSteps) -join '; ')
+        OptionalFailedSteps = (@($Status.OptionalFailedSteps) -join '; ')
+    }
 }
 
 function Write-AssessmentStepMetricsSummary {
@@ -6634,9 +6791,16 @@ function Test-MailboxStatCached {
             continue
         }
 
+        if ($StatsHash.PSObject.Methods['ContainsKey']) {
+            if ($StatsHash.ContainsKey($key)) {
+                return $true
+            }
+            continue
+        }
+
         if (
-            ($StatsHash.PSObject.Methods['ContainsKey'] -and $StatsHash.ContainsKey($key)) -or
-            ($StatsHash -is [System.Collections.IDictionary] -and $StatsHash.Contains($key))
+            $StatsHash -is [System.Collections.IDictionary] -and
+            ([System.Collections.IDictionary]$StatsHash).Contains($key)
         ) {
             return $true
         }
@@ -10817,7 +10981,7 @@ function Report-UserAndMailboxStats {
         }
 
         if ($Dictionary -is [System.Collections.IDictionary]) {
-            if ($Dictionary.Contains($Key)) {
+            if (([System.Collections.IDictionary]$Dictionary).Contains($Key)) {
                 return $Dictionary[$Key]
             }
             return $null
@@ -11373,9 +11537,12 @@ function Convert-AssessmentExportListToArray {
                     if ([string]::IsNullOrWhiteSpace($resolvedItemText) -and $_.PSObject.Properties['AdditionalProperties']) {
                         $additionalProperties = $_.AdditionalProperties
                         if ($additionalProperties -is [System.Collections.IDictionary]) {
+                            # Microsoft Graph exposes AdditionalProperties as a generic dictionary.
+                            # Cast to the non-generic interface so PowerShell binds Contains(Object)
+                            # instead of the incompatible Contains(KeyValuePair) overload.
                             foreach ($identityKey in @('displayName', 'name', 'title', 'domain', 'userPrincipalName', 'mail', 'email', 'value', 'id')) {
                                 if (
-                                    $additionalProperties.Contains($identityKey) -and
+                                    ([System.Collections.IDictionary]$additionalProperties).Contains($identityKey) -and
                                     -not [string]::IsNullOrWhiteSpace([string]$additionalProperties[$identityKey])
                                 ) {
                                     $resolvedItemText = ([string]$additionalProperties[$identityKey]).Trim()
@@ -14039,6 +14206,24 @@ function Update-TenantToTenantMigrationExportData {
     $relayAccountRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'SMTPRelayServiceAccounts')
     $calendarDelegateRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'MailboxCalendarDelegatePermissions')
 
+    $smtpRelayConfigRecord = $null
+    if ($TenantStatsStore.ContainsKey('SMTPRelayConfig') -and $TenantStatsStore['SMTPRelayConfig']) {
+        $smtpRelayConfigRoot = $TenantStatsStore['SMTPRelayConfig']
+        $smtpRelayConfigRecord = Get-AssessmentExportPropertyValue -Record $smtpRelayConfigRoot -Names @('Configuration', 'Summary')
+        if ($null -eq $smtpRelayConfigRecord) {
+            $smtpRelayConfigRecord = $smtpRelayConfigRoot
+        }
+    }
+    $smtpAuthEvidenceState = [string](Get-AssessmentExportPropertyValue -Record $smtpRelayConfigRecord -Names @('SMTPAuthEvidenceState'))
+    if ([string]::IsNullOrWhiteSpace($smtpAuthEvidenceState)) { $smtpAuthEvidenceState = 'Unavailable' }
+    $smtpAuthUnknownMailboxCount = [int](Convert-ArrayaToNumber -Value (Get-AssessmentExportPropertyValue -Record $smtpRelayConfigRecord -Names @('SMTPAuthMailboxStateUnknown')) -AsInt64)
+    $relayConnectorEvidenceState = [string](Get-AssessmentExportPropertyValue -Record $smtpRelayConfigRecord -Names @('RelayConnectorEvidenceState'))
+    if ([string]::IsNullOrWhiteSpace($relayConnectorEvidenceState)) { $relayConnectorEvidenceState = 'Unavailable' }
+    $smtpRelayConnectorRows = @(Get-AssessmentExportPropertyValue -Record $smtpRelayConfigRecord -Names @('RelayConnectors'))
+    $smtpRelayConnectorCount = $smtpRelayConnectorRows.Count
+    $smtpRelayAccountStatus = if ($relayAccountRows.Count -gt 0) { 'Review' } elseif ($smtpAuthEvidenceState -ne 'Complete') { 'Needs Data' } else { 'Ready' }
+    $smtpRelayConnectorStatus = if ($smtpRelayConnectorCount -gt 0) { 'Review' } elseif ($relayConnectorEvidenceState -ne 'Complete') { 'Needs Data' } else { 'Ready' }
+
     $primaryMailboxStatsLookup = Get-AssessmentMailboxStatsLookup -StatsRows @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'PrimaryMailboxStats')
     $archiveMailboxStatsLookup = Get-AssessmentMailboxStatsLookup -StatsRows @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'ArchiveMailboxStats')
 
@@ -14373,7 +14558,8 @@ function Update-TenantToTenantMigrationExportData {
         [pscustomobject]@{ Category = 'Dependencies'; Item = 'Mailbox delegate assignments'; Status = if ($delegateAssignmentRows.Count -gt 0 -or $calendarDelegateRows.Count -gt 0) { 'Review' } else { 'Ready' }; Value = ($delegateAssignmentRows.Count + $calendarDelegateRows.Count); Notes = 'Full Access, Send As, Send On Behalf, and calendar delegates need cutover tracking and possible reapplication.' },
         [pscustomobject]@{ Category = 'Mail flow'; Item = 'Mail flow connectors'; Status = if ($mailFlowConnectors.Count -gt 0) { 'Review' } else { 'Ready' }; Value = $mailFlowConnectors.Count; Notes = 'Inbound and outbound connectors should be reviewed for routing changes during coexistence and cutover.' },
         [pscustomobject]@{ Category = 'Mail flow'; Item = 'Remote domains'; Status = if ($remoteDomainRows.Count -gt 0) { 'Review' } else { 'Ready' }; Value = $remoteDomainRows.Count; Notes = 'Remote domain settings can affect auto-forwarding, TNEF, and cutover routing behavior.' },
-        [pscustomobject]@{ Category = 'Mail flow'; Item = 'SMTP relay service accounts'; Status = if ($relayAccountRows.Count -gt 0) { 'Review' } else { 'Ready' }; Value = $relayAccountRows.Count; Notes = 'Relay accounts often need separate SMTP auth or connector migration planning.' },
+        [pscustomobject]@{ Category = 'Mail flow'; Item = 'SMTP relay service accounts'; Status = $smtpRelayAccountStatus; Value = $relayAccountRows.Count; Notes = ("SMTP AUTH evidence={0}; unknown mailbox state={1}. Confirmed candidates need separate credential or application migration planning." -f $smtpAuthEvidenceState, $smtpAuthUnknownMailboxCount) },
+        [pscustomobject]@{ Category = 'Mail flow'; Item = 'Microsoft 365 SMTP relay connectors'; Status = $smtpRelayConnectorStatus; Value = $smtpRelayConnectorCount; Notes = ("Relay connector evidence={0}. Only enabled OnPremises inbound connectors with sender-IP or TLS-certificate authentication are counted." -f $relayConnectorEvidenceState) },
         [pscustomobject]@{ Category = 'Domains'; Item = 'Domains with third-party spam-filter review'; Status = if ($domainsNeedingSpamReview -gt 0) { 'Review' } else { 'Ready' }; Value = $domainsNeedingSpamReview; Notes = 'Heuristic review based on MX, connector, and spam-filter signals.' },
         [pscustomobject]@{ Category = 'Domains'; Item = 'Domains with hybrid/coexistence review'; Status = if ($domainsNeedingHybridReview -gt 0) { 'Review' } else { 'Ready' }; Value = $domainsNeedingHybridReview; Notes = 'Heuristic review based on hybrid configuration, internal relay, or federated domain signals.' },
         [pscustomobject]@{ Category = 'Exchange'; Item = 'Public folders'; Status = if ($publicFolderRows.Count -gt 0) { 'Review' } else { 'Ready' }; Value = $publicFolderRows.Count; Notes = 'Public folders require separate migration planning from mailbox cutover.' }
@@ -14508,11 +14694,20 @@ function Update-TenantToTenantMigrationExportData {
     Add-TenantToTenantChecklistRow `
         -Category 'Messaging' `
         -Item 'SMTP relay service accounts' `
-        -Status $(if ($relayAccountCount -gt 0) { 'Review' } else { 'Ready' }) `
-        -Value ("{0} relay account(s)" -f $relayAccountCount) `
-        -Notes 'Relay accounts and their SMTP authentication paths often require separate connector, credential, or application updates outside mailbox cutover.' `
+        -Status $smtpRelayAccountStatus `
+        -Value $(if ($smtpRelayAccountStatus -eq 'Needs Data') { "{0} confirmed candidate(s); effective state unknown for {1} mailbox(es)" -f $relayAccountCount, $smtpAuthUnknownMailboxCount } else { "{0} relay account candidate(s)" -f $relayAccountCount }) `
+        -Notes ("Relay accounts and their SMTP authentication paths often require separate connector, credential, or application updates outside mailbox cutover. Evidence state: {0}." -f $smtpAuthEvidenceState) `
         -MigrationAction 'Inventory relay account usage, relay endpoints, and required SMTP auth or connector changes before domain cutover.' `
         -SourceWorksheet 'SMTPRelayServiceAccounts'
+
+    Add-TenantToTenantChecklistRow `
+        -Category 'Messaging' `
+        -Item 'Microsoft 365 SMTP relay connectors' `
+        -Status $smtpRelayConnectorStatus `
+        -Value ("{0} confirmed relay connector(s)" -f $smtpRelayConnectorCount) `
+        -Notes ("Only enabled OnPremises inbound connectors authenticated by sender IP or TLS certificate are counted. Evidence state: {0}." -f $relayConnectorEvidenceState) `
+        -MigrationAction 'Confirm each relay source IP or certificate, application/device owner, target-tenant connector requirement, and cutover validation plan.' `
+        -SourceWorksheet 'MailFlowConnectors'
 
     $mailboxesWithOnMicrosoftAlias = @(
         $mailboxPlanningRows |
@@ -16372,6 +16567,13 @@ function Get-AuthenticationConfiguration {
         # Get authentication methods policy
         $authMethodsPolicy = [PSCustomObject]@{
             MFAEnabled = $false
+            MFAEnforcementEvidenced = $false
+            MFAConditionalAccessEnforced = $false
+            MFAConditionalAccessPolicies = 0
+            MFAReportOnlyConditionalAccessPolicies = 0
+            SecurityDefaultsEnabled = $null
+            AuthenticationMethodsAvailable = $false
+            AuthenticationMethodCount = 0
             MFAMethods = @()
             SSOEnabled = $false
             SSOApplications = @()
@@ -16383,6 +16585,7 @@ function Get-AuthenticationConfiguration {
             AdminConsentWorkflowEnabled = $null
             AdminConsentWorkflowReviewerCount = 0
         }
+        $conditionalAccessPoliciesForMfaEvaluation = @()
         
         # Check for federated domains (indicates SSO)
         $domains = $script:tenantStatsHash["Domains"].Values
@@ -16447,20 +16650,19 @@ function Get-AuthenticationConfiguration {
             
             if ($authPolicyData) {
                 # Extract enabled authentication methods
-                foreach ($method in $authPolicyData.authenticationMethodConfigurations) {
-                    if ($method.state -eq "enabled") {
-                        $authMethodsPolicy.MFAMethods += $method.'@odata.type'.Replace('#microsoft.graph.', '')
-                        
-                        # Check for passwordless methods
-                        if ($method.'@odata.type' -match "(fido2|windowsHello|microsoftAuthenticator)") {
-                            $authMethodsPolicy.PasswordlessMethods += $method.'@odata.type'.Replace('#microsoft.graph.', '')
-                        }
-                    }
-                }
-                
-                if ($authMethodsPolicy.MFAMethods.Count -gt 0) {
-                    $authMethodsPolicy.MFAEnabled = $true
-                    Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] MFA is enabled with $($authMethodsPolicy.MFAMethods.Count) methods" -ExportFileLocation $ExportDetails
+                $authenticationMethodConfigurations = Get-ArrayaObjectValue -Object $authPolicyData -Names @('AuthenticationMethodConfigurations', 'authenticationMethodConfigurations')
+                $authMethodsPolicy.MFAMethods = @(
+                    Get-AssessmentEnabledAuthenticationMethodNames -AuthenticationMethodConfigurations $authenticationMethodConfigurations
+                )
+                $authMethodsPolicy.PasswordlessMethods = @(
+                    $authMethodsPolicy.MFAMethods |
+                        Where-Object { $_ -match '(?i)(fido2|windowsHello|microsoftAuthenticator)' }
+                )
+
+                $authMethodsPolicy.AuthenticationMethodCount = @($authMethodsPolicy.MFAMethods).Count
+                $authMethodsPolicy.AuthenticationMethodsAvailable = $authMethodsPolicy.AuthenticationMethodCount -gt 0
+                if ($authMethodsPolicy.AuthenticationMethodsAvailable) {
+                    Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] Found $($authMethodsPolicy.AuthenticationMethodCount) enabled authentication methods. Method availability alone does not establish MFA enforcement." -ExportFileLocation $ExportDetails
                 }
             }
             
@@ -16470,13 +16672,19 @@ function Get-AuthenticationConfiguration {
         
         # Check Conditional Access policies for MFA requirements
         if ($script:tenantStatsHash["ConditionalAccessPolicies"]) {
-            $mfaPolicies = $script:tenantStatsHash["ConditionalAccessPolicies"].Values | 
-                Where-Object { Test-AssessmentConditionalAccessRequiresMfa -Policy $_ }
-            
-            if ($mfaPolicies) {
-                $authMethodsPolicy.MFAEnabled = $true
-                $authMethodsPolicy | Add-Member -MemberType NoteProperty -Name "MFAConditionalAccessPolicies" -Value $mfaPolicies.Count
-                Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] Found $($mfaPolicies.Count) CA policies requiring MFA" -ExportFileLocation $ExportDetails
+            $conditionalAccessPoliciesForMfaEvaluation = @($script:tenantStatsHash["ConditionalAccessPolicies"].Values)
+            $conditionalAccessEvidence = Get-AssessmentMfaEnforcementEvidence `
+                -AuthenticationMethods $authMethodsPolicy.MFAMethods `
+                -ConditionalAccessPolicies $conditionalAccessPoliciesForMfaEvaluation
+            $authMethodsPolicy.MFAConditionalAccessPolicies = $conditionalAccessEvidence.EnabledMfaConditionalAccessPolicyCount
+            $authMethodsPolicy.MFAReportOnlyConditionalAccessPolicies = $conditionalAccessEvidence.ReportOnlyMfaConditionalAccessPolicyCount
+            $authMethodsPolicy.MFAConditionalAccessEnforced = $conditionalAccessEvidence.MfaConditionalAccessEnforced
+
+            if ($authMethodsPolicy.MFAConditionalAccessPolicies -gt 0) {
+                Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] Found $($authMethodsPolicy.MFAConditionalAccessPolicies) enabled Conditional Access policies with MFA enforcement grants." -ExportFileLocation $ExportDetails
+            }
+            elseif ($authMethodsPolicy.MFAReportOnlyConditionalAccessPolicies -gt 0) {
+                Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] Found $($authMethodsPolicy.MFAReportOnlyConditionalAccessPolicies) report-only Conditional Access policies with MFA grants; report-only policies do not establish active enforcement." -ExportFileLocation $ExportDetails
             }
         }
 
@@ -16594,9 +16802,26 @@ function Get-AuthenticationConfiguration {
                     IsEnabled   = $isEnabled
                     Description = $(if ($isEnabled -eq $true) { 'Security Defaults are enabled.' } elseif ($isEnabled -eq $false) { 'Security Defaults are disabled.' } else { 'Security Defaults state unavailable.' })
                 }
+                $authMethodsPolicy.SecurityDefaultsEnabled = $isEnabled
             }
         } catch {
             Write-Log -Type WARNING -Message "[Get-AuthenticationConfiguration] Unable to retrieve Security Defaults policy: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
+        }
+
+        $mfaEnforcementEvidence = Get-AssessmentMfaEnforcementEvidence `
+            -AuthenticationMethods $authMethodsPolicy.MFAMethods `
+            -ConditionalAccessPolicies $conditionalAccessPoliciesForMfaEvaluation `
+            -SecurityDefaultsEnabled $authMethodsPolicy.SecurityDefaultsEnabled
+        $authMethodsPolicy.AuthenticationMethodsAvailable = $mfaEnforcementEvidence.AuthenticationMethodsAvailable
+        $authMethodsPolicy.AuthenticationMethodCount = $mfaEnforcementEvidence.AuthenticationMethodCount
+        $authMethodsPolicy.MFAConditionalAccessPolicies = $mfaEnforcementEvidence.EnabledMfaConditionalAccessPolicyCount
+        $authMethodsPolicy.MFAReportOnlyConditionalAccessPolicies = $mfaEnforcementEvidence.ReportOnlyMfaConditionalAccessPolicyCount
+        $authMethodsPolicy.MFAConditionalAccessEnforced = $mfaEnforcementEvidence.MfaConditionalAccessEnforced
+        $authMethodsPolicy.MFAEnforcementEvidenced = $mfaEnforcementEvidence.MfaEnforcementEvidenced
+        $authMethodsPolicy.MFAEnabled = $mfaEnforcementEvidence.MFAEnabled
+
+        if ($authMethodsPolicy.SecurityDefaultsEnabled -eq $true) {
+            Write-Log -Type INFO -Message '[Get-AuthenticationConfiguration] Security Defaults provide active MFA enforcement evidence.' -ExportFileLocation $ExportDetails
         }
 
         if ($collectExtendedIdentityTierB) {
@@ -17033,6 +17258,11 @@ function Get-AuthenticationConfiguration {
         
         $normalizedAuthenticationConfig = [pscustomobject]@{
             MFAEnabled                        = [bool]$authMethodsPolicy.MFAEnabled
+            MFAEnforcementEvidenced            = [bool]$authMethodsPolicy.MFAEnforcementEvidenced
+            MFAConditionalAccessEnforced       = [bool]$authMethodsPolicy.MFAConditionalAccessEnforced
+            SecurityDefaultsEnabled            = $authMethodsPolicy.SecurityDefaultsEnabled
+            AuthenticationMethodsAvailable     = [bool]$authMethodsPolicy.AuthenticationMethodsAvailable
+            AuthenticationMethodCount          = $authMethodsPolicy.AuthenticationMethodCount
             MFAMethods                        = @($authMethodsPolicy.MFAMethods)
             SSOEnabled                        = [bool]$authMethodsPolicy.SSOEnabled
             SSOApplications                    = @($authMethodsPolicy.SSOApplications)
@@ -17043,7 +17273,8 @@ function Get-AuthenticationConfiguration {
             PermissionGrantPoliciesAssigned   = @($authMethodsPolicy.PermissionGrantPoliciesAssigned)
             AdminConsentWorkflowEnabled       = $authMethodsPolicy.AdminConsentWorkflowEnabled
             AdminConsentWorkflowReviewerCount = $authMethodsPolicy.AdminConsentWorkflowReviewerCount
-            MFAConditionalAccessPolicies      = $(if ($authMethodsPolicy.PSObject.Properties['MFAConditionalAccessPolicies']) { $authMethodsPolicy.MFAConditionalAccessPolicies } else { 0 })
+            MFAConditionalAccessPolicies      = $authMethodsPolicy.MFAConditionalAccessPolicies
+            MFAReportOnlyConditionalAccessPolicies = $authMethodsPolicy.MFAReportOnlyConditionalAccessPolicies
             AllowInvitesFrom                  = $(if ($authMethodsPolicy.PSObject.Properties['AllowInvitesFrom']) { $authMethodsPolicy.AllowInvitesFrom } else { $null })
             AllowEmailVerifiedUsersToJoinOrganization = $(if ($authMethodsPolicy.PSObject.Properties['AllowEmailVerifiedUsersToJoinOrganization']) { $authMethodsPolicy.AllowEmailVerifiedUsersToJoinOrganization } else { $null })
             GuestUserRoleId                   = $(if ($authMethodsPolicy.PSObject.Properties['GuestUserRoleId']) { $authMethodsPolicy.GuestUserRoleId } else { $null })
@@ -17056,13 +17287,19 @@ function Get-AuthenticationConfiguration {
         $ssoAppNames = @($authMethodsPolicy.SSOApplications | ForEach-Object { $_.DisplayName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $script:tenantStatsHash["AuthenticationConfigSummary"]["Summary"] = [PSCustomObject]@{
             MFAEnabled                   = $authMethodsPolicy.MFAEnabled
+            MFAEnforcementEvidenced       = $authMethodsPolicy.MFAEnforcementEvidenced
+            MFAConditionalAccessEnforced  = $authMethodsPolicy.MFAConditionalAccessEnforced
+            SecurityDefaultsEnabled       = $authMethodsPolicy.SecurityDefaultsEnabled
+            AuthenticationMethodsAvailable = $authMethodsPolicy.AuthenticationMethodsAvailable
+            AuthenticationMethodCount     = $authMethodsPolicy.AuthenticationMethodCount
             MFAMethods                   = ($authMethodsPolicy.MFAMethods -join ', ')
             SSOEnabled                   = $authMethodsPolicy.SSOEnabled
             SSOApplicationsCount         = @($authMethodsPolicy.SSOApplications).Count
             SSOApplications              = ($ssoAppNames -join ', ')
             FederatedDomains             = ($authMethodsPolicy.FederatedDomains -join ', ')
             PasswordlessMethods          = ($authMethodsPolicy.PasswordlessMethods -join ', ')
-            MFAConditionalAccessPolicies = $(if ($authMethodsPolicy.PSObject.Properties['MFAConditionalAccessPolicies']) { $authMethodsPolicy.MFAConditionalAccessPolicies } else { 0 })
+            MFAConditionalAccessPolicies = $authMethodsPolicy.MFAConditionalAccessPolicies
+            MFAReportOnlyConditionalAccessPolicies = $authMethodsPolicy.MFAReportOnlyConditionalAccessPolicies
             DefaultUserCanCreateApps     = $(if ($null -eq $authMethodsPolicy.DefaultUserCanCreateApps) { 'Not available' } elseif ($authMethodsPolicy.DefaultUserCanCreateApps) { 'Yes' } else { 'No' })
             SelfServicePasswordReset     = $(if ($null -eq $authMethodsPolicy.SelfServicePasswordResetEnabled) { 'Not available' } elseif ($authMethodsPolicy.SelfServicePasswordResetEnabled) { 'Enabled' } else { 'Disabled' })
             PermissionGrantPolicies      = $(if (@($authMethodsPolicy.PermissionGrantPoliciesAssigned).Count -gt 0) { $authMethodsPolicy.PermissionGrantPoliciesAssigned -join ', ' } else { 'Not available' })
@@ -17391,7 +17628,7 @@ function Get-AdConnectSyncDetails {
             }
 
             foreach ($name in $Names) {
-                if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($name)) {
+                if ($Object -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$Object).Contains($name)) {
                     return $Object[$name]
                 }
 
@@ -18299,8 +18536,8 @@ function Get-MfaRegistrationDetails {
             $conditionalAccessPolicies |
                 Where-Object { Test-AssessmentConditionalAccessRequiresMfa -Policy $_ }
         )
-        $enabledMfaPolicies = @($mfaPolicies | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('State'))).ToLowerInvariant() -eq 'enabled' })
-        $reportOnlyMfaPolicies = @($mfaPolicies | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('State'))) -match '(?i)report' })
+        $enabledMfaPolicies = @($mfaPolicies | Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'enabled' })
+        $reportOnlyMfaPolicies = @($mfaPolicies | Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'enabledForReportingButNotEnforced' })
         $mfaCoverageAnalysis = Get-AssessmentMfaEnforcementCoverageSummary -EnabledMfaPolicies $enabledMfaPolicies -Users $script:tenantStatsHash["Users"] -Groups $script:tenantStatsHash["EntraIDGroups"] -OperationName 'Get-MfaRegistrationDetails' -IncludeDetails
         $mfaCoverageSummary = if ($mfaCoverageAnalysis -and $mfaCoverageAnalysis.PSObject.Properties['Summary']) { $mfaCoverageAnalysis.Summary } else { $mfaCoverageAnalysis }
         $securityDefaultsEnabled = $null
@@ -18601,7 +18838,7 @@ function Get-FederationAndCrossTenantConfiguration {
                         break
                     }
 
-                    if ($currentObject -is [System.Collections.IDictionary] -and $currentObject.Contains($segment)) {
+                    if ($currentObject -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$currentObject).Contains($segment)) {
                         $currentObject = $currentObject[$segment]
                         continue
                     }
@@ -18646,7 +18883,7 @@ function Get-FederationAndCrossTenantConfiguration {
 
             foreach ($propertyName in $PropertyNames) {
                 $leafName = [string](@($propertyName -split '\.') | Select-Object -Last 1)
-                if (($TrustObject -is [System.Collections.IDictionary] -and $TrustObject.Contains($leafName)) -or ($TrustObject.PSObject -and $TrustObject.PSObject.Properties[$leafName])) {
+                if (($TrustObject -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$TrustObject).Contains($leafName)) -or ($TrustObject.PSObject -and $TrustObject.PSObject.Properties[$leafName])) {
                     return 'Not configured'
                 }
             }
@@ -20305,7 +20542,7 @@ function Update-ExternalExposureSummaries {
 
         if ($null -eq $Object) { return $null }
         foreach ($name in $Names) {
-            if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($name)) {
+            if ($Object -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$Object).Contains($name)) {
                 return $Object[$name]
             }
             if ($Object.PSObject -and $Object.PSObject.Properties[$name]) {
@@ -21061,18 +21298,26 @@ else {
     Initialize-AssessmentProgress -TotalSteps ([Math]::Max(@($collectorPlan).Count, 1))
     $script:AssessmentCollectorPlan = $collectorPlan
     Sync-CollectorModuleRuntimeContext
-    Invoke-ArrayaCollectorPlan `
-        -Sections $collectorSections `
-        -Steps $collectorPlan `
-        -Context $script:AssessmentContext `
-        -OnSection {
-            param($Section)
-            Write-ConsoleSection -Step ([string]$Section.Step) -Title ([string]$Section.Name)
-        } `
-        -OnStep {
-            param($Step, $Enabled, $SkipReason)
-            Invoke-ProfileAwareAssessmentStep -Name ([string]$Step.Name) -Enabled ([bool]$Enabled) -SkipReason ([string]$SkipReason) -ScriptBlock $Step.ScriptBlock
-        } | Out-Null
+    $collectorPlanResults = @(
+        Invoke-ArrayaCollectorPlan `
+            -Sections $collectorSections `
+            -Steps $collectorPlan `
+            -Context $script:AssessmentContext `
+            -OnSection {
+                param($Section)
+                Write-ConsoleSection -Step ([string]$Section.Step) -Title ([string]$Section.Name)
+            } `
+            -OnStep {
+                param($Step, $Enabled, $SkipReason)
+                Invoke-ProfileAwareAssessmentStep -Name ([string]$Step.Name) -Enabled ([bool]$Enabled) -SkipReason ([string]$SkipReason) -ScriptBlock $Step.ScriptBlock
+            }
+    )
+
+    # Collector exceptions used to be discarded here, so a run that failed to collect
+    # required data still exported deliverables that looked complete. Judge the run before
+    # anything is written.
+    $script:AssessmentCollectorStatus = Get-ArrayaCollectorPlanStatus -Result $collectorPlanResults
+    Write-AssessmentCollectorStatusSummary -Status $script:AssessmentCollectorStatus -ExportFileLocation $ExportDetails
 
     Complete-AssessmentProgress
     Write-CollectorInventoryMatrix -TenantStatsHash $script:tenantStatsHash -ExportFileLocation $ExportDetails
@@ -21129,12 +21374,45 @@ try {
         -GenerateMigrationPack ([bool]$effectiveGenerateMigrationPack) `
         -LegacyScriptRoot $PSScriptRoot
 
+    $requiredProfileArtifacts = @()
+    if (-not $effectiveSkipWorkbook) {
+        $requiredProfileArtifacts += [pscustomobject]@{ Label = 'assessment workbook'; Keys = @('Workbook') }
+    }
+    if ($effectiveGenerateMigrationPack) {
+        $requiredProfileArtifacts += [pscustomobject]@{ Label = 'tenant-to-tenant cutover pack workbook'; Keys = @('T2T Cutover Pack Workbook') }
+    }
+    if (-not $effectiveSkipQuestionnaire) {
+        $requiredProfileArtifacts += [pscustomobject]@{ Label = 'questionnaire'; Keys = @('Questionnaire') }
+    }
+    if (-not $effectiveSkipHtmlReport) {
+        $requiredProfileArtifacts += [pscustomobject]@{ Label = 'technical HTML report'; Keys = @('Full HTML') }
+    }
+    $requiredProfileArtifacts += [pscustomobject]@{ Label = 'run manifest'; Keys = @('Manifest') }
+
+    foreach ($requiredArtifact in $requiredProfileArtifacts) {
+        $requiredArtifactPath = $null
+        foreach ($artifactKey in @($requiredArtifact.Keys)) {
+            if (
+                $generatedArtifacts -is [System.Collections.IDictionary] -and
+                ([System.Collections.IDictionary]$generatedArtifacts).Contains($artifactKey) -and
+                -not [string]::IsNullOrWhiteSpace([string]$generatedArtifacts[$artifactKey])
+            ) {
+                $requiredArtifactPath = [string]$generatedArtifacts[$artifactKey]
+                break
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($requiredArtifactPath) -or -not (Test-Path -LiteralPath $requiredArtifactPath -PathType Leaf)) {
+            throw ("The selected output profile requires the {0}, but that artifact was not produced. Review the earlier export error in the run log and rerun after it is corrected." -f $requiredArtifact.Label)
+        }
+    }
+
     if ($requiresAssessmentSnapshotArtifact) {
         $snapshotArtifactPath = $null
         foreach ($artifactKey in @('Assessment Snapshot JSON', 'JSON')) {
             if (
                 $generatedArtifacts -is [System.Collections.IDictionary] -and
-                $generatedArtifacts.Contains($artifactKey) -and
+                ([System.Collections.IDictionary]$generatedArtifacts).Contains($artifactKey) -and
                 -not [string]::IsNullOrWhiteSpace([string]$generatedArtifacts[$artifactKey])
             ) {
                 $snapshotArtifactPath = [string]$generatedArtifacts[$artifactKey]
@@ -21146,26 +21424,12 @@ try {
             throw ('The assessment workbook export completed, but the required assessment snapshot JSON was not produced. Improve, export replay, and manifest-based follow-up cannot continue without that snapshot. Review the earlier JSON export error in the run log and rerun after it is corrected.')
         }
 
-        $manifestArtifactPath = $null
-        if (
-            $generatedArtifacts -is [System.Collections.IDictionary] -and
-            $generatedArtifacts.Contains('Manifest') -and
-            -not [string]::IsNullOrWhiteSpace([string]$generatedArtifacts['Manifest'])
-        ) {
-            $manifestArtifactPath = [string]$generatedArtifacts['Manifest']
-        }
-
-        if ([string]::IsNullOrWhiteSpace($manifestArtifactPath) -or -not (Test-Path -Path $manifestArtifactPath)) {
-            throw ('The assessment snapshot JSON was produced, but the required run manifest was not produced. Improve and manifest-based follow-up cannot continue without the manifest. Review the earlier manifest write warning in the run log and rerun after it is corrected.')
-        }
     }
 }
 catch {
     Write-Log -Type ERROR -Message "Export pipeline execution failed: $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
     $generatedArtifacts = [ordered]@{}
-    if ($requiresAssessmentSnapshotArtifact) {
-        throw
-    }
+    throw
 }
 
 $runLogBaseDirectory = [System.IO.Path]::GetDirectoryName($ExportDetails)
@@ -21236,6 +21500,14 @@ if ($StoreTenantStatsGlobal) {
 
 Write-Log -Type INFO -Message "COMPLETED: Gathered Tenant Details. Completed Time: $($timeString)" -ExportFileLocation $ExportDetails
 
+# Publish the run status so callers (runner, CI, scheduled wrappers) can act on it without
+# scraping console output.
+$script:AssessmentRunExitCode = 0
+if ($script:AssessmentCollectorStatus) {
+    $global:ArrayaAssessmentCollectorStatus = $script:AssessmentCollectorStatus
+    $script:AssessmentRunExitCode = [int]$script:AssessmentCollectorStatus.SuggestedExitCode
+}
+
 # Encourage GC after large export/report generation to reduce retained working set in long-lived shells.
 $ExportTenantStatsHash = $null
 $script:AssessmentStepMetrics = $null
@@ -21244,4 +21516,10 @@ $script:AssessmentStepMetrics = $null
 }
 finally {
     Restore-AssessmentGraphRuntimeState
+}
+
+# Only a required-data failure changes the exit code. A clean or degraded run returns
+# normally so interactive and dot-sourced use is unaffected.
+if ($script:AssessmentRunExitCode -and [int]$script:AssessmentRunExitCode -ne 0) {
+    exit ([int]$script:AssessmentRunExitCode)
 }

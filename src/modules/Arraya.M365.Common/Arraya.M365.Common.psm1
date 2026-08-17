@@ -24,6 +24,7 @@ Export-ModuleMember -Function @(
     'Get-ArrayaBitTitanLicenseEstimate',
     'Get-ArrayaBitTitanLicenseModel',
     'Get-ArrayaCollectorCacheValue',
+    'Get-ArrayaCollectorPlanStatus',
     'Get-ArrayaObjectValue',
     'Get-ArrayaTenantSnapshotMetricSet',
     'Get-ArrayaTenantSnapshotMetricSetFromContext',

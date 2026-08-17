@@ -68,11 +68,17 @@ function Invoke-ArrayaCollectorPlan {
                     $completed.Add([string]$step.Name) | Out-Null
                 }
 
+                $isRequired = $false
+                if ($step.PSObject.Properties['Required']) {
+                    $isRequired = [bool]$step.Required
+                }
+
                 $results.Add([pscustomobject][ordered]@{
                     Name            = [string]$step.Name
                     Section         = $sectionName
                     Workload        = [string]$step.Workload
                     Status          = $status
+                    Required        = $isRequired
                     Message         = $message
                     DurationSeconds = [math]::Round($elapsed.TotalSeconds, 3)
                     ProducedKeys    = @($step.Produces)
