@@ -1,10 +1,10 @@
 ## Export Hash Table to Excel
 function Export-HashTableToExcel {
     [CmdletBinding()]
-    param ( 
-        [Parameter(Mandatory=$True)] 
+    param (
+        [Parameter(Mandatory=$True)]
         [Hashtable]$hashtable,
-        [Parameter(Mandatory=$True)] 
+        [Parameter(Mandatory=$True)]
         [string]$ExportDetails,
         [Parameter(Mandatory = $false)]
         [ValidateSet('Default', 'TenantToTenantCutover', 'Presales')]
@@ -1185,7 +1185,9 @@ function Export-HashTableToExcel {
         'EnterpriseApplications',
         'AdConnectConfiguration',
         'HybridConfiguration',
-        'LicenseSKUs'
+        'LicenseSKUs',
+        'DeviceManagementSummary',
+        'DeviceDetails'
     )
 
     # These Presales worksheets are working registers, not read-only evidence tables.

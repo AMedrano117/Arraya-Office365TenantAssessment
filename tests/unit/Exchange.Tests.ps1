@@ -14,11 +14,14 @@ Describe 'Arraya.M365.Exchange' {
         $script:mailFlowPath = Join-Path $script:moduleRoot 'Public\Get-MailFlowRulesandConnectors.ps1'
         $script:mailFlowSource = Get-Content -Raw -Path $script:mailFlowPath
         $script:expectedExports = @(
+            'Convert-DataSizeToBytes'
+            'Convert-ToMailboxGuidKey'
             'Get-AllExchangeMailboxDetails'
             'Get-AllPublicFolderDetails'
             'Get-AllRecipientDetails'
             'Get-ExchangeGroupDetails'
             'Get-ExchangeHybridConfiguration'
+            'Get-GroupMailboxActivityRowForUnifiedGroup'
             'Get-MailFlowRulesandConnectors'
             'Get-SMTPRelayConfiguration'
             'Get-ThirdPartySpamFilteringConfig'

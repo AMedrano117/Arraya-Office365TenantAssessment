@@ -29,6 +29,19 @@ Describe 'Migration scope reconciliation' {
             'Update-MigrationGroupWorkloadReconciliation'
             'Get-MigrationShareGateScopeData'
             'Update-MigrationPlanningRegisters'
+            'Get-AssessmentMailboxStatsLookup'
+            'Add-TenantToTenantMailboxDerivedFields'
+            'Get-AssessmentBitTitanBlockSizeGB'
+            'Get-AssessmentMailboxLicenseType'
+            'Get-AssessmentCustomDomainApplicationUris'
+            'Get-AssessmentExportDomainFromAddress'
+            'Convert-AssessmentExportDisplayText'
+            'New-AssessmentExportLookup'
+            'New-TenantToTenantConfigurationRow'
+            'Resolve-AssessmentExportRoutingSummary'
+            'Update-MigrationComplexityFlags'
+            'Update-MigrationScopeExportData'
+            'Update-TenantToTenantMigrationExportData'
         )
 
         $definitions = $ast.FindAll({
@@ -107,6 +120,87 @@ Describe 'Migration scope reconciliation' {
                     New-TestGroupMailbox -Name 'Empty shell group' -Smtp 'group2@contoso.com' -SizeGB 0
                 )
             }
+        }
+    }
+
+    Context 'Migration export with empty statistics' {
+        It 'builds an empty lookup when a statistics table has no rows' {
+            $lookup = Get-AssessmentMailboxStatsLookup -StatsRows @()
+
+            $lookup | Should -BeOfType [hashtable]
+            $lookup.Count | Should -Be 0
+        }
+
+        It 'preserves populated statistics while normalizing mailbox identifiers' {
+            $row = [pscustomobject]@{ MailboxGuid = ' MAILBOX-1 '; TotalItemSizeBytes = [int64](2GB) }
+            $lookup = Get-AssessmentMailboxStatsLookup -StatsRows @($row)
+
+            $lookup.Count | Should -Be 1
+            $lookup['mailbox-1'].TotalItemSizeBytes | Should -Be (2GB)
+        }
+
+        It 'completes cutover shaping with primary statistics and no archive statistics' {
+            $mailbox = [pscustomobject]@{
+                DisplayName = 'Mailbox without archive'
+                PrimarySmtpAddress = 'user@contoso.com'
+                ExchangeGuid = 'mailbox-1'
+                RecipientTypeDetails = 'UserMailbox'
+                ArchiveStatus = 'None'
+            }
+            $store = @{
+                MailboxFullDetails = @($mailbox)
+                PrimaryMailboxStats = @([pscustomobject]@{
+                    MailboxGuid = 'mailbox-1'
+                    TotalItemSizeBytes = [int64](2GB)
+                    TotalDeletedItemSizeBytes = [int64](1GB)
+                })
+                ArchiveMailboxStats = @()
+            }
+
+            Update-TenantToTenantMigrationExportData -TenantStatsStore $store -ErrorAction Stop
+
+            $mailbox.MailboxSizeGB | Should -Be 2
+            $mailbox.TotalDataToMigrateGB | Should -Be 3
+            $mailbox.ArchiveSizeGB | Should -BeNullOrEmpty
+            @($store.MigrationReadinessChecklist).Count | Should -BeGreaterThan 0
+            @($store.BitTitanLicenseDetail).Count | Should -Be 1
+        }
+
+        It 'keeps missing mailbox sizing unknown instead of inventing a zero-byte measurement' {
+            $mailbox = [pscustomobject]@{
+                DisplayName = 'Mailbox with unavailable statistics'
+                PrimarySmtpAddress = 'unknown@contoso.com'
+                ExchangeGuid = 'mailbox-unknown'
+                RecipientTypeDetails = 'UserMailbox'
+                ArchiveStatus = 'None'
+            }
+            $store = @{ MailboxFullDetails = @($mailbox) }
+
+            Update-TenantToTenantMigrationExportData -TenantStatsStore $store -ErrorAction Stop
+
+            $mailbox.MailboxSizeGB | Should -BeNullOrEmpty
+            $mailbox.TotalDataToMigrateGB | Should -BeNullOrEmpty
+            $mailbox.BitTitanLicenseType | Should -Be 'Needs sizing data'
+            @($store.MigrationReadinessChecklist).Count | Should -BeGreaterThan 0
+        }
+
+        It 'completes cutover shaping when no mailbox inventory was collected' {
+            $store = @{}
+
+            Update-TenantToTenantMigrationExportData -TenantStatsStore $store -ErrorAction Stop
+
+            @($store.BitTitanLicenseDetail).Count | Should -Be 0
+            @($store.MigrationReadinessChecklist).Count | Should -BeGreaterThan 0
+            @($store.MigrationScopeSummary).Count | Should -BeGreaterThan 0
+        }
+
+        It 'completes presales shaping when both statistics tables are empty' {
+            $store = @{ PrimaryMailboxStats = @(); ArchiveMailboxStats = @() }
+
+            Update-MigrationScopeExportData -TenantStatsStore $store -ErrorAction Stop
+
+            @($store.MigrationScopeSummary).Count | Should -BeGreaterThan 0
+            @($store.BitTitanLicenseDetail).Count | Should -Be 0
         }
     }
 

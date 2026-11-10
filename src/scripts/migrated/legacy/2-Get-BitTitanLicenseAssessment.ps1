@@ -3,16 +3,16 @@
     BitTitan License Assessment for Exchange Online Mailboxes
 
 .DESCRIPTION
-    This script gathers Exchange Online mailbox data and calculates the required 
+    This script gathers Exchange Online mailbox data and calculates the required
     BitTitan MigrationWiz licenses needed for migration.
-    
+
     Supports both interactive authentication and certificate-based authentication.
-    
+
     License Types:
     - MigrationWiz-Mailbox: For mailboxes up to 50 GB
     - MigrationWiz-Mailbox (x2): For mailboxes 51-100 GB (requires 2 licenses)
     - User Migration Bundle: For mailboxes with Archive enabled (any size)
-    
+
     Outputs an HTML report with executive summary and detailed breakdown.
 
 .PARAMETER ClientId
@@ -40,7 +40,7 @@
     Version: 1.3 (Enhanced & Optimized)
     Date: 2025-01-08
     Requires: ExchangeOnlineManagement PowerShell module
-    
+
     ENHANCEMENTS IN v1.3:
     - Fixed critical syntax errors and variable references
     - Optimized parallel processing for PowerShell 7
@@ -57,13 +57,13 @@
 param(
     [Parameter(Mandatory=$false)]
     [string]$ClientId,
-    
+
     [Parameter(Mandatory=$false)]
     [string]$TenantId,
-    
+
     [Parameter(Mandatory=$false)]
     [string]$CertificateThumbprint,
-    
+
     [Parameter(Mandatory=$false)]
     [string]$OutputPath,
 
@@ -172,29 +172,29 @@ function Write-StandardMessage {
     param(
         [Parameter(Mandatory=$true)]
         [string]$Message,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$Details,
-        
+
         [Parameter(Mandatory=$false)]
         [ValidateSet('Error', 'Warning', 'Info', 'Success')]
         [string]$Severity = 'Info'
     )
-    
+
     $emoji = switch ($Severity) {
         'Error'   { '❌' }
         'Warning' { '⚠️ ' }
         'Info'    { 'ℹ️ ' }
         'Success' { '✅' }
     }
-    
+
     $color = switch ($Severity) {
         'Error'   { 'Red' }
         'Warning' { 'Yellow' }
         'Info'    { 'Cyan' }
         'Success' { 'Green' }
     }
-    
+
     Write-Host "$emoji $Message" -ForegroundColor $color
     if ($Details) {
         Write-Host "   $Details" -ForegroundColor Gray
@@ -282,14 +282,14 @@ function Get-OptimalBatchSize {
     param(
         [Parameter(Mandatory=$true)]
         [int]$TotalCount,
-        
+
         [Parameter(Mandatory=$false)]
         [int]$MinBatchSize = 100,
-        
+
         [Parameter(Mandatory=$false)]
         [int]$MaxBatchSize = 2000
     )
-    
+
     # Tiered batch sizing based on tenant size
     $batchSize = if ($TotalCount -lt 500) {
         100   # Small tenant: smaller batches for faster feedback
@@ -306,10 +306,10 @@ function Get-OptimalBatchSize {
     else {
         2000  # Enterprise tenant: maximum batch size
     }
-    
+
     # Ensure within bounds
     $batchSize = [math]::Max($MinBatchSize, [math]::Min($MaxBatchSize, $batchSize))
-    
+
     Write-Verbose "Calculated batch size: $batchSize for $TotalCount items"
     return $batchSize
 }
@@ -322,20 +322,20 @@ function Get-OptimalBatchSize {
 function Test-RequiredModules {
     $requiredModules = @('ExchangeOnlineManagement')
     $missingModules = @()
-    
+
     foreach ($module in $requiredModules) {
         if (-not (Get-Module -ListAvailable -Name $module)) {
             $missingModules += $module
         }
     }
-    
+
     if ($missingModules.Count -gt 0) {
         Write-Host "Missing required modules:" -ForegroundColor Red
         $missingModules | ForEach-Object { Write-Host "  - $_" -ForegroundColor Yellow }
         Write-Host "`nInstall with: Install-Module -Name $($missingModules -join ', ') -Scope CurrentUser -Force" -ForegroundColor Cyan
         return $false
     }
-    
+
     return $true
 }
 
@@ -345,40 +345,40 @@ function Connect-ToExchangeOnline {
         [string]$TenantId,
         [string]$CertificateThumbprint
     )
-    
+
     Write-Host "`n========================================" -ForegroundColor Cyan
     Write-Host "Connecting to Exchange Online" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
-    
+
     try {
         # Determine authentication method
         $usingCertificate = $ClientId -and $TenantId -and $CertificateThumbprint
         $usingAppBased = $ClientId -and $TenantId -and -not $CertificateThumbprint
-        
+
         if ($usingCertificate) {
             Write-Host "`n🔐 Using Certificate-Based Authentication" -ForegroundColor Yellow
             Write-Host "  Client ID: $ClientId" -ForegroundColor Gray
             Write-Host "  Tenant ID: $TenantId" -ForegroundColor Gray
             #Write-Host "  Certificate: $CertificateThumbprint" -ForegroundColor Gray
-            
+
             # Convert Tenant ID (GUID) to domain name using certificate auth for Graph
             Write-Host "`nConnecting to Microsoft Graph with certificate..." -ForegroundColor Cyan
-            
+
             try {
                 # Connect to Graph using the same certificate
                 Connect-MgGraph -ClientId $ClientId -TenantId $TenantId -CertificateThumbprint $CertificateThumbprint -NoWelcome -ErrorAction Stop | Out-Null
-                
+
                 $org = Get-MgOrganization -ErrorAction Stop
                 $tenantDomain = ($org.VerifiedDomains | Where-Object { $_.IsInitial -eq $true }).Name
-                
+
                 if (-not $tenantDomain) {
                     # Fallback to any verified domain
                     $tenantDomain = $org.VerifiedDomains[0].Name
                 }
-                
+
                 Write-Host "  ✅ Connected to Graph via certificate" -ForegroundColor Green
                 Write-Host "  Tenant Domain: $tenantDomain" -ForegroundColor Gray
-                
+
                 # Keep Graph connection open for potential future use
                 # Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
             }
@@ -386,17 +386,17 @@ function Connect-ToExchangeOnline {
                 Write-StandardMessage -Message "Failed to connect to Graph with certificate" `
                     -Details $_.Exception.Message `
                     -Severity 'Error'
-                
+
                 Write-Host "`n⚠️  Could not auto-detect tenant domain" -ForegroundColor Yellow
                 $tenantDomain = Read-Host "Please enter your tenant domain (e.g., contoso.onmicrosoft.com)"
-                
+
                 if ([string]::IsNullOrWhiteSpace($tenantDomain)) {
                     throw "Tenant domain is required for certificate-based authentication"
                 }
             }
-            
+
             Write-Host "`nConnecting to Exchange Online with certificate..." -ForegroundColor Cyan
-            
+
             try {
                 # Certificate-based authentication requires domain, not GUID
                 Connect-ExchangeOnline `
@@ -405,29 +405,29 @@ function Connect-ToExchangeOnline {
                     -CertificateThumbprint $CertificateThumbprint `
                     -ShowBanner:$false `
                     -ErrorAction Stop
-                
+
                 Write-Host "✅ Connected to Exchange Online via certificate!" -ForegroundColor Green
             }
             catch {
                 Write-Host "`n❌ Certificate-based authentication to Exchange Online failed" -ForegroundColor Red
                 Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Yellow
-                
+
                 Write-Host "`n💡 Common Issues:" -ForegroundColor Yellow
                 Write-Host "  1. Certificate not uploaded to app registration in Azure Portal" -ForegroundColor White
                 Write-Host "  2. Certificate not in your store: Get-ChildItem Cert:\CurrentUser\My" -ForegroundColor White
                 Write-Host "  3. Admin consent not granted for the app" -ForegroundColor White
                 Write-Host "  4. App missing Exchange.ManageAsApp permission" -ForegroundColor White
-                
+
                 # Ask if user wants to fall back to interactive
                 Write-Host ""
                 $fallback = Read-Host "Would you like to try interactive authentication instead? (Y/N)"
-                
+
                 if ($fallback -eq 'Y' -or $fallback -eq 'y') {
                     Write-Host "`nFalling back to interactive authentication..." -ForegroundColor Cyan
-                    
+
                     # Disconnect certificate-based Graph connection
                     Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
-                    
+
                     # Connect to Exchange Online interactively
                     Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop
                 }
@@ -439,40 +439,40 @@ function Connect-ToExchangeOnline {
         elseif ($usingAppBased) {
             Write-Host "`n⚠️  App ID and Tenant ID provided but no certificate" -ForegroundColor Yellow
             Write-Host "Certificate-based auth requires all three parameters.`n" -ForegroundColor Yellow
-            
+
             Write-Host "Falling back to interactive authentication..." -ForegroundColor Cyan
             Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop
         }
         else {
             Write-Host "`n👤 Using Interactive Authentication" -ForegroundColor Yellow
             Write-Host "You will be prompted to sign in...`n" -ForegroundColor White
-            
+
             # Interactive authentication
             Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop
         }
-        
+
         # Verify connection by getting organization config
         try {
             $orgConfig = Get-OrganizationConfig -ErrorAction Stop
-            
+
             Write-Host "`n✅ Successfully connected to Exchange Online!" -ForegroundColor Green
             Write-Host "   Organization: $($orgConfig.DisplayName)" -ForegroundColor White
             Write-Host "   Tenant: $($orgConfig.Identity)" -ForegroundColor Gray
-            
+
             return $orgConfig
-            
+
         }
         catch {
             Write-Host "`n❌ Connected but failed to retrieve organization configuration" -ForegroundColor Red
             Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Yellow
             throw "Failed to verify Exchange Online connection"
         }
-        
+
     }
     catch {
         Write-Host "`n❌ Failed to connect to Exchange Online" -ForegroundColor Red
         Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-        
+
         # This will cause the script to terminate in the main try-catch
         throw
     }
@@ -485,8 +485,8 @@ function Get-AllMailboxData {
     Write-Host "`n========================================" -ForegroundColor Cyan
     Write-Host "Gathering Mailbox Data" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
-    
-    
+
+
     $mailboxData = @{
         AllMailboxes = @() # All Mailboxes Including Inactive - An Array
         ActiveMailboxes = @() # Active Mailboxes - An Array
@@ -496,7 +496,7 @@ function Get-AllMailboxData {
         AllMailboxStats = @{} # Mailbox Stats - A Hash Table
         AllArchiveStats = @{} # Active Archive Stats - A Hash Tabl
     }
-    
+
     # Get all mailboxes
     try {
         #$throttleLimit = Get-SafeThrottleLimit
@@ -539,7 +539,7 @@ function Get-AllMailboxData {
     Write-Host "  Inactive Mailboxes: $(($mailboxData.AllMailboxes | Where-Object { $_.IsInactiveMailbox -eq $true }).Count)" -ForegroundColor Gray
     Write-Host "  Active Archive Mailboxes: $(($mailboxData.AllMailboxes | Where-Object { $_.IsInactiveMailbox -eq $false -and $_.ArchiveStatus -eq 'Active' }).Count)" -ForegroundColor Gray
     Write-Host "  Inactive Archive Mailboxes: $(($mailboxData.AllMailboxes | Where-Object { $_.IsInactiveMailbox -eq $true -and $_.ArchiveStatus -eq 'Active' }).Count)" -ForegroundColor Gray
-    
+
     # Get mailbox statistics - Try Graph API first (much faster), fall back to EXO cmdlets
     Write-Host "`nGathering Active Mailbox Statistics..." -ForegroundColor Cyan
     $statsStartTime = Get-Date
@@ -555,69 +555,69 @@ function Get-AllMailboxData {
 
         # Check if we're connected to Graph
         $graphContext = Get-MgContext -ErrorAction SilentlyContinue
-        
+
         if ($graphContext) {
             #Write-Host "  Graph connection detected, fetching mailbox report..." -ForegroundColor Gray
-            
+
             # Get mailbox usage report from Graph - save to temp file
             $mailboxUsageUri = "https://graph.microsoft.com/v1.0/reports/getMailboxUsageDetail(period='D7')"
             $tempCsvFile = Join-Path $env:TEMP "MailboxUsageReport-$(Get-Date -Format 'yyyyMMddHHmmss').csv"
-            
+
             try {
                 Write-GraphVerbose "Graph API: Starting CSV download from $mailboxUsageUri"
-                
+
                 # Show progress during download
                 Write-Progress -Activity "Gathering Mailbox Statistics" -Status "Downloading report from Microsoft Graph..." -PercentComplete 25
                 $ProgressPreference = 'SilentlyContinue'
-                
+
                 # Download the CSV report to a temp file
                 Invoke-MgGraphRequest -Uri $mailboxUsageUri -Method GET -OutputFilePath $tempCsvFile -ErrorAction Stop | Out-Null
-                
+
                 # ✅ CRITICAL FIX: Clear progress bar immediately after download
                 Write-Progress -Activity "Gathering Mailbox Statistics" -Completed
                 $ProgressPreference = 'Continue'
-                
+
                 Write-GraphVerbose "Graph API: CSV downloaded to $tempCsvFile"
-                
+
                 # Verify file was created
                 if (-not (Test-Path $tempCsvFile)) {
                     throw "CSV file was not created"
                 }
-                
+
                 $fileSize = (Get-Item $tempCsvFile).Length
                 Write-GraphVerbose "Graph API: File size is $fileSize bytes"
-                
+
                 # Read and parse the CSV
                 Write-GraphVerbose "Graph API: Importing CSV..."
                 $graphReportData = Import-Csv -Path $tempCsvFile -ErrorAction Stop
                 Write-GraphVerbose "Graph API: CSV imported successfully, $($graphReportData.Count) rows"
-                
+
                 # Clean up temp file
                 Remove-Item -Path $tempCsvFile -Force -ErrorAction SilentlyContinue
-                
+
                 # Validate we got data
                 if (-not $graphReportData -or $graphReportData.Count -eq 0) {
                     Write-Host "  ⚠️  Graph report returned no data" -ForegroundColor Yellow
                     throw "Graph report is empty"
                 }
-                
+
                 Write-Host "  ✅ Retrieved $($graphReportData.Count) mailboxes from Graph" -ForegroundColor Green
-                
+
                 # Create hash table from Graph data for quick lookup by UPN
                 Write-GraphVerbose "Graph API: Building hash table by UPN..."
                 $graphMailboxHash = @{}
                 $rowNumber = 0
                 foreach ($item in $graphReportData) {
                     $rowNumber++
-                    
+
                     try {
                         $upn = $item.'User Principal Name'
-                        
+
                         if ([string]::IsNullOrWhiteSpace($upn)) {
                             Write-GraphVerbose "Graph API: Row $rowNumber has null/empty UPN, skipping"
                             continue
                         }
-                        
+
                         $graphMailboxHash[$upn] = $item
                     }
                     catch {
@@ -625,33 +625,33 @@ function Get-AllMailboxData {
                         continue
                     }
                 }
-                
+
                 Write-GraphVerbose "Graph API: Hash table built with $($graphMailboxHash.Count) entries"
 
                 # Map Graph data to our mailboxes: Match by UPN, store by GUID
                 Write-GraphVerbose "Graph API: Starting mailbox mapping..."
                 $matchedCount = 0
                 $mailboxNumber = 0
-                
+
                 foreach ($mailbox in $activeMailboxes) {
                     $mailboxNumber++
-                    
+
                     try {
                         # Match by UPN from Graph report
                         if (-not $graphMailboxHash.ContainsKey($mailbox.UserPrincipalName)) {
                             Write-GraphVerbose "Graph API: Mailbox $mailboxNumber ($($mailbox.UserPrincipalName)) - No Graph data found"
                             continue
                         }
-                        
+
                         $graphData = $graphMailboxHash[$mailbox.UserPrincipalName]
                         Write-GraphVerbose "Graph API: Mailbox $mailboxNumber ($($mailbox.UserPrincipalName)) - Processing..."
-                        
+
                         # Safely extract storage bytes
                         $storageBytes = 0
                         try {
                             $storageBytesRaw = $graphData.'Storage Used (Byte)'
                             Write-GraphVerbose "  Storage raw value: '$storageBytesRaw'"
-                            
+
                             if (-not [string]::IsNullOrWhiteSpace($storageBytesRaw)) {
                                 $storageBytes = [double]$storageBytesRaw
                                 Write-GraphVerbose "  Storage parsed: $storageBytes bytes"
@@ -660,13 +660,13 @@ function Get-AllMailboxData {
                         catch {
                             Write-Warning "  Could not parse storage: $($_.Exception.Message)"
                         }
-                        
+
                         # Safely extract deleted item size
                         $deletedBytes = 0
                         try {
                             $deletedBytesRaw = $graphData.'Deleted Item Size (Byte)'
                             Write-GraphVerbose "  Deleted raw value: '$deletedBytesRaw'"
-                            
+
                             if (-not [string]::IsNullOrWhiteSpace($deletedBytesRaw)) {
                                 $deletedBytes = [double]$deletedBytesRaw
                                 Write-GraphVerbose "  Deleted parsed: $deletedBytes bytes"
@@ -675,13 +675,13 @@ function Get-AllMailboxData {
                         catch {
                             Write-Warning "  Could not parse deleted size: $($_.Exception.Message)"
                         }
-                        
+
                         # Get item count
                         $itemCount = "0"
                         try {
                             $itemCountRaw = $graphData.'Item Count'
                             Write-GraphVerbose "  Item count raw: '$itemCountRaw'"
-                            
+
                             if (-not [string]::IsNullOrWhiteSpace($itemCountRaw)) {
                                 $itemCount = $itemCountRaw
                             }
@@ -689,7 +689,7 @@ function Get-AllMailboxData {
                         catch {
                             Write-Warning "  Could not get item count: $($_.Exception.Message)"
                         }
-                        
+
                         # Get display name
                         $displayName = $mailbox.DisplayName
                         try {
@@ -701,7 +701,7 @@ function Get-AllMailboxData {
                         catch {
                             Write-Warning "  Could not get display name: $($_.Exception.Message)"
                         }
-                        
+
                         # Validate critical mailbox properties
                         if (-not $mailbox.ExchangeGuid -and -not $mailbox.Guid) {
                             Write-Warning "  Mailbox has null ExchangeGuid, skipping: $($mailbox.UserPrincipalName)"
@@ -710,14 +710,14 @@ function Get-AllMailboxData {
 
                         $guidKey = if ($mailbox.ExchangeGuid) { $mailbox.ExchangeGuid.ToString() } else { $mailbox.Guid.ToString() }
                         Write-GraphVerbose "  GUID key: $guidKey"
-                        
+
                         # Get mailbox type safely
                         $mailboxType = "Unknown"
                         if ($mailbox.RecipientTypeDetails) {
                             $mailboxType = $mailbox.RecipientTypeDetails
                         }
                         Write-GraphVerbose "  Mailbox type: $mailboxType"
-                        
+
                         # Create mailbox statistics object from Graph data
                         Write-GraphVerbose "  Creating stats object..."
                         $stats = [PSCustomObject]@{
@@ -728,12 +728,12 @@ function Get-AllMailboxData {
                             MailboxType = $mailboxType
                             MailboxGuid = $mailbox.Guid
                         }
-                        
+
                         # Store using GUID as the key for consistency
                         Write-GraphVerbose "  Storing with GUID key: $guidKey"
                         $mailboxData.AllMailboxStats[$guidKey] = $stats
                         $matchedCount++
-                        
+
                         Write-GraphVerbose "  Success! Matched count: $matchedCount"
                     }
                     catch {
@@ -741,11 +741,11 @@ function Get-AllMailboxData {
                         Write-GraphVerbose "  Stack trace: $($_.ScriptStackTrace)"
                     }
                 }
-                
+
                 $elapsed = ((Get-Date) - $statsStartTime).TotalSeconds
                 $graphDurationSec = $elapsed
                 Write-Host "  ✅ Mapped $matchedCount mailboxes ($([math]::Round($elapsed,1))s)" -ForegroundColor Green
-                
+
                 if ($activeMailboxCount -gt 0 -and $matchedCount -ge ($activeMailboxCount * 0.8)) {
                     $useGraphSuccess = $true
                     #Write-Host "  Graph API method successful!" -ForegroundColor Green
@@ -759,17 +759,17 @@ function Get-AllMailboxData {
                 if (Test-Path $tempCsvFile) {
                     Remove-Item -Path $tempCsvFile -Force -ErrorAction SilentlyContinue
                 }
-                
+
                 # ✅ CRITICAL FIX: Clear any stuck progress bars
                 Write-Progress -Activity "Gathering Mailbox Statistics" -Completed
-                
+
                 Write-Host "  Graph API failed: $($_.Exception.Message)" -ForegroundColor Yellow
-                
+
                 # Check if it's a permissions issue
                 if ($_.Exception.Message -like "*Insufficient privileges*" -or $_.Exception.Message -like "*403*" -or $_.Exception.Message -like "*Forbidden*") {
                     Write-Host "  💡 Add Reports.Read.All permission for faster stats gathering" -ForegroundColor Gray
                 }
-                
+
                 Write-Host "  Falling back to Exchange Online..." -ForegroundColor Yellow
             }
         }
@@ -1009,7 +1009,7 @@ function Get-AllMailboxData {
     Write-Host "   Inactive Mailboxes: $(($mailboxData.AllMailboxes | Where-Object { $_.IsInactiveMailbox -eq $true}).Count)" -ForegroundColor White
     Write-Host "   Inactive Mailbox Statistics: $((($mailboxData.AllMailboxes | Where-Object { $_.IsInactiveMailbox -eq $true -and $null -ne $_.ItemCount })).Count)" -ForegroundColor White
     Write-Host "   Inactive Archive Statistics: $((($mailboxData.AllMailboxes | Where-Object { $_.IsInactiveMailbox -eq $true -and $null -ne $_.ArchiveItemCount })).Count)" -ForegroundColor White
-    
+
     Write-Host "`n⏱️  Timing Summary:" -ForegroundColor Cyan
     if ($graphDurationSec -ne $null) {
         Write-Host ("   Graph report mapping: {0}s" -f ([math]::Round($graphDurationSec, 1))) -ForegroundColor White
@@ -1054,7 +1054,7 @@ function Get-AllMailboxData {
 #>
 function Format-DataSize {
     param([double]$SizeInGB)
-    
+
     # If over 1000 GB (1 TB), show in TB
     if ($SizeInGB -ge 1000) {
         $sizeInTB = [math]::Round($SizeInGB / 1024, 2)
@@ -1090,7 +1090,7 @@ function Get-BitTitanLicenseCalculation {
             TotalMailboxDataGB = 0.0
             TotalDeletedItemsGB = 0.0
             TotalArchiveDataGB = 0.0
-            TotalArchiveDeletedItemsGB = 0.0 
+            TotalArchiveDeletedItemsGB = 0.0
             LicenseCounts = @{
                 MigrationWizMailbox = 0
                 UserMigrationBundle = 0
@@ -1221,10 +1221,10 @@ function Get-BitTitanLicenseCalculation {
             ArchiveSizeGB = $archiveSizeGB
             ArchiveDeletedItemSizeGB = $archiveDeletedItemSizeGB # <-- NEW: add to breakdown
             IsInactive = $IsInactive
-            LicenseType = if ($hasArchive) { "User Migration Bundle" } 
+            LicenseType = if ($hasArchive) { "User Migration Bundle" }
                         elseif ($mailboxSizeGB -le 50) { "MigrationWiz-Mailbox" }
                         else { "MigrationWiz-Mailbox x2" }
-            LicenseCount = if ($hasArchive) { 1 } 
+            LicenseCount = if ($hasArchive) { 1 }
                         elseif ($mailboxSizeGB -le 50) { 1 }
                         else { 2 }
         }
@@ -1888,17 +1888,17 @@ try {
         Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
         Write-Host "║           Choose Authentication Method                    ║" -ForegroundColor Cyan
         Write-Host "╚════════════════════════════════════════════════════════════╝`n" -ForegroundColor Cyan
-        
+
         Write-Host "1. Certificate-Based (Unattended/Automated)" -ForegroundColor White
         Write-Host "   - No login prompts" -ForegroundColor Gray
         Write-Host "   - Requires app registration with certificate" -ForegroundColor Gray
         Write-Host "   - Best for scheduled/automated runs`n" -ForegroundColor Gray
-        
+
         Write-Host "2. Interactive (Manual Login)" -ForegroundColor White
         Write-Host "   - Login prompt required" -ForegroundColor Gray
         Write-Host "   - Uses your user credentials" -ForegroundColor Gray
         Write-Host "   - Best for ad-hoc assessments`n" -ForegroundColor Gray
-        
+
         $authChoice = Read-Host "Select authentication method (1 or 2)"
         if ($authChoice -eq '1') {
             Write-Host "`n📋 Certificate-Based Authentication Selected" -ForegroundColor Cyan
@@ -1928,7 +1928,7 @@ try {
         Write-Host "Script terminated.`n" -ForegroundColor Yellow
         #exit 1
     }
-    
+
     if (-not $orgConfig) {
         Write-Host "`n❌ Failed to retrieve organization configuration" -ForegroundColor Red
         Write-Host "Script terminated.`n" -ForegroundColor Yellow
@@ -1996,11 +1996,11 @@ try {
         Write-Host "`n╔════════════════════════════════════════════════════════════╗" -ForegroundColor Green
         Write-Host "║              Assessment Complete!                      ║" -ForegroundColor Green
         Write-Host "╚════════════════════════════════════════════════════════════╝`n" -ForegroundColor Green
-        
+
         Write-Host "📊 Summary:" -ForegroundColor Cyan
         Write-Host "   Active Mailboxes: $($analysis.ActiveMailboxes.Total)" -ForegroundColor White
         Write-Host "   Inactive Mailboxes: $($analysis.InactiveMailboxes.Total)" -ForegroundColor White
-        
+
         $totalLicenses = $analysis.LicenseRequirements.MigrationWizMailbox + $analysis.LicenseRequirements.UserMigrationBundle
         Write-Host "   Total Licenses Required: $totalLicenses" -ForegroundColor White
         Write-Host "     • MigrationWiz-Mailbox: $($analysis.LicenseRequirements.MigrationWizMailbox)" -ForegroundColor Gray
@@ -2010,7 +2010,7 @@ try {
         if ($analysis.LicenseRequirements.ArchiveOver100GB -gt 0) {
             Write-Host "   ⚠️  Archives Over 100 GB: $($analysis.LicenseRequirements.ArchiveOver100GB)" -ForegroundColor Yellow
         }
-        
+
         Write-Host "`n📁 Report Location:" -ForegroundColor Cyan
         Write-Host "   $OutputPath" -ForegroundColor White
         Write-Host "`n⏱️  Total Time: $timeString" -ForegroundColor Gray
@@ -2039,30 +2039,30 @@ catch {
     Write-Host "`n╔════════════════════════════════════════════════════════════╗" -ForegroundColor Red
     Write-Host "║                 Assessment Failed                      ║" -ForegroundColor Red
     Write-Host "╚════════════════════════════════════════════════════════════╝`n" -ForegroundColor Red
-    
+
     Write-Host "Error: $($_.Exception.Message)`n" -ForegroundColor Red
-    
+
     if ($_.Exception.InnerException) {
         Write-Host "Additional Details:" -ForegroundColor Yellow
         Write-Host "$($_.Exception.InnerException.Message)`n" -ForegroundColor Yellow
     }
-    
+
     Write-Host "Stack Trace:" -ForegroundColor Gray
     Write-Host $_.ScriptStackTrace -ForegroundColor Gray
-    
+
     Write-Host "`n💡 Troubleshooting:" -ForegroundColor Yellow
     Write-Host "1. Module Issues:" -ForegroundColor White
     Write-Host "   Install-Module -Name ExchangeOnlineManagement -Scope CurrentUser -Force`n" -ForegroundColor Gray
-    
+
     Write-Host "2. Connection Issues:" -ForegroundColor White
     Write-Host "   - Verify you have Exchange Administrator role" -ForegroundColor Gray
     Write-Host "   - Check if admin consent was granted for the app registration" -ForegroundColor Gray
     Write-Host "   - Try running without ClientId/TenantId for interactive auth`n" -ForegroundColor Gray
-    
+
     Write-Host "3. Permission Issues:" -ForegroundColor White
     Write-Host "   - Ensure your account has permissions to read mailbox data" -ForegroundColor Gray
     Write-Host "   - Check for Conditional Access policies`n" -ForegroundColor Gray
-    
+
     Write-Host "For more help, see the README.md troubleshooting section`n" -ForegroundColor Cyan
     #exit 1
 }

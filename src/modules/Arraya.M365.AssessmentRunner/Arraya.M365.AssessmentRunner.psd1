@@ -15,6 +15,8 @@
         'Invoke-GraphActivityAssessment',
         'Invoke-M365ImprovementPlan',
         'Invoke-M365AssessmentComparison'
+        'Resolve-AssessmentLatestManifestPath'
+        'Resolve-AssessmentRunRootFromManifestPath'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

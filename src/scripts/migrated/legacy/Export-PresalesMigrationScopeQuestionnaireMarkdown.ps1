@@ -132,6 +132,35 @@ function Export-PresalesMigrationScopeQuestionnaireMarkdown {
         return ('{0:N2} GB' -f $numberValue)
     }
 
+    function ExchangeSizeGB($Value) {
+        # Exchange emits sizes as "18.4 GB (19,756,834,816 bytes)". The parenthesized byte
+        # count is exact and covers the "0 B (0 bytes)" case that the unit-only pattern in
+        # Number misses, which previously turned a measured zero into "Not collected".
+        if ($null -eq $Value) { return $null }
+        if ($Value -is [ValueType]) {
+            try { return [double]$Value } catch { return $null }
+        }
+
+        $text = [string]$Value
+        if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+
+        if ($text -match '\((?<bytes>[\d,]+)\s+bytes\)') {
+            try { return ([double](($Matches['bytes'] -replace ',', '')) / 1GB) } catch { }
+        }
+        if ($text -match '(?i)^\s*(?<number>[\d,]+(?:\.\d+)?)\s*(?<unit>B|KB|MB|GB|TB|PB)\s*$') {
+            $number = [double]($Matches['number'] -replace ',', '')
+            switch ($Matches['unit'].ToUpperInvariant()) {
+                'B' { return ($number / 1GB) }
+                'KB' { return ($number / 1MB) }
+                'MB' { return ($number / 1024) }
+                'GB' { return $number }
+                'TB' { return ($number * 1024) }
+                'PB' { return ($number * 1024 * 1024) }
+            }
+        }
+        return (Number $Value)
+    }
+
     function HasArchive($Mailbox) {
         $explicit = Prop $Mailbox @('HasActiveArchive', 'HasArchive')
         if ($explicit -eq $true) { return $true }
@@ -247,6 +276,8 @@ function Export-PresalesMigrationScopeQuestionnaireMarkdown {
     $publicFolders = @(Rows 'PublicFolderDetails')
     if ($publicFolders.Count -eq 0) { $publicFolders = @(Rows 'PublicFolders') }
     $domains = @(Rows 'Domains')
+    $tenantLicenses = @(Rows 'LicenseSKUs')
+    $devices = @(Rows 'DeviceDetails')
 
     $enabledMemberUsers = MetricNumber -InputRows $executiveRows -MetricNames @('Enabled member users')
     if ($null -eq $enabledMemberUsers -and $users.Count -gt 0) {
@@ -349,6 +380,73 @@ function Export-PresalesMigrationScopeQuestionnaireMarkdown {
     $teamsMissingMembers = @($teamEvidence | Where-Object { $_.MemberMissing }).Count
 
     $sourceDomainCount = if ($domains.Count -gt 0) { $domains.Count } else { $null }
+
+    # Public folders are counted, sized, and item-counted together. A folder count on its own
+    # does not separate a handful of stale folders from a priced workstream.
+    $publicFolderDataGB = $null
+    foreach ($publicFolder in $publicFolders) {
+        $folderSizeGB = ExchangeSizeGB (Prop $publicFolder @('TotalItemSize'))
+        if ($null -ne $folderSizeGB) {
+            if ($null -eq $publicFolderDataGB) { $publicFolderDataGB = 0.0 }
+            $publicFolderDataGB += $folderSizeGB
+        }
+    }
+    $publicFolderItemCount = $null
+    foreach ($publicFolder in $publicFolders) {
+        $folderItems = Number (Prop $publicFolder @('ItemCount'))
+        if ($null -ne $folderItems) {
+            if ($null -eq $publicFolderItemCount) { $publicFolderItemCount = 0.0 }
+            $publicFolderItemCount += $folderItems
+        }
+    }
+    $mailEnabledPublicFolderCount = @($publicFolders | Where-Object {
+            (Prop $_ @('MailEnabled')) -eq $true -or (Text (Prop $_ @('MailEnabled')) '') -match '^(?i:true|yes)$'
+        }).Count
+
+    # Source SKUs are the closest available proxy for what the destination has to carry. Only
+    # paid SKUs are totalled; trial and benefit SKUs inflate seat counts without being a
+    # renewal or migration basis.
+    $paidLicenses = @($tenantLicenses | Where-Object { (Text (Prop $_ @('LicenseClass')) '') -eq 'Paid' })
+    $paidSeatsAssigned = $null
+    $paidSeatsPurchased = $null
+    foreach ($paidLicense in $paidLicenses) {
+        $assignedSeats = Number (Prop $paidLicense @('ConsumedUnits'))
+        if ($null -ne $assignedSeats) {
+            if ($null -eq $paidSeatsAssigned) { $paidSeatsAssigned = 0.0 }
+            $paidSeatsAssigned += $assignedSeats
+        }
+        $purchasedSeats = Number (Prop $paidLicense @('PurchasedUnits', 'TotalLicenses'))
+        if ($null -ne $purchasedSeats) {
+            if ($null -eq $paidSeatsPurchased) { $paidSeatsPurchased = 0.0 }
+            $paidSeatsPurchased += $purchasedSeats
+        }
+    }
+    $topPaidLicenseNames = @($paidLicenses |
+            Sort-Object @{ Expression = { $value = Number (Prop $_ @('ConsumedUnits')); if ($null -eq $value) { 0 } else { $value } }; Descending = $true } |
+            ForEach-Object {
+                $productName = Text (Prop $_ @('SkuFriendlyName')) ''
+                if ([string]::IsNullOrWhiteSpace($productName)) { $productName = Text (Prop $_ @('SkuPartNumber')) '' }
+                $assignedSeats = Number (Prop $_ @('ConsumedUnits'))
+                if ([string]::IsNullOrWhiteSpace($productName)) { return }
+                if ($null -eq $assignedSeats) { $productName } else { "$productName ($(Format-MigrationCount $assignedSeats))" }
+            } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -First 4)
+
+    # Devices are endpoint scope: each is a re-join, re-enrollment, or rebuild at cutover.
+    $staleDeviceCount = @($devices | Where-Object {
+            (Prop $_ @('DeviceStale')) -eq $true -or (Text (Prop $_ @('DeviceStale')) '') -match '^(?i:true|yes)$'
+        }).Count
+    # DeviceJoinType is classified during collection, so older snapshots record 'Unknown' for
+    # every device. TrustType is the raw Graph value; ServerAd is the hybrid-joined signal.
+    $hybridJoinedDeviceCount = @($devices | Where-Object {
+            $joinType = Text (Prop $_ @('DeviceJoinType')) ''
+            if ($joinType -match '(?i)hybrid') { return $true }
+            if ([string]::IsNullOrWhiteSpace($joinType) -or $joinType -eq 'Unknown') {
+                return ((Text (Prop $_ @('TrustType', 'DeviceTrustType')) '') -match '(?i)^ServerAd$')
+            }
+            return $false
+        }).Count
     $employeeBasis = $enabledMemberUsers
     if ($null -eq $employeeBasis -or $employeeBasis -le 0) { $employeeBasis = $mailboxCount }
 
@@ -373,9 +471,14 @@ function Export-PresalesMigrationScopeQuestionnaireMarkdown {
             -Response 'Treat restoration, holds, archive handling, and licensing as an exception workstream before scheduling migration.'
     }
     if ($publicFolders.Count -gt 0) {
+        $publicFolderObservation = "{0} public folder object(s) were discovered, holding {1} across {2} item(s)." -f `
+            $publicFolders.Count, (Format-MigrationDataSize $publicFolderDataGB), (Format-MigrationCount $publicFolderItemCount)
+        if ($mailEnabledPublicFolderCount -gt 0) {
+            $publicFolderObservation += " {0} folder(s) are mail-enabled and carry addresses in the source domains." -f $mailEnabledPublicFolderCount
+        }
         Add-Callout -Title 'Public folders' `
-            -Observation ("{0} public folder object(s) were discovered." -f $publicFolders.Count) `
-            -Response 'Scope public folders separately; normal user-mailbox and collaboration migration paths do not automatically cover them.'
+            -Observation $publicFolderObservation `
+            -Response 'Scope public folders separately and settle their disposition before domain cutover; neither the user-mailbox nor the collaboration migration path covers them automatically.'
     }
     if ($sharedChannelCount -gt 0) {
         Add-Callout -Title 'Teams shared channels' `
@@ -566,7 +669,31 @@ function Export-PresalesMigrationScopeQuestionnaireMarkdown {
     $collaborationSummaryParts.Add("$(Format-MigrationDataSize $collaborationStorageGB) known, non-duplicated collaboration data") | Out-Null
     $lines.Add("- **Collaboration:** $($collaborationSummaryParts -join '; '). Teams file storage is already represented by its backing SharePoint site.") | Out-Null
     if ($publicFolders.Count -gt 0) {
-        $lines.Add("- **Special content:** $(Format-MigrationCount $publicFolders.Count) public folder object(s), which require a separate migration decision and tool validation.") | Out-Null
+        $publicFolderSummary = "$(Format-MigrationCount $publicFolders.Count) public folder object(s) holding $(Format-MigrationDataSize $publicFolderDataGB) across $(Format-MigrationCount $publicFolderItemCount) item(s)"
+        if ($mailEnabledPublicFolderCount -gt 0) {
+            $publicFolderSummary += "; $(Format-MigrationCount $mailEnabledPublicFolderCount) mail-enabled"
+        }
+        $lines.Add("- **Special content:** $publicFolderSummary. Public folders require a separate migration decision and tool validation, and their data is not included in the mailbox figures above.") | Out-Null
+    }
+    if ($tenantLicenses.Count -gt 0) {
+        $licenseSummaryParts = New-Object System.Collections.Generic.List[string]
+        $licenseSummaryParts.Add("$(Format-MigrationCount $tenantLicenses.Count) subscribed SKU(s)") | Out-Null
+        if ($null -ne $paidSeatsAssigned) {
+            $licenseSummaryParts.Add("$(Format-MigrationCount $paidSeatsAssigned) assigned paid seat(s) of $(Format-MigrationCount $paidSeatsPurchased) purchased") | Out-Null
+        }
+        $licenseLine = "- **Source licensing:** $($licenseSummaryParts -join '; ')."
+        if ($topPaidLicenseNames.Count -gt 0) {
+            $licenseLine += " Largest paid products by assigned seats: $(Cell ($topPaidLicenseNames -join '; '))."
+        }
+        $licenseLine += ' These are source subscriptions, not a destination requirement; the target tenant needs its own agreement.'
+        $lines.Add($licenseLine) | Out-Null
+    }
+    if ($devices.Count -gt 0) {
+        $deviceSummaryParts = New-Object System.Collections.Generic.List[string]
+        $deviceSummaryParts.Add("$(Format-MigrationCount $devices.Count) registered device object(s)") | Out-Null
+        if ($hybridJoinedDeviceCount -gt 0) { $deviceSummaryParts.Add("$(Format-MigrationCount $hybridJoinedDeviceCount) hybrid-joined") | Out-Null }
+        if ($staleDeviceCount -gt 0) { $deviceSummaryParts.Add("$(Format-MigrationCount $staleDeviceCount) not signed in for six months or more") | Out-Null }
+        $lines.Add("- **Endpoints:** $($deviceSummaryParts -join '; '). Each device is a re-join, re-enrollment, or rebuild at cutover; confirm which stale objects are genuinely retired before they are treated as scope.") | Out-Null
     }
 
     $lines.Add('') | Out-Null

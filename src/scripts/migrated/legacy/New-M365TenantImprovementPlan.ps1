@@ -96,6 +96,15 @@ if (-not (Import-ArrayaCommonModuleForPlanningScripts -GraphFallbackRequired:$gr
     $graphFallbackEnabled = $false
 }
 
+# The license, activity, and governance analysis helpers are shared with the HTML assessment
+# report. They live in Arraya.M365.Analytics so both deliverables are generated from one
+# implementation; this import is required, not best-effort.
+$analyticsModuleManifestPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\modules\Arraya.M365.Analytics\Arraya.M365.Analytics.psd1'))
+if (-not (Test-Path -Path $analyticsModuleManifestPath)) {
+    throw "The Arraya.M365.Analytics module manifest was not found: $analyticsModuleManifestPath"
+}
+Import-Module -Name $analyticsModuleManifestPath -Force -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
+
 function Get-ArrayaGraphResource {
     [CmdletBinding()]
     param(
@@ -148,839 +157,6 @@ function Get-ImprovementPlanDataset {
         Write-ImproveConsoleWarning "Snapshot plus live refresh failed for '$Activity': $($_.Exception.Message)"
         return @()
     }
-}
-
-function Convert-ToArrayaBoolean {
-    [CmdletBinding()]
-    param([AllowNull()]$Value)
-
-    if ($null -eq $Value) { return $null }
-    if ($Value -is [bool]) { return [bool]$Value }
-
-    switch -Regex (([string]$Value).Trim().ToLowerInvariant()) {
-        '^(true|yes|enabled|on|1)$' { return $true }
-        '^(false|no|disabled|off|0)$' { return $false }
-        default { return $null }
-    }
-}
-
-function Convert-ToArrayaStringList {
-    [CmdletBinding()]
-    param([AllowNull()]$Value)
-
-    if ($null -eq $Value) { return @() }
-    if ($Value -is [string]) {
-        if ([string]::IsNullOrWhiteSpace($Value)) { return @() }
-        return @(
-            $Value -split '[,;]' |
-                ForEach-Object { $_.Trim() } |
-                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-        )
-    }
-
-    return @(
-        (Convert-ArrayaObjectToArray $Value) |
-            ForEach-Object { [string]$_ } |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    )
-}
-
-function Get-ImprovementLicenseSkuLookup {
-    [CmdletBinding()]
-    param([Parameter(Mandatory = $false)][object[]]$Licenses = @())
-
-    $lookup = @{}
-    foreach ($license in @($Licenses)) {
-        if ($null -eq $license) { continue }
-        $skuId = [string](Get-ArrayaObjectValue -Object $license -Names @('SkuId', 'skuId', 'Id'))
-        $skuPartNumber = [string](Get-ArrayaObjectValue -Object $license -Names @('SkuPartNumber', 'skuPartNumber', 'AccountSkuId'))
-        $friendlyName = [string](Get-ArrayaObjectValue -Object $license -Names @('FriendlyName', 'SkuFriendlyName', 'SkuDisplayName', 'ProductName', 'DisplayName', 'Name', 'SkuPartNumber', 'skuPartNumber'))
-        $skuRecord = [pscustomobject]@{
-            SkuId         = $skuId
-            SkuPartNumber = $skuPartNumber
-            FriendlyName  = if ([string]::IsNullOrWhiteSpace($friendlyName)) { $skuPartNumber } else { $friendlyName }
-        }
-        foreach ($key in @($skuId, $skuPartNumber, $friendlyName)) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$key)) {
-                $lookup[[string]$key] = $skuRecord
-            }
-        }
-    }
-
-    return $lookup
-}
-
-function Resolve-ImprovementLicenseSkuName {
-    [CmdletBinding()]
-    param(
-        [AllowNull()]$SkuValue,
-        [Parameter(Mandatory = $false)][hashtable]$SkuLookup = @{}
-    )
-
-    $skuText = ([string]$SkuValue).Trim()
-    if ([string]::IsNullOrWhiteSpace($skuText)) { return $null }
-    if ($SkuLookup.ContainsKey($skuText)) {
-        $skuRecord = $SkuLookup[$skuText]
-        if (-not [string]::IsNullOrWhiteSpace([string]$skuRecord.FriendlyName)) { return [string]$skuRecord.FriendlyName }
-        if (-not [string]::IsNullOrWhiteSpace([string]$skuRecord.SkuPartNumber)) { return [string]$skuRecord.SkuPartNumber }
-    }
-
-    return $skuText
-}
-
-function Get-ImprovementUserLicenseAssignmentRows {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)]$User,
-        [Parameter(Mandatory = $false)][hashtable]$SkuLookup = @{}
-    )
-
-    $stateValue = Get-ArrayaObjectValue -Object $User -Names @('LicenseAssignmentStates', 'licenseAssignmentStates')
-    $stateRows = @()
-    if ($stateValue) {
-        if (
-            $stateValue -is [System.Collections.IDictionary] -and
-            ([System.Collections.IDictionary]$stateValue).Contains('SkuId')
-        ) {
-            $stateRows = @($stateValue)
-        }
-        else {
-            $stateRows = @(Convert-ArrayaObjectToArray $stateValue)
-        }
-    }
-
-    $rows = New-Object System.Collections.Generic.List[object]
-    foreach ($stateRow in @($stateRows)) {
-        if ($null -eq $stateRow -or $stateRow -is [string]) { continue }
-        $skuId = [string](Get-ArrayaObjectValue -Object $stateRow -Names @('SkuId', 'skuId'))
-        $skuName = [string](Get-ArrayaObjectValue -Object $stateRow -Names @('SkuName', 'SkuPartNumber', 'FriendlyName'))
-        if ([string]::IsNullOrWhiteSpace($skuName)) {
-            $skuName = Resolve-ImprovementLicenseSkuName -SkuValue $skuId -SkuLookup $SkuLookup
-        }
-        $assignedByGroup = [string](Get-ArrayaObjectValue -Object $stateRow -Names @('AssignedByGroup', 'assignedByGroup'))
-        $assignmentSource = [string](Get-ArrayaObjectValue -Object $stateRow -Names @('AssignmentSource', 'Source'))
-        if ([string]::IsNullOrWhiteSpace($assignmentSource)) {
-            $assignmentSource = if ([string]::IsNullOrWhiteSpace($assignedByGroup) -or $assignedByGroup -eq '00000000-0000-0000-0000-000000000000') { 'Direct' } else { 'Group' }
-        }
-        $rows.Add([pscustomobject]@{
-            SkuId            = $skuId
-            SkuName          = if ([string]::IsNullOrWhiteSpace($skuName)) { $skuId } else { $skuName }
-            AssignedByGroup  = $assignedByGroup
-            AssignmentSource = $assignmentSource
-            State            = [string](Get-ArrayaObjectValue -Object $stateRow -Names @('State', 'state'))
-            Error            = [string](Get-ArrayaObjectValue -Object $stateRow -Names @('Error', 'error'))
-            LastUpdatedDateTime = [string](Get-ArrayaObjectValue -Object $stateRow -Names @('LastUpdatedDateTime', 'lastUpdatedDateTime'))
-        }) | Out-Null
-    }
-
-    return @($rows.ToArray())
-}
-
-function Get-ImprovementGroupLicenseAssignedUserCountLookup {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$Users = @(),
-        [Parameter(Mandatory = $false)][object[]]$Licenses = @()
-    )
-
-    $skuLookup = Get-ImprovementLicenseSkuLookup -Licenses $Licenses
-    $userKeysByGroupId = @{}
-    $hasAssignmentStateData = $false
-    foreach ($user in @($Users)) {
-        if ($null -eq $user) { continue }
-
-        $assignmentRows = @(Get-ImprovementUserLicenseAssignmentRows -User $user -SkuLookup $skuLookup)
-        if ($assignmentRows.Count -gt 0) {
-            $hasAssignmentStateData = $true
-        }
-
-        $userKey = [string](Get-ArrayaObjectValue -Object $user -Names @('Id', 'ID', 'UserPrincipalName', 'Mail', 'DisplayName'))
-        if ([string]::IsNullOrWhiteSpace($userKey)) {
-            $userKey = [guid]::NewGuid().ToString()
-        }
-
-        foreach ($assignmentRow in @($assignmentRows)) {
-            $assignedByGroup = ([string]$assignmentRow.AssignedByGroup).Trim()
-            if ([string]::IsNullOrWhiteSpace($assignedByGroup) -or $assignedByGroup -eq '00000000-0000-0000-0000-000000000000') {
-                continue
-            }
-
-            if (-not $userKeysByGroupId.ContainsKey($assignedByGroup)) {
-                $userKeysByGroupId[$assignedByGroup] = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-            }
-            [void]$userKeysByGroupId[$assignedByGroup].Add($userKey)
-        }
-    }
-
-    $countLookup = @{}
-    foreach ($groupId in @($userKeysByGroupId.Keys)) {
-        $countLookup[$groupId] = [int]$userKeysByGroupId[$groupId].Count
-    }
-
-    return [pscustomobject]@{
-        Counts = $countLookup
-        HasAssignmentStateData = $hasAssignmentStateData
-    }
-}
-
-function Get-ImprovementLicenseSuiteFamily {
-    [CmdletBinding()]
-    param([AllowNull()][string]$SkuName)
-
-    if ([string]::IsNullOrWhiteSpace($SkuName)) { return $null }
-    $normalized = $SkuName.ToUpperInvariant()
-    if ($normalized -match 'SPE_E5|MICROSOFT 365 E5|M365 E5|ENTERPRISEPREMIUM|OFFICE 365 E5|O365 E5|SPE_E3|MICROSOFT 365 E3|M365 E3|ENTERPRISEPACK|OFFICE 365 E3|O365 E3|SPE_F1|MICROSOFT 365 F3|M365 F3|DESKLESSPACK|OFFICE 365 F3|O365 F3') {
-        return 'Microsoft 365 / Office 365 suite'
-    }
-    if ($normalized -match 'EMS|ENTERPRISE MOBILITY') {
-        return 'Enterprise Mobility + Security'
-    }
-
-    return $null
-}
-
-function Test-ImprovementGroupManagesLicenses {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)]
-        [AllowNull()]
-        $Group
-    )
-
-    if ($null -eq $Group) {
-        return $false
-    }
-
-    $assignedLicenseCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $Group -Names @('AssignedLicenseCount'))
-    if ($null -ne $assignedLicenseCount) {
-        return ($assignedLicenseCount -gt 0)
-    }
-
-    $assignedLicenseSignals = @(
-        'AssignedLicenseSkuIds',
-        'AssignedLicenseSkuPartNumbers',
-        'AssignedLicenseFriendlyNames'
-    ) | ForEach-Object {
-        [string](Get-ArrayaObjectValue -Object $Group -Names @($_))
-    } | Where-Object {
-        -not [string]::IsNullOrWhiteSpace($_) -and $_ -notmatch '^(?i)notcollected|not surfaced'
-    }
-
-    if (@($assignedLicenseSignals).Count -gt 0) {
-        return $true
-    }
-
-    # Older snapshots only carried the boolean. Trust it only when newer explicit
-    # assignment counts are not present, so stale replay data does not mark every
-    # group as a licensing group.
-    return ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $Group -Names @('IsManagingLicenses'))) -eq $true)
-}
-
-function Get-ImprovementNormalizedPrincipalKey {
-    [CmdletBinding()]
-    param([AllowNull()][string]$Value)
-
-    if ([string]::IsNullOrWhiteSpace($Value)) {
-        return ''
-    }
-
-    return $Value.Trim().ToLowerInvariant()
-}
-
-function New-ImprovementActivityLookup {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$Rows = @(),
-        [Parameter(Mandatory = $false)][string[]]$PrincipalNames = @('UserPrincipalName', 'UPN', 'Mail', 'PrimarySmtpAddress')
-    )
-
-    $lookup = @{}
-    foreach ($row in @($Rows)) {
-        if ($null -eq $row) {
-            continue
-        }
-
-        foreach ($principalName in @($PrincipalNames)) {
-            $principal = Get-ImprovementNormalizedPrincipalKey -Value ([string](Get-ArrayaObjectValue -Object $row -Names @($principalName)))
-            if ([string]::IsNullOrWhiteSpace($principal)) {
-                continue
-            }
-
-            if (-not $lookup.ContainsKey($principal)) {
-                $lookup[$principal] = New-Object System.Collections.Generic.List[object]
-            }
-
-            $lookup[$principal].Add($row) | Out-Null
-        }
-    }
-
-    return $lookup
-}
-
-function Get-ImprovementLatestDateFromRows {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$Rows = @(),
-        [Parameter(Mandatory = $false)][string[]]$DateNames = @('LastActivityDate', 'LastActivityDateTime', 'LastSignInDateTime', 'LastSuccessfulSignInDateTime')
-    )
-
-    $dates = @(
-        foreach ($row in @($Rows)) {
-            $date = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $row -Names $DateNames)
-            if ($null -ne $date) {
-                $date
-            }
-        }
-    )
-
-    if ($dates.Count -eq 0) {
-        return $null
-    }
-
-    return ($dates | Sort-Object -Descending | Select-Object -First 1)
-}
-
-function Get-ImprovementDateText {
-    [CmdletBinding()]
-    param([AllowNull()]$Date)
-
-    if ($null -eq $Date) {
-        return 'Not surfaced in current source'
-    }
-
-    try {
-        return ([datetime]$Date).ToString('yyyy-MM-dd')
-    }
-    catch {
-        return [string]$Date
-    }
-}
-
-function Get-ImprovementUserLicenseActivityState {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)]$User,
-        [Parameter(Mandatory = $false)]$EmailActivityLookup = @{},
-        [Parameter(Mandatory = $false)]$TeamsActivityLookup = @{},
-        [Parameter(Mandatory = $false)]$Microsoft365ActivityLookup = @{}
-    )
-
-    if (-not ($EmailActivityLookup -is [System.Collections.IDictionary])) {
-        $EmailActivityLookup = @{}
-    }
-    if (-not ($TeamsActivityLookup -is [System.Collections.IDictionary])) {
-        $TeamsActivityLookup = @{}
-    }
-    if (-not ($Microsoft365ActivityLookup -is [System.Collections.IDictionary])) {
-        $Microsoft365ActivityLookup = @{}
-    }
-
-    $principalKeys = @(
-        Get-ImprovementNormalizedPrincipalKey -Value ([string](Get-ArrayaObjectValue -Object $User -Names @('UserPrincipalName')))
-        Get-ImprovementNormalizedPrincipalKey -Value ([string](Get-ArrayaObjectValue -Object $User -Names @('Mail', 'PrimarySmtpAddress')))
-    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
-
-    $emailRows = New-Object System.Collections.Generic.List[object]
-    $teamsRows = New-Object System.Collections.Generic.List[object]
-    $m365Rows = New-Object System.Collections.Generic.List[object]
-    foreach ($principalKey in @($principalKeys)) {
-        if ($EmailActivityLookup.ContainsKey($principalKey)) {
-            foreach ($row in @($EmailActivityLookup[$principalKey])) { $emailRows.Add($row) | Out-Null }
-        }
-        if ($TeamsActivityLookup.ContainsKey($principalKey)) {
-            foreach ($row in @($TeamsActivityLookup[$principalKey])) { $teamsRows.Add($row) | Out-Null }
-        }
-        if ($Microsoft365ActivityLookup.ContainsKey($principalKey)) {
-            foreach ($row in @($Microsoft365ActivityLookup[$principalKey])) { $m365Rows.Add($row) | Out-Null }
-        }
-    }
-
-    $lastSignInDate = Get-ImprovementLatestDateFromRows -Rows @($User) -DateNames @(
-        'LastSuccessfulSignInDateTime',
-        'LastSignInDateTime',
-        'LastNonInteractiveSignInDateTime',
-        'SignInActivityLastSignInDateTime',
-        'SignInActivityLastSuccessfulSignInDateTime'
-    )
-    $lastExchangeActivityDate = Get-ImprovementLatestDateFromRows -Rows @(@($emailRows.ToArray()) + @($User)) -DateNames @('LastExchangeActivityDate', 'ExchangeLastActivityDate', 'LastActivityDate', 'LastActivityDateTime')
-    $lastTeamsActivityDate = Get-ImprovementLatestDateFromRows -Rows @(@($teamsRows.ToArray()) + @($User)) -DateNames @('LastTeamsActivityDate', 'TeamsLastActivityDate', 'LastActivityDate', 'LastActivityDateTime')
-    $lastMicrosoft365ActivityDate = Get-ImprovementLatestDateFromRows -Rows @(@($m365Rows.ToArray()) + @($User)) -DateNames @(
-        'LastMicrosoft365ActivityDate',
-        'Microsoft365LastActivityDate',
-        'LastActivityDate',
-        'LastActivityDateTime'
-    )
-    $availableDates = @(
-        $lastSignInDate
-        $lastExchangeActivityDate
-        $lastTeamsActivityDate
-        $lastMicrosoft365ActivityDate
-    ) | Where-Object { $null -ne $_ }
-    $lastActivityDate = if ($availableDates.Count -gt 0) {
-        $availableDates | Sort-Object -Descending | Select-Object -First 1
-    }
-    else {
-        $null
-    }
-
-    return [pscustomobject]@{
-        LastSignInDateTime          = $lastSignInDate
-        LastExchangeActivityDate    = $lastExchangeActivityDate
-        LastTeamsActivityDate       = $lastTeamsActivityDate
-        LastMicrosoft365ActivityDate = $lastMicrosoft365ActivityDate
-        LastActivityDate            = $lastActivityDate
-        AvailableSignalCount        = $availableDates.Count
-    }
-}
-
-function New-ImprovementConditionalAccessOptimizationRows {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$ConditionalAccessPolicies = @(),
-        [Parameter(Mandatory = $false)]$ConditionalAccessSummary
-    )
-
-    $rows = New-Object System.Collections.Generic.List[object]
-    $policyRows = @($ConditionalAccessPolicies | Where-Object { $null -ne $_ })
-    function Test-PolicyEnabledLocal { param($Policy) ([string](Get-ArrayaObjectValue -Object $Policy -Names @('State', 'state'))).ToLowerInvariant() -eq 'enabled' }
-    function Test-PolicyReportOnlyLocal { param($Policy) ([string](Get-ArrayaObjectValue -Object $Policy -Names @('State', 'state'))).ToLowerInvariant() -match 'report' }
-    function Test-PolicyRequiresMfaLocal {
-        param($Policy)
-        $explicit = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $Policy -Names @('RequiresMfaEnforcement', 'RequiresMfa', 'UsesAuthenticationStrengthForMfa'))
-        if ($explicit -eq $true) { return $true }
-        return (($Policy | ConvertTo-Json -Depth 8 -Compress) -match '(?i)mfa|multiFactorAuthentication|authenticationStrength')
-    }
-    function Test-PolicySignalLocal {
-        param($Policy, [string[]]$BooleanNames, [string]$Regex)
-        foreach ($name in @($BooleanNames)) {
-            $value = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $Policy -Names @($name))
-            if ($value -eq $true) { return $true }
-        }
-        $nameText = [string](Get-ArrayaObjectValue -Object $Policy -Names @('DisplayName', 'Name'))
-        $jsonText = ($Policy | ConvertTo-Json -Depth 8 -Compress)
-        return (($nameText -match $Regex) -or ($jsonText -match $Regex))
-    }
-    function Add-OptimizationRowLocal {
-        param([string]$Signal, [string]$Status, [string]$Severity, [object[]]$Policies, [string]$CurrentState, [string]$Recommendation, [string]$Evidence)
-        $policyNames = @($Policies | ForEach-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('DisplayName', 'Name')) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 8)
-        $rows.Add([pscustomobject]@{
-            Signal          = $Signal
-            Status          = $Status
-            Severity        = $Severity
-            PolicyCount     = @($Policies).Count
-            PolicyNames     = ($policyNames -join '; ')
-            CurrentState    = $CurrentState
-            Recommendation  = $Recommendation
-            Evidence        = $Evidence
-            SourceWorksheet = 'ConditionalAccessPolicies'
-        }) | Out-Null
-    }
-
-    $enabledPolicies = @($policyRows | Where-Object { Test-PolicyEnabledLocal -Policy $_ })
-    $reportOnlyPolicies = @($policyRows | Where-Object { Test-PolicyReportOnlyLocal -Policy $_ })
-    $disabledPolicies = @($policyRows | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('State', 'state'))).ToLowerInvariant() -eq 'disabled' })
-    $adminMfaPolicies = @($enabledPolicies | Where-Object { (Test-PolicyRequiresMfaLocal -Policy $_) -and (Test-PolicySignalLocal -Policy $_ -BooleanNames @('TargetsPrivilegedRoles') -Regex '(?i)admin|privileged|global administrator|directoryRole') })
-    $legacyPolicies = @($enabledPolicies | Where-Object { Test-PolicySignalLocal -Policy $_ -BooleanNames @('BlocksLegacyAuth') -Regex '(?i)legacy|exchangeActiveSync|other clients|clientAppTypes' })
-    $guestPolicies = @($enabledPolicies | Where-Object { Test-PolicySignalLocal -Policy $_ -BooleanNames @('TargetsGuestsOrExternalUsers') -Regex '(?i)guest|external|b2b|includeGuestsOrExternalUsers' })
-    $riskPolicies = @($enabledPolicies | Where-Object { Test-PolicySignalLocal -Policy $_ -BooleanNames @('UsesRiskSignals') -Regex '(?i)risk|signInRisk|userRisk' })
-    $devicePolicies = @($enabledPolicies | Where-Object { Test-PolicySignalLocal -Policy $_ -BooleanNames @('RequiresCompliantDevice') -Regex '(?i)compliantDevice|device compliance' })
-    $exclusionPolicies = @($policyRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasExclusions'))) -eq $true -or (($_ | ConvertTo-Json -Depth 8 -Compress) -match '(?i)"exclude') })
-
-    Add-OptimizationRowLocal -Signal 'Admin MFA baseline coverage' -Status $(if ($adminMfaPolicies.Count -gt 0) { 'Observed' } else { 'Review' }) -Severity $(if ($adminMfaPolicies.Count -gt 0) { 'Info' } else { 'High' }) -Policies $adminMfaPolicies -CurrentState "$($adminMfaPolicies.Count) enabled admin/privileged MFA policy signal(s)" -Recommendation 'Validate privileged roles are protected by enabled Conditional Access requiring strong MFA or authentication strength, with only documented emergency-access exclusions.' -Evidence 'TargetsPrivilegedRoles and MFA grant/authentication-strength signals.'
-    Add-OptimizationRowLocal -Signal 'Legacy authentication blocking' -Status $(if ($legacyPolicies.Count -gt 0) { 'Observed' } else { 'Review' }) -Severity $(if ($legacyPolicies.Count -gt 0) { 'Info' } else { 'High' }) -Policies $legacyPolicies -CurrentState "$($legacyPolicies.Count) enabled legacy-authentication protection signal(s)" -Recommendation 'Validate legacy client authentication is blocked through an enabled policy and exceptions are explicit.' -Evidence 'BlocksLegacyAuth, client app, grant-control, and policy-name signals.'
-    Add-OptimizationRowLocal -Signal 'Guest and external access coverage' -Status $(if ($guestPolicies.Count -gt 0) { 'Observed' } else { 'Review' }) -Severity $(if ($guestPolicies.Count -gt 0) { 'Info' } else { 'Medium' }) -Policies $guestPolicies -CurrentState "$($guestPolicies.Count) enabled guest/external policy signal(s)" -Recommendation 'Confirm guest/external users have a deliberate access baseline, including MFA or trusted inbound MFA where appropriate.' -Evidence 'Guest/external target signals.'
-    Add-OptimizationRowLocal -Signal 'Risk-based access coverage' -Status $(if ($riskPolicies.Count -gt 0) { 'Observed' } else { 'Review' }) -Severity $(if ($riskPolicies.Count -gt 0) { 'Info' } else { 'Medium' }) -Policies $riskPolicies -CurrentState "$($riskPolicies.Count) enabled risk-based policy signal(s)" -Recommendation 'Review user-risk and sign-in-risk policy coverage for high-value users and high-risk access paths.' -Evidence 'User risk and sign-in risk condition signals.'
-    Add-OptimizationRowLocal -Signal 'Compliant-device access scenarios' -Status $(if ($devicePolicies.Count -gt 0) { 'Observed' } else { 'Review' }) -Severity 'Low' -Policies $devicePolicies -CurrentState "$($devicePolicies.Count) enabled compliant-device requirement signal(s)" -Recommendation 'Decide which managed-access scenarios should require compliant devices and validate those controls in report-only or pilot before enforcement.' -Evidence 'Grant-control compliant-device signals.'
-    Add-OptimizationRowLocal -Signal 'Report-only policy backlog' -Status $(if ($reportOnlyPolicies.Count -gt 0) { 'Review' } else { 'Observed' }) -Severity $(if ($reportOnlyPolicies.Count -gt 0) { 'Medium' } else { 'Info' }) -Policies $reportOnlyPolicies -CurrentState "$($reportOnlyPolicies.Count) report-only policy/policies" -Recommendation 'Review report-only impact, document expected behavior, and move validated policies into enabled enforcement.' -Evidence 'Policy state.'
-    Add-OptimizationRowLocal -Signal 'Disabled policy backlog' -Status $(if ($disabledPolicies.Count -gt 0) { 'Review' } else { 'Observed' }) -Severity 'Low' -Policies $disabledPolicies -CurrentState "$($disabledPolicies.Count) disabled policy/policies" -Recommendation 'Retire obsolete disabled policies or document why they remain as staged/preserved policy definitions.' -Evidence 'Policy state.'
-    Add-OptimizationRowLocal -Signal 'Exclusion-heavy policy review' -Status $(if ($exclusionPolicies.Count -ge 3) { 'Review' } else { 'Observed' }) -Severity $(if ($exclusionPolicies.Count -ge 3) { 'Medium' } else { 'Info' }) -Policies $exclusionPolicies -CurrentState "$($exclusionPolicies.Count) policy/policies with exclusion signals" -Recommendation 'Minimize exclusions and reserve them for break-glass or validated operational exceptions.' -Evidence 'Exclude users/groups/roles/app/client signals.'
-
-    $signatureGroups = @(
-        $policyRows |
-            Group-Object {
-                $state = ([string](Get-ArrayaObjectValue -Object $_ -Names @('State', 'state'))).ToLowerInvariant()
-                $includeUsers = [string](Get-ArrayaObjectValue -Object $_ -Names @('IncludedUsers', 'IncludeUsers', 'Users'))
-                $includeGroups = [string](Get-ArrayaObjectValue -Object $_ -Names @('IncludedGroups', 'IncludeGroups'))
-                $includeRoles = [string](Get-ArrayaObjectValue -Object $_ -Names @('IncludedRoles', 'IncludeRoles'))
-                $applications = [string](Get-ArrayaObjectValue -Object $_ -Names @('Applications', 'IncludedApplications', 'CloudApps'))
-                $clientApps = [string](Get-ArrayaObjectValue -Object $_ -Names @('ClientAppTypes', 'ClientApps'))
-                $risk = [string](Get-ArrayaObjectValue -Object $_ -Names @('SignInRiskLevels', 'UserRiskLevels'))
-                $platforms = [string](Get-ArrayaObjectValue -Object $_ -Names @('IncludePlatforms', 'Platforms'))
-                $grant = [string](Get-ArrayaObjectValue -Object $_ -Names @('GrantControls'))
-                $session = [string](Get-ArrayaObjectValue -Object $_ -Names @('SessionControls'))
-                "$state|$includeUsers|$includeGroups|$includeRoles|$applications|$clientApps|$risk|$platforms|$grant|$session".ToLowerInvariant()
-            } |
-            Where-Object { $_.Count -gt 1 -and -not [string]::IsNullOrWhiteSpace([string]$_.Name) }
-    )
-    foreach ($signatureGroup in @($signatureGroups)) {
-        Add-OptimizationRowLocal -Signal 'Possible overlapping Conditional Access policies' -Status 'Review' -Severity 'Low' -Policies @($signatureGroup.Group) -CurrentState "$($signatureGroup.Count) policy/policies share a similar target, condition, grant, and session-control signature" -Recommendation 'Compare these policies for duplicate scope, conflicting controls, and opportunities to consolidate or clarify ownership.' -Evidence 'Deterministic policy-signature grouping.'
-    }
-
-    return @($rows.ToArray())
-}
-
-function New-ImprovementMfaMethodPostureSummaryRows {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)]$MfaEnrollmentSummary,
-        [Parameter(Mandatory = $false)][object[]]$MfaRegistrationDetails = @()
-    )
-
-    $summaryRecord = if ($MfaEnrollmentSummary) { Get-ArrayaObjectValue -Object $MfaEnrollmentSummary -Names @('Summary', 'Configuration') } else { $null }
-    if (-not $summaryRecord -and $MfaEnrollmentSummary) { $summaryRecord = $MfaEnrollmentSummary }
-    $totalUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $summaryRecord -Names @('TotalUsers', 'UserCount', 'TotalUserCount'))
-    $registeredUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $summaryRecord -Names @('RegisteredUsers', 'RegisteredUserCount', 'MfaRegisteredUsers'))
-    $notRegisteredUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $summaryRecord -Names @('NotRegisteredUsers', 'UsersNotRegisteredForMfa', 'NotRegisteredUserCount'))
-    if ($null -eq $notRegisteredUsers -and $null -ne $totalUsers -and $null -ne $registeredUsers) { $notRegisteredUsers = [Math]::Max(($totalUsers - $registeredUsers), 0) }
-    $weakMethodOnlyUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $summaryRecord -Names @('UsersWithWeakMethodsOnly'))
-    $weakDefaultMethodUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $summaryRecord -Names @('UsersWithWeakDefaultMethod'))
-    $phishingResistantUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $summaryRecord -Names @('UsersWithPhishingResistantMethods', 'PhishingResistantUsers'))
-    $weakBreakdown = [string](Get-ArrayaObjectValue -Object $summaryRecord -Names @('WeakMethodBreakdown'))
-    $registeredBreakdown = [string](Get-ArrayaObjectValue -Object $summaryRecord -Names @('RegisteredMethodBreakdown'))
-    if (($null -eq $totalUsers -or $null -eq $registeredUsers) -and @($MfaRegistrationDetails).Count -gt 0) {
-        $totalUsers = @($MfaRegistrationDetails).Count
-        $registeredUsers = @($MfaRegistrationDetails | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsMfaRegistered', 'IsRegistered', 'MfaRegistered'))) -eq $true }).Count
-        $notRegisteredUsers = [Math]::Max(($totalUsers - $registeredUsers), 0)
-    }
-
-    return @(
-        [pscustomobject]@{ Signal = 'MFA registration coverage'; Status = if ($null -ne $notRegisteredUsers -and $notRegisteredUsers -gt 0) { 'Review' } else { 'Observed' }; UserCount = $registeredUsers; CurrentState = ("{0} registered / {1} not registered" -f $(if ($null -eq $registeredUsers) { 'Unknown' } else { [int]$registeredUsers }), $(if ($null -eq $notRegisteredUsers) { 'Unknown' } else { [int]$notRegisteredUsers })); Recommendation = 'Keep enrollment separate from enforcement and drive remaining users through registration readiness.'; SourceWorksheet = 'MfaEnrollmentSummary' },
-        [pscustomobject]@{ Signal = 'Weak MFA method reliance'; Status = if ((($null -ne $weakMethodOnlyUsers -and $weakMethodOnlyUsers -gt 0) -or ($null -ne $weakDefaultMethodUsers -and $weakDefaultMethodUsers -gt 0))) { 'Review' } else { 'Observed' }; UserCount = $(if ($null -ne $weakMethodOnlyUsers) { [int]$weakMethodOnlyUsers } else { $null }); CurrentState = ("{0} weak-only user(s); {1} weak default user(s); {2}" -f $(if ($null -eq $weakMethodOnlyUsers) { 'Unknown' } else { [int]$weakMethodOnlyUsers }), $(if ($null -eq $weakDefaultMethodUsers) { 'Unknown' } else { [int]$weakDefaultMethodUsers }), $(if ([string]::IsNullOrWhiteSpace($weakBreakdown)) { 'Weak-method breakdown not surfaced' } else { $weakBreakdown })); Recommendation = 'Reduce SMS, voice, and email OTP reliance; encourage Microsoft Authenticator, passwordless, FIDO2/passkeys, or other phishing-resistant methods for privileged access.'; SourceWorksheet = 'MfaEnrollmentSummary' },
-        [pscustomobject]@{ Signal = 'Phishing-resistant method adoption'; Status = if ($null -ne $phishingResistantUsers -and $phishingResistantUsers -gt 0) { 'Observed' } else { 'Review' }; UserCount = $phishingResistantUsers; CurrentState = $(if ($null -eq $phishingResistantUsers) { 'Phishing-resistant method count not surfaced' } else { "$([int]$phishingResistantUsers) user(s)" }); Recommendation = 'Prioritize phishing-resistant authentication for privileged and high-risk populations where licensing and device readiness support it.'; SourceWorksheet = 'MfaEnrollmentSummary' },
-        [pscustomobject]@{ Signal = 'Registered method mix'; Status = 'Observed'; UserCount = $registeredUsers; CurrentState = $(if ([string]::IsNullOrWhiteSpace($registeredBreakdown)) { 'Registered method mix not surfaced' } else { $registeredBreakdown }); Recommendation = 'Use the method mix to target communications, registration campaigns, and weak-method retirement waves.'; SourceWorksheet = 'MfaEnrollmentSummary' }
-    )
-}
-
-function New-ImprovementPrivilegedAccessRemediationSummaryRows {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$Admins = @(),
-        [Parameter(Mandatory = $false)]$AdminMfaSummary,
-        [Parameter(Mandatory = $false)][object[]]$AdminMfaRegistrationGaps = @(),
-        [Parameter(Mandatory = $false)][object[]]$AdminMfaEnforcementGaps = @(),
-        [Parameter(Mandatory = $false)][int]$MaxGlobalAdmins = 5
-    )
-
-    $enabledAdmins = @($Admins | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false })
-    $globalAdmins = @($enabledAdmins | Where-Object { [string](Get-ArrayaObjectValue -Object $_ -Names @('Role', 'DirectoryRole', 'AdminRole', 'RoleName')) -match 'Global Administrator' })
-    $staleAdmins = @($enabledAdmins | Where-Object {
-        $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime'))
-        $lastSignIn -and $lastSignIn -lt (Get-Date).AddDays(-90)
-    })
-    $cloudOnlyGlobalAdmins = @($globalAdmins | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('OnPremisesSyncEnabled', 'DirSyncEnabled', 'IsSynced'))) -ne $true })
-    $summaryRecord = if ($AdminMfaSummary) { Get-ArrayaObjectValue -Object $AdminMfaSummary -Names @('Summary', 'Configuration') } else { $null }
-    if (-not $summaryRecord -and $AdminMfaSummary) { $summaryRecord = $AdminMfaSummary }
-    $notRegistered = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $summaryRecord -Names @('AdminUsersNotRegisteredForMfa'))
-    if ($null -eq $notRegistered) { $notRegistered = @($AdminMfaRegistrationGaps).Count }
-    $notCovered = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $summaryRecord -Names @('AdminUsersNotCoveredByMfaEnforcement'))
-    if ($null -eq $notCovered) { $notCovered = @($AdminMfaEnforcementGaps).Count }
-
-    return @(
-        [pscustomobject]@{ Signal = 'Standing Global Administrator assignments'; Status = if ($globalAdmins.Count -gt $MaxGlobalAdmins) { 'Review' } else { 'Observed' }; Count = $globalAdmins.Count; CurrentState = "$($globalAdmins.Count) enabled Global Administrator assignment(s)"; RecommendedAction = 'Reduce standing Global Administrators, remove stale assignments, use lower-privilege roles such as Global Reader where appropriate, and prefer PIM eligible activation with approval where supported.'; SourceWorksheet = 'Admins' },
-        [pscustomobject]@{ Signal = 'Stale privileged admin accounts'; Status = if ($staleAdmins.Count -gt 0) { 'Review' } else { 'Observed' }; Count = $staleAdmins.Count; CurrentState = "$($staleAdmins.Count) enabled admin account(s) appear stale"; RecommendedAction = 'Validate stale admin accounts and remove, disable, or downgrade privileges that are no longer required.'; SourceWorksheet = 'Admins' },
-        [pscustomobject]@{ Signal = 'Admin MFA registration gaps'; Status = if ($notRegistered -gt 0) { 'Review' } else { 'Observed' }; Count = $notRegistered; CurrentState = "$([int]$notRegistered) enabled admin account(s) not registered for MFA"; RecommendedAction = 'Drive admin registration completion separately from Conditional Access enforcement validation.'; SourceWorksheet = 'AdminMfaRegistrationGaps' },
-        [pscustomobject]@{ Signal = 'Admin MFA enforcement gaps'; Status = if ($notCovered -gt 0) { 'Review' } else { 'Observed' }; Count = $notCovered; CurrentState = "$([int]$notCovered) enabled admin account(s) not covered by active MFA enforcement"; RecommendedAction = 'Validate enabled Conditional Access enforcement for privileged roles and minimize exclusions to approved emergency-access accounts.'; SourceWorksheet = 'AdminMfaEnforcementGaps' },
-        [pscustomobject]@{ Signal = 'Cloud-only emergency access coverage'; Status = if ($cloudOnlyGlobalAdmins.Count -lt 2) { 'Review' } else { 'Observed' }; Count = $cloudOnlyGlobalAdmins.Count; CurrentState = "$($cloudOnlyGlobalAdmins.Count) enabled cloud-only Global Administrator account(s) surfaced"; RecommendedAction = 'Maintain at least two cloud-only emergency-access accounts and test their Conditional Access exclusion and monitoring process.'; SourceWorksheet = 'Admins' }
-    )
-}
-
-function New-ImprovementTeamsGroupsCleanupCandidateRows {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$Teams = @(),
-        [Parameter(Mandatory = $false)][object[]]$Groups = @()
-    )
-
-    $rows = New-Object System.Collections.Generic.List[object]
-    function Add-CleanupCandidateLocal {
-        param($ObjectType, $Name, $OwnerCount, $MemberCount, $GuestCount, $LastActivityDate, $StorageGB, $IsManagingLicenses, $RiskSignal, $RecommendedAction, $SourceWorksheet)
-        $rows.Add([pscustomobject]@{
-            ObjectType         = $ObjectType
-            Name               = $Name
-            OwnerCount         = $OwnerCount
-            MemberCount        = $MemberCount
-            GuestCount         = $GuestCount
-            LastActivityDate   = $LastActivityDate
-            StorageGB          = $StorageGB
-            IsManagingLicenses = $IsManagingLicenses
-            RiskSignal         = $RiskSignal
-            RecommendedAction  = $RecommendedAction
-            SourceWorksheet    = $SourceWorksheet
-        }) | Out-Null
-    }
-    function Resolve-MemberCountLocal {
-        param($Record)
-
-        $explicitCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $Record -Names @('MemberCount', 'MembersCount', 'GroupMemberCount', 'MemberTotalCount'))
-        if ($null -ne $explicitCount) {
-            return $explicitCount
-        }
-
-        $membersValue = Get-ArrayaObjectValue -Object $Record -Names @('Members', 'GroupMembers')
-        if ($null -eq $membersValue -or $membersValue -is [string]) {
-            return $null
-        }
-
-        return @(Convert-ArrayaObjectToArray $membersValue).Count
-    }
-
-    foreach ($team in @($Teams)) {
-        $name = [string](Get-ArrayaObjectValue -Object $team -Names @('DisplayName', 'Name'))
-        $ownerCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $team -Names @('OwnerCount', 'Owners'))
-        $memberCount = Resolve-MemberCountLocal -Record $team
-        $guestCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $team -Names @('GuestCount', 'Guests'))
-        $privateChannelCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $team -Names @('PrivateChannelCount'))
-        $sharedChannelCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $team -Names @('SharedChannelCount'))
-        $lastActivity = Get-ArrayaObjectValue -Object $team -Names @('LastActivityDate', 'LastActivityDateTime')
-        $storage = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $team -Names @('SiteSize-GB', 'StorageUsedGB'))
-        $riskSignals = @()
-        if ($null -ne $ownerCount -and $ownerCount -le 0) { $riskSignals += 'Ownerless Team' }
-        if ($null -ne $memberCount -and $memberCount -le 0) { $riskSignals += 'No members' }
-        if ($null -ne $guestCount -and $null -ne $memberCount -and $memberCount -gt 0 -and (($guestCount / $memberCount) -ge 0.4)) { $riskSignals += 'Guest-heavy Team' }
-        if (($null -ne $privateChannelCount -and $privateChannelCount -ge 5) -or ($null -ne $sharedChannelCount -and $sharedChannelCount -ge 1)) { $riskSignals += 'Private/shared channel review' }
-        try { if ($lastActivity -and ([datetime]$lastActivity) -lt (Get-Date).AddDays(-90)) { $riskSignals += 'Dormant Team' } } catch {}
-        if ($riskSignals.Count -gt 0) {
-            Add-CleanupCandidateLocal -ObjectType 'Team' -Name $name -OwnerCount $ownerCount -MemberCount $memberCount -GuestCount $guestCount -LastActivityDate $lastActivity -StorageGB $storage -IsManagingLicenses $false -RiskSignal ($riskSignals -join '; ') -RecommendedAction 'Confirm owner accountability, guest access, channel lifecycle, and whether this Team should remain active, be archived, or be retired.' -SourceWorksheet 'AllTeams'
-        }
-    }
-
-    foreach ($group in @($Groups)) {
-        $name = [string](Get-ArrayaObjectValue -Object $group -Names @('DisplayName', 'Name'))
-        $ownerCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $group -Names @('OwnerCount', 'Owners'))
-        $memberCount = Resolve-MemberCountLocal -Record $group
-        $isManagingLicenses = Test-ImprovementGroupManagesLicenses -Group $group
-        $riskSignals = @()
-        if ($null -ne $ownerCount -and $ownerCount -le 0) { $riskSignals += 'Ownerless group' }
-        if ($null -ne $memberCount -and $memberCount -le 0) { $riskSignals += 'No members' }
-        if ($isManagingLicenses -eq $true -and ($null -eq $ownerCount -or $ownerCount -le 0)) { $riskSignals += 'License-managing group without owner' }
-        if ($riskSignals.Count -gt 0) {
-            Add-CleanupCandidateLocal -ObjectType 'Microsoft 365 / Entra group' -Name $name -OwnerCount $ownerCount -MemberCount $memberCount -GuestCount $null -LastActivityDate (Get-ArrayaObjectValue -Object $group -Names @('LastActivityDate', 'LastActivityDateTime')) -StorageGB $null -IsManagingLicenses $isManagingLicenses -RiskSignal ($riskSignals -join '; ') -RecommendedAction 'Confirm owner accountability, membership purpose, and whether the group should remain active, be assigned lifecycle ownership, or be retired.' -SourceWorksheet 'EntraIDGroups'
-        }
-    }
-
-    return @($rows.ToArray())
-}
-
-function New-ImprovementGroupLicensingSummaryRows {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$Groups = @(),
-        [Parameter(Mandatory = $false)][object[]]$Users = @(),
-        [Parameter(Mandatory = $false)][object[]]$Licenses = @()
-    )
-
-    $assignedUserCountLookup = Get-ImprovementGroupLicenseAssignedUserCountLookup -Users $Users -Licenses $Licenses
-    $rows = New-Object System.Collections.Generic.List[object]
-    foreach ($group in @($Groups)) {
-        $isManagingLicenses = Test-ImprovementGroupManagesLicenses -Group $group
-        $assignedLicenseCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $group -Names @('AssignedLicenseCount'))
-        if ($isManagingLicenses -ne $true) { continue }
-        $ownerCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $group -Names @('OwnerCount'))
-        $groupId = [string](Get-ArrayaObjectValue -Object $group -Names @('Id', 'ID'))
-        $memberCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $group -Names @('MemberCount'))
-        $memberCountSource = [string](Get-ArrayaObjectValue -Object $group -Names @('MemberCountSource'))
-        $licensedUserCount = $null
-        if ($assignedUserCountLookup.HasAssignmentStateData -eq $true) {
-            $licensedUserCount = if (-not [string]::IsNullOrWhiteSpace($groupId) -and $assignedUserCountLookup.Counts.ContainsKey($groupId)) {
-                [int]$assignedUserCountLookup.Counts[$groupId]
-            }
-            else {
-                0
-            }
-        }
-        $effectiveMemberCount = if ($null -ne $licensedUserCount) { $licensedUserCount } else { $memberCount }
-        $membershipCountSource = if ($null -ne $licensedUserCount) { 'User licenseAssignmentStates assignedByGroup' } else { 'Group member count' }
-        $rows.Add([pscustomobject]@{
-            GroupName                    = [string](Get-ArrayaObjectValue -Object $group -Names @('DisplayName', 'Name'))
-            GroupId                      = $groupId
-            OwnerCount                   = $ownerCount
-            MemberCount                  = $memberCount
-            MemberCountSource            = $memberCountSource
-            LicensedUserCount            = $licensedUserCount
-            EffectiveMemberCount         = $effectiveMemberCount
-            MembershipCountSource        = $membershipCountSource
-            AssignedLicenseCount         = if ($null -ne $assignedLicenseCount) { [int]$assignedLicenseCount } else { $null }
-            AssignedLicenseSkuIds        = [string](Get-ArrayaObjectValue -Object $group -Names @('AssignedLicenseSkuIds'))
-            AssignedLicenseSkuPartNumbers = [string](Get-ArrayaObjectValue -Object $group -Names @('AssignedLicenseSkuPartNumbers'))
-            AssignedLicenseFriendlyNames = [string](Get-ArrayaObjectValue -Object $group -Names @('AssignedLicenseFriendlyNames'))
-            LicenseProcessingState       = [string](Get-ArrayaObjectValue -Object $group -Names @('LicenseProcessingState', 'licenseProcessingState'))
-            RiskSignal                   = if ($null -ne $ownerCount -and $ownerCount -le 0) { 'License-managing group without owner' } else { 'Group-based licensing in use' }
-            Recommendation               = 'Document license group ownership, assignment intent, and error-review cadence before relying on the group as a lifecycle control.'
-            SourceWorksheet              = 'EntraIDGroups'
-        }) | Out-Null
-    }
-
-    return @($rows.ToArray())
-}
-
-function Add-ImprovementGroupLicensingEffectiveCounts {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$Rows = @(),
-        [Parameter(Mandatory = $false)][object[]]$Users = @(),
-        [Parameter(Mandatory = $false)][object[]]$Licenses = @()
-    )
-
-    $assignedUserCountLookup = Get-ImprovementGroupLicenseAssignedUserCountLookup -Users $Users -Licenses $Licenses
-    foreach ($row in @($Rows)) {
-        if ($null -eq $row) { continue }
-
-        $groupId = [string](Get-ArrayaObjectValue -Object $row -Names @('GroupId', 'Id', 'ID'))
-        $memberCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $row -Names @('MemberCount'))
-        $memberCountSource = [string](Get-ArrayaObjectValue -Object $row -Names @('MemberCountSource'))
-        $licensedUserCount = $null
-        if ($assignedUserCountLookup.HasAssignmentStateData -eq $true) {
-            $licensedUserCount = if (-not [string]::IsNullOrWhiteSpace($groupId) -and $assignedUserCountLookup.Counts.ContainsKey($groupId)) {
-                [int]$assignedUserCountLookup.Counts[$groupId]
-            }
-            else {
-                0
-            }
-        }
-        $effectiveMemberCount = if ($null -ne $licensedUserCount) { $licensedUserCount } else { $memberCount }
-        $membershipCountSource = if ($null -ne $licensedUserCount) { 'User licenseAssignmentStates assignedByGroup' } else { 'Group member count' }
-
-        $row | Add-Member -MemberType NoteProperty -Name 'MemberCountSource' -Value $memberCountSource -Force
-        $row | Add-Member -MemberType NoteProperty -Name 'LicensedUserCount' -Value $licensedUserCount -Force
-        $row | Add-Member -MemberType NoteProperty -Name 'EffectiveMemberCount' -Value $effectiveMemberCount -Force
-        $row | Add-Member -MemberType NoteProperty -Name 'MembershipCountSource' -Value $membershipCountSource -Force
-    }
-
-    return @($Rows)
-}
-
-function New-ImprovementLicenseOptimizationCandidateRows {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$Users = @(),
-        [Parameter(Mandatory = $false)][object[]]$Groups = @(),
-        [Parameter(Mandatory = $false)][object[]]$Licenses = @(),
-        [Parameter(Mandatory = $false)][object[]]$EmailActivityRows = @(),
-        [Parameter(Mandatory = $false)][object[]]$TeamsActivityRows = @(),
-        [Parameter(Mandatory = $false)][object[]]$Microsoft365ActivityRows = @(),
-        [Parameter(Mandatory = $false)][int]$InactiveDaysThreshold = 90
-    )
-
-    $skuLookup = Get-ImprovementLicenseSkuLookup -Licenses $Licenses
-    $emailActivityLookup = New-ImprovementActivityLookup -Rows $EmailActivityRows -PrincipalNames @('UserPrincipalName', 'UPN', 'Mail', 'PrimarySmtpAddress')
-    $teamsActivityLookup = New-ImprovementActivityLookup -Rows $TeamsActivityRows -PrincipalNames @('UserPrincipalName', 'UPN', 'Mail', 'PrimarySmtpAddress')
-    $microsoft365ActivityLookup = New-ImprovementActivityLookup -Rows $Microsoft365ActivityRows -PrincipalNames @('UserPrincipalName', 'UPN', 'Mail', 'PrimarySmtpAddress')
-    $inactiveCutoff = (Get-Date).AddDays(-1 * [Math]::Abs($InactiveDaysThreshold))
-    $rows = New-Object System.Collections.Generic.List[object]
-    foreach ($group in @($Groups)) {
-        $isManagingLicenses = Test-ImprovementGroupManagesLicenses -Group $group
-        if ($isManagingLicenses -eq $true) {
-            $ownerCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $group -Names @('OwnerCount'))
-            if ($null -eq $ownerCount -or $ownerCount -le 0) {
-                $rows.Add([pscustomobject]@{ ObjectType = 'Group'; DisplayName = [string](Get-ArrayaObjectValue -Object $group -Names @('DisplayName', 'Name')); UserPrincipalName = $null; SkuFamily = 'Group-based licensing'; SkuNames = [string](Get-ArrayaObjectValue -Object $group -Names @('AssignedLicenseFriendlyNames', 'AssignedLicenseSkuPartNumbers')); AssignmentSource = 'Group'; LicenseProcessingState = [string](Get-ArrayaObjectValue -Object $group -Names @('LicenseProcessingState', 'licenseProcessingState')); Issue = 'License-managing group without owner'; RecommendedAction = 'Assign accountable owners to licensing groups and document change-control expectations.'; SourceWorksheet = 'EntraIDGroups' }) | Out-Null
-            }
-        }
-    }
-
-    foreach ($user in @($Users)) {
-        $displayName = [string](Get-ArrayaObjectValue -Object $user -Names @('DisplayName'))
-        $upn = [string](Get-ArrayaObjectValue -Object $user -Names @('UserPrincipalName'))
-        $assignmentRows = @(Get-ImprovementUserLicenseAssignmentRows -User $user -SkuLookup $skuLookup)
-        foreach ($skuGroup in @($assignmentRows | Group-Object { if (-not [string]::IsNullOrWhiteSpace([string]$_.SkuName)) { [string]$_.SkuName } else { [string]$_.SkuId } })) {
-            if ([string]::IsNullOrWhiteSpace([string]$skuGroup.Name)) { continue }
-            $hasDirect = @($skuGroup.Group | Where-Object { [string]$_.AssignmentSource -eq 'Direct' }).Count -gt 0
-            $hasGroup = @($skuGroup.Group | Where-Object { [string]$_.AssignmentSource -eq 'Group' }).Count -gt 0
-            if ($hasDirect -and $hasGroup) {
-                $rows.Add([pscustomobject]@{ ObjectType = 'User'; DisplayName = $displayName; UserPrincipalName = $upn; SkuFamily = 'Duplicate assignment source'; SkuNames = [string]$skuGroup.Name; AssignmentSource = 'Direct + Group'; Issue = 'Same SKU assigned directly and by group'; RecommendedAction = 'Remove duplicate direct assignments after confirming the group-based assignment is intentional and healthy.'; SourceWorksheet = 'Users' }) | Out-Null
-            }
-        }
-        foreach ($assignmentRow in @($assignmentRows)) {
-            $assignmentError = [string]$assignmentRow.Error
-            $assignmentState = [string]$assignmentRow.State
-            $hasAssignmentError = (
-                (-not [string]::IsNullOrWhiteSpace($assignmentError) -and $assignmentError -notmatch '^(?i)none|noerror|success$') -or
-                (-not [string]::IsNullOrWhiteSpace($assignmentState) -and $assignmentState -match '(?i)error|failed|failure')
-            )
-            if ($hasAssignmentError) {
-                $errorDetail = if (-not [string]::IsNullOrWhiteSpace($assignmentError) -and $assignmentError -notmatch '^(?i)none|noerror|success$') { $assignmentError } else { $assignmentState }
-                $rows.Add([pscustomobject]@{
-                    ObjectType          = 'User'
-                    DisplayName         = $displayName
-                    UserPrincipalName   = $upn
-                    SkuFamily           = 'Assignment error'
-                    SkuNames            = $assignmentRow.SkuName
-                    AssignmentSource    = $assignmentRow.AssignmentSource
-                    AssignmentState     = $assignmentState
-                    ErrorCode           = $errorDetail
-                    AssignedByGroup     = $assignmentRow.AssignedByGroup
-                    LastUpdatedDateTime = $assignmentRow.LastUpdatedDateTime
-                    Issue               = "License assignment error: $errorDetail"
-                    RecommendedAction   = 'Review Microsoft Graph license assignment errors, resolve the assignment conflict or capacity/usage-location issue, and reprocess group-based license assignment where appropriate.'
-                    SourceWorksheet     = 'Users'
-                }) | Out-Null
-            }
-        }
-        $assignedLicenseNames = @($assignmentRows | ForEach-Object { [string]$_.SkuName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        if ($assignedLicenseNames.Count -eq 0) {
-            $assignedLicenseNames = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $user -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
-        }
-        $suiteGroups = @($assignedLicenseNames | ForEach-Object { [pscustomobject]@{ Name = $_; Family = Get-ImprovementLicenseSuiteFamily -SkuName $_ } } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Family) } | Group-Object Family | Where-Object { $_.Count -gt 1 })
-        foreach ($suiteGroup in @($suiteGroups)) {
-            $rows.Add([pscustomobject]@{ ObjectType = 'User'; DisplayName = $displayName; UserPrincipalName = $upn; SkuFamily = [string]$suiteGroup.Name; SkuNames = (@($suiteGroup.Group | ForEach-Object { $_.Name }) -join '; '); AssignmentSource = 'Mixed/Unknown'; Issue = 'Likely duplicate suite assignment'; RecommendedAction = 'Review stacked Microsoft 365 / Office 365 suite assignments and retain the license set that matches the user role and required services.'; SourceWorksheet = 'Users' }) | Out-Null
-        }
-
-        if ($assignedLicenseNames.Count -gt 0) {
-            $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $user -Names @('AccountEnabled', 'Enabled'))
-            try {
-                $activityState = Get-ImprovementUserLicenseActivityState `
-                    -User $user `
-                    -EmailActivityLookup $emailActivityLookup `
-                    -TeamsActivityLookup $teamsActivityLookup `
-                    -Microsoft365ActivityLookup $microsoft365ActivityLookup
-            }
-            catch {
-                $activityState = [pscustomobject]@{
-                    LastSignInDateTime           = $null
-                    LastExchangeActivityDate     = $null
-                    LastTeamsActivityDate        = $null
-                    LastMicrosoft365ActivityDate = $null
-                    LastActivityDate             = $null
-                    AvailableSignalCount         = 0
-                }
-            }
-            $isDisabledLicensedUser = ($enabled -eq $false)
-            $isInactiveLicensedUser = (
-                -not $isDisabledLicensedUser -and
-                $activityState.AvailableSignalCount -gt 0 -and
-                $activityState.LastActivityDate -and
-                $activityState.LastActivityDate -lt $inactiveCutoff
-            )
-
-            if ($isDisabledLicensedUser -or $isInactiveLicensedUser) {
-                $basis = if ($isDisabledLicensedUser) {
-                    'Account disabled'
-                }
-                else {
-                    "No recent activity in surfaced sign-in or workload signals for $InactiveDaysThreshold+ days"
-                }
-                $rows.Add([pscustomobject]@{
-                    ObjectType                   = 'User'
-                    DisplayName                  = $displayName
-                    UserPrincipalName            = $upn
-                    Enabled                      = $enabled
-                    SkuFamily                    = 'Inactive licensed user'
-                    SkuNames                     = (($assignedLicenseNames | Select-Object -Unique) -join '; ')
-                    AssignmentSource             = if (@($assignmentRows | Where-Object { [string]$_.AssignmentSource -eq 'Group' }).Count -gt 0) { 'Direct/Group review' } else { 'Direct/Unknown' }
-                    Issue                        = if ($isDisabledLicensedUser) { 'Disabled user with assigned licenses' } else { 'Inactive licensed user with assigned licenses' }
-                    LastSignInDateTime           = Get-ImprovementDateText -Date $activityState.LastSignInDateTime
-                    LastExchangeActivityDate     = Get-ImprovementDateText -Date $activityState.LastExchangeActivityDate
-                    LastTeamsActivityDate        = Get-ImprovementDateText -Date $activityState.LastTeamsActivityDate
-                    LastMicrosoft365ActivityDate = Get-ImprovementDateText -Date $activityState.LastMicrosoft365ActivityDate
-                    LastActivityDate             = Get-ImprovementDateText -Date $activityState.LastActivityDate
-                    InactivityBasis              = $basis
-                    RecommendedAction            = 'Validate whether the user still requires paid Microsoft 365 licensing; reclaim or right-size licenses after confirming mailbox, OneDrive, Teams, and compliance hold requirements.'
-                    SourceWorksheet              = 'Users'
-                }) | Out-Null
-            }
-        }
-    }
-
-    return @($rows.ToArray())
 }
 
 function Convert-ToImprovementCollectionRows {
@@ -1656,7 +832,7 @@ function Get-ExchangeForwardingPolicyEvidence {
     $allowingPolicies = if ($summary) { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $summary -Names @('PoliciesExplicitlyAllowingAutoForwarding')) } else { $null }
     $restrictingPolicies = if ($summary) { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $summary -Names @('PoliciesRestrictingAutoForwarding')) } else { $null }
     $remoteDomainsAllow = if ($summary) { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $summary -Names @('RemoteDomainsAllowingAutoForwarding')) } else { $null }
-    $defaultRemoteDomainAllows = if ($summary) { Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $summary -Names @('DefaultRemoteDomainAllowsAutoForwarding')) } else { $null }
+    $defaultRemoteDomainAllows = if ($summary) { Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $summary -Names @('DefaultRemoteDomainAllowsAutoForwarding')) } else { $null }
     $modes = if ($summary) { Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $summary -Names @('PolicyAutoForwardingModes')) -Default '' } else { '' }
 
     if ($RemoteDomains.Count -gt 0 -and $null -eq $remoteDomainsAllow) {
@@ -1664,7 +840,7 @@ function Get-ExchangeForwardingPolicyEvidence {
             $RemoteDomains |
                 Where-Object {
                     $_ -and
-                    (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AutoForwardEnabled'))) -eq $true
+                    (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AutoForwardEnabled'))) -eq $true
                 }
         ).Count
     }
@@ -1678,7 +854,7 @@ function Get-ExchangeForwardingPolicyEvidence {
                 }
         ) | Select-Object -First 1
         if ($defaultRemoteDomainRecord) {
-            $defaultRemoteDomainAllows = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $defaultRemoteDomainRecord -Names @('AutoForwardEnabled'))
+            $defaultRemoteDomainAllows = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $defaultRemoteDomainRecord -Names @('AutoForwardEnabled'))
         }
     }
 
@@ -2890,18 +2066,18 @@ function Get-CustomerGuestMfaExperienceSummary {
         $allowInvitesFrom = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $ExternalIdentityRestrictionsRecord -Names @('AllowInvitesFrom')) -Default 'Not validated from the reviewed data'
     }
 
-    $hasCrossTenantAccessPolicy = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExternalIdentityRestrictionsRecord -Names @('HasCrossTenantAccessPolicy'))
+    $hasCrossTenantAccessPolicy = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ExternalIdentityRestrictionsRecord -Names @('HasCrossTenantAccessPolicy'))
     $defaultInboundMfaTrustRaw = Get-ArrayaObjectValue -Object $ExternalIdentityRestrictionsRecord -Names @('DefaultInboundMfaTrust')
     $defaultOutboundMfaTrustRaw = Get-ArrayaObjectValue -Object $ExternalIdentityRestrictionsRecord -Names @('DefaultOutboundMfaTrust')
     $defaultInboundMfaTrust = Convert-ToArrayaDisplayText -Value $defaultInboundMfaTrustRaw -Default 'Not validated from the reviewed data'
     $defaultOutboundMfaTrust = Convert-ToArrayaDisplayText -Value $defaultOutboundMfaTrustRaw -Default 'Not validated from the reviewed data'
-    $guestCoverageDetected = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $MfaEnforcementSummaryRecord -Names @('GuestOrExternalCoverage'))
+    $guestCoverageDetected = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $MfaEnforcementSummaryRecord -Names @('GuestOrExternalCoverage'))
     $enabledPoliciesRequiringMfa = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $MfaEnforcementSummaryRecord -Names @('EnabledPoliciesRequiringMfa'))
     $guestUserCoveragePercent = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $MfaEnforcementSummaryRecord -Names @('GuestUserCoveragePercent'))
     $guestCoverageLow = ($null -ne $guestUserCoveragePercent -and $guestUserCoveragePercent -lt 80)
     $guestCoverageNotClear = ($guestCoverageDetected -eq $false -or $null -eq $guestUserCoveragePercent)
 
-    $inboundTrustBoolean = Convert-ToArrayaBoolean $defaultInboundMfaTrustRaw
+    $inboundTrustBoolean = Convert-ArrayaToBoolean $defaultInboundMfaTrustRaw
     $trustValidated = -not ($defaultInboundMfaTrust -match '(?i)^not validated|^not available')
     $trustConfigured = ($inboundTrustBoolean -eq $true)
     $trustNotConfigured = (($inboundTrustBoolean -eq $false) -or ($defaultInboundMfaTrust -match '(?i)^not configured$'))
@@ -3692,7 +2868,7 @@ function Get-CustomerMfaEnrollmentSummary {
     $detailUsersWithStrongMethods = 0
     $detailUsersWithPhishingResistantMethods = 0
     foreach ($detailRow in $detailRows) {
-        $isRegistered = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $detailRow -Names @('IsMfaRegistered'))
+        $isRegistered = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $detailRow -Names @('IsMfaRegistered'))
         if ($isRegistered -eq $true) {
             $detailRegisteredUsers++
         }
@@ -3712,7 +2888,7 @@ function Get-CustomerMfaEnrollmentSummary {
             )
         }
         else {
-            $methodsRegistered = Convert-ToArrayaStringList $methodsRegisteredSource
+            $methodsRegistered = Convert-ArrayaToStringList $methodsRegisteredSource
         }
         foreach ($methodName in @($methodsRegistered | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })) {
             if (-not $detailMethodCounts.ContainsKey($methodName)) { $detailMethodCounts[$methodName] = 0 }
@@ -3731,9 +2907,9 @@ function Get-CustomerMfaEnrollmentSummary {
             $detailDefaultMethodCounts[$defaultMethod]++
         }
 
-        $hasWeakMethod = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $detailRow -Names @('HasWeakMethod'))
-        $hasStrongMethod = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $detailRow -Names @('HasStrongMethod'))
-        $hasPhishingResistantMethod = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $detailRow -Names @('HasPhishingResistantMethod'))
+        $hasWeakMethod = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $detailRow -Names @('HasWeakMethod'))
+        $hasStrongMethod = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $detailRow -Names @('HasStrongMethod'))
+        $hasPhishingResistantMethod = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $detailRow -Names @('HasPhishingResistantMethod'))
         if ($isRegistered -eq $true -and $hasWeakMethod -eq $true -and $hasStrongMethod -ne $true) {
             $detailUsersWithWeakMethodsOnly++
         }
@@ -3844,9 +3020,9 @@ function Get-CustomerGuestUserEnforcementState {
         return $existingState
     }
 
-    $guestCoverage = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('GuestOrExternalCoverage'))
+    $guestCoverage = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('GuestOrExternalCoverage'))
     if ($null -eq $guestCoverage -and $ConditionalAccessSummary) {
-        $guestCoverage = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object (Get-ArrayaObjectValue -Object $ConditionalAccessSummary -Names @('Summary')) -Names @('HasGuestCoverage'))
+        $guestCoverage = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object (Get-ArrayaObjectValue -Object $ConditionalAccessSummary -Names @('Summary')) -Names @('HasGuestCoverage'))
     }
     $enabledPoliciesRequiringMfa = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnabledPoliciesRequiringMfa'))
     $reportOnlyPoliciesRequiringMfa = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('ReportOnlyPoliciesRequiringMfa'))
@@ -4014,7 +3190,7 @@ function Get-CustomerMfaEnforcementSummary {
         $guestUserEnforcementState = Get-CustomerGuestUserEnforcementState -ExistingSummary $ExistingSummary -ConditionalAccessPolicies $ConditionalAccessPolicies -ConditionalAccessSummary $ConditionalAccessSummary
         $existingCoveragePct = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('UserCoveragePercent'))
         $existingEnabledPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('EnabledPoliciesRequiringMfa'))
-        $existingSecDefaults = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('SecurityDefaultsEnabled'))
+        $existingSecDefaults = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('SecurityDefaultsEnabled'))
         $coverageBasedEnforcementState = if ($null -ne $existingCoveragePct) {
             if ($existingCoveragePct -ge 95) {
                 'Full coverage — enabled Conditional Access policies cover virtually all enabled users.'
@@ -4053,11 +3229,11 @@ function Get-CustomerMfaEnforcementSummary {
             GroupTargetedPolicyCount            = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('GroupTargetedPolicyCount'))
             RoleTargetedPolicyCount             = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('RoleTargetedPolicyCount'))
             CoverageCalculationNote             = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('CoverageCalculationNote')) -Default 'Not validated from the reviewed data'
-            SecurityDefaultsEnabled             = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('SecurityDefaultsEnabled'))
-            GuestOrExternalCoverage             = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('GuestOrExternalCoverage'))
-            PrivilegedRoleCoverage              = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('PrivilegedRoleCoverage'))
-            RiskBasedCoverage                   = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('RiskBasedCoverage'))
-            CompliantDeviceRequirement          = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('CompliantDeviceRequirement'))
+            SecurityDefaultsEnabled             = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('SecurityDefaultsEnabled'))
+            GuestOrExternalCoverage             = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('GuestOrExternalCoverage'))
+            PrivilegedRoleCoverage              = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('PrivilegedRoleCoverage'))
+            RiskBasedCoverage                   = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('RiskBasedCoverage'))
+            CompliantDeviceRequirement          = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('CompliantDeviceRequirement'))
             GuestUserEnforcementState           = $guestUserEnforcementState
             EnforcementState                    = $coverageBasedEnforcementState
             CollectionState                     = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $ExistingSummary -Names @('CollectionState')) -Default 'Not validated from the reviewed data'
@@ -4069,7 +3245,7 @@ function Get-CustomerMfaEnforcementSummary {
     $reportOnlyMfaPolicies = @($calculatedReportOnlyMfaPolicies)
     $securityDefaultsEnabled = $null
     if ($securityDefaultsRecord) {
-        $securityDefaultsEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $securityDefaultsRecord -Names @('IsEnabled', 'Enabled'))
+        $securityDefaultsEnabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $securityDefaultsRecord -Names @('IsEnabled', 'Enabled'))
     }
 
     $enforcementState = if ($enabledMfaPolicies.Count -gt 0 -and $securityDefaultsEnabled -eq $true) {
@@ -4088,7 +3264,7 @@ function Get-CustomerMfaEnforcementSummary {
         'Active MFA enforcement was not clearly detected in the reviewed policy baseline.'
     }
     $guestUserEnforcementState = Get-CustomerGuestUserEnforcementState -ExistingSummary ([pscustomobject]@{
-        GuestOrExternalCoverage        = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasGuestCoverage'))
+        GuestOrExternalCoverage        = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasGuestCoverage'))
         EnabledPoliciesRequiringMfa    = $enabledMfaPolicies.Count
         ReportOnlyPoliciesRequiringMfa = $reportOnlyMfaPolicies.Count
     }) -ConditionalAccessPolicies $ConditionalAccessPolicies -ConditionalAccessSummary $ConditionalAccessSummary
@@ -4114,10 +3290,10 @@ function Get-CustomerMfaEnforcementSummary {
         RoleTargetedPolicyCount             = $null
         CoverageCalculationNote             = 'Not validated from the reviewed data'
         SecurityDefaultsEnabled             = $securityDefaultsEnabled
-        GuestOrExternalCoverage             = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasGuestCoverage'))
-        PrivilegedRoleCoverage              = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasPrivilegedRoleCoverage'))
-        RiskBasedCoverage                   = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasRiskBasedCoverage'))
-        CompliantDeviceRequirement          = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasCompliantDeviceRequirement'))
+        GuestOrExternalCoverage             = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasGuestCoverage'))
+        PrivilegedRoleCoverage              = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasPrivilegedRoleCoverage'))
+        RiskBasedCoverage                   = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasRiskBasedCoverage'))
+        CompliantDeviceRequirement          = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $conditionalAccessSummaryRecord -Names @('HasCompliantDeviceRequirement'))
         GuestUserEnforcementState           = $guestUserEnforcementState
         EnforcementState                    = $enforcementState
         CollectionState                     = 'Derived'
@@ -4467,7 +3643,7 @@ function Get-CustomerTechnicalObservations {
     $privilegedSummaryRecord = if ($Signals.PrivilegedAccessSummary) { Get-ArrayaObjectValue -Object $Signals.PrivilegedAccessSummary -Names @('Summary') } else { $null }
     $recipientRows = Convert-ArrayaObjectToArray $Signals.AllRecipients
     $retentionPolicyRows = Convert-ArrayaObjectToArray $Signals.RetentionPolicies
-    $adminConsentWorkflowEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $authConfig -Names @('AdminConsentWorkflowEnabled'))
+    $adminConsentWorkflowEnabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $authConfig -Names @('AdminConsentWorkflowEnabled'))
 
     $reportOnlyPolicies = @($caPolicies | Where-Object { [string]$_.State -match 'report' }).Count
     $inactiveGuests90Days = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $guestSummaryRecord -Names @('InactiveGuests90Days'))
@@ -4492,7 +3668,7 @@ function Get-CustomerTechnicalObservations {
         $policiesUsingRiskSignals = @(
             $caPolicies |
                 Where-Object {
-                    (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('UsesRiskSignals', 'HasRiskSignals'))) -eq $true
+                    (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('UsesRiskSignals', 'HasRiskSignals'))) -eq $true
                 }
         ).Count
     }
@@ -4519,7 +3695,7 @@ function Get-CustomerTechnicalObservations {
     $totalDevices = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $deviceManagementSummaryRecord -Names @('TotalDevices'))
     $unmanagedDevices = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $deviceManagementSummaryRecord -Names @('UnmanagedDevices'))
     $unsupportedOsDevices = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $deviceManagementSummaryRecord -Names @('UnsupportedOsDevices'))
-    $nonCompliantDevices = @($deviceRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsCompliant', 'Compliant'))) -eq $false }).Count
+    $nonCompliantDevices = @($deviceRows | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsCompliant', 'Compliant'))) -eq $false }).Count
     $staleDeviceCutoff = (Get-Date).AddDays(-180)
     $staleDevices = @($deviceRows | Where-Object { $lastSeen = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('ApproximateLastSignInDateTime')); $lastSeen -and $lastSeen -lt $staleDeviceCutoff }).Count
     $intuneManaged = @($deviceRows | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('MDMSolution', 'ManagementAgent', 'ManagedBy'))) -match 'intune' }).Count
@@ -4544,7 +3720,7 @@ function Get-CustomerTechnicalObservations {
     $sharedMailboxGovernanceSummaryRecord = if ($Signals.SharedMailboxGovernanceSummary) { Get-ArrayaObjectValue -Object $Signals.SharedMailboxGovernanceSummary -Names @('Summary') } else { $null }
     $publicFolderRows = Convert-ArrayaObjectToArray $Signals.PublicFolderDetails
     $forwardedMailboxCount = @($mailboxRows | Where-Object {
-        $deliverAndForward = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DeliverToMailboxAndForward'))
+        $deliverAndForward = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DeliverToMailboxAndForward'))
         $forwardSmtp = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ForwardingSmtpAddress')) -Default ''
         $forwardAddress = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ForwardingAddress')) -Default ''
         $deliverAndForward -or -not [string]::IsNullOrWhiteSpace($forwardSmtp) -or -not [string]::IsNullOrWhiteSpace($forwardAddress)
@@ -4630,12 +3806,12 @@ function Get-CustomerTechnicalObservations {
     $secureScoreRows = Convert-ArrayaObjectToArray $Signals.SecuritySecureScore
     $smtpRelaySummary = $Signals.SMTPRelaySummary
     $authConfigSummaryRecord = if ($Signals.AuthenticationConfigSummary) { Get-ArrayaObjectValue -Object $Signals.AuthenticationConfigSummary -Names @('Summary') } else { $null }
-    $unverifiedDomains = @($domainRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsVerified'))) -eq $false }).Count
+    $unverifiedDomains = @($domainRows | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsVerified'))) -eq $false }).Count
     $secureScoreLatest = $secureScoreRows | Sort-Object { Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('CreatedDateTime', 'createdDateTime')) } -Descending | Select-Object -First 1
     $secureScoreCurrent = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $secureScoreLatest -Names @('CurrentScore', 'currentScore'))
     $secureScoreMax = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $secureScoreLatest -Names @('MaxScore', 'maxScore'))
     $secureScorePercent = if ($null -ne $secureScoreCurrent -and $null -ne $secureScoreMax -and $secureScoreMax -gt 0) { [math]::Round(($secureScoreCurrent / $secureScoreMax) * 100, 2) } else { $null }
-    $dirSyncEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $tenantInfoSummaryRecord -Names @('DirSyncEnabled', 'DirectorySynchronizationEnabled'))
+    $dirSyncEnabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $tenantInfoSummaryRecord -Names @('DirSyncEnabled', 'DirectorySynchronizationEnabled'))
     $smtpAuthUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $smtpRelaySummary -Names @('SMTPAuthUsers'))
     $licenseStress = @()
     foreach ($license in $licenseRows) {
@@ -4664,8 +3840,8 @@ function Get-CustomerTechnicalObservations {
         $inactiveLicensedUsers = @(
             $userRows |
                 Where-Object {
-                    $assignedLicenses = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $_ -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
-                    $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
+                    $assignedLicenses = Convert-ArrayaToStringList (Get-ArrayaObjectValue -Object $_ -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
+                    $enabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
                     $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime'))
                     $assignedLicenses.Count -gt 0 -and (($enabled -eq $false) -or ($lastSignIn -and $lastSignIn -lt (Get-Date).AddDays(-90)))
                 }
@@ -4711,13 +3887,13 @@ function Get-CustomerTechnicalObservations {
     $domainBreakdownShort = Get-CustomerCondensedListText -Text $domainBreakdown -MaxItems 2
     $recipientBreakdownItems = Get-CustomerListItemsFromText -Text $recipientBreakdown -MaxItems 3
     $domainBreakdownItems = Get-CustomerListItemsFromText -Text $domainBreakdown -MaxItems 3
-    $verifiedDomains = @($domainRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsVerified', 'Verified'))) -eq $true }).Count
+    $verifiedDomains = @($domainRows | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsVerified', 'Verified'))) -eq $true }).Count
     $licensePressureText = Get-CustomerTopLicensePressureText -LicenseRows $licenseRows -Top 3
     $licenseTopTwoText = Get-CustomerTopLicensePressureText -LicenseRows $licenseRows -Top 2
     $retentionCount = if ($retentionPolicyRows.Count -gt 0) { $retentionPolicyRows.Count } else { $null }
-    $policyNames = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $authConfigSummaryRecord -Names @('PermissionGrantPolicies'))
+    $policyNames = Convert-ArrayaToStringList (Get-ArrayaObjectValue -Object $authConfigSummaryRecord -Names @('PermissionGrantPolicies'))
     if ($policyNames.Count -eq 0) {
-        $policyNames = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $authConfig -Names @('PermissionGrantPoliciesAssigned', 'PermissionGrantPolicies'))
+        $policyNames = Convert-ArrayaToStringList (Get-ArrayaObjectValue -Object $authConfig -Names @('PermissionGrantPoliciesAssigned', 'PermissionGrantPolicies'))
     }
     $identityExamples = Get-CustomerExampleText -Rows $staleAdminRows -Top 2 -Default 'No specific stale admin examples were surfaced in the current source.' -Project {
         param($row)
@@ -4727,7 +3903,7 @@ function Get-CustomerTechnicalObservations {
         '{0} ({1}, last sign-in {2})' -f $displayName, $upn, $(if ($lastSignIn) { $lastSignIn.ToString('yyyy-MM-dd') } else { 'not surfaced' })
     }
     $forwardedMailboxExamples = Get-CustomerExampleText -Rows @($mailboxRows | Where-Object {
-        (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DeliverToMailboxAndForward'))) -or
+        (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DeliverToMailboxAndForward'))) -or
         -not [string]::IsNullOrWhiteSpace((Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ForwardingSmtpAddress')) -Default ''))
     }) -Top 2 -Default 'No individual forwarded mailbox examples were surfaced in the current source.' -Project {
         param($row)
@@ -4744,7 +3920,7 @@ function Get-CustomerTechnicalObservations {
     $inactiveLicensedExamples = Get-CustomerExampleText -Rows $inactiveLicensedUsers -Top 2 -Default 'No inactive licensed-user examples were surfaced in the current source.' -Project {
         param($row)
         $name = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $row -Names @('DisplayName', 'UserPrincipalName')) -Default 'Unnamed user'
-        $licenses = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $row -Names @('SkuNames', 'AssignedLicensesFriendly', 'AssignedLicenses'))
+        $licenses = Convert-ArrayaToStringList (Get-ArrayaObjectValue -Object $row -Names @('SkuNames', 'AssignedLicensesFriendly', 'AssignedLicenses'))
         '{0} ({1})' -f $name, $(if ($licenses.Count -gt 0) { ($licenses -join ', ') } else { 'license names not surfaced' })
     }
 
@@ -4774,7 +3950,7 @@ function Get-CustomerTechnicalObservations {
                     New-CustomerConfigurationRow -Signal 'Example stale privileged identities' -State $identityExamples
                 )
                 $observation.ObservedNarrative = "Identity stood out because the tenant is carrying $globalAdminCount Global Administrators while also showing $reportOnlyPolicies report-only Conditional Access policies and $policiesWithExclusions policies with exclusions. MFA enrollment is currently $mfaPercent%, but enforcement should be read separately: the reviewed policy baseline shows $enabledMfaPolicies enabled MFA enforcement policies, with $reportOnlyMfaPolicies still in report-only mode. Weak-method usage remains visible in the registration data, which means enrollment quality should be reviewed alongside coverage. Guest invitation control is currently shown as $guestInvitationControl, and cross-tenant partner count is $crossTenantPartnerCount, which means external identity exposure should be reviewed alongside privileged access rather than as a separate track. The stale-admin examples in the table show that some long-lived privileged access remains in place well past what would normally be expected in a tighter operating model."
-                $observation.PositiveNarrative = if (($policiesUsingRiskSignals -gt 0) -or ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $authConfig -Names @('MFAEnabled'))) -eq $true)) { "What is working well is that the tenant already has risk-aware Conditional Access coverage in place, MFA is enabled, and the current source contains enough identity telemetry to target cleanup precisely." } else { "What is working well is that this source still surfaces administrator, guest, and policy telemetry clearly enough to support evidence-based identity cleanup." }
+                $observation.PositiveNarrative = if (($policiesUsingRiskSignals -gt 0) -or ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $authConfig -Names @('MFAEnabled'))) -eq $true)) { "What is working well is that the tenant already has risk-aware Conditional Access coverage in place, MFA is enabled, and the current source contains enough identity telemetry to target cleanup precisely." } else { "What is working well is that this source still surfaces administrator, guest, and policy telemetry clearly enough to support evidence-based identity cleanup." }
             }
             'Devices & Endpoint Management' {
                 $observation.ConfigurationRows = @(
@@ -5006,7 +4182,7 @@ function Get-CustomerConsultativeSummaries {
     $mfaEnforcementState = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $mfaEnforcementSummaryRecord -Names @('EnforcementState')) -Default $null
 
     $forwardedMailboxCount = @($mailboxRows | Where-Object {
-        $deliverAndForward = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DeliverToMailboxAndForward'))
+        $deliverAndForward = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DeliverToMailboxAndForward'))
         $forwardSmtp = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ForwardingSmtpAddress')) -Default ''
         $forwardAddress = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('ForwardingAddress')) -Default ''
         $deliverAndForward -or -not [string]::IsNullOrWhiteSpace($forwardSmtp) -or -not [string]::IsNullOrWhiteSpace($forwardAddress)
@@ -5019,9 +4195,9 @@ function Get-CustomerConsultativeSummaries {
     $oversizedSharedMailboxes = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $sharedMailboxGovernanceSummaryRecord -Names @('OversizedSharedMailboxes'))
     $mailboxesWithHoldSignals = @(
         $mailboxRows | Where-Object {
-            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('LitigationHoldEnabled'))) -eq $true -or
-            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RetentionHoldEnabled'))) -eq $true -or
-            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DelayHoldApplied'))) -eq $true
+            (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('LitigationHoldEnabled'))) -eq $true -or
+            (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RetentionHoldEnabled'))) -eq $true -or
+            (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DelayHoldApplied'))) -eq $true
         }
     ).Count
     $archiveMailboxesOverFiftyGb = @(
@@ -5059,10 +4235,10 @@ function Get-CustomerConsultativeSummaries {
     $secureScoreCurrent = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $secureScoreLatest -Names @('CurrentScore', 'currentScore'))
     $secureScoreMax = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $secureScoreLatest -Names @('MaxScore', 'maxScore'))
     $secureScorePercent = if ($null -ne $secureScoreCurrent -and $null -ne $secureScoreMax -and $secureScoreMax -gt 0) { [math]::Round(($secureScoreCurrent / $secureScoreMax) * 100, 2) } else { $null }
-    $unverifiedDomains = @($domainRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsVerified', 'Verified'))) -eq $false }).Count
-    $dmarcMissingCount = @($domainRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DmarcConfigured'))) -ne $true }).Count
+    $unverifiedDomains = @($domainRows | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsVerified', 'Verified'))) -eq $false }).Count
+    $dmarcMissingCount = @($domainRows | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DmarcConfigured'))) -ne $true }).Count
     $licensePressure = Get-CustomerTopLicensePressureText -LicenseRows $licenseRows -Top 3
-    $dirSyncEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $tenantInfoSummaryRecord -Names @('DirSyncEnabled', 'DirectorySynchronizationEnabled'))
+    $dirSyncEnabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $tenantInfoSummaryRecord -Names @('DirSyncEnabled', 'DirectorySynchronizationEnabled'))
     $guestMfaExperienceSummary = Get-CustomerGuestMfaExperienceSummary `
         -ExternalIdentityRestrictionsRecord $externalIdentityRestrictionsRecord `
         -GuestAccessConfigurationRecord $guestAccessConfigurationRecord `
@@ -5075,8 +4251,8 @@ function Get-CustomerConsultativeSummaries {
         $inactiveLicensedUsers = @(
             $userRows |
                 Where-Object {
-                    $assignedLicenses = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $_ -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
-                    $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
+                    $assignedLicenses = Convert-ArrayaToStringList (Get-ArrayaObjectValue -Object $_ -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
+                    $enabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
                     $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime'))
                     $assignedLicenses.Count -gt 0 -and (($enabled -eq $false) -or ($lastSignIn -and $lastSignIn -lt (Get-Date).AddDays(-90)))
                 }
@@ -5092,13 +4268,13 @@ function Get-CustomerConsultativeSummaries {
     $memberCount = @($userRows | Where-Object { (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default '') -notmatch 'Guest' }).Count
     $guestCount = @($userRows | Where-Object { (Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default '') -match 'Guest' }).Count
     $staleEnabledMembers90Days = @($userRows | Where-Object {
-        $uEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
+        $uEnabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
         $uLastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime'))
         $uType = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default ''
         $uType -notmatch 'Guest' -and $uEnabled -eq $true -and $uLastSignIn -and $uLastSignIn -lt (Get-Date).AddDays(-90)
     }).Count
     $disabledMemberCount = @($userRows | Where-Object {
-        $uEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
+        $uEnabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
         $uType = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('UserType')) -Default ''
         $uType -notmatch 'Guest' -and $uEnabled -eq $false
     }).Count
@@ -5108,7 +4284,7 @@ function Get-CustomerConsultativeSummaries {
         $dLastSignIn -and $dLastSignIn -lt (Get-Date).AddDays(-180)
     }).Count
     $nonCompliantDevices = @($deviceRows | Where-Object {
-        (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsCompliant', 'ComplianceState'))) -eq $false
+        (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsCompliant', 'ComplianceState'))) -eq $false
     }).Count
     $totalManagedDeviceCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $deviceManagementSummaryRecord -Names @('TotalDevices'))
 
@@ -5135,7 +4311,7 @@ function Get-CustomerConsultativeSummaries {
     }).Count
     $dlpEnforcedPolicies = @($dlpPolicyRows | Where-Object {
         $dlpMode = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Mode')) -Default ''
-        $dlpEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('Enabled'))
+        $dlpEnabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('Enabled'))
         $dlpMode -match 'Enable|Enforce' -and $dlpEnabled -eq $true
     }).Count
 
@@ -6728,7 +5904,7 @@ function Test-AssessmentEnterpriseApplicationRow {
         }
     }
 
-    return (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('SsoEnabled'))) -eq $true
+    return (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('SsoEnabled'))) -eq $true
 }
 
 function Get-AssessmentEnterpriseApplicationSignalState {
@@ -6757,7 +5933,7 @@ function Test-AssessmentEnterpriseApplicationSsoEnabled {
         $ApplicationRow
     )
 
-    $explicitSsoEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('SsoEnabled'))
+    $explicitSsoEnabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('SsoEnabled'))
     $preferredSingleSignOnMode = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('SSOMode', 'PreferredSingleSignOnMode')) -Default ''
     return (
         ($explicitSsoEnabled -eq $true) -or
@@ -6840,12 +6016,12 @@ function New-AssessmentEnterpriseApplicationSummaryFromRows {
         }).Count
         ApplicationsWithNoRecentActivity = @($rows | Where-Object {
             ((Get-AssessmentEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ActivitySignalState') -eq 'Collected') -and
-            ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))) -eq $false)
+            ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))) -eq $false)
         }).Count
         ApplicationsWithInsecureRedirectUris = @($rows | Where-Object {
             $redirectState = Get-AssessmentEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'RedirectUriSignalState'
             (($redirectState -eq 'Collected') -or ($redirectState -eq 'Partial')) -and
-            ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasInsecureRedirectUris'))) -eq $true)
+            ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasInsecureRedirectUris'))) -eq $true)
         }).Count
         SsoEnabledApplications           = @($rows | Where-Object { Test-AssessmentEnterpriseApplicationSsoEnabled -ApplicationRow $_ }).Count
         ApplicationSourceCoverageState   = Get-AssessmentEnterpriseApplicationCoverageState -TotalCount $rows.Count -CollectedCount $applicationSourceCollectedCount -UnavailableCount $applicationSourceUnavailableCount
@@ -6998,7 +6174,7 @@ $conditionalAccessOptimization = @(
 )
 if ($conditionalAccessOptimization.Count -eq 0) {
     $conditionalAccessOptimization = @(
-        New-ImprovementConditionalAccessOptimizationRows `
+        New-ArrayaConditionalAccessOptimizationRows `
             -ConditionalAccessPolicies $caPolicies `
             -ConditionalAccessSummary $conditionalAccessSummary
     )
@@ -7011,7 +6187,7 @@ $mfaMethodPostureSummary = @(
 )
 if ($mfaMethodPostureSummary.Count -eq 0) {
     $mfaMethodPostureSummary = @(
-        New-ImprovementMfaMethodPostureSummaryRows `
+        New-ArrayaMfaMethodPostureSummaryRows `
             -MfaEnrollmentSummary $mfaEnrollmentSummary `
             -MfaRegistrationDetails $mfaRegistrationDetails
     )
@@ -7024,7 +6200,7 @@ $privilegedAccessRemediationSummary = @(
 )
 if ($privilegedAccessRemediationSummary.Count -eq 0) {
     $privilegedAccessRemediationSummary = @(
-        New-ImprovementPrivilegedAccessRemediationSummaryRows `
+        New-ArrayaPrivilegedAccessRemediationSummaryRows `
             -Admins $adminRows `
             -AdminMfaSummary $adminMfaSummary `
             -AdminMfaRegistrationGaps $adminMfaRegistrationGaps `
@@ -7040,7 +6216,7 @@ $teamsGroupsCleanupCandidates = @(
 )
 if ($teamsGroupsCleanupCandidates.Count -eq 0) {
     $teamsGroupsCleanupCandidates = @(
-        New-ImprovementTeamsGroupsCleanupCandidateRows -Teams $teamRows -Groups $unifiedGroupRows
+        New-ArrayaTeamsGroupsCleanupCandidateRows -Teams $teamRows -Groups $unifiedGroupRows
     )
 }
 
@@ -7049,15 +6225,15 @@ $groupLicensingSummary = @(
         -Value (Get-ArrayaObjectValue -Object $tenantData -Names @('GroupLicensingSummary')) `
         -MarkerNames @('GroupName', 'RiskSignal')
 )
-$groupLicensingSummary = @($groupLicensingSummary | Where-Object { Test-ImprovementGroupManagesLicenses -Group $_ })
+$groupLicensingSummary = @($groupLicensingSummary | Where-Object { Test-ArrayaGroupManagesLicenses -Group $_ })
 if ($groupLicensingSummary.Count -eq 0) {
     $groupLicensingSummary = @(
-        New-ImprovementGroupLicensingSummaryRows -Groups $unifiedGroupRows -Users $userRows -Licenses $licenseRows
+        New-ArrayaGroupLicensingSummaryRows -Groups $unifiedGroupRows -Users $userRows -Licenses $licenseRows
     )
 }
 else {
     $groupLicensingSummary = @(
-        Add-ImprovementGroupLicensingEffectiveCounts -Rows $groupLicensingSummary -Users $userRows -Licenses $licenseRows
+        Add-ArrayaGroupLicensingEffectiveCounts -Rows $groupLicensingSummary -Users $userRows -Licenses $licenseRows
     )
 }
 
@@ -7091,7 +6267,7 @@ $licenseOptimizationCandidates = @(
 )
 if ($licenseOptimizationCandidates.Count -eq 0) {
     $licenseOptimizationCandidates = @(
-        New-ImprovementLicenseOptimizationCandidateRows `
+        New-ArrayaLicenseOptimizationCandidateRows `
             -Users $userRows `
             -Groups $unifiedGroupRows `
             -Licenses $licenseRows `
@@ -7107,9 +6283,9 @@ if ($retentionPolicyRows.Count -eq 0 -and $mailboxRows.Count -gt 0) {
             Group-Object {
                 $policyName = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('RetentionPolicy')) -Default ''
                 $hasHoldSignals =
-                    (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('LitigationHoldEnabled'))) -eq $true -or
-                    (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RetentionHoldEnabled'))) -eq $true -or
-                    (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DelayHoldApplied'))) -eq $true
+                    (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('LitigationHoldEnabled'))) -eq $true -or
+                    (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RetentionHoldEnabled'))) -eq $true -or
+                    (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DelayHoldApplied'))) -eq $true
 
                 if (-not [string]::IsNullOrWhiteSpace($policyName)) {
                     return $policyName
@@ -7125,9 +6301,9 @@ if ($retentionPolicyRows.Count -eq 0 -and $mailboxRows.Count -gt 0) {
                 [pscustomobject]@{
                     PolicyName                 = $_.Name
                     MailboxCount               = $_.Count
-                    LitigationHoldMailboxCount = @($_.Group | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('LitigationHoldEnabled'))) -eq $true }).Count
-                    RetentionHoldMailboxCount  = @($_.Group | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RetentionHoldEnabled'))) -eq $true }).Count
-                    DelayHoldMailboxCount      = @($_.Group | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DelayHoldApplied'))) -eq $true }).Count
+                    LitigationHoldMailboxCount = @($_.Group | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('LitigationHoldEnabled'))) -eq $true }).Count
+                    RetentionHoldMailboxCount  = @($_.Group | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RetentionHoldEnabled'))) -eq $true }).Count
+                    DelayHoldMailboxCount      = @($_.Group | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DelayHoldApplied'))) -eq $true }).Count
                 }
             }
     )
@@ -7215,7 +6391,7 @@ if (-not (Test-DerivedCoverage -Tags @('mfa method', 'weak method') -DerivedFind
 if (-not (Test-DerivedCoverage -Tags @('mfa enforcement') -DerivedFindings $derivedFindings)) {
     $enabledMfaPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnforcementSummary -Names @('EnabledPoliciesRequiringMfa'))
     $reportOnlyMfaPolicies = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $mfaEnforcementSummary -Names @('ReportOnlyPoliciesRequiringMfa'))
-    $securityDefaultsEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $mfaEnforcementSummary -Names @('SecurityDefaultsEnabled'))
+    $securityDefaultsEnabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $mfaEnforcementSummary -Names @('SecurityDefaultsEnabled'))
     if ((($null -eq $enabledMfaPolicies) -or ($enabledMfaPolicies -eq 0)) -and ($securityDefaultsEnabled -ne $true)) {
         Add-HeuristicFinding -Store $findingStore -RuleId 'MFA-003' -Area 'Conditional Access' -Category 'Conditional Access Quality' -Severity 'High' -Finding 'Active MFA enforcement was not clearly detected.' -Recommendation 'Move validated MFA coverage into enabled Conditional Access policies or confirm that Security Defaults is the intended enforcement model.' -CurrentValue ("Enabled MFA enforcement policies={0}; report-only MFA policies={1}; Security Defaults={2}" -f $(if ($null -eq $enabledMfaPolicies) { 0 } else { $enabledMfaPolicies }), $(if ($null -eq $reportOnlyMfaPolicies) { 0 } else { $reportOnlyMfaPolicies }), $(if ($securityDefaultsEnabled -eq $true) { 'Enabled' } elseif ($securityDefaultsEnabled -eq $false) { 'Disabled' } else { 'Not validated' })) -TargetValue 'MFA enforcement active for the intended population through one documented baseline model' -RelatedWorksheet 'MfaEnforcementSummary' -RelatedSection 'MFA Enforcement'
     }
@@ -7301,8 +6477,8 @@ $enabledCloudOnlyGlobalAdmins = @(
     $adminRows |
         Where-Object {
             $roleText = [string](Get-ArrayaObjectValue -Object $_ -Names @('Role', 'DirectoryRole', 'AdminRole', 'RoleName'))
-            $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
-            $synced = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('OnPremisesSyncEnabled', 'DirSyncEnabled', 'IsSynced'))
+            $enabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
+            $synced = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('OnPremisesSyncEnabled', 'DirSyncEnabled', 'IsSynced'))
             $roleText -match 'Global Administrator' -and $enabled -ne $false -and $synced -ne $true
         }
 )
@@ -7315,7 +6491,7 @@ $inactiveGuestUsers = @(
     $guestUsers |
         Where-Object {
             $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime', 'SignInActivityLastSignInDateTime'))
-            $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
+            $enabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
             ($enabled -ne $false) -and ($null -eq $lastSignIn -or $lastSignIn -lt (Get-Date).AddDays(-90))
         }
 )
@@ -7326,7 +6502,7 @@ if ($guestUsers.Count -gt 25 -or $inactiveGuestUsers.Count -gt 0) {
 $stalePrivilegedAdmins = @(
     $adminRows |
         Where-Object {
-            $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
+            $enabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
             $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime'))
             ($enabled -ne $false) -and $lastSignIn -and $lastSignIn -lt (Get-Date).AddDays(-90)
         }
@@ -7336,9 +6512,9 @@ if ($stalePrivilegedAdmins.Count -gt 0) {
 }
 
 $authConfigSummaryRecord = if ($authSummary) { Get-ArrayaObjectValue -Object $authSummary -Names @('Summary') } else { $null }
-$passwordlessMethods = @(Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $authConfigSummaryRecord -Names @('PasswordlessMethods')))
+$passwordlessMethods = @(Convert-ArrayaToStringList (Get-ArrayaObjectValue -Object $authConfigSummaryRecord -Names @('PasswordlessMethods')))
 if ($passwordlessMethods.Count -eq 0) {
-    $passwordlessMethods = @(Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $authConfig -Names @('PasswordlessMethods')))
+    $passwordlessMethods = @(Convert-ArrayaToStringList (Get-ArrayaObjectValue -Object $authConfig -Names @('PasswordlessMethods')))
 }
 $registrationPercent = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $(if ($mfaDerivedSummary) { Get-ArrayaObjectValue -Object $mfaDerivedSummary -Names @('Summary') } else { $mfaSummary }) -Names @('RegistrationPercent', 'RegisteredPercent'))
 if ($null -ne $registrationPercent -and $registrationPercent -ge 60 -and $passwordlessMethods.Count -eq 0) {
@@ -7381,7 +6557,7 @@ if ($excludedPolicies.Count -ge 3) {
 $forwardingMailboxes = @(
     $mailboxRows |
         Where-Object {
-            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DeliverToMailboxAndForward'))) -eq $true -or
+            (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DeliverToMailboxAndForward'))) -eq $true -or
             -not [string]::IsNullOrWhiteSpace([string](Get-ArrayaObjectValue -Object $_ -Names @('ForwardingAddress', 'ForwardingSmtpAddress')))
         }
 )
@@ -7397,10 +6573,10 @@ if ($forwardingMailboxes.Count -gt 0) {
 $riskyConnectors = @(
     $connectorRows |
         Where-Object {
-            $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('Enabled'))
-            $requireTls = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RequireTls'))
-            $internal = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('TreatMessagesAsInternal'))
-            $senderIps = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $_ -Names @('SenderIPAddresses'))
+            $enabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('Enabled'))
+            $requireTls = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RequireTls'))
+            $internal = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('TreatMessagesAsInternal'))
+            $senderIps = Convert-ArrayaToStringList (Get-ArrayaObjectValue -Object $_ -Names @('SenderIPAddresses'))
             ($enabled -ne $false) -and ($requireTls -eq $false -or $internal -eq $true -or $senderIps.Count -gt 0)
         }
 )
@@ -7408,9 +6584,9 @@ if ($riskyConnectors.Count -gt 0) {
     Add-HeuristicFinding -Store $findingStore -RuleId 'EX-002' -Area 'Exchange Hygiene' -Category 'Exchange Hygiene' -Severity 'Medium' -Finding 'Mail flow connectors with higher-trust or relay-like characteristics were detected.' -Recommendation 'Review connector purpose, tighten IP restrictions, require TLS where appropriate, and remove unneeded trusted relay behavior.' -CurrentValue "$($riskyConnectors.Count) connector(s) flagged for review" -TargetValue 'Only documented secure connectors remain' -Source 'Hybrid/Exchange' -RelatedWorksheet 'MailFlowConnectors' -RelatedSection 'Mail Flow Connectors'
 }
 
-$smtpAuthEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $smtpRelaySummary -Names @('SMTPAuthEnabled'))
+$smtpAuthEnabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $smtpRelaySummary -Names @('SMTPAuthEnabled'))
 $smtpAuthUsers = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $smtpRelaySummary -Names @('SMTPAuthUsers'))
-$smtpClientAuthDisabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $smtpRelaySummary -Names @('SmtpClientAuthenticationDisabled'))
+$smtpClientAuthDisabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $smtpRelaySummary -Names @('SmtpClientAuthenticationDisabled'))
 if ($smtpAuthEnabled -eq $true -or ($null -ne $smtpAuthUsers -and $smtpAuthUsers -gt 0) -or $smtpClientAuthDisabled -eq $false) {
     Add-HeuristicFinding -Store $findingStore -RuleId 'EX-003' -Area 'Exchange Hygiene' -Category 'Exchange Hygiene' -Severity 'Medium' -Finding 'SMTP relay or client-auth style mail submission still appears enabled.' -Recommendation 'Validate relay dependencies, move applications to modern authenticated patterns where possible, and retire broad SMTP relay exposure.' -CurrentValue "SMTPAuthEnabled=$(Convert-ToArrayaDisplayText $smtpAuthEnabled); SMTPAuthUsers=$(Convert-ToArrayaDisplayText $smtpAuthUsers)" -TargetValue 'SMTP relay minimized and documented' -Source 'Hybrid/Exchange' -RelatedWorksheet 'SMTPRelaySummary' -RelatedSection 'SMTP Relay'
 }
@@ -7509,7 +6685,7 @@ if ($inactiveLicensedUserCandidates.Count -gt 0) {
     Add-HeuristicFinding -Store $findingStore -RuleId 'LIC-002' -Area 'Licensing Optimization' -Category 'Licensing Optimization' -Severity 'Medium' -Finding 'Disabled or inactive users still appear to hold paid licenses.' -Recommendation 'Review paid license assignments for disabled or inactive users and reclaim unused SKUs where appropriate.' -CurrentValue "$($inactiveLicensedUserCandidates.Count) inactive/disabled licensed user(s)" -TargetValue 'Inactive paid-license assignments reviewed and reclaimed' -Source 'Summary/LicenseOptimization' -RelatedWorksheet 'LicenseOptimizationCandidates' -RelatedSection 'Licensing'
 }
 
-$nonCompliantDevices = @($deviceRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsCompliant', 'Compliant'))) -eq $false })
+$nonCompliantDevices = @($deviceRows | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsCompliant', 'Compliant'))) -eq $false })
 $unmanagedDevices = @(
     $deviceRows |
         Where-Object {
@@ -7537,17 +6713,17 @@ if ($deviceRows.Count -gt 0) {
     }
 }
 
-$adminConsentWorkflowEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $authConfigSummaryRecord -Names @('AdminConsentWorkflowEnabled'))
+$adminConsentWorkflowEnabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $authConfigSummaryRecord -Names @('AdminConsentWorkflowEnabled'))
 if ($null -eq $adminConsentWorkflowEnabled) {
-    $adminConsentWorkflowEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $authConfig -Names @('AdminConsentWorkflowEnabled'))
+    $adminConsentWorkflowEnabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $authConfig -Names @('AdminConsentWorkflowEnabled'))
 }
 if ($adminConsentWorkflowEnabled -eq $false) {
     Add-HeuristicFinding -Store $findingStore -RuleId 'SEC-002' -Area 'Security Configuration' -Category 'Security Configuration' -Severity 'Medium' -Finding 'Admin consent workflow appears disabled in the authentication configuration summary.' -Recommendation 'Review application consent governance and enable or replace the consent review workflow where the operating model requires it.' -CurrentValue 'Admin consent workflow disabled' -TargetValue 'Consent governance process documented and enforced' -Source 'Hybrid/AuthenticationConfig' -RelatedWorksheet 'AuthenticationConfig' -RelatedSection 'Consent Governance'
 }
 
-$permissionGrantPolicies = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $authConfigSummaryRecord -Names @('PermissionGrantPolicies'))
+$permissionGrantPolicies = Convert-ArrayaToStringList (Get-ArrayaObjectValue -Object $authConfigSummaryRecord -Names @('PermissionGrantPolicies'))
 if ($permissionGrantPolicies.Count -eq 0) {
-    $permissionGrantPolicies = Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $authConfig -Names @('PermissionGrantPoliciesAssigned', 'PermissionGrantPolicies'))
+    $permissionGrantPolicies = Convert-ArrayaToStringList (Get-ArrayaObjectValue -Object $authConfig -Names @('PermissionGrantPoliciesAssigned', 'PermissionGrantPolicies'))
 }
 if ($permissionGrantPolicies.Count -gt 0) {
     $grantPoliciesText = ($permissionGrantPolicies -join ', ').ToLowerInvariant()
@@ -7573,7 +6749,7 @@ $highPrivilegeApps = @($enterpriseApplications | Where-Object { (Convert-ArrayaT
 if ($highPrivilegeApps.Count -gt 0) {
     $highPrivilegePermissionExamples = @(
         $highPrivilegeApps |
-            ForEach-Object { Convert-ToArrayaStringList (Get-ArrayaObjectValue -Object $_ -Names @('HighPrivilegePermissions')) } |
+            ForEach-Object { Convert-ArrayaToStringList (Get-ArrayaObjectValue -Object $_ -Names @('HighPrivilegePermissions')) } |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
             Select-Object -Unique -First 5
     )
@@ -7641,7 +6817,7 @@ $appsWithRedirectUriRisk = @(
     $enterpriseApplications | Where-Object {
         $redirectSignalState = Get-AssessmentEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'RedirectUriSignalState'
         (($redirectSignalState -eq 'Collected') -or ($redirectSignalState -eq 'Partial')) -and
-        ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasInsecureRedirectUris'))) -eq $true)
+        ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasInsecureRedirectUris'))) -eq $true)
     }
 )
 if ($appsWithRedirectUriRisk.Count -gt 0) {
@@ -7673,7 +6849,7 @@ if ($appsWithRedirectUriRisk.Count -gt 0) {
 $inactiveEnterpriseApps = @(
     $enterpriseApplications | Where-Object {
         ((Get-AssessmentEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ActivitySignalState') -eq 'Collected') -and
-        ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))) -eq $false)
+        ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))) -eq $false)
     }
 )
 if ($inactiveEnterpriseApps.Count -gt 0) {
@@ -7692,16 +6868,16 @@ if ($inactiveEnterpriseApps.Count -gt 0) {
 }
 
 $securityDefaultsRecord = if ($securityDefaultsPolicy) { Get-ArrayaObjectValue -Object $securityDefaultsPolicy -Names @('Configuration', 'Summary') } else { $null }
-$securityDefaultsEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $securityDefaultsRecord -Names @('IsEnabled'))
+$securityDefaultsEnabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $securityDefaultsRecord -Names @('IsEnabled'))
 $caSummaryRecord = if ($conditionalAccessSummary) { Get-ArrayaObjectValue -Object $conditionalAccessSummary -Names @('Summary') } else { $null }
 if ($securityDefaultsEnabled -eq $true -and $snapshotMetrics.ConditionalAccessPolicyCount -gt 0) {
     Add-HeuristicFinding -Store $findingStore -RuleId 'SEC-004' -Area 'Security Configuration' -Category 'Security Configuration' -Severity 'Low' -Finding 'Security Defaults appear enabled while Conditional Access policies are also present.' -Recommendation 'Confirm the intended identity-control model and retire overlapping baseline protections where Conditional Access has replaced Security Defaults.' -CurrentValue 'Security Defaults enabled with Conditional Access policies present' -TargetValue 'One clear baseline identity protection model in place' -Source 'Summary/SecurityDefaults' -RelatedWorksheet 'SecurityDefaultsPolicy' -RelatedSection 'Security Defaults'
 }
 if ($securityDefaultsEnabled -eq $false -and $caSummaryRecord) {
-    $hasGuestCoverage = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $caSummaryRecord -Names @('HasGuestCoverage'))
-    $hasPrivilegedCoverage = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $caSummaryRecord -Names @('HasPrivilegedRoleCoverage'))
-    $hasCompliantDeviceRequirement = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $caSummaryRecord -Names @('HasCompliantDeviceRequirement'))
-    $hasRiskCoverage = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $caSummaryRecord -Names @('HasRiskBasedCoverage'))
+    $hasGuestCoverage = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $caSummaryRecord -Names @('HasGuestCoverage'))
+    $hasPrivilegedCoverage = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $caSummaryRecord -Names @('HasPrivilegedRoleCoverage'))
+    $hasCompliantDeviceRequirement = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $caSummaryRecord -Names @('HasCompliantDeviceRequirement'))
+    $hasRiskCoverage = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $caSummaryRecord -Names @('HasRiskBasedCoverage'))
     $policiesWithExclusions = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $caSummaryRecord -Names @('PoliciesWithExclusions'))
 
     if ($hasGuestCoverage -eq $false) {
@@ -7764,7 +6940,7 @@ $crossTenantPartnerCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object
 $defaultInboundMfaTrust = [string](Get-ArrayaObjectValue -Object $externalIdentityRestrictionsRecord -Names @('DefaultInboundMfaTrust'))
 $defaultOutboundMfaTrust = [string](Get-ArrayaObjectValue -Object $externalIdentityRestrictionsRecord -Names @('DefaultOutboundMfaTrust'))
 $hasCrossTenantAccessPolicy = [string](Get-ArrayaObjectValue -Object $externalIdentityRestrictionsRecord -Names @('HasCrossTenantAccessPolicy'))
-$guestCoverageSummary = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $guestAccessConfigurationRecord -Names @('ConditionalAccessGuestCoverage'))
+$guestCoverageSummary = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $guestAccessConfigurationRecord -Names @('ConditionalAccessGuestCoverage'))
 if ($tenantSharingCapability -match 'ExternalUserAndGuestSharing|ExternalUserSharingOnly') {
     Add-HeuristicFinding -Store $findingStore -RuleId 'COL-005' -Area 'SharePoint / OneDrive Governance' -Category 'SharePoint / OneDrive Governance' -Severity 'Medium' -Finding 'SharePoint sharing is configured to allow external sharing at the tenant level.' -Recommendation 'Confirm that tenant-wide sharing settings still match the intended external collaboration model.' -CurrentValue "SharingCapability=$tenantSharingCapability; OneDriveSharingCapability=$oneDriveSharingCapability; DefaultSharingLinkType=$defaultSharingLinkType; SharingDomainRestrictionMode=$sharingDomainRestrictionMode; RequireInvitedUserMatch=$requireInvitedUserMatch; PreventExternalUsersFromResharing=$preventExternalUsersFromResharing" -TargetValue 'Tenant sharing posture documented and aligned to policy' -Source 'Summary/SharePointSharing' -RelatedWorksheet 'SharePointSharingSummary' -RelatedSection 'Sharing'
 }

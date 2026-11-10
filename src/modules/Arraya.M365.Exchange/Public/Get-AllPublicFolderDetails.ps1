@@ -21,7 +21,7 @@ function Get-AllPublicFolderDetails {
     $tenantStatsHash["PublicFolderDetails"] = @{}
     Write-ArrayaExchangeCollectorBanner -Message ("[Get-AllPublicFolderDetails] START: Gathering all public folder details with {0} details" -f $detailLevel) -ExportFileLocation $exportDetails
     Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] START: Gathering all public folder details with $($detailLevel) details" -ExportFileLocation $exportDetails
-    
+
     try {
         #Get Public Folder Data, Statistics, and Permissions
         switch ($detailLevel) {
@@ -52,7 +52,7 @@ function Get-AllPublicFolderDetails {
         Write-Log -Type ERROR -Message "[Get-AllPublicFolderDetails] An error occurred in running Get-AllPublicFolderDetails function. $($_.Exception.Message)" -ExportFileLocation $exportDetails -CaptureError -ErrorRecordVar $_
 
     }
-    
+
     # Public Folder Statistics
     #**************************
     Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] Gathering all public folder statistics" -ExportFileLocation $exportDetails
@@ -122,7 +122,7 @@ function Get-AllPublicFolderDetails {
             Write-ProgressHelper -Total $publicFolderPermProgressTotal -Id $publicFolderPermProgressId -Activity "Processing all public folder permissions" -Completed
         }
     }
-    
+
     #Combine Stats with Details
     $tenantStatsHash["PublicFolderDetails"] = @{}
     $totalCount = ($allPublicFolders | Measure-Object).count

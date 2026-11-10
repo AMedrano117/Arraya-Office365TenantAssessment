@@ -1,5 +1,16 @@
 #region Helper Functions
 
+# The license, activity, and governance analysis helpers used below are shared with the
+# tenant improvement plan and live in Arraya.M365.Analytics. This file is dot-sourced by
+# several callers, so it imports the module itself rather than relying on the caller.
+$analyticsManifest = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\..\..\modules\Arraya.M365.Analytics\Arraya.M365.Analytics.psd1'))
+if (-not (Test-Path -Path $analyticsManifest)) {
+    throw "The Arraya.M365.Analytics module manifest was not found: $analyticsManifest"
+}
+if (-not (Get-Module -Name 'Arraya.M365.Analytics' | Where-Object { $_.Path -eq $analyticsManifest })) {
+    Import-Module -Name $analyticsManifest -Force -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
+}
+
 function Convert-AssessmentHtmlArray {
     <#
     .SYNOPSIS
@@ -181,12 +192,12 @@ function Format-AssessmentHtmlNumber {
     param(
         [AllowNull()]
         $Number,
-        
+
         [int]$DecimalPlaces = 0
     )
-    
+
     if (Test-AssessmentHtmlBlankValue -Value $Number) { return 'N/A' }
-    
+
     try {
         $num = [double]$Number
         if ($DecimalPlaces -eq 0) {
@@ -238,12 +249,12 @@ function Format-AssessmentHtmlPercentage {
     param(
         [AllowNull()]
         $Value,
-        
+
         [int]$DecimalPlaces = 1
     )
-    
+
     if (Test-AssessmentHtmlBlankValue -Value $Value) { return 'N/A' }
-    
+
     try {
         $num = [double]$Value
         return $num.ToString("P$DecimalPlaces")
@@ -358,27 +369,27 @@ function New-HtmlTable {
     param(
         [AllowNull()]
         [array]$Data,
-        
+
         [Parameter(Mandatory)]
         [string[]]$Columns,
-        
+
         [hashtable]$ColumnHeaders,
-        
+
         [hashtable]$RiskColumns,
 
         [hashtable]$ValueFormatters,
-        
+
         [string]$EmptyMessage = 'No data available',
-        
+
         [string]$CssClass = 'data-table'
     )
-    
+
     if ($null -eq $Data -or $Data.Count -eq 0) {
         return "<div class='empty-state'>$EmptyMessage</div>"
     }
-    
+
     $html = "<table class='$CssClass'>`n<thead><tr>"
-    
+
     # Headers
     foreach ($col in $Columns) {
         $header = if ($ColumnHeaders -and $ColumnHeaders.ContainsKey($col)) {
@@ -389,13 +400,13 @@ function New-HtmlTable {
         $html += "<th>$header</th>"
     }
     $html += "</tr></thead>`n<tbody>"
-    
+
     # Rows
     foreach ($row in $Data) {
         $html += "<tr>"
         foreach ($col in $Columns) {
             $value = $row.$col
-            
+
             # Format value
             if ($ValueFormatters -and $ValueFormatters.ContainsKey($col)) {
                 $formatter = $ValueFormatters[$col]
@@ -426,7 +437,7 @@ function New-HtmlTable {
             } else {
                 $displayValue = [System.Web.HttpUtility]::HtmlEncode($value.ToString())
             }
-            
+
             # Check for risk highlighting
             $cellClass = ''
             if ($RiskColumns -and $RiskColumns.ContainsKey($col)) {
@@ -437,12 +448,12 @@ function New-HtmlTable {
                     }
                 }
             }
-            
+
             $html += "<td$cellClass>$displayValue</td>"
         }
         $html += "</tr>`n"
     }
-    
+
     $html += "</tbody></table>"
     return $html
 }
@@ -455,26 +466,26 @@ function New-KpiCard {
     param(
         [Parameter(Mandatory)]
         [string]$Title,
-        
+
         [Parameter(Mandatory)]
         [object]$Value,
-        
+
         [string]$Subtitle,
-        
+
         [ValidateSet('', 'up', 'down', 'neutral')]
         [string]$Trend = '',
-        
+
         [ValidateSet('default', 'success', 'warning', 'danger')]
         [string]$Theme = 'default'
     )
-    
+
     $trendIcon = switch ($Trend) {
         'up' { '↗️' }
         'down' { '↘️' }
         'neutral' { '→' }
         default { '' }
     }
-    
+
     $subtitleHtml = if ($Subtitle) {
         "<div class='kpi-subtitle'>$Subtitle</div>"
     } else { '' }
@@ -486,7 +497,7 @@ function New-KpiCard {
     } else {
         $Value.ToString()
     }
-    
+
     return @"
 <div class="kpi-card kpi-$Theme">
     <div class="kpi-title">$Title</div>
@@ -505,21 +516,21 @@ function New-CalloutBox {
         [Parameter(Mandatory)]
         [ValidateSet('info', 'warning', 'danger', 'success')]
         [string]$Type,
-        
+
         [Parameter(Mandatory)]
         [string]$Title,
-        
+
         [Parameter(Mandatory)]
         [string]$Content
     )
-    
+
     $iconMap = @{
         'info' = 'ℹ️'
         'warning' = '⚠️'
         'danger' = '🔴'
         'success' = '✅'
     }
-    
+
     return @"
 <div class="callout callout-$Type">
     <div class="callout-header">$($iconMap[$Type]) $Title</div>
@@ -559,7 +570,7 @@ function Get-LicenseAnalysis {
     <#
     .SYNOPSIS
         Analyzes license data with refined severity levels
-        
+
     .DESCRIPTION
         Critical: Over capacity (negative remaining)
         Warning: At capacity (0 remaining) or high utilization (>85% with licenses available)
@@ -569,23 +580,23 @@ function Get-LicenseAnalysis {
         [array]$Licenses,
         [int]$UserCount = 0
     )
-    
+
     $findings = @()
     $criticalFindings = @()
     $warningFindings = @()
     $infoFindings = @()
-    
+
     # Process licenses with consistent paid/free classification
     $processedLicenses = $Licenses | ForEach-Object {
         Resolve-LicenseInventoryRecord -License $_ -UserCount $UserCount
     }
-    
+
     # Filter paid licenses
     $paidLicenses = $processedLicenses | Where-Object { $_.IsPaid -eq $true }
-    
+
     # Analyze findings with NEW logic
     foreach ($lic in $paidLicenses) {
-        
+
         # 🔴 CRITICAL: Over capacity (negative remaining)
         $licenseName = if ($lic.SkuFriendlyName) { $lic.SkuFriendlyName } else { $lic.SkuPartNumber }
         if ($lic.RemainingUnits -lt 0 -and $lic.PurchasedUnits -gt 0) {
@@ -618,11 +629,11 @@ function Get-LicenseAnalysis {
             }
         }
     }
-    
+
     # Overall utilization (info level)
     $totalPurchased = ($paidLicenses | Measure-Object -Property PurchasedUnits -Sum).Sum
     $totalConsumed = ($paidLicenses | Measure-Object -Property ConsumedUnits -Sum).Sum
-    
+
     if ($totalPurchased -gt 0) {
         $overallUtil = ($totalConsumed / $totalPurchased) * 100
         if ($overallUtil -ge 85) {
@@ -635,10 +646,10 @@ function Get-LicenseAnalysis {
             }
         }
     }
-    
+
     # Combine findings in priority order
     $findings = $criticalFindings + $warningFindings + $infoFindings
-    
+
     return @{
         Findings = $findings
         TotalPurchased = $totalPurchased
@@ -655,30 +666,30 @@ function Get-MailboxAnalysis {
         Analyzes mailbox data and returns findings
     #>
     param([array]$Mailboxes)
-    
+
     $findings = @()
     $largeMailboxes = @()
     $largeArchiveCount = 0
     $largestArchiveMailbox = $null
-    
+
     foreach ($mbx in $Mailboxes) {
         # Handle N/A values safely
         $mbxSize = 0
         $archiveSize = 0
-        
+
         if ($mbx.MBXSizeGB -ne 'N/A' -and $null -ne $mbx.MBXSizeGB -and $mbx.MBXSizeGB -ne '') {
             try { $mbxSize = [double]$mbx.MBXSizeGB } catch { $mbxSize = 0 }
         }
-        
+
         if ($mbx.ArchiveSizeGB -ne 'N/A' -and $null -ne $mbx.ArchiveSizeGB -and $mbx.ArchiveSizeGB -ne '') {
             try { $archiveSize = [double]$mbx.ArchiveSizeGB } catch { $archiveSize = 0 }
         }
-        
+
         # Large mailbox warnings
         if ($mbxSize -gt $script:DefaultThresholds.MailboxSizeGB) {
             $largeMailboxes += $mbx
         }
-        
+
         # Large archive warnings
         if ($archiveSize -gt $script:DefaultThresholds.ArchiveSizeGB) {
             $largeArchiveCount++
@@ -690,7 +701,7 @@ function Get-MailboxAnalysis {
             }
         }
     }
-    
+
     # Summary finding for large mailboxes
     if ($largeMailboxes.Count -gt 0) {
         $findings += @{
@@ -716,7 +727,7 @@ function Get-MailboxAnalysis {
             Priority = 2
         }
     }
-    
+
     return @{
         Findings = $findings
         LargeMailboxes = $largeMailboxes
@@ -1013,14 +1024,14 @@ function Get-DomainAnalysis {
         [object]$SpamFilteringSummary,
         [object]$SMTPRelaySummary
     )
-    
+
     $findings = @()
     $mailEnabledCustomDomainCount = 0
     $spfPassingDomainCount = 0
     $dmarcConfiguredDomainCount = 0
     $dmarcEnforcedDomainCount = 0
     $dkimCompleteDomainCount = 0
-    
+
     foreach ($domain in $Domains) {
         $domainName = [string]$domain.Domain
         $isTenantServiceDomain = $domainName -match '(?i)\.onmicrosoft\.com$'
@@ -1040,7 +1051,7 @@ function Get-DomainAnalysis {
                 Priority = 1
             }
         }
-        
+
         # Check MX records
         if ($script:DefaultThresholds.MXRecordValidation) {
             if ($domain.Office365MailExchanger -eq $false) {
@@ -1227,7 +1238,7 @@ function Get-DomainAnalysis {
             }
         }
     }
-    
+
     return @{
         Findings = $findings
     }
@@ -1239,18 +1250,18 @@ function Get-DeviceAnalysis {
         Analyzes device data and returns findings
     #>
     param([array]$Devices)
-    
+
     $findings = @()
-    
+
     if ($Devices.Count -eq 0) {
         return @{ Findings = @() }
     }
-    
+
     # Stale devices
     $staleDevices = $Devices | Where-Object {
         $_.DeviceStale -eq $true
     }
-    
+
     if ($staleDevices.Count -gt 0) {
         $stalePercent = ($staleDevices.Count / $Devices.Count) * 100
         $findings += @{
@@ -1261,11 +1272,11 @@ function Get-DeviceAnalysis {
             Priority = 2
         }
     }
-    
+
     # Device compliance
     $compliantDevices = $Devices | Where-Object { $_.IsCompliant -eq $true }
     $compliancePercent = ($compliantDevices.Count / $Devices.Count) * 100
-    
+
     if ($compliancePercent -lt $script:DefaultThresholds.DeviceCompliancePercent) {
         $findings += @{
             Type = 'Risk'
@@ -1275,7 +1286,7 @@ function Get-DeviceAnalysis {
             Priority = 1
         }
     }
-    
+
     return @{
         Findings = $findings
     }
@@ -1852,14 +1863,14 @@ function Get-SharePointOneDriveAnalysis {
         [array]$SharePointSites,
         [array]$OneDriveSites
     )
-    
+
     $findings = @()
-    
+
     # Large SharePoint sites
     $largeSPSites = $SharePointSites | Where-Object {
         $_.StorageUsedGB -gt $script:DefaultThresholds.SharePointSiteGB
     }
-    
+
     if ($largeSPSites.Count -gt 0) {
         $findings += @{
             Type = 'Warning'
@@ -1896,12 +1907,12 @@ function Get-SharePointOneDriveAnalysis {
             Priority = 2
         }
     }
-    
+
     # Large OneDrive sites
     $largeODSites = $OneDriveSites | Where-Object {
         $_.StorageUsedGB -gt $script:DefaultThresholds.OneDriveSiteGB
     }
-    
+
     if ($largeODSites.Count -gt 0) {
         $findings += @{
             Type = 'Warning'
@@ -1911,7 +1922,7 @@ function Get-SharePointOneDriveAnalysis {
             Priority = 2
         }
     }
-    
+
     return @{
         Findings = $findings
     }
@@ -1923,13 +1934,13 @@ function Get-InactiveMailboxAnalysis {
         Analyzes inactive mailboxes
     #>
     param([array]$InactiveMailboxes)
-    
+
     $findings = @()
-    
+
     if ($InactiveMailboxes.Count -eq 0) {
         return @{ Findings = @() }
     }
-    
+
     # Count of inactive mailboxes
     $findings += @{
         Type = 'Info'
@@ -1938,7 +1949,7 @@ function Get-InactiveMailboxAnalysis {
         Anchor = 'inactive-mailboxes'
         Priority = 3
     }
-    
+
     # Large inactive mailboxes
     $largeInactive = $InactiveMailboxes | Where-Object {
         try {
@@ -1948,7 +1959,7 @@ function Get-InactiveMailboxAnalysis {
             $false
         }
     }
-    
+
     if ($largeInactive.Count -gt 0) {
         $findings += @{
             Type = 'Warning'
@@ -1958,7 +1969,7 @@ function Get-InactiveMailboxAnalysis {
             Priority = 2
         }
     }
-    
+
     return @{
         Findings = $findings
     }
@@ -1970,20 +1981,20 @@ function Get-ExchangeHybridAnalysis {
         Analyzes Exchange hybrid configuration and returns findings
     #>
     param([object]$HybridInfo)
-    
+
     $findings = @()
-    
+
     if (-not $HybridInfo) {
         return @{ Findings = @() }
     }
-    
+
     $partialIndicators = (
         ($HybridInfo.InboundOnPremConnectorCount -gt 0) -or
         ($HybridInfo.OutboundOnPremConnectorCount -gt 0) -or
         ($HybridInfo.MigrationEndpointCount -gt 0) -or
         ($HybridInfo.EvidenceCount -gt 0)
     )
-    
+
     if ($HybridInfo.IsHybridConfigured -eq $true) {
         $findings += @{
             Type = 'Info'
@@ -2017,7 +2028,7 @@ function Get-ExchangeHybridAnalysis {
             Priority = 2
         }
     }
-    
+
     return @{
         Findings = $findings
     }
@@ -2034,9 +2045,9 @@ function Get-IdentityAdminAnalysis {
         [array]$Groups,
         [array]$ConditionalAccessPolicies
     )
-    
+
     $findings = @()
-    
+
     if ($Admins.Count -eq 0) {
         $findings += @{
             Type = 'Warning'
@@ -2046,7 +2057,7 @@ function Get-IdentityAdminAnalysis {
             Priority = 2
         }
     }
-    
+
     if ($Groups.Count -eq 0) {
         $findings += @{
             Type = 'Info'
@@ -2353,7 +2364,7 @@ function Get-IdentityAdminAnalysis {
             }
         }
     }
-    
+
     return @{
         Findings = $findings
     }
@@ -2369,13 +2380,13 @@ function Get-ConditionalAccessMfaAnalysis {
         [object]$AuthConfig,
         [int]$TotalUsers
     )
-    
+
     $findings = @()
     $policyRows = @($ConditionalAccessPolicies | Where-Object { $null -ne $_ })
-    $enabledPolicies = @($policyRows | Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'enabled' })
+    $enabledPolicies = @($policyRows | Where-Object { (Get-ArrayaConditionalAccessPolicyState -Policy $_) -eq 'enabled' })
     $mfaPolicies = @($enabledPolicies | Where-Object { Test-AssessmentConditionalAccessPolicyRequiresMfa -Policy $_ })
     $mfaEnforced = $mfaPolicies.Count -gt 0
-    
+
     if ($enabledPolicies.Count -eq 0) {
         $findings += @{
             Type = 'Warning'
@@ -2385,7 +2396,7 @@ function Get-ConditionalAccessMfaAnalysis {
             Priority = 2
         }
     }
-    
+
     if (-not $mfaEnforced) {
         $findings += @{
             Type = 'Warning'
@@ -2487,7 +2498,7 @@ function Get-ConditionalAccessMfaAnalysis {
             }
         }
     }
-    
+
     return @{
         Findings = $findings
     }
@@ -2499,7 +2510,7 @@ function Get-AdConnectAnalysis {
         Analyzes AD Connect sync data
     #>
     param([object]$AdConnect)
-    
+
     $findings = @()
     if ($AdConnect -and $AdConnect.Summary) {
         if ($AdConnect.Summary.OnPremisesSyncEnabled -ne $true) {
@@ -2521,7 +2532,7 @@ function Get-AdConnectAnalysis {
             }
         }
     }
-    
+
     return @{
         Findings = $findings
     }
@@ -2537,9 +2548,9 @@ function Get-FederationAnalysis {
         [object]$CrossTenantAccess,
         [object]$ExternalIdentities
     )
-    
+
     $findings = @()
-    
+
     if ($ExchangeFederation -and ($ExchangeFederation.OrganizationRelationshipCount -gt 0 -or $ExchangeFederation.IntraOrgConnectorCount -gt 0)) {
         $findings += @{
             Type = 'Info'
@@ -2549,7 +2560,7 @@ function Get-FederationAnalysis {
             Priority = 3
         }
     }
-    
+
     if ($CrossTenantAccess -and $CrossTenantAccess.PartnerCount -gt 0) {
         $findings += @{
             Type = 'Info'
@@ -2559,7 +2570,7 @@ function Get-FederationAnalysis {
             Priority = 3
         }
     }
-    
+
     if ($ExternalIdentities -and $ExternalIdentities.B2BManagementPolicyPresent -eq $false) {
         $findings += @{
             Type = 'Warning'
@@ -2569,7 +2580,7 @@ function Get-FederationAnalysis {
             Priority = 2
         }
     }
-    
+
     return @{
         Findings = $findings
     }
@@ -3491,24 +3502,8 @@ function Convert-AssessmentRuleValueToStringList {
     )
 }
 
-function Get-AssessmentConditionalAccessPolicyState {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)]
-        [AllowNull()]
-        $Policy
-    )
-
-    $rawState = [string](Get-AssessmentRuleValue -Record $Policy -Names @('State', 'state', 'PolicyState', 'policyState'))
-    switch ($rawState.Trim().ToLowerInvariant()) {
-        'enabled'                           { return 'enabled' }
-        'enabledforreportingbutnotenforced' { return 'enabledForReportingButNotEnforced' }
-        'reportonly'                        { return 'enabledForReportingButNotEnforced' }
-        'report-only'                       { return 'enabledForReportingButNotEnforced' }
-        'disabled'                          { return 'disabled' }
-        default                             { return 'unknown' }
-    }
-}
+# Conditional Access policy state normalization now comes from Arraya.M365.Analytics
+# (Get-ArrayaConditionalAccessPolicyState), imported at the top of this file.
 
 function Test-AssessmentConditionalAccessPolicyRequiresMfa {
     [CmdletBinding()]
@@ -3547,376 +3542,6 @@ function Test-AssessmentConditionalAccessPolicyRequiresMfa {
     return (-not [string]::IsNullOrWhiteSpace($authenticationStrengthText) -and $authenticationStrengthText -notin @('{}', 'null'))
 }
 
-function Get-AssessmentLicenseSkuLookup {
-    [CmdletBinding()]
-    param([Parameter(Mandatory = $false)][object[]]$Licenses = @())
-
-    $lookup = @{}
-    foreach ($license in @($Licenses)) {
-        if ($null -eq $license) { continue }
-        $skuId = [string](Get-AssessmentRuleValue -Record $license -Names @('SkuId', 'skuId', 'Id'))
-        $skuPartNumber = [string](Get-AssessmentRuleValue -Record $license -Names @('SkuPartNumber', 'skuPartNumber', 'AccountSkuId'))
-        $friendlyName = [string](Get-AssessmentRuleValue -Record $license -Names @('FriendlyName', 'SkuFriendlyName', 'SkuDisplayName', 'ProductName', 'DisplayName', 'Name', 'SkuPartNumber', 'skuPartNumber'))
-        $skuRecord = [pscustomobject]@{
-            SkuId         = $skuId
-            SkuPartNumber = $skuPartNumber
-            FriendlyName  = if ([string]::IsNullOrWhiteSpace($friendlyName)) { $skuPartNumber } else { $friendlyName }
-        }
-        foreach ($key in @($skuId, $skuPartNumber, $friendlyName)) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$key)) {
-                $lookup[[string]$key] = $skuRecord
-            }
-        }
-    }
-
-    return $lookup
-}
-
-function Resolve-AssessmentLicenseSkuName {
-    [CmdletBinding()]
-    param(
-        [AllowNull()]$SkuValue,
-        [Parameter(Mandatory = $false)][hashtable]$SkuLookup = @{}
-    )
-
-    $skuText = ([string]$SkuValue).Trim()
-    if ([string]::IsNullOrWhiteSpace($skuText)) {
-        return $null
-    }
-
-    if ($SkuLookup.ContainsKey($skuText)) {
-        $skuRecord = $SkuLookup[$skuText]
-        if (-not [string]::IsNullOrWhiteSpace([string]$skuRecord.FriendlyName)) { return [string]$skuRecord.FriendlyName }
-        if (-not [string]::IsNullOrWhiteSpace([string]$skuRecord.SkuPartNumber)) { return [string]$skuRecord.SkuPartNumber }
-    }
-
-    return $skuText
-}
-
-function Get-AssessmentUserLicenseAssignmentRows {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)]$User,
-        [Parameter(Mandatory = $false)][hashtable]$SkuLookup = @{}
-    )
-
-    $stateValue = Get-AssessmentRuleValue -Record $User -Names @('LicenseAssignmentStates', 'licenseAssignmentStates')
-    $stateRows = @()
-    if ($stateValue) {
-        if ($stateValue -is [System.Collections.IDictionary] -and ([System.Collections.IDictionary]$stateValue).Contains('SkuId')) {
-            $stateRows = @($stateValue)
-        }
-        else {
-            $stateRows = @(Convert-AssessmentHtmlArray -InputObject $stateValue)
-        }
-    }
-
-    $rows = New-Object System.Collections.Generic.List[object]
-    foreach ($stateRow in @($stateRows)) {
-        if ($null -eq $stateRow) { continue }
-        if ($stateRow -is [string]) {
-            continue
-        }
-
-        $skuId = [string](Get-AssessmentRuleValue -Record $stateRow -Names @('SkuId', 'skuId'))
-        $skuName = [string](Get-AssessmentRuleValue -Record $stateRow -Names @('SkuName', 'SkuPartNumber', 'FriendlyName'))
-        if ([string]::IsNullOrWhiteSpace($skuName)) {
-            $skuName = Resolve-AssessmentLicenseSkuName -SkuValue $skuId -SkuLookup $SkuLookup
-        }
-        $assignedByGroup = [string](Get-AssessmentRuleValue -Record $stateRow -Names @('AssignedByGroup', 'assignedByGroup'))
-        $assignmentSource = [string](Get-AssessmentRuleValue -Record $stateRow -Names @('AssignmentSource', 'Source'))
-        if ([string]::IsNullOrWhiteSpace($assignmentSource)) {
-            $assignmentSource = if ([string]::IsNullOrWhiteSpace($assignedByGroup) -or $assignedByGroup -eq '00000000-0000-0000-0000-000000000000') { 'Direct' } else { 'Group' }
-        }
-        $assignmentError = [string](Get-AssessmentRuleValue -Record $stateRow -Names @('Error', 'error'))
-        $assignmentState = [string](Get-AssessmentRuleValue -Record $stateRow -Names @('State', 'state'))
-
-        $rows.Add([pscustomobject]@{
-            SkuId            = $skuId
-            SkuName          = if ([string]::IsNullOrWhiteSpace($skuName)) { $skuId } else { $skuName }
-            AssignedByGroup  = $assignedByGroup
-            AssignmentSource = $assignmentSource
-            State            = $assignmentState
-            Error            = $assignmentError
-            LastUpdatedDateTime = [string](Get-AssessmentRuleValue -Record $stateRow -Names @('LastUpdatedDateTime', 'lastUpdatedDateTime'))
-        }) | Out-Null
-    }
-
-    return @($rows.ToArray())
-}
-
-function Get-AssessmentGroupLicenseAssignedUserCountLookup {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$Users = @(),
-        [Parameter(Mandatory = $false)][object[]]$Licenses = @()
-    )
-
-    $skuLookup = Get-AssessmentLicenseSkuLookup -Licenses $Licenses
-    $userKeysByGroupId = @{}
-    $hasAssignmentStateData = $false
-    foreach ($user in @($Users)) {
-        if ($null -eq $user) {
-            continue
-        }
-
-        $assignmentRows = @(Get-AssessmentUserLicenseAssignmentRows -User $user -SkuLookup $skuLookup)
-        if ($assignmentRows.Count -gt 0) {
-            $hasAssignmentStateData = $true
-        }
-
-        $userKey = [string](Get-AssessmentRuleValue -Record $user -Names @('Id', 'ID', 'UserPrincipalName', 'Mail', 'DisplayName'))
-        if ([string]::IsNullOrWhiteSpace($userKey)) {
-            $userKey = [guid]::NewGuid().ToString()
-        }
-
-        foreach ($assignmentRow in @($assignmentRows)) {
-            $assignedByGroup = ([string]$assignmentRow.AssignedByGroup).Trim()
-            if ([string]::IsNullOrWhiteSpace($assignedByGroup) -or $assignedByGroup -eq '00000000-0000-0000-0000-000000000000') {
-                continue
-            }
-
-            if (-not $userKeysByGroupId.ContainsKey($assignedByGroup)) {
-                $userKeysByGroupId[$assignedByGroup] = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-            }
-            [void]$userKeysByGroupId[$assignedByGroup].Add($userKey)
-        }
-    }
-
-    $countLookup = @{}
-    foreach ($groupId in @($userKeysByGroupId.Keys)) {
-        $countLookup[$groupId] = [int]$userKeysByGroupId[$groupId].Count
-    }
-
-    return [pscustomobject]@{
-        Counts = $countLookup
-        HasAssignmentStateData = $hasAssignmentStateData
-    }
-}
-
-function Get-AssessmentLicenseSuiteFamily {
-    [CmdletBinding()]
-    param([AllowNull()][string]$SkuName)
-
-    if ([string]::IsNullOrWhiteSpace($SkuName)) {
-        return $null
-    }
-
-    $normalized = $SkuName.ToUpperInvariant()
-    if ($normalized -match 'SPE_E5|MICROSOFT 365 E5|M365 E5|ENTERPRISEPREMIUM|OFFICE 365 E5|O365 E5|SPE_E3|MICROSOFT 365 E3|M365 E3|ENTERPRISEPACK|OFFICE 365 E3|O365 E3|SPE_F1|MICROSOFT 365 F3|M365 F3|DESKLESSPACK|OFFICE 365 F3|O365 F3') {
-        return 'Microsoft 365 / Office 365 suite'
-    }
-
-    if ($normalized -match 'EMS|ENTERPRISE MOBILITY') {
-        return 'Enterprise Mobility + Security'
-    }
-
-    return $null
-}
-
-function New-AssessmentConditionalAccessOptimizationRows {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$ConditionalAccessPolicies = @(),
-        [Parameter(Mandatory = $false)]$ConditionalAccessSummary
-    )
-
-    $rows = New-Object System.Collections.Generic.List[object]
-    $policyRows = @($ConditionalAccessPolicies | Where-Object { $null -ne $_ })
-    $summaryRecord = if ($ConditionalAccessSummary) { Get-AssessmentRuleValue -Record $ConditionalAccessSummary -Names @('Summary', 'Configuration') } else { $null }
-    if (-not $summaryRecord -and $ConditionalAccessSummary) { $summaryRecord = $ConditionalAccessSummary }
-
-    function Test-PolicyEnabled {
-        param($Policy)
-        return (Get-AssessmentConditionalAccessPolicyState -Policy $Policy) -eq 'enabled'
-    }
-    function Test-PolicyReportOnly {
-        param($Policy)
-        return (Get-AssessmentConditionalAccessPolicyState -Policy $Policy) -eq 'enabledForReportingButNotEnforced'
-    }
-    function Test-PolicyRequiresMfa {
-        param($Policy)
-        return Test-AssessmentConditionalAccessPolicyRequiresMfa -Policy $Policy
-    }
-    function Test-PolicySignal {
-        param($Policy, [string[]]$BooleanNames, [string]$Regex)
-        foreach ($name in @($BooleanNames)) {
-            $value = Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $Policy -Names @($name))
-            if ($value -eq $true) { return $true }
-        }
-        $text = ($Policy | ConvertTo-Json -Depth 8 -Compress)
-        if (-not [string]::IsNullOrWhiteSpace($Regex) -and $text -match $Regex) { return $true }
-        $nameText = [string](Get-AssessmentRuleValue -Record $Policy -Names @('DisplayName', 'Name'))
-        return (-not [string]::IsNullOrWhiteSpace($Regex) -and $nameText -match $Regex)
-    }
-    function Add-OptimizationRow {
-        param(
-            [string]$Signal,
-            [string]$Status,
-            [string]$Severity,
-            [object[]]$Policies,
-            [string]$CurrentState,
-            [string]$Recommendation,
-            [string]$Evidence
-        )
-        $policyNames = @($Policies | ForEach-Object { [string](Get-AssessmentRuleValue -Record $_ -Names @('DisplayName', 'Name')) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 8)
-        $rows.Add([pscustomobject]@{
-            Signal           = $Signal
-            Status           = $Status
-            Severity         = $Severity
-            PolicyCount      = @($Policies).Count
-            PolicyNames      = ($policyNames -join '; ')
-            CurrentState     = $CurrentState
-            Recommendation   = $Recommendation
-            Evidence         = $Evidence
-            SourceWorksheet  = 'ConditionalAccessPolicies'
-        }) | Out-Null
-    }
-
-    $enabledPolicies = @($policyRows | Where-Object { Test-PolicyEnabled -Policy $_ })
-    $reportOnlyPolicies = @($policyRows | Where-Object { Test-PolicyReportOnly -Policy $_ })
-    $disabledPolicies = @($policyRows | Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'disabled' })
-    $adminMfaPolicies = @($enabledPolicies | Where-Object { (Test-PolicyRequiresMfa -Policy $_) -and (Test-PolicySignal -Policy $_ -BooleanNames @('TargetsPrivilegedRoles') -Regex '(?i)admin|privileged|global administrator|directoryRole') })
-    $legacyPolicies = @($enabledPolicies | Where-Object { Test-PolicySignal -Policy $_ -BooleanNames @('BlocksLegacyAuth') -Regex '(?i)legacy|exchangeActiveSync|other clients|clientAppTypes' })
-    $guestPolicies = @($enabledPolicies | Where-Object { Test-PolicySignal -Policy $_ -BooleanNames @('TargetsGuestsOrExternalUsers') -Regex '(?i)guest|external|b2b|includeGuestsOrExternalUsers' })
-    $riskPolicies = @($enabledPolicies | Where-Object { Test-PolicySignal -Policy $_ -BooleanNames @('UsesRiskSignals') -Regex '(?i)risk|signInRisk|userRisk' })
-    $devicePolicies = @($enabledPolicies | Where-Object { Test-PolicySignal -Policy $_ -BooleanNames @('RequiresCompliantDevice') -Regex '(?i)compliantDevice|device compliance' })
-    $exclusionPolicies = @($policyRows | Where-Object { (Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $_ -Names @('HasExclusions'))) -eq $true -or (($_ | ConvertTo-Json -Depth 8 -Compress) -match '(?i)"exclude') })
-
-    Add-OptimizationRow -Signal 'Admin MFA baseline coverage' -Status $(if ($adminMfaPolicies.Count -gt 0) { 'Observed' } else { 'Review' }) -Severity $(if ($adminMfaPolicies.Count -gt 0) { 'Info' } else { 'High' }) -Policies $adminMfaPolicies -CurrentState ("{0} enabled admin/privileged MFA policy signal(s)" -f $adminMfaPolicies.Count) -Recommendation 'Validate that privileged roles are protected by enabled Conditional Access requiring strong MFA or authentication strength, with only documented emergency-access exclusions.' -Evidence 'TargetsPrivilegedRoles and MFA grant/authentication-strength signals.'
-    Add-OptimizationRow -Signal 'Legacy authentication blocking' -Status $(if ($legacyPolicies.Count -gt 0) { 'Observed' } else { 'Review' }) -Severity $(if ($legacyPolicies.Count -gt 0) { 'Info' } else { 'High' }) -Policies $legacyPolicies -CurrentState ("{0} enabled legacy-authentication protection signal(s)" -f $legacyPolicies.Count) -Recommendation 'Validate that legacy client authentication is blocked through an enabled policy and that exceptions are explicit.' -Evidence 'BlocksLegacyAuth, client app, grant-control, and policy-name signals.'
-    Add-OptimizationRow -Signal 'Guest and external access coverage' -Status $(if ($guestPolicies.Count -gt 0) { 'Observed' } else { 'Review' }) -Severity $(if ($guestPolicies.Count -gt 0) { 'Info' } else { 'Medium' }) -Policies $guestPolicies -CurrentState ("{0} enabled guest/external policy signal(s)" -f $guestPolicies.Count) -Recommendation 'Confirm guest/external users have a deliberate access baseline, including MFA or trusted inbound MFA where appropriate.' -Evidence 'Guest/external target signals.'
-    Add-OptimizationRow -Signal 'Risk-based access coverage' -Status $(if ($riskPolicies.Count -gt 0) { 'Observed' } else { 'Review' }) -Severity $(if ($riskPolicies.Count -gt 0) { 'Info' } else { 'Medium' }) -Policies $riskPolicies -CurrentState ("{0} enabled risk-based policy signal(s)" -f $riskPolicies.Count) -Recommendation 'Review user-risk and sign-in-risk policy coverage for high-value users and high-risk access paths.' -Evidence 'User risk and sign-in risk condition signals.'
-    Add-OptimizationRow -Signal 'Compliant-device access scenarios' -Status $(if ($devicePolicies.Count -gt 0) { 'Observed' } else { 'Review' }) -Severity 'Low' -Policies $devicePolicies -CurrentState ("{0} enabled compliant-device requirement signal(s)" -f $devicePolicies.Count) -Recommendation 'Decide which managed-access scenarios should require compliant devices and validate those controls in report-only or pilot before enforcement.' -Evidence 'Grant-control compliant-device signals.'
-    Add-OptimizationRow -Signal 'Report-only policy backlog' -Status $(if ($reportOnlyPolicies.Count -gt 0) { 'Review' } else { 'Observed' }) -Severity $(if ($reportOnlyPolicies.Count -gt 0) { 'Medium' } else { 'Info' }) -Policies $reportOnlyPolicies -CurrentState ("{0} report-only policy/policies" -f $reportOnlyPolicies.Count) -Recommendation 'Review report-only impact, document expected behavior, and move validated policies into enabled enforcement.' -Evidence 'Policy state.'
-    Add-OptimizationRow -Signal 'Disabled policy backlog' -Status $(if ($disabledPolicies.Count -gt 0) { 'Review' } else { 'Observed' }) -Severity 'Low' -Policies $disabledPolicies -CurrentState ("{0} disabled policy/policies" -f $disabledPolicies.Count) -Recommendation 'Retire obsolete disabled policies or document why they remain as staged/preserved policy definitions.' -Evidence 'Policy state.'
-    Add-OptimizationRow -Signal 'Exclusion-heavy policy review' -Status $(if ($exclusionPolicies.Count -ge 3) { 'Review' } else { 'Observed' }) -Severity $(if ($exclusionPolicies.Count -ge 3) { 'Medium' } else { 'Info' }) -Policies $exclusionPolicies -CurrentState ("{0} policy/policies with exclusion signals" -f $exclusionPolicies.Count) -Recommendation 'Minimize exclusions, reserve them for break-glass or validated operational exceptions, and periodically review membership drift.' -Evidence 'Exclude users/groups/roles/app/client signals.'
-
-    $signatureGroups = @(
-        $policyRows |
-            Group-Object {
-                $state = ([string](Get-AssessmentRuleValue -Record $_ -Names @('State', 'state'))).ToLowerInvariant()
-                $includeUsers = [string](Get-AssessmentRuleValue -Record $_ -Names @('IncludedUsers', 'IncludeUsers', 'Users'))
-                $includeGroups = [string](Get-AssessmentRuleValue -Record $_ -Names @('IncludedGroups', 'IncludeGroups'))
-                $includeRoles = [string](Get-AssessmentRuleValue -Record $_ -Names @('IncludedRoles', 'IncludeRoles'))
-                $applications = [string](Get-AssessmentRuleValue -Record $_ -Names @('Applications', 'IncludedApplications', 'CloudApps'))
-                $clientApps = [string](Get-AssessmentRuleValue -Record $_ -Names @('ClientAppTypes', 'ClientApps'))
-                $risk = [string](Get-AssessmentRuleValue -Record $_ -Names @('SignInRiskLevels', 'UserRiskLevels'))
-                $platforms = [string](Get-AssessmentRuleValue -Record $_ -Names @('IncludePlatforms', 'Platforms'))
-                $grant = [string](Get-AssessmentRuleValue -Record $_ -Names @('GrantControls'))
-                $session = [string](Get-AssessmentRuleValue -Record $_ -Names @('SessionControls'))
-                "$state|$includeUsers|$includeGroups|$includeRoles|$applications|$clientApps|$risk|$platforms|$grant|$session".ToLowerInvariant()
-            } |
-            Where-Object { $_.Count -gt 1 -and -not [string]::IsNullOrWhiteSpace([string]$_.Name) }
-    )
-    foreach ($signatureGroup in @($signatureGroups)) {
-        Add-OptimizationRow -Signal 'Possible overlapping Conditional Access policies' -Status 'Review' -Severity 'Low' -Policies @($signatureGroup.Group) -CurrentState ("{0} policy/policies share a similar target, condition, grant, and session-control signature" -f $signatureGroup.Count) -Recommendation 'Compare these policies for duplicate scope, conflicting controls, and opportunities to consolidate or clarify ownership.' -Evidence 'Deterministic policy-signature grouping.'
-    }
-
-    return @($rows.ToArray())
-}
-
-function New-AssessmentMfaMethodPostureSummaryRows {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)]$MfaEnrollmentSummary,
-        [Parameter(Mandatory = $false)][object[]]$MfaRegistrationDetails = @()
-    )
-
-    $summaryRecord = if ($MfaEnrollmentSummary) { Get-AssessmentRuleValue -Record $MfaEnrollmentSummary -Names @('Summary', 'Configuration') } else { $null }
-    if (-not $summaryRecord -and $MfaEnrollmentSummary) { $summaryRecord = $MfaEnrollmentSummary }
-    $totalUsers = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $summaryRecord -Names @('TotalUsers', 'UserCount', 'TotalUserCount'))
-    $registeredUsers = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $summaryRecord -Names @('RegisteredUsers', 'RegisteredUserCount', 'MfaRegisteredUsers'))
-    $notRegisteredUsers = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $summaryRecord -Names @('NotRegisteredUsers', 'UsersNotRegisteredForMfa', 'NotRegisteredUserCount'))
-    if ($null -eq $notRegisteredUsers -and $null -ne $totalUsers -and $null -ne $registeredUsers) {
-        $notRegisteredUsers = [Math]::Max(($totalUsers - $registeredUsers), 0)
-    }
-    $weakMethodOnlyUsers = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $summaryRecord -Names @('UsersWithWeakMethodsOnly'))
-    $weakDefaultMethodUsers = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $summaryRecord -Names @('UsersWithWeakDefaultMethod'))
-    $phishingResistantUsers = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $summaryRecord -Names @('UsersWithPhishingResistantMethods', 'PhishingResistantUsers'))
-    $weakBreakdown = [string](Get-AssessmentRuleValue -Record $summaryRecord -Names @('WeakMethodBreakdown'))
-    $registeredBreakdown = [string](Get-AssessmentRuleValue -Record $summaryRecord -Names @('RegisteredMethodBreakdown'))
-
-    if (($null -eq $totalUsers -or $null -eq $registeredUsers) -and @($MfaRegistrationDetails).Count -gt 0) {
-        $totalUsers = @($MfaRegistrationDetails).Count
-        $registeredUsers = @($MfaRegistrationDetails | Where-Object { (Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $_ -Names @('IsMfaRegistered', 'IsRegistered', 'MfaRegistered'))) -eq $true }).Count
-        $notRegisteredUsers = [Math]::Max(($totalUsers - $registeredUsers), 0)
-    }
-
-    return @(
-        [pscustomobject]@{ Signal = 'MFA registration coverage'; Status = if ($null -ne $notRegisteredUsers -and $notRegisteredUsers -gt 0) { 'Review' } else { 'Observed' }; UserCount = $registeredUsers; CurrentState = ("{0} registered / {1} not registered" -f $(if ($null -eq $registeredUsers) { 'Unknown' } else { [int]$registeredUsers }), $(if ($null -eq $notRegisteredUsers) { 'Unknown' } else { [int]$notRegisteredUsers })); Recommendation = 'Keep enrollment separate from enforcement and drive remaining users through registration readiness.'; SourceWorksheet = 'MfaEnrollmentSummary' },
-        [pscustomobject]@{ Signal = 'Weak MFA method reliance'; Status = if ((($null -ne $weakMethodOnlyUsers -and $weakMethodOnlyUsers -gt 0) -or ($null -ne $weakDefaultMethodUsers -and $weakDefaultMethodUsers -gt 0))) { 'Review' } else { 'Observed' }; UserCount = $(if ($null -ne $weakMethodOnlyUsers) { [int]$weakMethodOnlyUsers } else { $null }); CurrentState = ("{0} weak-only user(s); {1} weak default user(s); {2}" -f $(if ($null -eq $weakMethodOnlyUsers) { 'Unknown' } else { [int]$weakMethodOnlyUsers }), $(if ($null -eq $weakDefaultMethodUsers) { 'Unknown' } else { [int]$weakDefaultMethodUsers }), $(if ([string]::IsNullOrWhiteSpace($weakBreakdown)) { 'Weak-method breakdown not surfaced' } else { $weakBreakdown })); Recommendation = 'Reduce SMS, voice, and email OTP reliance; encourage Microsoft Authenticator, passwordless, FIDO2/passkeys, or other phishing-resistant methods for privileged access.'; SourceWorksheet = 'MfaEnrollmentSummary' },
-        [pscustomobject]@{ Signal = 'Phishing-resistant method adoption'; Status = if ($null -ne $phishingResistantUsers -and $phishingResistantUsers -gt 0) { 'Observed' } else { 'Review' }; UserCount = $phishingResistantUsers; CurrentState = $(if ($null -eq $phishingResistantUsers) { 'Phishing-resistant method count not surfaced' } else { "$([int]$phishingResistantUsers) user(s)" }); Recommendation = 'Prioritize phishing-resistant authentication for privileged and high-risk populations where licensing and device readiness support it.'; SourceWorksheet = 'MfaEnrollmentSummary' },
-        [pscustomobject]@{ Signal = 'Registered method mix'; Status = 'Observed'; UserCount = $registeredUsers; CurrentState = $(if ([string]::IsNullOrWhiteSpace($registeredBreakdown)) { 'Registered method mix not surfaced' } else { $registeredBreakdown }); Recommendation = 'Use the method mix to target communications, registration campaigns, and weak-method retirement waves.'; SourceWorksheet = 'MfaEnrollmentSummary' }
-    )
-}
-
-function New-AssessmentPrivilegedAccessRemediationSummaryRows {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$Admins = @(),
-        [Parameter(Mandatory = $false)]$AdminMfaSummary,
-        [Parameter(Mandatory = $false)][object[]]$AdminMfaRegistrationGaps = @(),
-        [Parameter(Mandatory = $false)][object[]]$AdminMfaEnforcementGaps = @()
-    )
-
-    $enabledAdmins = @($Admins | Where-Object { (Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false })
-    $globalAdmins = @($enabledAdmins | Where-Object { [string](Get-AssessmentRuleValue -Record $_ -Names @('Role', 'DirectoryRole', 'AdminRole', 'RoleName')) -match 'Global Administrator' })
-    $staleAdmins = @($enabledAdmins | Where-Object {
-        $lastSignIn = $null
-        try { $lastSignIn = [datetime](Get-AssessmentRuleValue -Record $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime')) } catch { $lastSignIn = $null }
-        $lastSignIn -and $lastSignIn -lt (Get-Date).AddDays(-90)
-    })
-    $cloudOnlyGlobalAdmins = @($globalAdmins | Where-Object { (Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $_ -Names @('OnPremisesSyncEnabled', 'DirSyncEnabled', 'IsSynced'))) -ne $true })
-    $summaryRecord = if ($AdminMfaSummary) { Get-AssessmentRuleValue -Record $AdminMfaSummary -Names @('Summary', 'Configuration') } else { $null }
-    if (-not $summaryRecord -and $AdminMfaSummary) { $summaryRecord = $AdminMfaSummary }
-    $notRegistered = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $summaryRecord -Names @('AdminUsersNotRegisteredForMfa'))
-    if ($null -eq $notRegistered) { $notRegistered = @($AdminMfaRegistrationGaps).Count }
-    $notCovered = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $summaryRecord -Names @('AdminUsersNotCoveredByMfaEnforcement'))
-    if ($null -eq $notCovered) { $notCovered = @($AdminMfaEnforcementGaps).Count }
-
-    return @(
-        [pscustomobject]@{ Signal = 'Standing Global Administrator assignments'; Status = if ($globalAdmins.Count -gt 5) { 'Review' } else { 'Observed' }; Count = $globalAdmins.Count; CurrentState = "$($globalAdmins.Count) enabled Global Administrator assignment(s)"; RecommendedAction = 'Reduce standing Global Administrators, remove stale assignments, use lower-privilege roles such as Global Reader where appropriate, and prefer PIM eligible activation with approval where supported.'; SourceWorksheet = 'Admins' },
-        [pscustomobject]@{ Signal = 'Stale privileged admin accounts'; Status = if ($staleAdmins.Count -gt 0) { 'Review' } else { 'Observed' }; Count = $staleAdmins.Count; CurrentState = "$($staleAdmins.Count) enabled admin account(s) appear stale"; RecommendedAction = 'Validate stale admin accounts and remove, disable, or downgrade privileges that are no longer required.'; SourceWorksheet = 'Admins' },
-        [pscustomobject]@{ Signal = 'Admin MFA registration gaps'; Status = if ($notRegistered -gt 0) { 'Review' } else { 'Observed' }; Count = $notRegistered; CurrentState = "$([int]$notRegistered) enabled admin account(s) not registered for MFA"; RecommendedAction = 'Drive admin registration completion separately from Conditional Access enforcement validation.'; SourceWorksheet = 'AdminMfaRegistrationGaps' },
-        [pscustomobject]@{ Signal = 'Admin MFA enforcement gaps'; Status = if ($notCovered -gt 0) { 'Review' } else { 'Observed' }; Count = $notCovered; CurrentState = "$([int]$notCovered) enabled admin account(s) not covered by active MFA enforcement"; RecommendedAction = 'Validate enabled Conditional Access enforcement for privileged roles and minimize exclusions to approved emergency-access accounts.'; SourceWorksheet = 'AdminMfaEnforcementGaps' },
-        [pscustomobject]@{ Signal = 'Cloud-only emergency access coverage'; Status = if ($cloudOnlyGlobalAdmins.Count -lt 2) { 'Review' } else { 'Observed' }; Count = $cloudOnlyGlobalAdmins.Count; CurrentState = "$($cloudOnlyGlobalAdmins.Count) enabled cloud-only Global Administrator account(s) surfaced"; RecommendedAction = 'Maintain at least two cloud-only emergency-access accounts and test their Conditional Access exclusion and monitoring process.'; SourceWorksheet = 'Admins' }
-    )
-}
-
-function Test-AssessmentGroupManagesLicenses {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)]
-        [AllowNull()]
-        $Record
-    )
-
-    if ($null -eq $Record) {
-        return $false
-    }
-
-    $assignedLicenseCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $Record -Names @('AssignedLicenseCount'))
-    if ($null -ne $assignedLicenseCount) {
-        return ($assignedLicenseCount -gt 0)
-    }
-
-    $assignedLicenseSignals = @(
-        'AssignedLicenseSkuIds',
-        'AssignedLicenseSkuPartNumbers',
-        'AssignedLicenseFriendlyNames'
-    ) | ForEach-Object {
-        [string](Get-AssessmentRuleValue -Record $Record -Names @($_))
-    } | Where-Object {
-        -not [string]::IsNullOrWhiteSpace($_) -and $_ -notmatch '^(?i)notcollected|not surfaced'
-    }
-
-    if (@($assignedLicenseSignals).Count -gt 0) {
-        return $true
-    }
-
-    return ((Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $Record -Names @('IsManagingLicenses'))) -eq $true)
-}
 
 function Convert-ToAssessmentLicenseDate {
     [CmdletBinding()]
@@ -3932,471 +3557,6 @@ function Convert-ToAssessmentLicenseDate {
     catch {
         return $null
     }
-}
-
-function Get-AssessmentNormalizedPrincipalKey {
-    [CmdletBinding()]
-    param([AllowNull()][string]$Value)
-
-    if ([string]::IsNullOrWhiteSpace($Value)) {
-        return ''
-    }
-
-    return $Value.Trim().ToLowerInvariant()
-}
-
-function New-AssessmentActivityLookup {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$Rows = @(),
-        [Parameter(Mandatory = $false)][string[]]$PrincipalNames = @('UserPrincipalName', 'UPN', 'Mail', 'PrimarySmtpAddress')
-    )
-
-    $lookup = @{}
-    foreach ($row in @($Rows)) {
-        if ($null -eq $row) {
-            continue
-        }
-
-        foreach ($principalName in @($PrincipalNames)) {
-            $principal = Get-AssessmentNormalizedPrincipalKey -Value ([string](Get-AssessmentRuleValue -Record $row -Names @($principalName)))
-            if ([string]::IsNullOrWhiteSpace($principal)) {
-                continue
-            }
-
-            if (-not $lookup.ContainsKey($principal)) {
-                $lookup[$principal] = New-Object System.Collections.Generic.List[object]
-            }
-
-            $lookup[$principal].Add($row) | Out-Null
-        }
-    }
-
-    return $lookup
-}
-
-function Get-AssessmentLatestDateFromRows {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$Rows = @(),
-        [Parameter(Mandatory = $false)][string[]]$DateNames = @('LastActivityDate', 'LastActivityDateTime', 'LastSignInDateTime', 'LastSuccessfulSignInDateTime')
-    )
-
-    $dates = @(
-        foreach ($row in @($Rows)) {
-            $date = Convert-ToAssessmentLicenseDate -Value (Get-AssessmentRuleValue -Record $row -Names $DateNames)
-            if ($null -ne $date) {
-                $date
-            }
-        }
-    )
-
-    if ($dates.Count -eq 0) {
-        return $null
-    }
-
-    return ($dates | Sort-Object -Descending | Select-Object -First 1)
-}
-
-function Get-AssessmentDateText {
-    [CmdletBinding()]
-    param([AllowNull()]$Date)
-
-    if ($null -eq $Date) {
-        return 'Not surfaced in current source'
-    }
-
-    try {
-        return ([datetime]$Date).ToString('yyyy-MM-dd')
-    }
-    catch {
-        return [string]$Date
-    }
-}
-
-function Get-AssessmentUserLicenseActivityState {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)]$User,
-        [Parameter(Mandatory = $false)]$EmailActivityLookup = @{},
-        [Parameter(Mandatory = $false)]$TeamsActivityLookup = @{},
-        [Parameter(Mandatory = $false)]$Microsoft365ActivityLookup = @{}
-    )
-
-    if (-not ($EmailActivityLookup -is [System.Collections.IDictionary])) {
-        $EmailActivityLookup = @{}
-    }
-    if (-not ($TeamsActivityLookup -is [System.Collections.IDictionary])) {
-        $TeamsActivityLookup = @{}
-    }
-    if (-not ($Microsoft365ActivityLookup -is [System.Collections.IDictionary])) {
-        $Microsoft365ActivityLookup = @{}
-    }
-
-    $principalKeys = @(
-        Get-AssessmentNormalizedPrincipalKey -Value ([string](Get-AssessmentRuleValue -Record $User -Names @('UserPrincipalName')))
-        Get-AssessmentNormalizedPrincipalKey -Value ([string](Get-AssessmentRuleValue -Record $User -Names @('Mail', 'PrimarySmtpAddress')))
-    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
-
-    $emailRows = New-Object System.Collections.Generic.List[object]
-    $teamsRows = New-Object System.Collections.Generic.List[object]
-    $m365Rows = New-Object System.Collections.Generic.List[object]
-    foreach ($principalKey in @($principalKeys)) {
-        if ($EmailActivityLookup.ContainsKey($principalKey)) {
-            foreach ($row in @($EmailActivityLookup[$principalKey])) { $emailRows.Add($row) | Out-Null }
-        }
-        if ($TeamsActivityLookup.ContainsKey($principalKey)) {
-            foreach ($row in @($TeamsActivityLookup[$principalKey])) { $teamsRows.Add($row) | Out-Null }
-        }
-        if ($Microsoft365ActivityLookup.ContainsKey($principalKey)) {
-            foreach ($row in @($Microsoft365ActivityLookup[$principalKey])) { $m365Rows.Add($row) | Out-Null }
-        }
-    }
-
-    $lastSignInDate = Get-AssessmentLatestDateFromRows -Rows @($User) -DateNames @(
-        'LastSuccessfulSignInDateTime',
-        'LastSignInDateTime',
-        'LastNonInteractiveSignInDateTime',
-        'SignInActivityLastSignInDateTime',
-        'SignInActivityLastSuccessfulSignInDateTime'
-    )
-    $lastExchangeActivityDate = Get-AssessmentLatestDateFromRows -Rows @(@($emailRows.ToArray()) + @($User)) -DateNames @('LastExchangeActivityDate', 'ExchangeLastActivityDate', 'LastActivityDate', 'LastActivityDateTime')
-    $lastTeamsActivityDate = Get-AssessmentLatestDateFromRows -Rows @(@($teamsRows.ToArray()) + @($User)) -DateNames @('LastTeamsActivityDate', 'TeamsLastActivityDate', 'LastActivityDate', 'LastActivityDateTime')
-    $lastMicrosoft365ActivityDate = Get-AssessmentLatestDateFromRows -Rows @(@($m365Rows.ToArray()) + @($User)) -DateNames @(
-        'LastMicrosoft365ActivityDate',
-        'Microsoft365LastActivityDate',
-        'LastActivityDate',
-        'LastActivityDateTime'
-    )
-    $availableDates = @(
-        $lastSignInDate
-        $lastExchangeActivityDate
-        $lastTeamsActivityDate
-        $lastMicrosoft365ActivityDate
-    ) | Where-Object { $null -ne $_ }
-    $lastActivityDate = if ($availableDates.Count -gt 0) {
-        $availableDates | Sort-Object -Descending | Select-Object -First 1
-    }
-    else {
-        $null
-    }
-
-    return [pscustomobject]@{
-        LastSignInDateTime          = $lastSignInDate
-        LastExchangeActivityDate    = $lastExchangeActivityDate
-        LastTeamsActivityDate       = $lastTeamsActivityDate
-        LastMicrosoft365ActivityDate = $lastMicrosoft365ActivityDate
-        LastActivityDate            = $lastActivityDate
-        AvailableSignalCount        = $availableDates.Count
-    }
-}
-
-function New-AssessmentTeamsGroupsCleanupCandidateRows {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$Teams = @(),
-        [Parameter(Mandatory = $false)][object[]]$Groups = @()
-    )
-
-    $rows = New-Object System.Collections.Generic.List[object]
-    function Add-CleanupCandidate {
-        param($ObjectType, $Name, $OwnerCount, $MemberCount, $GuestCount, $LastActivityDate, $StorageGB, $IsManagingLicenses, $RiskSignal, $RecommendedAction, $SourceWorksheet)
-        $rows.Add([pscustomobject]@{
-            ObjectType        = $ObjectType
-            Name              = $Name
-            OwnerCount        = $OwnerCount
-            MemberCount       = $MemberCount
-            GuestCount        = $GuestCount
-            LastActivityDate  = $LastActivityDate
-            StorageGB         = $StorageGB
-            IsManagingLicenses = $IsManagingLicenses
-            RiskSignal        = $RiskSignal
-            RecommendedAction = $RecommendedAction
-            SourceWorksheet   = $SourceWorksheet
-        }) | Out-Null
-    }
-    function Resolve-AssessmentMemberCount {
-        param($Record)
-
-        $explicitCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $Record -Names @('MemberCount', 'MembersCount', 'GroupMemberCount', 'MemberTotalCount'))
-        if ($null -ne $explicitCount) {
-            return $explicitCount
-        }
-
-        $membersValue = Get-AssessmentRuleValue -Record $Record -Names @('Members', 'GroupMembers')
-        if ($null -eq $membersValue -or $membersValue -is [string]) {
-            return $null
-        }
-
-        return @(Convert-AssessmentHtmlArray -InputObject $membersValue).Count
-    }
-    foreach ($team in @($Teams)) {
-        $name = [string](Get-AssessmentRuleValue -Record $team -Names @('DisplayName', 'Name'))
-        $ownerCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $team -Names @('OwnerCount', 'Owners'))
-        $memberCount = Resolve-AssessmentMemberCount -Record $team
-        $guestCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $team -Names @('GuestCount', 'Guests'))
-        $privateChannelCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $team -Names @('PrivateChannelCount'))
-        $sharedChannelCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $team -Names @('SharedChannelCount'))
-        $lastActivity = Get-AssessmentRuleValue -Record $team -Names @('LastActivityDate', 'LastActivityDateTime')
-        $storage = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $team -Names @('SiteSize-GB', 'StorageUsedGB'))
-        $riskSignals = @()
-        if ($null -ne $ownerCount -and $ownerCount -le 0) { $riskSignals += 'Ownerless Team' }
-        if ($null -ne $memberCount -and $memberCount -le 0) { $riskSignals += 'No members' }
-        if ($null -ne $guestCount -and $null -ne $memberCount -and $memberCount -gt 0 -and (($guestCount / $memberCount) -ge 0.4)) { $riskSignals += 'Guest-heavy Team' }
-        if (($null -ne $privateChannelCount -and $privateChannelCount -ge 5) -or ($null -ne $sharedChannelCount -and $sharedChannelCount -ge 1)) { $riskSignals += 'Private/shared channel review' }
-        try {
-            if ($lastActivity -and ([datetime]$lastActivity) -lt (Get-Date).AddDays(-90)) { $riskSignals += 'Dormant Team' }
-        } catch {}
-        if ($riskSignals.Count -gt 0) {
-            Add-CleanupCandidate -ObjectType 'Team' -Name $name -OwnerCount $ownerCount -MemberCount $memberCount -GuestCount $guestCount -LastActivityDate $lastActivity -StorageGB $storage -IsManagingLicenses $false -RiskSignal ($riskSignals -join '; ') -RecommendedAction 'Confirm owner accountability, guest access, channel lifecycle, and whether this Team should remain active, be archived, or be retired.' -SourceWorksheet 'AllTeams'
-        }
-    }
-
-    foreach ($group in @($Groups)) {
-        $name = [string](Get-AssessmentRuleValue -Record $group -Names @('DisplayName', 'Name'))
-        $ownerCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $group -Names @('OwnerCount', 'Owners'))
-        $memberCount = Resolve-AssessmentMemberCount -Record $group
-        $isManagingLicenses = Test-AssessmentGroupManagesLicenses -Record $group
-        $riskSignals = @()
-        if ($null -ne $ownerCount -and $ownerCount -le 0) { $riskSignals += 'Ownerless group' }
-        if ($null -ne $memberCount -and $memberCount -le 0) { $riskSignals += 'No members' }
-        if ($isManagingLicenses -eq $true -and ($null -eq $ownerCount -or $ownerCount -le 0)) { $riskSignals += 'License-managing group without owner' }
-        if ($riskSignals.Count -gt 0) {
-            Add-CleanupCandidate -ObjectType 'Microsoft 365 / Entra group' -Name $name -OwnerCount $ownerCount -MemberCount $memberCount -GuestCount $null -LastActivityDate (Get-AssessmentRuleValue -Record $group -Names @('LastActivityDate', 'LastActivityDateTime')) -StorageGB $null -IsManagingLicenses $isManagingLicenses -RiskSignal ($riskSignals -join '; ') -RecommendedAction 'Confirm owner accountability, membership purpose, and whether the group should remain active, be assigned lifecycle ownership, or be retired.' -SourceWorksheet 'EntraIDGroups'
-        }
-    }
-
-    return @($rows.ToArray())
-}
-
-function New-AssessmentGroupLicensingSummaryRows {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$Groups = @(),
-        [Parameter(Mandatory = $false)][object[]]$Users = @(),
-        [Parameter(Mandatory = $false)][object[]]$Licenses = @()
-    )
-
-    $assignedUserCountLookup = Get-AssessmentGroupLicenseAssignedUserCountLookup -Users $Users -Licenses $Licenses
-    $rows = New-Object System.Collections.Generic.List[object]
-    foreach ($group in @($Groups)) {
-        $isManagingLicenses = Test-AssessmentGroupManagesLicenses -Record $group
-        $assignedLicenseCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $group -Names @('AssignedLicenseCount'))
-        if ($isManagingLicenses -ne $true) {
-            continue
-        }
-
-        $ownerCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $group -Names @('OwnerCount'))
-        $groupId = [string](Get-AssessmentRuleValue -Record $group -Names @('Id', 'ID'))
-        $memberCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $group -Names @('MemberCount'))
-        $memberCountSource = [string](Get-AssessmentRuleValue -Record $group -Names @('MemberCountSource'))
-        $licensedUserCount = $null
-        if ($assignedUserCountLookup.HasAssignmentStateData -eq $true) {
-            $licensedUserCount = if (-not [string]::IsNullOrWhiteSpace($groupId) -and $assignedUserCountLookup.Counts.ContainsKey($groupId)) {
-                [int]$assignedUserCountLookup.Counts[$groupId]
-            }
-            else {
-                0
-            }
-        }
-        $effectiveMemberCount = if ($null -ne $licensedUserCount) { $licensedUserCount } else { $memberCount }
-        $membershipCountSource = if ($null -ne $licensedUserCount) { 'User licenseAssignmentStates assignedByGroup' } else { 'Group member count' }
-        $rows.Add([pscustomobject]@{
-            GroupName                    = [string](Get-AssessmentRuleValue -Record $group -Names @('DisplayName', 'Name'))
-            GroupId                      = $groupId
-            OwnerCount                   = $ownerCount
-            MemberCount                  = $memberCount
-            MemberCountSource            = $memberCountSource
-            LicensedUserCount            = $licensedUserCount
-            EffectiveMemberCount         = $effectiveMemberCount
-            MembershipCountSource        = $membershipCountSource
-            AssignedLicenseCount         = if ($null -ne $assignedLicenseCount) { [int]$assignedLicenseCount } else { $null }
-            AssignedLicenseSkuIds        = [string](Get-AssessmentRuleValue -Record $group -Names @('AssignedLicenseSkuIds'))
-            AssignedLicenseSkuPartNumbers = [string](Get-AssessmentRuleValue -Record $group -Names @('AssignedLicenseSkuPartNumbers'))
-            AssignedLicenseFriendlyNames = [string](Get-AssessmentRuleValue -Record $group -Names @('AssignedLicenseFriendlyNames'))
-            LicenseProcessingState       = [string](Get-AssessmentRuleValue -Record $group -Names @('LicenseProcessingState', 'licenseProcessingState'))
-            RiskSignal                   = if ($null -ne $ownerCount -and $ownerCount -le 0) { 'License-managing group without owner' } else { 'Group-based licensing in use' }
-            Recommendation               = 'Document license group ownership, assignment intent, and error-review cadence before relying on the group as a lifecycle control.'
-            SourceWorksheet              = 'EntraIDGroups'
-        }) | Out-Null
-    }
-
-    return @($rows.ToArray())
-}
-
-function New-AssessmentLicenseOptimizationCandidateRows {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)][object[]]$Users = @(),
-        [Parameter(Mandatory = $false)][object[]]$Groups = @(),
-        [Parameter(Mandatory = $false)][object[]]$Licenses = @(),
-        [Parameter(Mandatory = $false)][object[]]$EmailActivityRows = @(),
-        [Parameter(Mandatory = $false)][object[]]$TeamsActivityRows = @(),
-        [Parameter(Mandatory = $false)][object[]]$Microsoft365ActivityRows = @(),
-        [Parameter(Mandatory = $false)][int]$InactiveDaysThreshold = 90
-    )
-
-    $skuLookup = Get-AssessmentLicenseSkuLookup -Licenses $Licenses
-    $emailActivityLookup = New-AssessmentActivityLookup -Rows $EmailActivityRows -PrincipalNames @('UserPrincipalName', 'UPN', 'Mail', 'PrimarySmtpAddress')
-    $teamsActivityLookup = New-AssessmentActivityLookup -Rows $TeamsActivityRows -PrincipalNames @('UserPrincipalName', 'UPN', 'Mail', 'PrimarySmtpAddress')
-    $microsoft365ActivityLookup = New-AssessmentActivityLookup -Rows $Microsoft365ActivityRows -PrincipalNames @('UserPrincipalName', 'UPN', 'Mail', 'PrimarySmtpAddress')
-    $inactiveCutoff = (Get-Date).AddDays(-1 * [Math]::Abs($InactiveDaysThreshold))
-    $rows = New-Object System.Collections.Generic.List[object]
-    foreach ($group in @($Groups)) {
-        $isManagingLicenses = Test-AssessmentGroupManagesLicenses -Record $group
-        if ($isManagingLicenses -eq $true) {
-            $ownerCount = Convert-AssessmentRuleValueToNumber (Get-AssessmentRuleValue -Record $group -Names @('OwnerCount'))
-            if ($null -eq $ownerCount -or $ownerCount -le 0) {
-                $rows.Add([pscustomobject]@{
-                    ObjectType        = 'Group'
-                    DisplayName       = [string](Get-AssessmentRuleValue -Record $group -Names @('DisplayName', 'Name'))
-                    UserPrincipalName = $null
-                    SkuFamily         = 'Group-based licensing'
-                    SkuNames          = [string](Get-AssessmentRuleValue -Record $group -Names @('AssignedLicenseFriendlyNames', 'AssignedLicenseSkuPartNumbers'))
-                    AssignmentSource  = 'Group'
-                    LicenseProcessingState = [string](Get-AssessmentRuleValue -Record $group -Names @('LicenseProcessingState', 'licenseProcessingState'))
-                    Issue             = 'License-managing group without owner'
-                    RecommendedAction = 'Assign accountable owners to licensing groups and document change-control expectations.'
-                    SourceWorksheet   = 'EntraIDGroups'
-                }) | Out-Null
-            }
-        }
-    }
-
-    foreach ($user in @($Users)) {
-        $displayName = [string](Get-AssessmentRuleValue -Record $user -Names @('DisplayName'))
-        $upn = [string](Get-AssessmentRuleValue -Record $user -Names @('UserPrincipalName'))
-        $assignmentRows = @(Get-AssessmentUserLicenseAssignmentRows -User $user -SkuLookup $skuLookup)
-        foreach ($skuGroup in @($assignmentRows | Group-Object { if (-not [string]::IsNullOrWhiteSpace([string]$_.SkuName)) { [string]$_.SkuName } else { [string]$_.SkuId } })) {
-            if ([string]::IsNullOrWhiteSpace([string]$skuGroup.Name)) { continue }
-            $hasDirect = @($skuGroup.Group | Where-Object { [string]$_.AssignmentSource -eq 'Direct' }).Count -gt 0
-            $hasGroup = @($skuGroup.Group | Where-Object { [string]$_.AssignmentSource -eq 'Group' }).Count -gt 0
-            if ($hasDirect -and $hasGroup) {
-                $rows.Add([pscustomobject]@{
-                    ObjectType        = 'User'
-                    DisplayName       = $displayName
-                    UserPrincipalName = $upn
-                    SkuFamily         = 'Duplicate assignment source'
-                    SkuNames          = [string]$skuGroup.Name
-                    AssignmentSource  = 'Direct + Group'
-                    Issue             = 'Same SKU assigned directly and by group'
-                    RecommendedAction = 'Remove duplicate direct assignments after confirming the group-based assignment is intentional and healthy.'
-                    SourceWorksheet   = 'Users'
-                }) | Out-Null
-            }
-        }
-
-        foreach ($assignmentRow in @($assignmentRows)) {
-            $assignmentError = [string]$assignmentRow.Error
-            $assignmentState = [string]$assignmentRow.State
-            $hasAssignmentError = (
-                (-not [string]::IsNullOrWhiteSpace($assignmentError) -and $assignmentError -notmatch '^(?i)none|noerror|success$') -or
-                (-not [string]::IsNullOrWhiteSpace($assignmentState) -and $assignmentState -match '(?i)error|failed|failure')
-                )
-                if ($hasAssignmentError) {
-                    $errorDetail = if (-not [string]::IsNullOrWhiteSpace($assignmentError) -and $assignmentError -notmatch '^(?i)none|noerror|success$') { $assignmentError } else { $assignmentState }
-                    $rows.Add([pscustomobject]@{
-                        ObjectType        = 'User'
-                        DisplayName       = $displayName
-                        UserPrincipalName = $upn
-                        SkuFamily         = 'Assignment error'
-                        SkuNames          = $assignmentRow.SkuName
-                        AssignmentSource  = $assignmentRow.AssignmentSource
-                        AssignmentState   = $assignmentState
-                        ErrorCode         = $errorDetail
-                        AssignedByGroup   = $assignmentRow.AssignedByGroup
-                        LastUpdatedDateTime = $assignmentRow.LastUpdatedDateTime
-                        Issue             = "License assignment error: $errorDetail"
-                        RecommendedAction = 'Review Microsoft Graph license assignment errors, resolve the assignment conflict or capacity/usage-location issue, and reprocess group-based license assignment where appropriate.'
-                        SourceWorksheet   = 'Users'
-                    }) | Out-Null
-                }
-        }
-
-        $assignedLicenseNames = @($assignmentRows | ForEach-Object { [string]$_.SkuName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        if ($assignedLicenseNames.Count -eq 0) {
-            $assignedLicenseNames = Convert-AssessmentRuleValueToStringList (Get-AssessmentRuleValue -Record $user -Names @('AssignedLicensesFriendly', 'AssignedLicenses'))
-        }
-        $suiteGroups = @(
-            $assignedLicenseNames |
-                ForEach-Object {
-                    [pscustomobject]@{ Name = $_; Family = Get-AssessmentLicenseSuiteFamily -SkuName $_ }
-                } |
-                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Family) } |
-                Group-Object Family |
-                Where-Object { $_.Count -gt 1 }
-        )
-        foreach ($suiteGroup in @($suiteGroups)) {
-            $rows.Add([pscustomobject]@{
-                ObjectType        = 'User'
-                DisplayName       = $displayName
-                UserPrincipalName = $upn
-                SkuFamily         = [string]$suiteGroup.Name
-                SkuNames          = (@($suiteGroup.Group | ForEach-Object { $_.Name }) -join '; ')
-                AssignmentSource  = 'Mixed/Unknown'
-                Issue             = 'Likely duplicate suite assignment'
-                RecommendedAction = 'Review stacked Microsoft 365 / Office 365 suite assignments and retain the license set that matches the user role and required services.'
-                SourceWorksheet   = 'Users'
-            }) | Out-Null
-        }
-
-        if ($assignedLicenseNames.Count -gt 0) {
-            $enabled = Convert-AssessmentRuleValueToBoolean (Get-AssessmentRuleValue -Record $user -Names @('AccountEnabled', 'Enabled'))
-            try {
-                $activityState = Get-AssessmentUserLicenseActivityState `
-                    -User $user `
-                    -EmailActivityLookup $emailActivityLookup `
-                    -TeamsActivityLookup $teamsActivityLookup `
-                    -Microsoft365ActivityLookup $microsoft365ActivityLookup
-            }
-            catch {
-                $activityState = [pscustomobject]@{
-                    LastSignInDateTime           = $null
-                    LastExchangeActivityDate     = $null
-                    LastTeamsActivityDate        = $null
-                    LastMicrosoft365ActivityDate = $null
-                    LastActivityDate             = $null
-                    AvailableSignalCount         = 0
-                }
-            }
-            $isDisabledLicensedUser = ($enabled -eq $false)
-            $isInactiveLicensedUser = (
-                -not $isDisabledLicensedUser -and
-                $activityState.AvailableSignalCount -gt 0 -and
-                $activityState.LastActivityDate -and
-                $activityState.LastActivityDate -lt $inactiveCutoff
-            )
-
-            if ($isDisabledLicensedUser -or $isInactiveLicensedUser) {
-                $basis = if ($isDisabledLicensedUser) {
-                    'Account disabled'
-                }
-                else {
-                    "No recent activity in surfaced sign-in or workload signals for $InactiveDaysThreshold+ days"
-                }
-                $rows.Add([pscustomobject]@{
-                    ObjectType                   = 'User'
-                    DisplayName                  = $displayName
-                    UserPrincipalName            = $upn
-                    Enabled                      = $enabled
-                    SkuFamily                    = 'Inactive licensed user'
-                    SkuNames                     = (($assignedLicenseNames | Select-Object -Unique) -join '; ')
-                    AssignmentSource             = if (@($assignmentRows | Where-Object { [string]$_.AssignmentSource -eq 'Group' }).Count -gt 0) { 'Direct/Group review' } else { 'Direct/Unknown' }
-                    Issue                        = if ($isDisabledLicensedUser) { 'Disabled user with assigned licenses' } else { 'Inactive licensed user with assigned licenses' }
-                    LastSignInDateTime           = Get-AssessmentDateText -Date $activityState.LastSignInDateTime
-                    LastExchangeActivityDate     = Get-AssessmentDateText -Date $activityState.LastExchangeActivityDate
-                    LastTeamsActivityDate        = Get-AssessmentDateText -Date $activityState.LastTeamsActivityDate
-                    LastMicrosoft365ActivityDate = Get-AssessmentDateText -Date $activityState.LastMicrosoft365ActivityDate
-                    LastActivityDate             = Get-AssessmentDateText -Date $activityState.LastActivityDate
-                    InactivityBasis              = $basis
-                    RecommendedAction            = 'Validate whether the user still requires paid Microsoft 365 licensing; reclaim or right-size licenses after confirming mailbox, OneDrive, Teams, and compliance hold requirements.'
-                    SourceWorksheet              = 'Users'
-                }) | Out-Null
-            }
-        }
-    }
-
-    return @($rows.ToArray())
 }
 
 function Update-AssessmentReportTables {
@@ -4580,30 +3740,30 @@ function Update-AssessmentReportTables {
         $adminMfaRegistrationGapRows = @(Convert-AssessmentHtmlArray -InputObject (Get-AssessmentReportTableValue -Name 'AdminMfaRegistrationGaps'))
         $adminMfaEnforcementGapRows = @(Convert-AssessmentHtmlArray -InputObject (Get-AssessmentReportTableValue -Name 'AdminMfaEnforcementGaps'))
         $TenantStatsHash['ConditionalAccessOptimization'] = @(
-            New-AssessmentConditionalAccessOptimizationRows `
+            New-ArrayaConditionalAccessOptimizationRows `
                 -ConditionalAccessPolicies $context.ConditionalAccess `
                 -ConditionalAccessSummary (Get-AssessmentReportTableValue -Name 'ConditionalAccessPolicySummary')
         )
         $TenantStatsHash['MfaMethodPostureSummary'] = @(
-            New-AssessmentMfaMethodPostureSummaryRows `
+            New-ArrayaMfaMethodPostureSummaryRows `
                 -MfaEnrollmentSummary (Get-AssessmentReportTableValue -Name 'MfaEnrollmentSummary') `
                 -MfaRegistrationDetails $mfaRegistrationDetailsRows
         )
         $TenantStatsHash['PrivilegedAccessRemediationSummary'] = @(
-            New-AssessmentPrivilegedAccessRemediationSummaryRows `
+            New-ArrayaPrivilegedAccessRemediationSummaryRows `
                 -Admins $context.Admins `
                 -AdminMfaSummary (Get-AssessmentReportTableValue -Name 'AdminMfaSummary') `
                 -AdminMfaRegistrationGaps $adminMfaRegistrationGapRows `
                 -AdminMfaEnforcementGaps $adminMfaEnforcementGapRows
         )
         $TenantStatsHash['TeamsGroupsCleanupCandidates'] = @(
-            New-AssessmentTeamsGroupsCleanupCandidateRows -Teams $context.Teams -Groups $context.Groups
+            New-ArrayaTeamsGroupsCleanupCandidateRows -Teams $context.Teams -Groups $context.Groups
         )
         $TenantStatsHash['GroupLicensingSummary'] = @(
-            New-AssessmentGroupLicensingSummaryRows -Groups $context.Groups -Users $context.Users -Licenses $context.Licenses
+            New-ArrayaGroupLicensingSummaryRows -Groups $context.Groups -Users $context.Users -Licenses $context.Licenses
         )
         $TenantStatsHash['LicenseOptimizationCandidates'] = @(
-            New-AssessmentLicenseOptimizationCandidateRows `
+            New-ArrayaLicenseOptimizationCandidateRows `
                 -Users $context.Users `
                 -Groups $context.Groups `
                 -Licenses $context.Licenses `
@@ -5747,7 +4907,7 @@ function Convert-ArrayToPieChart {
     param (
         [Parameter(Mandatory=$true)]
         [array]$Array,
-        
+
         [Parameter(Mandatory=$true)]
         [string]$LabelProperty,
 
@@ -5755,14 +4915,14 @@ function Convert-ArrayToPieChart {
         [string]$ValueProperty,
 
         [string]$ChartTitle = "Pie Chart",
-        
+
         [int]$Width = 300,
         [int]$Height = 300
     )
 
     $labels = @()
     $data = @()
-    
+
     foreach ($item in $Array) {
         $labels += $item.$LabelProperty
         $data += $item.$ValueProperty
@@ -5828,47 +4988,47 @@ function Build-LicenseSection {
         [array]$Licenses,
         [int]$UserCount = 0
     )
-    
+
     if ($Licenses.Count -eq 0) {
         return "<div class='empty-state'>No license data available</div>"
     }
-    
+
     #Write-Host "  Building License section..." -ForegroundColor Gray
-    
+
     # Get analysis with processed licenses
     $analysis = Get-LicenseAnalysis -Licenses $Licenses -UserCount $UserCount
     $paidLicenses = $analysis.PaidLicenses
-    
+
     # Calculate totals
     $totalPurchased = $analysis.TotalPurchased
     $totalConsumed = $analysis.TotalConsumed
     $totalRemaining = $totalPurchased - $totalConsumed
-    
+
     # Build summary KPIs
     $kpiHtml = "<div class='kpi-grid'>"
     $kpiHtml += New-KpiCard -Title "Paid Licenses" -Value (Format-AssessmentHtmlNumber $totalPurchased) -Subtitle "Used for utilization only" -Theme 'default'
     $kpiHtml += New-KpiCard -Title "Consumed" -Value (Format-AssessmentHtmlNumber $totalConsumed) -Theme 'default'
     $kpiHtml += New-KpiCard -Title "Available" -Value (Format-AssessmentHtmlNumber $totalRemaining) -Theme 'default'
-    
+
     $utilPct = if ($totalPurchased -gt 0) {
         ($totalConsumed / $totalPurchased) * 100
     } else { 0 }
     $utilTheme = if ($utilPct -ge 85) { 'warning' } elseif ($utilPct -ge 70) { 'warning' } else { 'success' }
     $kpiHtml += New-KpiCard -Title "Utilization" -Value (Format-AssessmentHtmlPercentage ($utilPct/100) -DecimalPlaces 1) -Theme $utilTheme
     $kpiHtml += "</div>"
-    
+
     # Updated summary message with new categories
     $overCapacityCount = ($paidLicenses | Where-Object { $_.RemainingUnits -lt 0 }).Count
     $atCapacityCount = ($paidLicenses | Where-Object { $_.RemainingUnits -eq 0 }).Count
     $highUtilCount = ($paidLicenses | Where-Object { $_.Utilization -ge 85 -and $_.RemainingUnits -gt 0 }).Count
-    
+
     if ($overCapacityCount -gt 0 -or $atCapacityCount -gt 0 -or $highUtilCount -gt 0) {
         $summaryHtml = "<div style='margin: 20px 0; padding: 15px; background: "
         $summaryHtml += if ($overCapacityCount -gt 0) { '#fff4f4' } elseif ($atCapacityCount -gt 0) { '#fffaf4' } else { '#fff8e1' }
         $summaryHtml += "; border-left: 4px solid "
         $summaryHtml += if ($overCapacityCount -gt 0) { '#d13438' } elseif ($atCapacityCount -gt 0) { '#f7630c' } else { '#ffa726' }
         $summaryHtml += "; border-radius: 4px;'>"
-        
+
         if ($overCapacityCount -gt 0) {
             $summaryHtml += "<strong>🔴 CRITICAL: $overCapacityCount license(s) OVER capacity</strong> - You are consuming more licenses than purchased!<br>"
         }
@@ -5882,7 +5042,7 @@ function Build-LicenseSection {
         $summaryHtml += "</div>"
         $kpiHtml += $summaryHtml
     }
-    
+
     # Prepare table data
     $tableData = $paidLicenses | ForEach-Object {
         $licenseName = if ($_.PSObject.Properties['SkuFriendlyName'] -and $_.SkuFriendlyName) {
@@ -5899,7 +5059,7 @@ function Build-LicenseSection {
             Utilization = [math]::Round($_.Utilization, 1)
         }
     }
-    
+
     # Build table
     $tableColumns = @('LicenseName', 'AppliesTo', 'PurchasedUnits', 'ConsumedUnits', 'RemainingUnits', 'Utilization')
     $tableHeaders = @{
@@ -5910,10 +5070,10 @@ function Build-LicenseSection {
         'RemainingUnits' = 'Remaining'
         'Utilization' = 'Utilization %'
     }
-    
+
     # Updated risk highlighting - differentiate critical vs warning
     $riskColumns = @{
-        'RemainingUnits' = { param($val, $row) 
+        'RemainingUnits' = { param($val, $row)
             # Critical (red) if negative, Warning (orange) if 0
             [int]$val -lt 0
         }
@@ -5921,12 +5081,12 @@ function Build-LicenseSection {
             [double]$val -ge 85
         }
     }
-    
+
     # Sort by remaining (problems first)
     $sortedData = $tableData | Sort-Object RemainingUnits, @{Expression={$_.ConsumedUnits}; Descending=$true}
-    
+
     $tableHtml = New-HtmlTable -Data $sortedData -Columns $tableColumns -ColumnHeaders $tableHeaders -RiskColumns $riskColumns
-    
+
     # Add custom CSS for warning-level highlighting (0 remaining)
     $tableHtml = @"
 <style>
@@ -5954,7 +5114,7 @@ function Build-LicenseSection {
 </script>
 $tableHtml
 "@
-    
+
     # Add note about trial/viral
     $allProcessed = $Licenses | ForEach-Object {
         [PSCustomObject]@{
@@ -5967,7 +5127,7 @@ $tableHtml
         }
     }
     $trialViralCount = ($allProcessed | Where-Object { -not $_.IsPaid }).Count
-    
+
     if ($trialViralCount -gt 0) {
         $tableHtml += @"
 <div style='margin-top: 15px; padding: 10px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;'>
@@ -5975,14 +5135,14 @@ $tableHtml
 </div>
 "@
     }
-    
+
     # Charts
     $chartHtml = "<div class='chart-grid'>"
-    
-    $top10 = $paidLicenses | Where-Object { 
-        $_.ConsumedUnits -gt 0 
+
+    $top10 = $paidLicenses | Where-Object {
+        $_.ConsumedUnits -gt 0
     } | Sort-Object ConsumedUnits -Descending | Select-Object -First 10
-    
+
     if ($top10.Count -gt 0) {
         $chartHtml += "<div class='chart-container'>"
         $chartHtml += Convert-ArrayToPieChart `
@@ -5994,13 +5154,13 @@ $tableHtml
             -Height 300
         $chartHtml += "</div>"
     }
-    
+
     if ($totalPurchased -gt 0 -and $totalRemaining -ge 0) {
         $utilizationData = @(
             [PSCustomObject]@{ Label = 'Consumed'; Value = $totalConsumed }
             [PSCustomObject]@{ Label = 'Available'; Value = $totalRemaining }
         )
-        
+
         $chartHtml += "<div class='chart-container'>"
         $chartHtml += Convert-ArrayToPieChart `
             -Array $utilizationData `
@@ -6011,9 +5171,9 @@ $tableHtml
             -Height 300
         $chartHtml += "</div>"
     }
-    
+
     $chartHtml += "</div>"
-    
+
     # Footer
     $footerHtml = @"
 <div class='section-footer'>
@@ -6030,25 +5190,25 @@ $tableHtml
     <strong>High Utilization:</strong> Plan purchases for next month.</p>
 </div>
 "@
-    
+
     return $kpiHtml + $tableHtml + $chartHtml + $footerHtml
 }
 
 # Updated Build-RecipientsSection
 function Build-RecipientsSection {
     param([array]$Recipients)
-    
+
     if ($Recipients.Count -eq 0) {
         return "<div class='empty-state'>No recipient data available</div>"
     }
-    
+
     # Group by type
-    $grouped = $Recipients | Group-Object RecipientTypeDetails | 
+    $grouped = $Recipients | Group-Object RecipientTypeDetails |
         Select-Object @{N='Type';E={$_.Name}}, Count |
         Sort-Object Count -Descending
-    
+
     $tableHtml = New-HtmlTable -Data $grouped -Columns @('Type','Count') -ColumnHeaders @{'Type'='Recipient Type';'Count'='Quantity'}
-    
+
     # Chart using your function
     $chartHtml = ""
     if ($grouped.Count -gt 0) {
@@ -6062,14 +5222,14 @@ function Build-RecipientsSection {
             -Height 400
         $chartHtml += "</div>"
     }
-    
+
     $footerHtml = @"
 <div class='section-footer'>
     <h3>What This Means</h3>
     <p>This shows the distribution of all mail-enabled recipient objects in your tenant, including mailboxes, groups, contacts, and resources.</p>
 </div>
 "@
-    
+
     return $tableHtml + $chartHtml + $footerHtml
 }
 
@@ -6327,7 +5487,7 @@ function Build-MailboxesSection {
             }
         } | Sort-Object Quantity -Descending
     }
-    
+
     # KPIs
     $kpiHtml = "<div class='kpi-grid'>"
     $totalMbx = if ($hasDetailedMailboxRows) {
@@ -6361,7 +5521,7 @@ function Build-MailboxesSection {
     $kpiHtml += New-KpiCard -Title "Public Folders" -Value (Format-AssessmentHtmlNumber $publicFolderCount) -Theme $publicFolderTheme
     $kpiHtml += New-KpiCard -Title "Mail-Enabled Public Folders" -Value (Format-AssessmentHtmlNumber $publicFolderMailEnabled)
     $kpiHtml += "</div>"
-    
+
     # Table
     $tableHtml = ""
     if ($hasDetailedMailboxRows) {
@@ -6396,7 +5556,7 @@ function Build-MailboxesSection {
         $tableHtml = New-CalloutBox -Type 'info' -Title 'Mailbox Size Detail Not Collected' -Content 'This snapshot does not include per-mailbox size rows, so size and >50 GB breakdowns are unavailable. Run a profile that collects detailed mailbox records for full mailbox analytics.'
         $tableHtml += New-HtmlTable -Data $coverageRows -Columns @('Metric','Value') -ColumnHeaders @{ Metric = 'Collection Summary'; Value = 'Value' }
     }
-    
+
     # Inactive mailbox summary table
     $inactiveSummaryHtml = ""
     if ($inactiveMailboxRows.Count -gt 0) {
@@ -6405,7 +5565,7 @@ function Build-MailboxesSection {
             $totalSize = ($mbxs | Measure-Object MBXSizeGB -Sum).Sum
             $avgSize = if ($mbxs.Count -gt 0) { $totalSize / $mbxs.Count } else { 0 }
             $over50 = ($mbxs | Where-Object { [double]$_.MBXSizeGB -gt 50 }).Count
-            
+
             [PSCustomObject]@{
                 Type = $_.Name
                 Quantity = $mbxs.Count
@@ -6445,7 +5605,7 @@ function Build-MailboxesSection {
         $publicFolderSummaryHtml = "<h3 style='margin-top:30px;'>Public Folders</h3>" +
             (New-HtmlTable -Data $publicFolderSummary -Columns $publicFolderTableColumns -ColumnHeaders $publicFolderTableHeaders)
     }
-    
+
     # Chart using your function
     $chartHtml = ""
     $chartData = if ($hasDetailedMailboxRows) { $summary | Where-Object { $_.Quantity -gt 0 } } else { @() }
@@ -6460,7 +5620,7 @@ function Build-MailboxesSection {
             -Height 400
         $chartHtml += "</div>"
     }
-    
+
     $footerHtml = @"
 <div class='section-footer'>
     <h3>What This Means</h3>
@@ -6469,7 +5629,7 @@ function Build-MailboxesSection {
     <p>Enable archive mailboxes for users over 50 GB. Review retention policies. Consider implementing auto-expanding archives for heavy users.</p>
 </div>
 "@
-    
+
     return $kpiHtml + $tableHtml + $inactiveSummaryHtml + $publicFolderSummaryHtml + $chartHtml + $footerHtml
 }
 
@@ -6599,19 +5759,19 @@ function Build-EmailActivitySection {
 
 function Build-InactiveMailboxesSection {
     param([array]$InactiveMailboxes)
-    
+
     if ($InactiveMailboxes.Count -eq 0) {
         $callout = New-CalloutBox -Type 'success' -Title 'No Inactive Mailboxes' -Content 'Your tenant has no inactive mailboxes, which is good for license optimization.'
         return $callout
     }
-    
+
     # Summary stats
     $summary = $InactiveMailboxes | Group-Object RecipientTypeDetails | ForEach-Object {
         $mbxs = $_.Group
         $totalSize = ($mbxs | Measure-Object MBXSizeGB -Sum).Sum
         $avgSize = if ($mbxs.Count -gt 0) { $totalSize / $mbxs.Count } else { 0 }
         $over50 = ($mbxs | Where-Object { [double]$_.MBXSizeGB -gt 50 }).Count
-        
+
         [PSCustomObject]@{
             Type = $_.Name
             Quantity = $mbxs.Count
@@ -6620,10 +5780,10 @@ function Build-InactiveMailboxesSection {
             Over50GB = $over50
         }
     }
-    
+
     # Warning callout
     $calloutHtml = New-CalloutBox -Type 'warning' -Title 'Inactive Mailboxes Detected' -Content "You have $($InactiveMailboxes.Count) inactive mailboxes. These do not consume licenses but do use storage. Consider if they need to be retained for compliance."
-    
+
     # Table
     $tableColumns = @('Type','Quantity','TotalSizeGB','AverageSizeGB','Over50GB')
     $tableHeaders = @{
@@ -6633,9 +5793,9 @@ function Build-InactiveMailboxesSection {
         'AverageSizeGB' = 'Avg Size (GB)'
         'Over50GB' = 'Over 50 GB'
     }
-    
+
     $tableHtml = New-HtmlTable -Data $summary -Columns $tableColumns -ColumnHeaders $tableHeaders
-    
+
     $footerHtml = @"
 <div class='section-footer'>
     <h3>What This Means</h3>
@@ -6644,7 +5804,7 @@ function Build-InactiveMailboxesSection {
     <p>Review retention requirements. If mailboxes are no longer needed for legal hold or eDiscovery, consider permanent deletion to free storage.</p>
 </div>
 "@
-    
+
     return $calloutHtml + $tableHtml + $footerHtml
 }
 
@@ -6653,10 +5813,10 @@ function Build-SharePointOneDriveSection {
         [array]$SharePointSites,
         [array]$OneDriveSites
     )
-    
+
     # Calculate summaries
     $summaries = @()
-    
+
     # SharePoint (non-O365 connected)
     $spRegular = $SharePointSites | Where-Object { -not $_.IsOffice365GroupsConnected }
     if ($spRegular.Count -gt 0) {
@@ -6664,7 +5824,7 @@ function Build-SharePointOneDriveSection {
         $avgGB = $totalGB / $spRegular.Count
         $over1TB = ($spRegular | Where-Object { $_.StorageUsedGB -gt 1024 }).Count
         $largest = ($spRegular | Measure-Object StorageUsedGB -Maximum).Maximum
-        
+
         $summaries += [PSCustomObject]@{
             Category = 'SharePoint Sites'
             Quantity = $spRegular.Count
@@ -6674,14 +5834,14 @@ function Build-SharePointOneDriveSection {
             LargestSizeGB = [math]::Round($largest, 2)
         }
     }
-    
+
     # OneDrive
     if ($OneDriveSites.Count -gt 0) {
         $totalGB = ($OneDriveSites | Measure-Object StorageUsedGB -Sum).Sum
         $avgGB = $totalGB / $OneDriveSites.Count
         $over1TB = ($OneDriveSites | Where-Object { $_.StorageUsedGB -gt 1024 }).Count
         $largest = ($OneDriveSites | Measure-Object StorageUsedGB -Maximum).Maximum
-        
+
         $summaries += [PSCustomObject]@{
             Category = 'OneDrive Sites'
             Quantity = $OneDriveSites.Count
@@ -6691,7 +5851,7 @@ function Build-SharePointOneDriveSection {
             LargestSizeGB = [math]::Round($largest, 2)
         }
     }
-    
+
     # O365 Groups
     $spGroups = $SharePointSites | Where-Object { $_.IsOffice365GroupsConnected -and $_.Template -ne 'TEAMCHANNEL#0' }
     if ($spGroups.Count -gt 0) {
@@ -6699,7 +5859,7 @@ function Build-SharePointOneDriveSection {
         $avgGB = $totalGB / $spGroups.Count
         $over1TB = ($spGroups | Where-Object { $_.StorageUsedGB -gt 1024 }).Count
         $largest = ($spGroups | Measure-Object StorageUsedGB -Maximum).Maximum
-        
+
         $summaries += [PSCustomObject]@{
             Category = 'Office 365 Groups'
             Quantity = $spGroups.Count
@@ -6709,7 +5869,7 @@ function Build-SharePointOneDriveSection {
             LargestSizeGB = [math]::Round($largest, 2)
         }
     }
-    
+
     # Teams
     $teams = $SharePointSites | Where-Object { $_.Template -eq 'TEAMCHANNEL#0' }
     if ($teams.Count -gt 0) {
@@ -6717,7 +5877,7 @@ function Build-SharePointOneDriveSection {
         $avgGB = $totalGB / $teams.Count
         $over1TB = ($teams | Where-Object { $_.StorageUsedGB -gt 1024 }).Count
         $largest = ($teams | Measure-Object StorageUsedGB -Maximum).Maximum
-        
+
         $summaries += [PSCustomObject]@{
             Category = 'Teams Sites'
             Quantity = $teams.Count
@@ -6727,23 +5887,23 @@ function Build-SharePointOneDriveSection {
             LargestSizeGB = [math]::Round($largest, 2)
         }
     }
-    
+
     if ($summaries.Count -eq 0) {
         return "<div class='empty-state'>No SharePoint or OneDrive data available</div>"
     }
-    
+
     # KPIs
     $kpiHtml = "<div class='kpi-grid'>"
     $totalSites = ($summaries | Measure-Object Quantity -Sum).Sum
     $totalStorage = ($summaries | Measure-Object TotalStorageGB -Sum).Sum
-    
+
     $kpiHtml += New-KpiCard -Title "Total Sites" -Value (Format-AssessmentHtmlNumber $totalSites)
     $kpiHtml += New-KpiCard -Title "Total Storage" -Value (Format-AssessmentHtmlDataSize $totalStorage)
-    
+
     $avgStorage = if ($totalSites -gt 0) { $totalStorage / $totalSites } else { 0 }
     $kpiHtml += New-KpiCard -Title "Average Size" -Value (Format-AssessmentHtmlDataSize $avgStorage)
     $kpiHtml += "</div>"
-    
+
     # Table
     $tableColumns = @('Category','Quantity','TotalStorageGB','AverageStorageGB','Over1TB','LargestSizeGB')
     $tableHeaders = @{
@@ -6754,7 +5914,7 @@ function Build-SharePointOneDriveSection {
         'Over1TB' = 'Over 1 TB'
         'LargestSizeGB' = 'Largest Site'
     }
-    
+
     $riskColumns = @{
         'Over1TB' = { param($val) [int]$val -gt 0 }
     }
@@ -6766,9 +5926,9 @@ function Build-SharePointOneDriveSection {
         'Over1TB' = { param($val) Format-AssessmentHtmlNumber $val }
         'LargestSizeGB' = { param($val) Format-AssessmentHtmlDataSize $val }
     }
-    
+
     $tableHtml = New-HtmlTable -Data $summaries -Columns $tableColumns -ColumnHeaders $tableHeaders -RiskColumns $riskColumns -ValueFormatters $valueFormatters
-    
+
     $footerHtml = @"
 <div class='section-footer'>
     <h3>What This Means</h3>
@@ -6777,7 +5937,7 @@ function Build-SharePointOneDriveSection {
     <p>Review large sites for archived content that can be moved to cold storage. Implement retention policies and educate users on storage best practices.</p>
 </div>
 "@
-    
+
     return $kpiHtml + $tableHtml + $footerHtml
 }
 
@@ -6860,11 +6020,11 @@ function Build-TeamsSection {
         [object]$TeamsVoice,
         [int]$UserCount = 0
     )
-    
+
     if ($Teams.Count -eq 0) {
         return "<div class='empty-state'>No Teams data available</div>"
     }
-    
+
     # Determine Teams Voice availability from service plans
     $voicePlans = @('MCOEV','MCOPSTN1','MCOPSTN2','MCOEV_VIRTUALUSER','MCOEV_DOD','MCOPSTNC')
     $hasVoice = $false
@@ -6885,7 +6045,7 @@ function Build-TeamsSection {
         }
     }
     $voicePlanHits = $voicePlanHits | Select-Object -Unique
-    
+
     $teamRows = $Teams | ForEach-Object {
         $publicCount = if ($_.PublicChannels) { ((@($_.PublicChannels -split ',')) | Where-Object { $_ -and $_.Trim() -ne '' }).Count } else { 0 }
         $privateCount = if ($_.PrivateChannels) { ((@($_.PrivateChannels -split ',')) | Where-Object { $_ -and $_.Trim() -ne '' }).Count } else { 0 }
@@ -6900,10 +6060,10 @@ function Build-TeamsSection {
             SharedChannels = $sharedCount
         }
     }
-    
+
     $totalTeams = $Teams.Count
     $totalChannels = ($Teams | Measure-Object -Property TotalChannels -Sum).Sum
-    
+
     $voiceValue = if ($hasVoice) { 'Detected' } else { 'Not Detected' }
     $voiceTheme = if ($hasVoice) { 'success' } else { 'warning' }
     $kpiHtml = "<div class='kpi-grid'>"
@@ -6911,7 +6071,7 @@ function Build-TeamsSection {
     $kpiHtml += New-KpiCard -Title "Total Channels" -Value (Format-AssessmentHtmlNumber $totalChannels)
     $kpiHtml += New-KpiCard -Title "Teams Voice" -Value $voiceValue -Theme $voiceTheme
     $kpiHtml += "</div>"
-    
+
     if ($voicePlanHits.Count -gt 0) {
         $kpiHtml += "<div style='margin-top:10px; color:#605e5c; font-size:0.9em;'>Voice-related plans detected: $([string]::Join(', ', $voicePlanHits))</div>"
     }
@@ -6935,7 +6095,7 @@ function Build-TeamsSection {
         $voiceSummaryTable = "<h3 style='margin-top:20px;'>Teams Voice Summary</h3>" +
             (New-HtmlTable -Data $voiceRows -Columns @('Metric','Value') -ColumnHeaders @{ Metric='Metric'; Value='Value' })
     }
-    
+
     $tableColumns = @('DisplayName','Visibility','SiteSizeGB','TotalChannels','PublicChannels','PrivateChannels','SharedChannels')
     $tableHeaders = @{
         DisplayName = 'Team'
@@ -6947,7 +6107,7 @@ function Build-TeamsSection {
         SharedChannels = 'Shared'
     }
     $tableHtml = New-HtmlTable -Data $teamRows -Columns $tableColumns -ColumnHeaders $tableHeaders -CssClass 'data-table wrap-cells'
-    
+
     $footerHtml = @"
 <div class='section-footer'>
     <h3>What This Means</h3>
@@ -6956,7 +6116,7 @@ function Build-TeamsSection {
     <p>If Teams Voice is required, confirm Phone System and PSTN add-ons are correctly licensed and configured.</p>
 </div>
 "@
-    
+
     return $kpiHtml + $voiceSummaryTable + $tableHtml + $footerHtml
 }
 
@@ -6967,11 +6127,11 @@ function Build-DomainsSection {
         [object]$SMTPRelaySummary,
         [array]$MailFlowConnectors = @()
     )
-    
+
     if ($Domains.Count -eq 0) {
         return "<div class='empty-state'>No domain data available</div>"
     }
-    
+
     $analysis = Get-DomainAnalysis -Domains $Domains -SpamFilteringSummary $SpamFilteringSummary -SMTPRelaySummary $SMTPRelaySummary
 
     function Convert-MailFlowValueList {
@@ -7046,7 +6206,7 @@ function Build-DomainsSection {
         }
         return @($endpointSet)
     }
-    
+
     # Basic domain info
     $tableColumns = @('Domain','Verified','AuthenticationType','DomainType','IsDefault')
     $tableHeaders = @{
@@ -7056,11 +6216,11 @@ function Build-DomainsSection {
         'DomainType' = 'Domain Type'
         'IsDefault' = 'Default'
     }
-    
+
     $riskColumns = @{
         'Verified' = { param($val) $val -eq $false }
     }
-    
+
     $tableHtml = "<h3>Domain Configuration</h3>"
     $tableHtml += New-HtmlTable -Data $Domains -Columns $tableColumns -ColumnHeaders $tableHeaders -RiskColumns $riskColumns
 
@@ -7127,7 +6287,7 @@ function Build-DomainsSection {
         }
         $mailAuthKpiHtml += New-HtmlTable -Data $mailAuthRows -Columns $mailAuthColumns -ColumnHeaders $mailAuthHeaders -RiskColumns $mailAuthRiskColumns -CssClass 'data-table wrap-cells'
     }
-    
+
     # DNS info
     $dnsColumns = @('Domain','NSRecords','ARecords','MXRecords','Office365MailExchanger')
     $dnsHeaders = @{
@@ -7137,7 +6297,7 @@ function Build-DomainsSection {
         'MXRecords' = 'MX Records'
         'Office365MailExchanger' = 'M365 MX'
     }
-    
+
     $tableHtml += "<h3 id='domains-dns' style='margin-top:30px;'>DNS Configuration</h3>"
     $tableHtml += New-HtmlTable -Data $Domains -Columns $dnsColumns -ColumnHeaders $dnsHeaders -CssClass 'data-table wrap-cells'
 
@@ -7320,7 +6480,7 @@ function Build-DomainsSection {
             } `
             -CssClass 'data-table wrap-cells'
     }
-    
+
     # Recipient counts
     $recipColumns = @('Domain','PrimarySMTPRecipients','AliasOnlyRecipients','TotalDomainRecipients')
     $recipHeaders = @{
@@ -7329,10 +6489,10 @@ function Build-DomainsSection {
         'AliasOnlyRecipients' = 'Alias Only'
         'TotalDomainRecipients' = 'Total Domain Recipients'
     }
-    
+
     $tableHtml += "<h3 id='domains-recipients' style='margin-top:30px;'>Recipient Distribution</h3>"
     $tableHtml += New-HtmlTable -Data $Domains -Columns $recipColumns -ColumnHeaders $recipHeaders
-    
+
     $footerHtml = @"
 <div class='section-footer'>
     <h3>What This Means</h3>
@@ -7341,19 +6501,19 @@ function Build-DomainsSection {
     <p>For mail-enabled custom domains, target SPF alignment, two DKIM selectors, and DMARC enforcement (quarantine/reject). Review trusted-IP bypasses and SMTP AUTH exceptions regularly.</p>
 </div>
 "@
-    
+
     return $tableHtml + $mailAuthKpiHtml + $footerHtml
 }
 
 function Build-DevicesSection {
     param([array]$Devices)
-    
+
     if ($Devices.Count -eq 0) {
         return "<div class='empty-state'>No device data available</div>"
     }
-    
+
     $analysis = Get-DeviceAnalysis -Devices $Devices
-    
+
     # Group by OS
     $osSummary = $Devices | Group-Object OperatingSystem | ForEach-Object {
         $osDevices = $_.Group
@@ -7361,7 +6521,7 @@ function Build-DevicesSection {
         $stale = ($osDevices | Where-Object { $_.DeviceStale -eq $true }).Count
         $managed = ($osDevices | Where-Object { $_.IsManaged -eq $true }).Count
         $compliant = ($osDevices | Where-Object { $_.IsCompliant -eq $true }).Count
-        
+
         [PSCustomObject]@{
             OS = $_.Name
             Total = $total
@@ -7371,15 +6531,15 @@ function Build-DevicesSection {
             IsCompliantPercentage = [math]::Round(($compliant / $total) * 100, 1)
         }
     } | Sort-Object Total -Descending
-    
+
     # KPIs
     $kpiHtml = "<div class='kpi-grid'>"
     $totalDevices = $Devices.Count
     $managedCount = ($Devices | Where-Object { $_.IsManaged -eq $true }).Count
     $compliantCount = ($Devices | Where-Object { $_.IsCompliant -eq $true }).Count
-    
+
     $kpiHtml += New-KpiCard -Title "Total Devices" -Value (Format-AssessmentHtmlNumber $totalDevices)
-    
+
     $managedPct = if ($totalDevices -gt 0) { ($managedCount / $totalDevices) * 100 } else { 0 }
     $managedTheme = if ($managedPct -ge 80) { 'success' } elseif ($managedPct -ge 60) { 'warning' } else { 'danger' }
     $managedValue = "{0:N1}%" -f [double]$managedPct
@@ -7390,7 +6550,7 @@ function Build-DevicesSection {
     $compliantValue = "{0:N1}%" -f [double]$compliantPct
     $kpiHtml += New-KpiCard -Title "Compliant" -Value $compliantValue -Theme $compTheme
     $kpiHtml += "</div>"
-    
+
     # OS Summary table
     $tableColumns = @('OS','Total','AllDevicePercentage','StaleDevicePercentage','MDMManagedPercentage','IsCompliantPercentage')
     $tableHeaders = @{
@@ -7401,29 +6561,29 @@ function Build-DevicesSection {
         'MDMManagedPercentage' = '% Managed'
         'IsCompliantPercentage' = '% Compliant'
     }
-    
+
     $riskColumns = @{
         'StaleDevicePercentage' = { param($val) [double]$val -gt 20 }
         'IsCompliantPercentage' = { param($val) [double]$val -lt 80 }
     }
-    
+
     $tableHtml = New-HtmlTable -Data $osSummary -Columns $tableColumns -ColumnHeaders $tableHeaders -RiskColumns $riskColumns
-    
+
     # Top OS versions
     $versionHtml = "<h3 style='margin-top:30px;'>Top 5 OS Versions</h3>"
     foreach ($os in ($osSummary | Select-Object -First 3)) {
         $osDevices = $Devices | Where-Object { $_.OperatingSystem -eq $os.OS }
-        $topVersions = $osDevices | Group-Object OperatingSystemVersion | 
+        $topVersions = $osDevices | Group-Object OperatingSystemVersion |
             Select-Object @{N='Version';E={$_.Name}}, Count |
             Sort-Object Count -Descending |
             Select-Object -First 5
-        
+
         if ($topVersions.Count -gt 0) {
             $versionHtml += "<h4>$($os.OS)</h4>"
             $versionHtml += New-HtmlTable -Data $topVersions -Columns @('Version','Count') -CssClass 'data-table'
         }
     }
-    
+
     $footerHtml = @"
 <div class='section-footer'>
     <h3>What This Means</h3>
@@ -7432,48 +6592,48 @@ function Build-DevicesSection {
     <p>Enroll unmanaged devices in Intune. Investigate non-compliant devices. Remove or disable stale devices to reduce security risk.</p>
 </div>
 "@
-    
+
     return $kpiHtml + $tableHtml + $versionHtml + $footerHtml
 }
 
 function Build-SecureScoreSection {
     param([array]$SecureScore)
-    
+
     if ($SecureScore.Count -eq 0) {
         return "<div class='empty-state'>No Secure Score data available</div>"
     }
-    
+
     # Use most recent score
     $latest = $SecureScore | Sort-Object CreatedDateTime -Descending | Select-Object -First 1
-    
+
     $currentScore = [int]$latest.CurrentScore
     $maxScore = [int]$latest.MaxScore
     $scorePct = if ($maxScore -gt 0) { ($currentScore / $maxScore) * 100 } else { 0 }
-    
+
     # KPI
     $scoreTheme = if ($scorePct -ge 80) { 'success' } elseif ($scorePct -ge 60) { 'warning' } else { 'danger' }
     $kpiHtml = "<div class='kpi-grid'>"
     $kpiHtml += New-KpiCard -Title "Current Score" -Value "$currentScore / $maxScore" -Subtitle "$(Format-AssessmentHtmlNumber $scorePct -DecimalPlaces 1)%" -Theme $scoreTheme
     $kpiHtml += New-KpiCard -Title "Enabled Services" -Value $latest.EnabledServicesCount
     $kpiHtml += "</div>"
-    
+
     # Comparison
     $compHtml = "<h3>Score Comparison</h3><div class='kpi-grid'>"
-    
+
     if ($latest.SimilarSizeOrg_ComparitiveScore) {
         $compScore = [int]$latest.SimilarSizeOrg_ComparitiveScore
         $compTheme = if ($currentScore -ge $compScore) { 'success' } else { 'warning' }
         $compHtml += New-KpiCard -Title "Similar Size Orgs" -Value $compScore -Subtitle "Your score: $currentScore" -Theme $compTheme
     }
-    
+
     if ($latest.AllTenants_ComparitiveScore) {
         $allScore = [int]$latest.AllTenants_ComparitiveScore
         $allTheme = if ($currentScore -ge $allScore) { 'success' } else { 'warning' }
         $compHtml += New-KpiCard -Title "All Tenants Average" -Value $allScore -Subtitle "Your score: $currentScore" -Theme $allTheme
     }
-    
+
     $compHtml += "</div>"
-    
+
     $footerHtml = @"
 <div class='section-footer'>
     <h3>What This Means</h3>
@@ -7482,7 +6642,7 @@ function Build-SecureScoreSection {
     <p>Review top improvement actions in the Microsoft 365 Security Center. Prioritize actions with the highest score impact. Aim for gradual improvement each quarter.</p>
 </div>
 "@
-    
+
     return $kpiHtml + $compHtml + $footerHtml
 }
 
@@ -7492,11 +6652,11 @@ function Build-ExchangeHybridSection {
         [object]$HybridInfo,
         [object]$ExchangeFederation
     )
-    
+
     if (-not $HybridInfo) {
         return "<div class='empty-state'>No Exchange hybrid data available</div>"
     }
-    
+
     $isHybrid = $HybridInfo.IsHybridConfigured -eq $true
     $partial = (-not $isHybrid) -and (
         ($HybridInfo.InboundOnPremConnectorCount -gt 0) -or
@@ -7513,7 +6673,7 @@ function Build-ExchangeHybridSection {
     } else {
         $statusText = 'None'
     }
-    
+
     $callout = if ($isHybrid) {
         New-CalloutBox -Type 'info' -Title 'Hybrid Configuration Detected' -Content "Exchange hybrid indicators were found. Hybrid type: <strong>$($HybridInfo.HybridType)</strong>."
     } elseif ($partial) {
@@ -7521,7 +6681,7 @@ function Build-ExchangeHybridSection {
     } else {
         New-CalloutBox -Type 'success' -Title 'No Hybrid Detected' -Content "No Exchange hybrid indicators were detected in this tenant."
     }
-    
+
     $statusTextDisplay = $statusText -replace '/', ' / '
     $kpiHtml = "<div class='kpi-grid'>"
     $statusTheme = if ($isHybrid -or $statusText -eq 'Possible Hybrid') { 'warning' } else { 'success' }
@@ -7531,7 +6691,7 @@ function Build-ExchangeHybridSection {
     $kpiHtml += New-KpiCard -Title "Evidence Signals" -Value (Format-AssessmentHtmlNumber $HybridInfo.EvidenceCount)
     $kpiHtml += New-KpiCard -Title "On-Prem Connectors" -Value (Format-AssessmentHtmlNumber ($HybridInfo.InboundOnPremConnectorCount + $HybridInfo.OutboundOnPremConnectorCount))
     $kpiHtml += "</div>"
-    
+
     $tableData = @(
         [PSCustomObject]@{ Signal = 'IntraOrg Connectors'; Count = $HybridInfo.IntraOrgConnectorCount },
         [PSCustomObject]@{ Signal = 'Organization Relationships'; Count = $HybridInfo.OrgRelationshipCount },
@@ -7540,7 +6700,7 @@ function Build-ExchangeHybridSection {
         [PSCustomObject]@{ Signal = 'Migration Endpoints'; Count = $HybridInfo.MigrationEndpointCount },
         [PSCustomObject]@{ Signal = 'Mail Flow On-Prem Connectors'; Count = $HybridInfo.MailFlowOnPremConnectorCount }
     )
-    
+
     $tableHtml = New-HtmlTable -Data $tableData -Columns @('Signal','Count') -ColumnHeaders @{'Signal'='Signal';'Count'='Count'}
 
     $endpointRows = @()
@@ -7560,7 +6720,7 @@ function Build-ExchangeHybridSection {
         $endpointsHtml = "<h3 style='margin-top:20px;'>Endpoints / Objects</h3>"
         $endpointsHtml += New-HtmlTable -Data $endpointRows -Columns @('Category','Values') -ColumnHeaders @{'Category'='Category';'Values'='Values'}
     }
-    
+
     $evidenceHtml = ""
     if ($HybridInfo.Evidence) {
         $evidenceItems = $HybridInfo.Evidence -split '; ' | Where-Object { $_ -and $_.Trim().Length -gt 0 }
@@ -7573,7 +6733,7 @@ function Build-ExchangeHybridSection {
             $evidenceHtml += "</ul>"
         }
     }
-    
+
     $federationHtml = ""
     if ($ExchangeFederation) {
         $fedRows = @(
@@ -7592,7 +6752,7 @@ function Build-ExchangeHybridSection {
     <p>If hybrid is detected, validate hybrid configuration in the Exchange admin center and confirm connectors align with your intended mail routing. If partial indicators exist, review connectors and organization relationships for stale or incomplete setup.</p>
 </div>
 "@
-    
+
     return $callout + $kpiHtml + $tableHtml + $endpointsHtml + $evidenceHtml + $federationHtml + $footerHtml
 }
 
@@ -7603,7 +6763,7 @@ function Build-IdentityAdminSection {
         [array]$Groups,
         [array]$ExchangeGroups
     )
-    
+
     $totalUsers = $Users.Count
     $memberUsers = ($Users | Where-Object { $_.UserType -eq 'Member' }).Count
     $guestUsers = ($Users | Where-Object { $_.UserType -eq 'Guest' }).Count
@@ -7612,7 +6772,7 @@ function Build-IdentityAdminSection {
     $internalMembers = ($Users | Where-Object { $_.UserType -eq 'Member' -and $_.UserPrincipalName -notlike '*#EXT#*' }).Count
     $groupsCount = $Groups.Count
     $adminCount = $Admins.Count
-    
+
     $kpiHtml = "<div class='kpi-grid'>"
     $kpiHtml += New-KpiCard -Title "Total Users" -Value (Format-AssessmentHtmlNumber $totalUsers)
     $kpiHtml += New-KpiCard -Title "Members (Internal)" -Value (Format-AssessmentHtmlNumber $internalMembers)
@@ -7621,14 +6781,14 @@ function Build-IdentityAdminSection {
     $kpiHtml += New-KpiCard -Title "Groups" -Value (Format-AssessmentHtmlNumber $groupsCount)
     $kpiHtml += New-KpiCard -Title "Admins" -Value (Format-AssessmentHtmlNumber $adminCount)
     $kpiHtml += "</div>"
-    
+
     $userSummary = @(
         [PSCustomObject]@{ Category = 'Members (Internal)'; Count = $internalMembers },
         [PSCustomObject]@{ Category = 'Guests'; Count = $guestUsers },
         [PSCustomObject]@{ Category = 'Members (External)'; Count = $externalMembers }
     )
     $userTable = "<h3>User Type Summary</h3>" + (New-HtmlTable -Data $userSummary -Columns @('Category','Count') -ColumnHeaders @{'Category'='Category';'Count'='Count'})
-    
+
     $dynamicGroups = ($Groups | Where-Object { $_.MembershipType -eq 'Dynamic Group' }).Count
     $dynamicDistributionGroups = ($ExchangeGroups | Where-Object { $_.RecipientTypeDetails -eq 'DynamicDistributionGroup' }).Count
     $m365Groups = ($Groups | Where-Object { $_.GroupType -eq 'Microsoft 365' }).Count
@@ -7646,7 +6806,7 @@ function Build-IdentityAdminSection {
     )
     $groupTable = "<h3 style='margin-top:20px;'>Group Overview</h3>" +
         (New-HtmlTable -Data $groupSummary -Columns @('Category','Count') -ColumnHeaders @{'Category'='Category';'Count'='Count'})
-    
+
     $roleCounts = @{}
     foreach ($admin in $Admins) {
         $roles = @()
@@ -7661,13 +6821,13 @@ function Build-IdentityAdminSection {
     $roleSummary = $roleCounts.GetEnumerator() | ForEach-Object {
         [PSCustomObject]@{ Role = $_.Key; AdminCount = $_.Value }
     } | Sort-Object AdminCount -Descending
-    
+
     $roleTable = ""
     if ($roleSummary.Count -gt 0) {
         $roleTable = "<h3 style='margin-top:20px;'>Admin Roles Summary</h3>" +
             (New-HtmlTable -Data $roleSummary -Columns @('Role','AdminCount') -ColumnHeaders @{'Role'='Role';'AdminCount'='Admins'})
     }
-    
+
     $footerHtml = @"
 <div class='section-footer'>
     <h3>What This Means</h3>
@@ -7676,7 +6836,7 @@ function Build-IdentityAdminSection {
     <p>Review guest and external users for necessity. Ensure admin roles follow least privilege and are distributed appropriately.</p>
 </div>
 "@
-    
+
     return $kpiHtml + $userTable + $groupTable + $roleTable + $footerHtml
 }
 
@@ -7741,20 +6901,20 @@ function Build-ConditionalAccessMfaSection {
         [array]$Users,
         [object]$MfaRegistrationSummary
     )
-    
+
     $totalUsers = $Users.Count
     $policyRows = @($ConditionalAccessPolicies | Where-Object { $null -ne $_ })
-    $enabledPolicies = @($policyRows | Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'enabled' })
-    $reportOnlyPolicies = @($policyRows | Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'enabledForReportingButNotEnforced' })
-    $disabledPolicies = @($policyRows | Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'disabled' })
+    $enabledPolicies = @($policyRows | Where-Object { (Get-ArrayaConditionalAccessPolicyState -Policy $_) -eq 'enabled' })
+    $reportOnlyPolicies = @($policyRows | Where-Object { (Get-ArrayaConditionalAccessPolicyState -Policy $_) -eq 'enabledForReportingButNotEnforced' })
+    $disabledPolicies = @($policyRows | Where-Object { (Get-ArrayaConditionalAccessPolicyState -Policy $_) -eq 'disabled' })
     $mfaPolicies = @($enabledPolicies | Where-Object { Test-AssessmentConditionalAccessPolicyRequiresMfa -Policy $_ })
     $mfaEnforced = $mfaPolicies.Count -gt 0
-    
+
     $mfaMethodValues = @(Convert-AssessmentRuleValueToStringList -Value (Get-AssessmentRuleValue -Record $AuthConfig -Names @('MFAMethods', 'mfaMethods')))
     $passwordlessMethodValues = @(Convert-AssessmentRuleValueToStringList -Value (Get-AssessmentRuleValue -Record $AuthConfig -Names @('PasswordlessMethods', 'passwordlessMethods')))
     $mfaMethods = if ($mfaMethodValues.Count -gt 0) { $mfaMethodValues -join ', ' } else { 'Not available' }
     $passwordlessMethods = if ($passwordlessMethodValues.Count -gt 0) { $passwordlessMethodValues -join ', ' } else { 'Not available' }
-    
+
     $mfaAllUsers = $false
     foreach ($policy in $enabledPolicies) {
         $includedUsersCount = Get-AssessmentRuleValue -Record $policy -Names @('IncludedUsersCount', 'includedUsersCount')
@@ -7769,7 +6929,7 @@ function Build-ConditionalAccessMfaSection {
             break
         }
     }
-    
+
     $caAllUsers = $false
     foreach ($policy in $enabledPolicies) {
         $includedUsersCount = Get-AssessmentRuleValue -Record $policy -Names @('IncludedUsersCount', 'includedUsersCount')
@@ -7783,20 +6943,20 @@ function Build-ConditionalAccessMfaSection {
             break
         }
     }
-    
+
     $pctNotMfa = if ($mfaAllUsers) { '0%' } else { 'Unknown' }
     $pctNotCA = if ($caAllUsers) { '0%' } else { 'Unknown' }
-    
+
     $mfaEnforcedValue = if ($mfaEnforced) { 'Evidenced' } else { 'Not Evidenced' }
     $mfaEnforcedTheme = if ($mfaEnforced) { 'success' } else { 'warning' }
-    
+
     $kpiHtml = "<div class='kpi-grid'>"
     $kpiHtml += New-KpiCard -Title "CA Policies" -Value (Format-AssessmentHtmlNumber $policyRows.Count)
     $kpiHtml += New-KpiCard -Title "Enabled" -Value (Format-AssessmentHtmlNumber $enabledPolicies.Count)
     $kpiHtml += New-KpiCard -Title "Report-Only" -Value (Format-AssessmentHtmlNumber $reportOnlyPolicies.Count)
     $kpiHtml += New-KpiCard -Title "MFA CA Enforcement" -Value $mfaEnforcedValue -Theme $mfaEnforcedTheme
     $kpiHtml += "</div>"
-    
+
     $summaryRows = @(
         [PSCustomObject]@{ Metric = 'MFA CA Policies Enabled'; Value = $mfaPolicies.Count },
         [PSCustomObject]@{ Metric = 'Authentication Methods Available'; Value = $mfaMethods },
@@ -7835,7 +6995,7 @@ function Build-ConditionalAccessMfaSection {
                 (New-HtmlTable -Data $methodRows -Columns @('Method','Count') -ColumnHeaders @{'Method'='Method';'Count'='Count'})
         }
     }
-    
+
     $footerHtml = @"
 <div class='section-footer'>
     <h3>What This Means</h3>
@@ -7844,17 +7004,17 @@ function Build-ConditionalAccessMfaSection {
     <p>Ensure MFA is enforced for all users via Conditional Access, review report-only policies, and validate registration methods in your authentication policy.</p>
 </div>
 "@
-    
+
     return $kpiHtml + $summaryTable + $methodTable + $footerHtml
 }
 
 function Build-AdConnectSection {
     param([object]$AdConnect)
-    
+
     if (-not $AdConnect -or -not $AdConnect.Summary) {
         return "<div class='empty-state'>No AD Connect/Sync data available</div>"
     }
-    
+
     $summary = $AdConnect.Summary
     $syncEnabledFlag = ($summary.OnPremisesSyncEnabled -eq $true)
     $syncEnabled = if ($syncEnabledFlag) { 'Yes' } else { 'No' }
@@ -7891,19 +7051,19 @@ function Build-AdConnectSection {
     $errorCount = if ($AdConnect.ErrorCount -gt 0) { $AdConnect.ErrorCount } else { 0 }
     $syncTheme = if ($syncEnabledFlag) { 'success' } else { 'warning' }
     $errorTheme = if ($errorCount -gt 0) { 'warning' } else { 'success' }
-    
+
     $kpiHtml = "<div class='kpi-grid'>"
     $kpiHtml += New-KpiCard -Title "DirSync Enabled" -Value $syncEnabled -Theme $syncTheme
     $kpiHtml += New-KpiCard -Title "Last Sync" -Value $lastSync -Subtitle $lastSyncSubtitle -Theme $lastSyncTheme
     $kpiHtml += New-KpiCard -Title "Sync Errors" -Value (Format-AssessmentHtmlNumber $errorCount) -Theme $errorTheme
     $kpiHtml += "</div>"
-    
+
     $serviceTable = ""
     if ($AdConnect.SyncServices -and $AdConnect.SyncServices.Count -gt 0) {
         $serviceTable = "<h3>Sync Service(s)</h3>" +
             (New-HtmlTable -Data $AdConnect.SyncServices -Columns @('ServiceName','ServerName','LastSyncTime') -ColumnHeaders @{'ServiceName'='Service';'ServerName'='Server';'LastSyncTime'='Last Sync'})
     }
-    
+
     $errorTable = ""
     if ($AdConnect.RecentErrors -and $AdConnect.RecentErrors.Count -gt 0) {
         $errorRows = $AdConnect.RecentErrors | ForEach-Object {
@@ -7916,7 +7076,7 @@ function Build-AdConnectSection {
         $errorTable = "<h3 style='margin-top:20px;'>Recent Sync Errors</h3>" +
             (New-HtmlTable -Data $errorRows -Columns @('TimeGenerated','Error','Description') -ColumnHeaders @{'TimeGenerated'='Time';'Error'='Error';'Description'='Description'})
     }
-    
+
     $footerHtml = @"
 <div class='section-footer'>
     <h3>What This Means</h3>
@@ -7925,7 +7085,7 @@ function Build-AdConnectSection {
     <p>Review sync errors and verify the AD Connect server is healthy. Confirm last sync is recent.</p>
 </div>
 "@
-    
+
     return $kpiHtml + $serviceTable + $errorTable + $footerHtml
 }
 
@@ -7934,19 +7094,19 @@ function Build-CrossTenantAccessSection {
         [object]$CrossTenantAccess,
         [object]$ExternalIdentities
     )
-    
+
     if (-not $CrossTenantAccess -and -not $ExternalIdentities) {
         return "<div class='empty-state'>No cross-tenant or external identity data available</div>"
     }
-    
+
     $hasCrossTenant = $CrossTenantAccess -and ($CrossTenantAccess.PartnerCount -gt 0)
-    
+
     $callout = if ($hasCrossTenant) {
         New-CalloutBox -Type 'info' -Title 'Cross-Tenant Access Detected' -Content 'This tenant has cross-tenant access partner settings configured.'
     } else {
         New-CalloutBox -Type 'success' -Title 'No Cross-Tenant Partners Detected' -Content 'No cross-tenant access partners were detected.'
     }
-    
+
     $kpiHtml = "<div class='kpi-grid'>"
     $partnerCount = if ($CrossTenantAccess) { $CrossTenantAccess.PartnerCount } else { 0 }
     $b2bPresent = if ($ExternalIdentities -and $ExternalIdentities.B2BManagementPolicyPresent) { $true } else { $false }
@@ -7955,7 +7115,7 @@ function Build-CrossTenantAccessSection {
     $kpiHtml += New-KpiCard -Title "Cross-Tenant Partners" -Value (Format-AssessmentHtmlNumber $partnerCount)
     $kpiHtml += New-KpiCard -Title "B2B Policy" -Value $b2bValue -Theme $b2bTheme
     $kpiHtml += "</div>"
-    
+
     $crossRows = @()
     if ($CrossTenantAccess) {
         $crossRows += [PSCustomObject]@{ Setting = 'Cross-Tenant Access Policy'; Value = $CrossTenantAccess.HasCrossTenantAccessPolicy }
@@ -7966,7 +7126,7 @@ function Build-CrossTenantAccessSection {
         $crossRows += [PSCustomObject]@{ Setting = 'Default B2B Direct Connect (Outbound)'; Value = $CrossTenantAccess.DefaultB2BDirectConnectOutbound }
     }
     $crossHtml = "<h3>Cross-Tenant Access</h3>" + (New-HtmlTable -Data $crossRows -Columns @('Setting','Value') -ColumnHeaders @{'Setting'='Setting';'Value'='Value'})
-    
+
     $partnerDetailRows = @()
     if ($CrossTenantAccess -and $CrossTenantAccess.PartnerTenantDetails) {
         foreach ($tenant in $CrossTenantAccess.PartnerTenantDetails) {
@@ -7994,7 +7154,7 @@ function Build-CrossTenantAccessSection {
                 'TrustHybridJoinedDevices'='Trust Hybrid Joined Devices'
             } -CssClass 'data-table wrap-headers')
     }
-    
+
     $externalRows = @()
     if ($ExternalIdentities) {
         $externalRows += [PSCustomObject]@{ Setting = 'B2B Management Policy Present'; Value = $ExternalIdentities.B2BManagementPolicyPresent }
@@ -8002,7 +7162,7 @@ function Build-CrossTenantAccessSection {
         $externalRows += [PSCustomObject]@{ Setting = 'Invitations Allowed'; Value = $ExternalIdentities.InvitationsAllowed }
     }
     $externalHtml = "<h3 style='margin-top:20px;'>External Identities</h3>" + (New-HtmlTable -Data $externalRows -Columns @('Setting','Value') -ColumnHeaders @{'Setting'='Setting';'Value'='Value'})
-    
+
     $footerHtml = @"
 <div class='section-footer'>
     <h3>What This Means</h3>
@@ -8011,7 +7171,7 @@ function Build-CrossTenantAccessSection {
     <p>Review partner access rules for least-privilege. Ensure B2B invitation policies align with your security requirements.</p>
 </div>
 "@
-    
+
     return $callout + $kpiHtml + $crossHtml + $partnerDetailsHtml + $externalHtml + $footerHtml
 }
 
@@ -8021,17 +7181,17 @@ function Build-CrossTenantAccessSection {
 
 function Build-FindingsPanel {
     param([array]$AllFindings)
-    
+
     if ($AllFindings.Count -eq 0) {
         $content = New-CalloutBox -Type 'success' -Title 'No Issues Found' -Content 'Your tenant configuration looks good! No automatic risk flags were detected.'
         return $content
     }
-    
+
     # Group findings by category
-    $grouped = $AllFindings | Group-Object { 
+    $grouped = $AllFindings | Group-Object {
         if ($_.Category) { $_.Category } else { 'Other' }
     }
-    
+
     # Sort groups by priority
     $sortedGroups = $grouped | Sort-Object {
         switch ($_.Name) {
@@ -8042,14 +7202,14 @@ function Build-FindingsPanel {
             default { 5 }
         }
     }
-    
+
     $html = "<div class='findings-panel'><h2>🔍 Findings of Note</h2>"
-    
+
     # Count by severity
     $riskCount = ($AllFindings | Where-Object { $_.Type -eq 'Risk' }).Count
     $warningCount = ($AllFindings | Where-Object { $_.Type -eq 'Warning' }).Count
     $infoCount = ($AllFindings | Where-Object { $_.Type -eq 'Info' }).Count
-    
+
     # Summary badges
     $html += "<div style='margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap;'>"
     if ($riskCount -gt 0) {
@@ -8062,12 +7222,12 @@ function Build-FindingsPanel {
         $html += "<span class='badge badge-info' style='font-size: 0.9em; padding: 8px 12px;'>ℹ️ $infoCount Info</span>"
     }
     $html += "</div>"
-    
+
     # Render findings by category
     foreach ($group in $sortedGroups) {
         $categoryName = $group.Name
         $categoryFindings = $group.Group
-        
+
         # Category header with appropriate icon
         $categoryIcon = switch ($categoryName) {
             'Critical' { '🔴' }
@@ -8076,7 +7236,7 @@ function Build-FindingsPanel {
             'Overall Utilization' { 'ℹ️' }
             default { '📋' }
         }
-        
+
         # Add description for each category
         $categoryDesc = switch ($categoryName) {
             'Critical' { 'Over allocated - consuming more licenses than purchased' }
@@ -8085,22 +7245,22 @@ function Build-FindingsPanel {
             'Overall Utilization' { 'Tenant-wide license usage summary' }
             default { '' }
         }
-        
+
         $html += "<h3 style='margin-top: 20px; margin-bottom: 5px; color: #333; font-size: 1.1em;'>$categoryIcon $categoryName</h3>"
         if ($categoryDesc) {
             $html += "<p style='margin: 0 0 10px 0; color: #666; font-size: 0.9em; font-style: italic;'>$categoryDesc</p>"
         }
         $html += "<ul class='findings-list'>"
-        
+
         foreach ($finding in $categoryFindings) {
             $class = "finding-$($finding.Type.ToLower())"
             $anchor = if ($finding.Anchor) { "#$($finding.Anchor)" } else { "#" }
             $html += "<li class='$class'><a href='$anchor'>$($finding.Message)</a></li>"
         }
-        
+
         $html += "</ul>"
     }
-    
+
     $html += "</div>"
     return $html
 }
@@ -8218,13 +7378,13 @@ function New-TenantHtmlReport {
     param(
         [Parameter()]
         [hashtable]$TenantStatsHash = $script:tenantStatsHash,
-        
+
         [Parameter()]
         [string]$OutputPath,
-        
+
         [Parameter()]
         [hashtable]$Thresholds,
-        
+
         [Parameter()]
         [string[]]$IncludeSections,
 
@@ -8234,9 +7394,9 @@ function New-TenantHtmlReport {
         [Parameter()]
         [switch]$UseJsonCache
     )
-    
+
     #region Validation
-    
+
     if ($JsonPath -and ($UseJsonCache -or -not $TenantStatsHash -or $TenantStatsHash.Count -eq 0)) {
         $loaded = Import-TenantStatsJson -Path $JsonPath
         if ($loaded) {
@@ -8247,21 +7407,21 @@ function New-TenantHtmlReport {
     if (-not $TenantStatsHash -or $TenantStatsHash.Count -eq 0) {
         throw "TenantStatsHash is null or empty. Please ensure data collection has completed successfully or provide -JsonPath."
     }
-    
+
     # Merge thresholds
     if ($Thresholds) {
         foreach ($key in $Thresholds.Keys) {
             $script:DefaultThresholds[$key] = $Thresholds[$key]
         }
     }
-    
+
     #endregion
-    
+
     #region Gather Data
-    
+
     #Write-Host "Building HTML report..." -ForegroundColor Cyan
     #Write-Host "  Validating hashtable structure..." -ForegroundColor Gray
-    
+
     # Extract and normalize data through shared assessment context helper.
     $context = Get-TenantAssessmentContext -TenantStatsHash $TenantStatsHash
 
@@ -8337,16 +7497,16 @@ function New-TenantHtmlReport {
     $emailActivityTopSenders = $context.EmailActivityTopSenders
     $emailActivityTopReceivers = $context.EmailActivityTopReceivers
     Write-Verbose "Email activity: TopSenders=$($emailActivityTopSenders.Count), TopReceivers=$($emailActivityTopReceivers.Count)"
-    
+
     Write-Host "  Data extraction complete" -ForegroundColor Green
-    
+
     #endregion
-    
+
     #region Build Sections and Collect ALL Findings
-    
+
     $allFindings = @()
     $sectionContents = @()
-    
+
     # Tenant Overview
     $sectionContents += @{
         Id = 'tenant-overview'
@@ -8377,7 +7537,7 @@ function New-TenantHtmlReport {
             Content = Build-DomainsSection -Domains $domains -SpamFilteringSummary $spamFilteringSummary -SMTPRelaySummary $smtpRelaySummary -MailFlowConnectors $mailFlowConnectors
         }
     }
-    
+
     # Recipients
     if ($recipients.Count -gt 0) {
         #Write-Host "  Building Recipients section..." -ForegroundColor Gray
@@ -8387,7 +7547,7 @@ function New-TenantHtmlReport {
             Content = Build-RecipientsSection -Recipients $recipients
         }
     }
-    
+
     # Identity & Admins
     if ($users.Count -gt 0 -or $admins.Count -gt 0 -or $groups.Count -gt 0) {
         #Write-Host "  Building Identity & Admins section..." -ForegroundColor Gray
@@ -8399,7 +7559,7 @@ function New-TenantHtmlReport {
             Content = Build-IdentityAdminSection -Users $users -Admins $admins -Groups $groups -ExchangeGroups $exchangeGroups
         }
     }
-    
+
     # Mailboxes
     if ($mailboxes.Count -gt 0 -or $publicFolders.Count -gt 0 -or $primaryMailboxStatsCollectionSummary) {
         #Write-Host "  Building Mailboxes section..." -ForegroundColor Gray
@@ -8419,7 +7579,7 @@ function New-TenantHtmlReport {
             Content = Build-EmailActivitySection -TopSenders $emailActivityTopSenders -TopReceivers $emailActivityTopReceivers -EmailActivitySummary $emailActivitySummary
         }
     }
-    
+
     # Inactive Mailboxes
     if ($inactiveMailboxes.Count -gt 0) {
         #Write-Host "  Building Inactive Mailboxes section..." -ForegroundColor Gray
@@ -8431,7 +7591,7 @@ function New-TenantHtmlReport {
             Content = Build-InactiveMailboxesSection -InactiveMailboxes $inactiveMailboxes
         }
     }
-    
+
     # SharePoint & OneDrive
     if ($sharepoint.Count -gt 0 -or $onedrive.Count -gt 0) {
         #Write-Host "  Building SharePoint/OneDrive section..." -ForegroundColor Gray
@@ -8466,7 +7626,7 @@ function New-TenantHtmlReport {
             Content = Build-TeamsSection -Teams $teams -Licenses $licenses -TeamsVoice $teamsVoice -UserCount $users.Count
         }
     }
-    
+
     # Devices
     if ($devices.Count -gt 0) {
         #Write-Host "  Building Devices section..." -ForegroundColor Gray
@@ -8478,7 +7638,7 @@ function New-TenantHtmlReport {
             Content = Build-DevicesSection -Devices $devices
         }
     }
-    
+
     # AD Connect / Sync
     if ($adConnect) {
         #Write-Host "  Building AD Connect section..." -ForegroundColor Gray
@@ -8490,7 +7650,7 @@ function New-TenantHtmlReport {
             Content = Build-AdConnectSection -AdConnect $adConnect
         }
     }
-    
+
     # Conditional Access & MFA
     if ($conditionalAccess.Count -gt 0 -or $authConfig) {
         #Write-Host "  Building Conditional Access & MFA section..." -ForegroundColor Gray
@@ -8502,7 +7662,7 @@ function New-TenantHtmlReport {
             Content = Build-ConditionalAccessMfaSection -ConditionalAccessPolicies $conditionalAccess -AuthConfig $authConfig -Users $users -MfaRegistrationSummary $mfaRegistrationSummary
         }
     }
-    
+
     # Exchange Hybrid (includes federation subsection)
     if ($hybridInfo) {
         #Write-Host "  Building Exchange Hybrid section..." -ForegroundColor Gray
@@ -8516,7 +7676,7 @@ function New-TenantHtmlReport {
             Content = Build-ExchangeHybridSection -HybridInfo $hybridInfo -ExchangeFederation $federationExchange
         }
     }
-    
+
     if ($federationCrossTenant -or $federationExternal) {
         #Write-Host "  Building Cross-Tenant Access section..." -ForegroundColor Gray
         $sectionContents += @{
@@ -8525,7 +7685,7 @@ function New-TenantHtmlReport {
             Content = Build-CrossTenantAccessSection -CrossTenantAccess $federationCrossTenant -ExternalIdentities $federationExternal
         }
     }
-    
+
     # Secure Score
     if ($secureScore.Count -gt 0) {
         #Write-Host "  Building Secure Score section..." -ForegroundColor Gray
@@ -8535,14 +7695,14 @@ function New-TenantHtmlReport {
             Content = Build-SecureScoreSection -SecureScore $secureScore
         }
     }
-    
+
     #Write-Host "  Total findings collected: $($allFindings.Count)" -ForegroundColor Green
     $sectionContents = Sort-AssessmentSections -Sections $sectionContents
-    
+
     #endregion
-    
+
     #region Build HTML
-    
+
     $tenantIdentity = Get-TenantIdentityDetails -TenantStatsHash $TenantStatsHash
     $tenantName = [string]$tenantIdentity.DisplayName
     $tenantIdText = if (-not [string]::IsNullOrWhiteSpace([string]$tenantIdentity.TenantId)) { [string]$tenantIdentity.TenantId } else { 'Unavailable' }
@@ -8566,15 +7726,15 @@ function New-TenantHtmlReport {
             $OutputPath = Join-Path ([Environment]::GetFolderPath("Desktop")) "$safeName-Report.html"
         }
     }
-    
+
     # Ensure .html extension
     if ($OutputPath -notmatch '\.html$') {
         $OutputPath += '.html'
     }
-    
+
     $reportDate = Get-Date -Format "MMMM dd, yyyy h:mm tt"
     $reportDateHtml = [System.Web.HttpUtility]::HtmlEncode($reportDate)
-    
+
     $htmlContent = @"
 <!DOCTYPE html>
 <html lang="en">
@@ -8617,7 +7777,7 @@ function New-TenantHtmlReport {
         
         <!-- Sections -->
 "@
-    
+
     foreach ($section in $sectionContents) {
         $sectionWorkload = Get-AssessmentSectionWorkload -SectionId $section.Id
         $htmlContent += @"
@@ -8628,7 +7788,7 @@ function New-TenantHtmlReport {
         </div>
 "@
     }
-    
+
     $htmlContent += @"
     </div>
     
@@ -8637,24 +7797,24 @@ function New-TenantHtmlReport {
 </body>
 </html>
 "@
-    
+
     #endregion
-    
+
     #region Write File
-    
+
     try {
         $htmlContent | Out-File -FilePath $OutputPath -Encoding UTF8 -Force
         #Write-Host "✅ HTML report saved: $OutputPath" -ForegroundColor Green
-        
+
         # Display summary
         Write-Host "`n📊 Report Summary:" -ForegroundColor Cyan
         Write-Host "   Sections: $($sectionContents.Count)" -ForegroundColor White
         Write-Host "   Findings: $($allFindings.Count)" -ForegroundColor White
-        
+
         $criticalCount = ($allFindings | Where-Object { $_.Type -eq 'Risk' }).Count
         $warningCount = ($allFindings | Where-Object { $_.Type -eq 'Warning' }).Count
         $infoCount = ($allFindings | Where-Object { $_.Type -eq 'Info' }).Count
-        
+
         if ($criticalCount -gt 0) {
             Write-Host "   🔴 Critical: $criticalCount" -ForegroundColor Red
         }
@@ -8664,7 +7824,7 @@ function New-TenantHtmlReport {
         if ($infoCount -gt 0) {
             Write-Host "   ℹ️  Info: $infoCount" -ForegroundColor Cyan
         }
-        
+
         return [PSCustomObject]@{
             Success = $true
             OutputPath = $OutputPath
@@ -8686,6 +7846,73 @@ function New-TenantHtmlReport {
 }
 
 #endregion
+
+# Migration display/size formatting shared by the cutover and scope HTML reports.
+# Both report builders used to carry their own nested copy of these three helpers; the
+# copies were behaviourally identical and differed only in formatting.
+function Format-MigrationDisplayValue {
+    param(
+        [AllowNull()]$Value,
+        [string]$Fallback = 'Not surfaced in current source'
+    )
+
+    if ($null -eq $Value) {
+        return $Fallback
+    }
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $Fallback
+    }
+
+    return $Value
+}
+
+function Get-MigrationNumericValue {
+    param(
+        [AllowNull()]$Value
+    )
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    try {
+        return [double]$Value
+    }
+    catch {
+        return $null
+    }
+}
+
+function Format-MigrationHumanDataSize {
+    param(
+        [AllowNull()]$Value,
+        [string]$Fallback = 'Not surfaced in current source'
+    )
+
+    $numericValue = Get-MigrationNumericValue -Value $Value
+    if ($null -eq $numericValue) {
+        return $Fallback
+    }
+
+    if ($numericValue -eq 0) {
+        return '0 GB'
+    }
+
+    $sizeInBytes = [double]$numericValue * 1GB
+    $absoluteBytes = [math]::Abs($sizeInBytes)
+    $units = @('B', 'KB', 'MB', 'GB', 'TB', 'PB')
+    $unitIndex = 0
+
+    while ($absoluteBytes -ge 1024 -and $unitIndex -lt ($units.Count - 1)) {
+        $sizeInBytes /= 1024
+        $absoluteBytes /= 1024
+        $unitIndex++
+    }
+
+    return '{0:N2} {1}' -f $sizeInBytes, $units[$unitIndex]
+}
 
 function New-TenantMigrationCutoverHtmlReport {
     [CmdletBinding()]
@@ -8742,70 +7969,6 @@ function New-TenantMigrationCutoverHtmlReport {
         }
 
         return $match[0].Value
-    }
-
-    function Format-MigrationDisplayValue {
-        param(
-            [AllowNull()]$Value,
-            [string]$Fallback = 'Not surfaced in current source'
-        )
-
-        if ($null -eq $Value) {
-            return $Fallback
-        }
-
-        $text = [string]$Value
-        if ([string]::IsNullOrWhiteSpace($text)) {
-            return $Fallback
-        }
-
-        return $Value
-    }
-
-    function Get-MigrationNumericValue {
-        param(
-            [AllowNull()]$Value
-        )
-
-        if ($null -eq $Value) {
-            return $null
-        }
-
-        try {
-            return [double]$Value
-        }
-        catch {
-            return $null
-        }
-    }
-
-    function Format-MigrationHumanDataSize {
-        param(
-            [AllowNull()]$Value,
-            [string]$Fallback = 'Not surfaced in current source'
-        )
-
-        $numericValue = Get-MigrationNumericValue -Value $Value
-        if ($null -eq $numericValue) {
-            return $Fallback
-        }
-
-        if ($numericValue -eq 0) {
-            return '0 GB'
-        }
-
-        $sizeInBytes = [double]$numericValue * 1GB
-        $absoluteBytes = [math]::Abs($sizeInBytes)
-        $units = @('B', 'KB', 'MB', 'GB', 'TB', 'PB')
-        $unitIndex = 0
-
-        while ($absoluteBytes -ge 1024 -and $unitIndex -lt ($units.Count - 1)) {
-            $sizeInBytes /= 1024
-            $absoluteBytes /= 1024
-            $unitIndex++
-        }
-
-        return '{0:N2} {1}' -f $sizeInBytes, $units[$unitIndex]
     }
 
     function New-MigrationReadinessChecklistRows {
@@ -9703,45 +8866,52 @@ function New-TenantMigrationScopeHtmlReport {
         [string]$OutputPath
     )
 
-    function Format-MigrationDisplayValue {
-        param(
-            [AllowNull()]$Value,
-            [string]$Fallback = 'Not surfaced in current source'
-        )
+    function ConvertTo-PresalesSizeBytes {
+        <#
+        .SYNOPSIS
+            Normalizes an Exchange size value to bytes.
 
-        if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
-            return $Fallback
-        }
-        return $Value
-    }
-
-    function Get-MigrationNumericValue {
+        .DESCRIPTION
+            Exchange returns sizes as "1.5 GB (1,610,612,736 bytes)" in some code paths, as a
+            ByteQuantifiedSize object in others, and as a plain number after a snapshot
+            round-trip. The parenthesized byte count is preferred when present because it is
+            exact; the unit form is the fallback. Anything unparseable returns $null rather
+            than zero, because a folder whose statistics were never collected is not a folder
+            that measured empty. Measure-Object skips those nulls when totalling.
+        #>
         param([AllowNull()]$Value)
 
         if ($null -eq $Value) { return $null }
-        try { return [double]$Value } catch { return $null }
-    }
-
-    function Format-MigrationHumanDataSize {
-        param(
-            [AllowNull()]$Value,
-            [string]$Fallback = 'Not surfaced in current source'
-        )
-
-        $numericValue = Get-MigrationNumericValue -Value $Value
-        if ($null -eq $numericValue) { return $Fallback }
-        if ($numericValue -eq 0) { return '0 GB' }
-
-        $sizeInBytes = [double]$numericValue * 1GB
-        $absoluteBytes = [math]::Abs($sizeInBytes)
-        $units = @('B', 'KB', 'MB', 'GB', 'TB', 'PB')
-        $unitIndex = 0
-        while ($absoluteBytes -ge 1024 -and $unitIndex -lt ($units.Count - 1)) {
-            $sizeInBytes /= 1024
-            $absoluteBytes /= 1024
-            $unitIndex++
+        if ($Value -is [int64] -or $Value -is [int32] -or $Value -is [double] -or $Value -is [decimal]) {
+            try { return [int64]$Value } catch { return [int64]0 }
         }
-        return '{0:N2} {1}' -f $sizeInBytes, $units[$unitIndex]
+
+        $text = [string]$Value
+        if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+
+        if ($text -match '\((?<bytes>[0-9,]+)\s+bytes\)') {
+            try { return [int64](($Matches['bytes'] -replace ',', '')) } catch { }
+        }
+
+        if ($text -match '^\s*(?<number>[0-9,]+(?:\.[0-9]+)?)\s*(?<unit>B|KB|MB|GB|TB|PB)\b') {
+            $number = [double]($Matches['number'] -replace ',', '')
+            $multiplier = switch ($Matches['unit'].ToUpperInvariant()) {
+                'KB' { 1KB }
+                'MB' { 1MB }
+                'GB' { 1GB }
+                'TB' { 1TB }
+                'PB' { 1PB }
+                default { 1 }
+            }
+            try { return [int64]($number * $multiplier) } catch { return $null }
+        }
+
+        $plainNumber = 0.0
+        if ([double]::TryParse($text, [System.Globalization.NumberStyles]::Any, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$plainNumber)) {
+            try { return [int64]$plainNumber } catch { return $null }
+        }
+
+        return $null
     }
 
     function Get-ScopeRows {
@@ -9769,6 +8939,9 @@ function New-TenantMigrationScopeHtmlReport {
     $tenantInfoSource = if ($TenantStatsHash.ContainsKey('TenantInfo')) { $TenantStatsHash['TenantInfo'] } else { $null }
     $tenantInfoRows = @(Get-ScopeRows -Key 'TenantInfo')
     $domainRows = @(Get-ScopeRows -Key 'Domains')
+    $tenantLicenseRows = @(Get-ScopeRows -Key 'LicenseSKUs')
+    $publicFolderRows = @(Get-ScopeRows -Key 'PublicFolderDetails')
+    $deviceRows = @(Get-ScopeRows -Key 'DeviceDetails')
 
     function Get-PresalesTenantInfoValue {
         param(
@@ -9862,6 +9035,23 @@ function New-TenantMigrationScopeHtmlReport {
             }
         })
 
+    # Collection state and inventory state are different answers. An absent key means the
+    # profile never ran the collector; a present but empty key means the collector ran and
+    # measured nothing. A scoping brief that blurs the two invites a quote built on a gap.
+    $licenseDataCollected = $TenantStatsHash.ContainsKey('LicenseSKUs')
+    $publicFolderDataCollected = $TenantStatsHash.ContainsKey('PublicFolderDetails')
+    $deviceDataCollected = $TenantStatsHash.ContainsKey('DeviceDetails')
+
+    $paidLicenseRows = @($tenantLicenseRows | Where-Object {
+            [string](Get-ArrayaObjectValue -Object $_ -Names @('LicenseClass')) -eq 'Paid'
+        })
+    $paidLicenseAssignedUnits = [int](@($paidLicenseRows | ForEach-Object {
+                Get-MigrationNumericValue (Get-ArrayaObjectValue -Object $_ -Names @('ConsumedUnits'))
+            } | Measure-Object -Sum).Sum)
+    $paidLicensePurchasedUnits = [int](@($paidLicenseRows | ForEach-Object {
+                Get-MigrationNumericValue (Get-ArrayaObjectValue -Object $_ -Names @('PurchasedUnits', 'TotalLicenses'))
+            } | Measure-Object -Sum).Sum)
+
     # ---- Tenant scope at a glance ----
     $overviewHtml = "<div class='kpi-grid'>"
     $overviewHtml += New-KpiCard -Title 'Mailbox Recipients' -Value (Format-MigrationDisplayValue $mailboxRecipientCount) -Subtitle 'Active and inactive; groups separate' -Theme 'default'
@@ -9871,6 +9061,9 @@ function New-TenantMigrationScopeHtmlReport {
     $overviewHtml += New-KpiCard -Title 'SharePoint Sites' -Value (Format-MigrationDisplayValue (& $scopeMetric 'ShareGate' 'SharePoint sites (total)')) -Subtitle ("{0} of source data" -f (Format-MigrationHumanDataSize -Value (& $scopeMetric 'ShareGate' 'SharePoint storage (GB)'))) -Theme 'default'
     $overviewHtml += New-KpiCard -Title 'OneDrive Sites' -Value (Format-MigrationDisplayValue (& $scopeMetric 'ShareGate' 'OneDrive sites')) -Subtitle ("{0} of source data" -f (Format-MigrationHumanDataSize -Value (& $scopeMetric 'ShareGate' 'OneDrive storage (GB)'))) -Theme 'default'
     $overviewHtml += New-KpiCard -Title 'Teams' -Value (Format-MigrationDisplayValue (& $scopeMetric 'ShareGate' 'Teams')) -Subtitle 'Files already counted in SharePoint' -Theme 'default'
+    $overviewHtml += New-KpiCard -Title 'Public Folders' -Value $(if ($publicFolderDataCollected) { $publicFolderRows.Count } else { 'Not collected' }) -Subtitle 'Separate migration path' -Theme $(if ((-not $publicFolderDataCollected) -or ($publicFolderRows.Count -gt 0)) { 'warning' } else { 'success' })
+    $overviewHtml += New-KpiCard -Title 'Devices' -Value $(if ($deviceDataCollected) { $deviceRows.Count } else { 'Not collected' }) -Subtitle 'Entra device objects to re-join' -Theme $(if (-not $deviceDataCollected) { 'warning' } else { 'default' })
+    $overviewHtml += New-KpiCard -Title 'Paid License Seats' -Value $(if ($licenseDataCollected) { '{0:N0} of {1:N0}' -f $paidLicenseAssignedUnits, $paidLicensePurchasedUnits } else { 'Not collected' }) -Subtitle 'Assigned of purchased, paid SKUs' -Theme $(if (-not $licenseDataCollected) { 'warning' } else { 'default' })
     $overviewHtml += '</div>'
     $overviewHtml += "<p><strong>This report inventories the source tenant only.</strong> BitTitan carries mailbox data, while ShareGate carries SharePoint, OneDrive, and Teams content. Teams file storage is already included in SharePoint and is not counted twice. Destination assumptions and mappings are customer-provided inputs elsewhere in the report.</p>"
 
@@ -10039,9 +9232,278 @@ function New-TenantMigrationScopeHtmlReport {
             return Format-MigrationHumanDataSize -Value $value
         }
     } -EmptyMessage 'Workload effort rows were not generated for this run.'
+
+    # ---- Source tenant licensing -------------------------------------------------------
+    # A source-only run cannot size the destination tenant, but the SKUs already carried in the
+    # source are the closest thing to a target shopping list, and trials or lapsing
+    # subscriptions change what has to be bought before cutover rather than discovered during
+    # it. Assigned seats, not purchased seats, are the number that has to exist on the far side.
+    $tenantLicensePresentationRows = @($tenantLicenseRows | ForEach-Object {
+            $purchasedUnits = Get-MigrationNumericValue (Get-ArrayaObjectValue -Object $_ -Names @('PurchasedUnits', 'TotalLicenses'))
+            if ($null -eq $purchasedUnits) { $purchasedUnits = 0 }
+            $consumedUnits = Get-MigrationNumericValue (Get-ArrayaObjectValue -Object $_ -Names @('ConsumedUnits'))
+            if ($null -eq $consumedUnits) { $consumedUnits = 0 }
+            $skuPartNumber = [string](Get-ArrayaObjectValue -Object $_ -Names @('SkuPartNumber'))
+            $friendlyName = [string](Get-ArrayaObjectValue -Object $_ -Names @('SkuFriendlyName'))
+            if ([string]::IsNullOrWhiteSpace($friendlyName)) { $friendlyName = $skuPartNumber }
+            $rawLicenseClass = [string](Get-ArrayaObjectValue -Object $_ -Names @('LicenseClass'))
+            $licenseClassLabel = switch ($rawLicenseClass) {
+                'Paid' { 'Paid' }
+                'FreeTrialBenefit' { 'Free or trial' }
+                default { if ([string]::IsNullOrWhiteSpace($rawLicenseClass)) { 'Unclassified' } else { $rawLicenseClass } }
+            }
+
+            [pscustomobject]@{
+                SkuFriendlyName = $friendlyName
+                SkuPartNumber = $skuPartNumber
+                LicenseClass = $licenseClassLabel
+                PurchasedUnits = [int]$purchasedUnits
+                ConsumedUnits = [int]$consumedUnits
+                RemainingUnits = [int]($purchasedUnits - $consumedUnits)
+                Utilization = $(if ($purchasedUnits -gt 0) { [math]::Round((($consumedUnits / $purchasedUnits) * 100), 1) } else { $null })
+                AppliesTo = [string](Get-ArrayaObjectValue -Object $_ -Names @('AppliesTo'))
+                NextLifecycleDateTime = Get-ArrayaObjectValue -Object $_ -Names @('NextLifecycleDateTime')
+            }
+        } | Sort-Object @{ Expression = { if ($_.LicenseClass -eq 'Paid') { 0 } else { 1 } } }, @{ Expression = { $_.ConsumedUnits }; Descending = $true })
+
+    $freeOrTrialLicenseRows = @($tenantLicensePresentationRows | Where-Object { $_.LicenseClass -eq 'Free or trial' })
+    $paidLicenseRemainingUnits = $paidLicensePurchasedUnits - $paidLicenseAssignedUnits
+    $overAssignedLicenseRows = @($tenantLicensePresentationRows | Where-Object { $_.RemainingUnits -lt 0 })
+
+    $tenantLicensingHtml = "<div class='kpi-grid'>"
+    $tenantLicensingHtml += New-KpiCard -Title 'Distinct SKUs' -Value $(if ($licenseDataCollected) { $tenantLicensePresentationRows.Count } else { 'Not collected' }) -Subtitle 'Subscribed SKUs in the source' -Theme $(if (-not $licenseDataCollected) { 'warning' } else { 'default' })
+    $tenantLicensingHtml += New-KpiCard -Title 'Paid Seats Assigned' -Value $(if ($licenseDataCollected) { '{0:N0}' -f $paidLicenseAssignedUnits } else { 'Not collected' }) -Subtitle 'Target-side entitlement to plan for' -Theme $(if (-not $licenseDataCollected) { 'warning' } else { 'default' })
+    $tenantLicensingHtml += New-KpiCard -Title 'Paid Seats Purchased' -Value $(if ($licenseDataCollected) { '{0:N0}' -f $paidLicensePurchasedUnits } else { 'Not collected' }) -Subtitle 'Contracted quantity in the source' -Theme $(if (-not $licenseDataCollected) { 'warning' } else { 'default' })
+    $tenantLicensingHtml += New-KpiCard -Title 'Paid Seats Unassigned' -Value $(if ($licenseDataCollected) { '{0:N0}' -f $paidLicenseRemainingUnits } else { 'Not collected' }) -Subtitle 'Purchased but not consumed' -Theme $(if (-not $licenseDataCollected) { 'warning' } elseif ($paidLicenseRemainingUnits -lt 0) { 'danger' } else { 'default' })
+    $tenantLicensingHtml += New-KpiCard -Title 'Free or Trial SKUs' -Value $(if ($licenseDataCollected) { $freeOrTrialLicenseRows.Count } else { 'Not collected' }) -Subtitle 'Not a renewal or migration basis' -Theme $(if (-not $licenseDataCollected) { 'warning' } elseif ($freeOrTrialLicenseRows.Count -gt 0) { 'warning' } else { 'default' })
+    $tenantLicensingHtml += '</div>'
+
+    if (-not $licenseDataCollected) {
+        $tenantLicensingHtml += New-CalloutBox -Type 'warning' -Title 'License inventory was not collected in this run' -Content 'The source SKU inventory is missing from this snapshot, so nothing here should be read as evidence that the tenant is unlicensed or lightly licensed. Re-run the collection in Microsoft Graph SDK mode before using this brief to shape a target licensing conversation.'
+    }
+    else {
+        $tenantLicensingHtml += "<p>These are the SKUs subscribed <strong>in the source tenant</strong>. They are a starting point for the destination licensing conversation, not the destination requirement: the target tenant needs its own agreement, and the workloads actually in migration scope decide which of these SKUs have to be reproduced. <strong>Assigned</strong> is the quantity that has to exist on the far side at cutover; <strong>Purchased</strong> is what the source currently contracts.</p>"
+        if ($overAssignedLicenseRows.Count -gt 0) {
+            $tenantLicensingHtml += New-CalloutBox -Type 'warning' -Title 'Assigned seats exceed purchased seats' -Content ("{0} SKU(s) report more consumed units than prepaid units. This normally means a subscription is mid-change or in a grace period. Confirm the true entitlement through the customer licensing channel before it is used as a migration quantity." -f $overAssignedLicenseRows.Count)
+        }
+        if ($freeOrTrialLicenseRows.Count -gt 0) {
+            $tenantLicensingHtml += New-CalloutBox -Type 'info' -Title 'Free and trial SKUs are listed but not counted as paid' -Content ("{0} SKU(s) were classified as free, trial, or benefit licenses and are excluded from the paid seat totals above. Any workload a trial SKU is currently carrying still has to be licensed properly in the target." -f $freeOrTrialLicenseRows.Count)
+        }
+    }
+
+    $tenantLicensingHtml += New-HtmlTable -Data $tenantLicensePresentationRows -Columns @('SkuFriendlyName', 'SkuPartNumber', 'LicenseClass', 'PurchasedUnits', 'ConsumedUnits', 'RemainingUnits', 'Utilization', 'NextLifecycleDateTime') -ColumnHeaders @{
+        SkuFriendlyName = 'Product'
+        SkuPartNumber = 'SKU Part Number'
+        LicenseClass = 'Class'
+        PurchasedUnits = 'Purchased'
+        ConsumedUnits = 'Assigned'
+        RemainingUnits = 'Available'
+        Utilization = 'Utilization'
+        NextLifecycleDateTime = 'Next Lifecycle Date'
+    } -ValueFormatters @{
+        Utilization = {
+            param($value, $row)
+            if ($null -eq $value) { return 'Not applicable' }
+            return ('{0:N1}%' -f [double]$value)
+        }
+        NextLifecycleDateTime = {
+            param($value, $row)
+            if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) { return 'Not published' }
+            try {
+                $lifecycleDate = if ($value -is [datetime]) {
+                    [datetime]$value
+                }
+                else {
+                    [datetime]::Parse([string]$value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                }
+                # Graph parks perpetual and benefit subscriptions on year 9999 rather than null.
+                if ($lifecycleDate.Year -eq 9999) { return 'No scheduled expiry' }
+                return $lifecycleDate.ToString('yyyy-MM-dd')
+            }
+            catch { return [string]$value }
+        }
+    } -RiskColumns @{
+        RemainingUnits = { param($value, $row) ([double]$value) -lt 0 }
+    } -CssClass 'data-table wrap-cells' -EmptyMessage $(if ($licenseDataCollected) { 'The license collector ran and returned no subscribed SKUs for this tenant.' } else { 'License SKU inventory was not collected for this run.' })
+
+    # ---- Public folders ----------------------------------------------------------------
+    # Public folders are the classic pre-sales surprise: no mainstream tenant-to-tenant path
+    # carries them as part of a mailbox or collaboration move, so a non-zero count here is a
+    # priced workstream. Item counts and size are what separate a few stale folders from a
+    # project, so the brief reports both rather than only a folder count.
+    $publicFolderPresentationRows = @($publicFolderRows | ForEach-Object {
+            $itemCount = Get-MigrationNumericValue (Get-ArrayaObjectValue -Object $_ -Names @('ItemCount'))
+            [pscustomobject]@{
+                FolderPath = [string](Get-ArrayaObjectValue -Object $_ -Names @('FolderPath', 'Path', 'Identity', 'Name'))
+                MailEnabled = Get-ArrayaObjectValue -Object $_ -Names @('MailEnabled')
+                ItemCount = $(if ($null -eq $itemCount) { $null } else { [int]$itemCount })
+                TotalItemSizeBytes = ConvertTo-PresalesSizeBytes (Get-ArrayaObjectValue -Object $_ -Names @('TotalItemSize'))
+                DeletedItemSizeBytes = ConvertTo-PresalesSizeBytes (Get-ArrayaObjectValue -Object $_ -Names @('TotalDeletedItemSize'))
+                LastModificationTime = Get-ArrayaObjectValue -Object $_ -Names @('LastModificationTime')
+            }
+        } | Sort-Object -Property TotalItemSizeBytes -Descending)
+
+    $mailEnabledPublicFolderCount = @($publicFolderPresentationRows | Where-Object { $_.MailEnabled -eq $true }).Count
+    $publicFolderItemTotal = [int64](@($publicFolderPresentationRows | ForEach-Object { $_.ItemCount } | Measure-Object -Sum).Sum)
+    $publicFolderSizeBytes = [int64](@($publicFolderPresentationRows | ForEach-Object { $_.TotalItemSizeBytes } | Measure-Object -Sum).Sum)
+    $publicFolderSizeGB = if ($publicFolderSizeBytes -gt 0) { $publicFolderSizeBytes / 1GB } else { 0 }
+    $largestPublicFolderRows = @($publicFolderPresentationRows | Select-Object -First 25)
+
+    $publicFolderHtml = "<div class='kpi-grid'>"
+    $publicFolderHtml += New-KpiCard -Title 'Public Folders' -Value $(if ($publicFolderDataCollected) { $publicFolderPresentationRows.Count } else { 'Not collected' }) -Subtitle 'Folder objects in the source hierarchy' -Theme $(if (-not $publicFolderDataCollected) { 'warning' } elseif ($publicFolderPresentationRows.Count -gt 0) { 'warning' } else { 'success' })
+    $publicFolderHtml += New-KpiCard -Title 'Mail-Enabled Folders' -Value $(if ($publicFolderDataCollected) { $mailEnabledPublicFolderCount } else { 'Not collected' }) -Subtitle 'Each carries an SMTP address to reproduce' -Theme $(if (-not $publicFolderDataCollected) { 'warning' } elseif ($mailEnabledPublicFolderCount -gt 0) { 'warning' } else { 'default' })
+    $publicFolderHtml += New-KpiCard -Title 'Items' -Value $(if ($publicFolderDataCollected) { '{0:N0}' -f $publicFolderItemTotal } else { 'Not collected' }) -Subtitle 'Total items across the hierarchy' -Theme $(if (-not $publicFolderDataCollected) { 'warning' } else { 'default' })
+    $publicFolderHtml += New-KpiCard -Title 'Public Folder Data' -Value $(if ($publicFolderDataCollected) { Format-MigrationHumanDataSize -Value $publicFolderSizeGB } else { 'Not collected' }) -Subtitle 'Not included in mailbox sizing' -Theme $(if (-not $publicFolderDataCollected) { 'warning' } else { 'default' })
+    $publicFolderHtml += '</div>'
+
+    if (-not $publicFolderDataCollected) {
+        $publicFolderHtml += New-CalloutBox -Type 'warning' -Title 'Public folder inventory was not collected in this run' -Content 'A missing inventory is not the same as no public folders. Do not quote a migration that excludes public folders on the strength of this section until the Exchange Online public folder collection has actually run.'
+    }
+    elseif ($publicFolderPresentationRows.Count -eq 0) {
+        $publicFolderHtml += New-CalloutBox -Type 'success' -Title 'No public folders were found' -Content 'The Exchange Online public folder collector ran and returned no folders, so no separate public folder workstream is indicated for this source tenant.'
+    }
+    else {
+        $publicFolderHtml += New-CalloutBox -Type 'warning' -Title 'Public folders are a separate priced workstream' -Content ("This source carries {0} public folder object(s) holding {1} across {2} item(s). Neither the BitTitan mailbox scope nor the ShareGate collaboration scope on this brief includes them, and the Microsoft native cross-tenant paths do not carry them either. Settle the disposition early: migrate to public folders, convert to shared mailboxes or Microsoft 365 Groups, archive, or leave behind." -f $publicFolderPresentationRows.Count, (Format-MigrationHumanDataSize -Value $publicFolderSizeGB), ('{0:N0}' -f $publicFolderItemTotal))
+        if ($mailEnabledPublicFolderCount -gt 0) {
+            $publicFolderHtml += New-CalloutBox -Type 'info' -Title 'Mail-enabled folders touch the domain cutover' -Content ("{0} folder(s) are mail-enabled. Their SMTP addresses live in the domains being moved, so their disposition has to be settled before the domain cutover rather than after it." -f $mailEnabledPublicFolderCount)
+        }
+        $publicFolderHtml += ("<p>The table lists the {0} largest folder(s) by size. The full hierarchy remains in the <strong>PublicFolderDetails</strong> worksheet of the supporting workbook.</p>" -f $largestPublicFolderRows.Count)
+    }
+
+    $publicFolderHtml += New-HtmlTable -Data $largestPublicFolderRows -Columns @('FolderPath', 'MailEnabled', 'ItemCount', 'TotalItemSizeBytes', 'DeletedItemSizeBytes', 'LastModificationTime') -ColumnHeaders @{
+        FolderPath = 'Folder Path'
+        MailEnabled = 'Mail-Enabled'
+        ItemCount = 'Items'
+        TotalItemSizeBytes = 'Size'
+        DeletedItemSizeBytes = 'Recoverable'
+        LastModificationTime = 'Last Modified'
+    } -ValueFormatters @{
+        ItemCount = {
+            param($value, $row)
+            if ($null -eq $value) { return 'Needs data' }
+            return ('{0:N0}' -f [double]$value)
+        }
+        TotalItemSizeBytes = {
+            param($value, $row)
+            if ($null -eq $value) { return 'Needs data' }
+            return Format-MigrationHumanDataSize -Value ([double]$value / 1GB) -Fallback 'Needs data'
+        }
+        DeletedItemSizeBytes = {
+            param($value, $row)
+            if ($null -eq $value) { return 'Needs data' }
+            return Format-MigrationHumanDataSize -Value ([double]$value / 1GB) -Fallback 'Needs data'
+        }
+    } -CssClass 'data-table wrap-cells' -EmptyMessage $(if ($publicFolderDataCollected) { 'The public folder collector ran and returned no folders.' } else { 'Public folder inventory was not collected for this run.' })
+
+    # ---- Device estate -----------------------------------------------------------------
+    # Device counts are scope, not security posture. In a tenant move every joined device is a
+    # re-join or rebuild, every registered device is a re-registration, and the OS and join-type
+    # mix decides whether that is a scripted task or a desk-side visit. Stale devices get called
+    # out because they inflate the count a quote would otherwise be built on.
+    $devicePresentationRows = @($deviceRows | ForEach-Object {
+            $operatingSystem = [string](Get-ArrayaObjectValue -Object $_ -Names @('OperatingSystem'))
+            if ([string]::IsNullOrWhiteSpace($operatingSystem)) { $operatingSystem = 'Unknown' }
+            # DeviceJoinType is classified at collection time, so snapshots taken before that
+            # classification was fixed carry 'Unknown' for every device. TrustType is the raw
+            # Graph value and is always present, so fall back to it rather than reporting an
+            # entire estate as unclassified.
+            $joinType = [string](Get-ArrayaObjectValue -Object $_ -Names @('DeviceJoinType'))
+            if ([string]::IsNullOrWhiteSpace($joinType) -or $joinType -eq 'Unknown') {
+                $joinType = switch ([string](Get-ArrayaObjectValue -Object $_ -Names @('TrustType', 'DeviceTrustType'))) {
+                    'AzureAD' { 'Entra AD joined' }
+                    'WorkPlace' { 'Entra AD registered' }
+                    'ServerAd' { 'Hybrid Entra AD joined' }
+                    default { 'Unknown' }
+                }
+            }
+            [pscustomobject]@{
+                OperatingSystem = $operatingSystem
+                JoinType = $joinType
+                IsManaged = ((Get-ArrayaObjectValue -Object $_ -Names @('IsManaged')) -eq $true)
+                IsStale = ((Get-ArrayaObjectValue -Object $_ -Names @('DeviceStale')) -eq $true)
+            }
+        })
+
+    $deviceTotalCount = $devicePresentationRows.Count
+    $managedDeviceCount = @($devicePresentationRows | Where-Object { $_.IsManaged }).Count
+    $staleDeviceCount = @($devicePresentationRows | Where-Object { $_.IsStale }).Count
+    $activeDeviceCount = $deviceTotalCount - $staleDeviceCount
+    $hybridJoinedDeviceCount = @($devicePresentationRows | Where-Object { $_.JoinType -eq 'Hybrid Entra AD joined' }).Count
+    $managedDeviceShare = if ($deviceTotalCount -gt 0) { '{0:N1}% of the estate' -f (($managedDeviceCount / $deviceTotalCount) * 100) } else { 'No devices to compare' }
+
+    $newDeviceBreakdownRows = {
+        param([object[]]$Rows, [string]$PropertyName)
+
+        return @($Rows | Group-Object -Property $PropertyName | ForEach-Object {
+                $groupRows = @($_.Group)
+                [pscustomobject]@{
+                    Category = $_.Name
+                    DeviceCount = $groupRows.Count
+                    ShareOfEstate = $(if ($deviceTotalCount -gt 0) { [math]::Round((($groupRows.Count / $deviceTotalCount) * 100), 1) } else { $null })
+                    ManagedCount = @($groupRows | Where-Object { $_.IsManaged }).Count
+                    StaleCount = @($groupRows | Where-Object { $_.IsStale }).Count
+                }
+            } | Sort-Object -Property DeviceCount -Descending)
+    }
+
+    $deviceOsBreakdownRows = @(& $newDeviceBreakdownRows $devicePresentationRows 'OperatingSystem')
+    $deviceJoinBreakdownRows = @(& $newDeviceBreakdownRows $devicePresentationRows 'JoinType')
+    $deviceBreakdownColumns = @('Category', 'DeviceCount', 'ShareOfEstate', 'ManagedCount', 'StaleCount')
+    $deviceBreakdownFormatters = @{
+        ShareOfEstate = {
+            param($value, $row)
+            if ($null -eq $value) { return 'Not applicable' }
+            return ('{0:N1}%' -f [double]$value)
+        }
+    }
+
+    $deviceHtml = "<div class='kpi-grid'>"
+    $deviceHtml += New-KpiCard -Title 'Total Devices' -Value $(if ($deviceDataCollected) { '{0:N0}' -f $deviceTotalCount } else { 'Not collected' }) -Subtitle 'Entra ID device objects' -Theme $(if (-not $deviceDataCollected) { 'warning' } else { 'default' })
+    $deviceHtml += New-KpiCard -Title 'Active Devices' -Value $(if ($deviceDataCollected) { '{0:N0}' -f $activeDeviceCount } else { 'Not collected' }) -Subtitle 'Signed in within six months' -Theme $(if (-not $deviceDataCollected) { 'warning' } else { 'default' })
+    $deviceHtml += New-KpiCard -Title 'Stale Devices' -Value $(if ($deviceDataCollected) { '{0:N0}' -f $staleDeviceCount } else { 'Not collected' }) -Subtitle 'Confirm before including in scope' -Theme $(if (-not $deviceDataCollected) { 'warning' } elseif ($staleDeviceCount -gt 0) { 'warning' } else { 'success' })
+    $deviceHtml += New-KpiCard -Title 'MDM Managed' -Value $(if ($deviceDataCollected) { '{0:N0}' -f $managedDeviceCount } else { 'Not collected' }) -Subtitle $managedDeviceShare -Theme $(if (-not $deviceDataCollected) { 'warning' } else { 'default' })
+    $deviceHtml += New-KpiCard -Title 'Hybrid Joined' -Value $(if ($deviceDataCollected) { '{0:N0}' -f $hybridJoinedDeviceCount } else { 'Not collected' }) -Subtitle 'Depend on the on-premises directory' -Theme $(if (-not $deviceDataCollected) { 'warning' } elseif ($hybridJoinedDeviceCount -gt 0) { 'warning' } else { 'default' })
+    $deviceHtml += '</div>'
+
+    if (-not $deviceDataCollected) {
+        $deviceHtml += New-CalloutBox -Type 'warning' -Title 'Device inventory was not collected in this run' -Content 'This snapshot holds no Entra ID device objects, which is a collection gap rather than a measured zero. Endpoint re-join and re-enrollment effort cannot be sized from this brief until the device collection has run.'
+    }
+    else {
+        $deviceHtml += "<p>Every device object here becomes work in a tenant move: Entra joined devices are re-joined or rebuilt, hybrid joined devices additionally depend on whatever happens to the on-premises directory, and registered devices are re-registered by their owner. This section sizes that estate. It deliberately does not score endpoint security posture, which is an assessment concern rather than a scoping one.</p>"
+        if ($staleDeviceCount -gt 0) {
+            $deviceHtml += New-CalloutBox -Type 'warning' -Title 'Stale devices inflate the endpoint count' -Content ("{0} of {1} device object(s) have not signed in for at least six months. Confirm with the customer which are genuinely retired before this count is used as an endpoint migration quantity; cleaning them up first is usually cheaper than migrating them." -f $staleDeviceCount, $deviceTotalCount)
+        }
+        if ($hybridJoinedDeviceCount -gt 0) {
+            $deviceHtml += New-CalloutBox -Type 'warning' -Title 'Hybrid joined devices add a directory dependency' -Content ("{0} device(s) are hybrid Entra ID joined, so their join state is owned by an on-premises Active Directory. The endpoint plan has to be sequenced against whatever the project does with that directory and its synchronization." -f $hybridJoinedDeviceCount)
+        }
+        $deviceHtml += "<h3 style='margin-top:30px;'>Breakdown by operating system</h3>"
+    }
+
+    $deviceHtml += New-HtmlTable -Data $deviceOsBreakdownRows -Columns $deviceBreakdownColumns -ColumnHeaders @{
+        Category = 'Operating System'
+        DeviceCount = 'Devices'
+        ShareOfEstate = 'Share of Estate'
+        ManagedCount = 'MDM Managed'
+        StaleCount = 'Stale'
+    } -ValueFormatters $deviceBreakdownFormatters -EmptyMessage $(if ($deviceDataCollected) { 'The device collector ran and returned no device objects.' } else { 'Device inventory was not collected for this run.' })
+
+    if ($deviceDataCollected -and $deviceTotalCount -gt 0) {
+        $deviceHtml += "<h3 style='margin-top:30px;'>Breakdown by join type</h3>"
+        $deviceHtml += New-HtmlTable -Data $deviceJoinBreakdownRows -Columns $deviceBreakdownColumns -ColumnHeaders @{
+            Category = 'Join Type'
+            DeviceCount = 'Devices'
+            ShareOfEstate = 'Share of Estate'
+            ManagedCount = 'MDM Managed'
+            StaleCount = 'Stale'
+        } -ValueFormatters $deviceBreakdownFormatters -EmptyMessage 'No join type breakdown was available.'
+    }
+
     $sectionContents = @(
         @{ Id = 'presales-scope'; Name = 'Tenant Scope at a Glance'; Workload = 'Source-tenant migration scoping'; Content = $overviewHtml },
         @{ Id = 'presales-domains'; Name = 'Domain and DNS Inventory'; Workload = 'Source-tenant namespaces and recipient use'; Content = $domainHtml },
+        @{ Id = 'presales-licensing'; Name = 'Source Tenant Licensing'; Workload = 'Source-tenant subscriptions and assigned seats'; Content = $tenantLicensingHtml },
+        @{ Id = 'presales-publicfolders'; Name = 'Public Folders'; Workload = 'Neither BitTitan mailbox nor ShareGate collaboration scope'; Content = $publicFolderHtml },
+        @{ Id = 'presales-devices'; Name = 'Device Estate'; Workload = 'Endpoint re-join and re-enrollment scope'; Content = $deviceHtml },
         @{ Id = 'presales-readiness'; Name = 'Quote Readiness and Blockers'; Workload = 'Customer decisions; destination inputs are not queried'; Content = $readinessHtml },
         @{ Id = 'presales-bittitan'; Name = 'BitTitan Mailbox Licensing'; Workload = 'BitTitan - mailbox data'; Content = $licensingHtml },
         @{ Id = 'presales-sharegate'; Name = 'ShareGate Collaboration Scope'; Workload = 'ShareGate - SharePoint, OneDrive, Teams'; Content = $collaborationHtml },

@@ -87,7 +87,7 @@ function Get-ExchangeGroupDetails {
                 $primarySmtpLookupKey = if ([string]::IsNullOrWhiteSpace($PrimarySMTPAddress)) { $null } else { $PrimarySMTPAddress.ToLowerInvariant() }
                 Write-ProgressHelper -Total $exchangeGroupProgressTotal -Id $exchangeGroupProgressId -Activity "Gathering All Exchange Online Group Details" -Operation "Gathering Group Details for $($PrimarySMTPAddress)"
                 Write-Log -Type DEBUG -Message ("[Get-ExchangeGroupDetails] Gathering '{0}' '{1}' Group Details" -f $object.RecipientTypeDetails, $PrimarySMTPAddress) -ExportFileLocation $exportDetails
-    
+
                 # Clear details
                 $attributesToClear = @('groupDetails', 'groupOwners','groupMembers')
                 foreach ($attribute in $attributesToClear) {
@@ -103,7 +103,7 @@ function Get-ExchangeGroupDetails {
                 ) {
                     $cachedUnifiedGroup = $cachedUnifiedGroupsByAddress[$primarySmtpLookupKey]
                 }
-                
+
                 # Conditional logic for different recipient types
                 switch ($object.RecipientTypeDetails) {
                     "DynamicDistributionGroup" {
@@ -191,7 +191,7 @@ function Get-ExchangeGroupDetails {
                     $groupDetails = $object
                     $metadataReusedFromRecipientCount++
                 }
-    
+
                 #Check Group Owners Size and Get Owners Addresses
                 if ($object.ManagedBy.count -ge 1) {
                     $groupOwners = $object.ManagedBy
@@ -206,7 +206,7 @@ function Get-ExchangeGroupDetails {
                     $groupMembersCount = ($groupMembers | Measure-Object).Count
                 }
                 Write-Log -Type DEBUG -Message ("[Get-ExchangeGroupDetails] Create Group Output Details for '{0}' '{1}'" -f $object.RecipientTypeDetails, $PrimarySMTPAddress) -ExportFileLocation $exportDetails
-    
+
                 #Output Group Details
                 $currentobject = [PSCustomObject]@{
                     DisplayName                              = $object.DisplayName
@@ -235,7 +235,7 @@ function Get-ExchangeGroupDetails {
                     AllowAddGuests                           = $groupDetails.AllowAddGuests
                     SharePointSiteUrl                        = $groupDetails.SharePointSiteUrl
                 }
-    
+
                 Write-Log -Type DEBUG -Message ("[Get-ExchangeGroupDetails] Add '{0}' '{1}' Group Details to Tenant Stats Hash" -f $object.RecipientTypeDetails, $PrimarySMTPAddress) -ExportFileLocation $exportDetails
                 $tenantStatsHash["AllExchangeGroups"][$object.identity] = $currentobject
             }

@@ -92,22 +92,8 @@ function Get-ArrayaEmployeeExperienceInsightsAnalysis {
         })
     }
 
-    function Get-ConditionalAccessPolicyState {
-        param(
-            [AllowNull()]
-            $Policy
-        )
-
-        $state = [string](Get-SummaryValue -Record $Policy -Key @('State', 'state', 'PolicyState', 'policyState') -Default '')
-        switch ($state.Trim().ToLowerInvariant()) {
-            'enabled'                           { return 'enabled' }
-            'enabledforreportingbutnotenforced' { return 'enabledForReportingButNotEnforced' }
-            'reportonly'                        { return 'enabledForReportingButNotEnforced' }
-            'report-only'                       { return 'enabledForReportingButNotEnforced' }
-            'disabled'                          { return 'disabled' }
-            default                             { return 'unknown' }
-        }
-    }
+    # Conditional Access policy state normalization comes from Arraya.M365.Analytics
+    # (Get-ArrayaConditionalAccessPolicyState).
 
     function Convert-ToBoolean {
         param(
@@ -247,12 +233,12 @@ function Get-ArrayaEmployeeExperienceInsightsAnalysis {
     $allPolicies = @($ConditionalAccessPolicies | Where-Object { $null -ne $_ })
     $enabledPolicies = @(
         $allPolicies | Where-Object {
-            (Get-ConditionalAccessPolicyState -Policy $_) -eq 'enabled'
+            (Get-ArrayaConditionalAccessPolicyState -Policy $_) -eq 'enabled'
         }
     )
     $reportOnlyPolicies = @(
         $allPolicies | Where-Object {
-            (Get-ConditionalAccessPolicyState -Policy $_) -eq 'enabledForReportingButNotEnforced'
+            (Get-ArrayaConditionalAccessPolicyState -Policy $_) -eq 'enabledForReportingButNotEnforced'
         }
     )
 

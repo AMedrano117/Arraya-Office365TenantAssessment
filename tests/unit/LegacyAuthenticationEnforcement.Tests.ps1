@@ -3,6 +3,9 @@ Describe 'Legacy authentication enforcement evidence' {
         $script:repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
         $script:collectorPath = Join-Path $script:repoRoot 'src\scripts\migrated\legacy\Get-FullTenantReportDetails.ps1'
         Import-Module -Name (Join-Path $script:repoRoot 'src\modules\Arraya.M365.Common\Arraya.M365.Common.psd1') -Force -ErrorAction Stop
+        # Get-ArrayaConditionalAccessPolicyState moved out of the collector into
+        # Arraya.M365.Analytics when three duplicate copies of it were consolidated.
+        Import-Module -Name (Join-Path $script:repoRoot 'src\modules\Arraya.M365.Analytics\Arraya.M365.Analytics.psd1') -Force -ErrorAction Stop
 
         $collectorSource = [System.IO.File]::ReadAllText($script:collectorPath, [System.Text.Encoding]::UTF8)
         $tokens = $null
@@ -18,7 +21,6 @@ Describe 'Legacy authentication enforcement evidence' {
             'Convert-ToAssessmentStringArray'
             'Test-AssessmentMeaningfulNestedValue'
             'Test-AssessmentConditionalAccessRequiresMfa'
-            'Get-AssessmentConditionalAccessPolicyState'
             'Get-AssessmentEnabledAuthenticationMethodNames'
             'Get-AssessmentMfaEnforcementEvidence'
             'Convert-ToAssessmentBoolean'

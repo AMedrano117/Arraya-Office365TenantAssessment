@@ -39,7 +39,7 @@ function Filter-TenantStatsHash {
     }
     if ($GraphTest -eq "REST") {
         $additionalTables += @(
-            "EmailData", "OneDriveData", "SharePointData", "TeamsUserData", "MailboxUsage", 
+            "EmailData", "OneDriveData", "SharePointData", "TeamsUserData", "MailboxUsage",
             "SignInData", "UserSignIns", "SPOUsage", "YammerUsage"
         )
     }

@@ -1,31 +1,31 @@
-#to do: Add filter for app with and without owners. Add a risk indicator for apps with no owners
+﻿#to do: Add filter for app with and without owners. Add a risk indicator for apps with no owners
 
 <#PSScriptInfo
- 
+
 .VERSION 0.2.2
- 
+
 .GUID 175aa966-47dc-4a76-bbd1-b7ab11cd3079
- 
+
 .AUTHOR Daniel Bradley
- 
+
 .COMPANYNAME ourcloudnetwork.co.uk
- 
+
 .COPYRIGHT
- 
+
 .TAGS
     ourcloudnetwork
     Microsoft Entra
     Microsoft Graph
- 
+
 .LICENSEURI
     https://github.com/DanielBradley1/Invoke-EntraAppReport/blob/main/LICENSE
- 
+
 .PROJECTURI
     https://ourcloudnetwork.com/create-a-free-enterprise-app-permissions-report-in-microsoft-entra/
- 
+
 .EXTERNALMODULEDEPENDENCIES
     Microsoft.Graph.Authentication
- 
+
 .RELEASENOTES
     v0.1 - Initial release
     v0.2 - Added app registration owners
@@ -35,13 +35,13 @@
 <#
 .DESCRIPTION
  This script, created by Daniel Bradley at ourcloudnetwork.co.uk, generates a report of all applications in your Microsoft Entra tenant, including their permissions, credentials, and sign-in activity. The report includes a summary of the total number of applications, applications with delegated permissions, applications with application permissions, third-party applications, and inactive applications. The report also includes a list of applications with insecure sign-in methods, applications with application permissions, and applications with no sign-in activity. The report is generated in HTML format and can be saved to a file for further analysis.
- 
+
 .PARAMETER outpath
  Specified the output path of the report file.
 
 .PARAMETER TenantId
  Optional tenant ID to connect to. When omitted, the script connects using the default tenant for the signed-in account.
- 
+
 .EXAMPLE
 PS> Invoke-EntraAuthReport -outpath "C:\Reports\EntraAuthReport.html"
 #>
@@ -129,7 +129,7 @@ $currentStep = 0
 #Get organisation information
 $currentStep++
 Write-Progress -Activity "Gathering Entra Application Data" -Status "Getting organization information" -PercentComplete (($currentStep / $progressSteps) * 100)
-$organisationInfo = (Invoke-MgGraphRequest -Uri "v1.0/organization" -OutputType PSObject | Select -Expand value)
+$organisationInfo = (Invoke-MgGraphRequest -Uri "v1.0/organization" -OutputType PSObject | Select-Object -Expand value)
 
 # Get all service principals first to build our lookup dictionaries
 $currentStep++
@@ -288,7 +288,7 @@ Function Get-MgSpSignIns {
         }
     }
 }
-$ServicePrincipalSignIns = Get-MgSpSignIns -filter "appOwnerTenantId ne '$($organisationInfo.id)'" | Select createdDateTime, appDisplayName, appId, clientCredentialType, appOwnerTenantId
+$ServicePrincipalSignIns = Get-MgSpSignIns -filter "appOwnerTenantId ne '$($organisationInfo.id)'" | Select-Object createdDateTime, appDisplayName, appId, clientCredentialType, appOwnerTenantId
 
 #Add last sign-in activity to the permissions report
 Write-Host "Adding sign-in activity data to applications..." -ForegroundColor Yellow
@@ -305,9 +305,9 @@ $AllfilteredPermissions | ForEach-Object {
 $currentStep++
 Write-Progress -Activity "Gathering Entra Application Data" -Status "Getting application credentials" -PercentComplete (($currentStep / $progressSteps) * 100)
 Write-Host "Retrieving application credentials..." -ForegroundColor Yellow
-$credentials = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/applications/?`$select=displayName,id,appId,info,createdDateTime,keyCredentials,passwordCredentials,deletedDateTime,publicClient&`$count=true" -OutputType PSObject | Select -Expand Value
+$credentials = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/applications/?`$select=displayName,id,appId,info,createdDateTime,keyCredentials,passwordCredentials,deletedDateTime,publicClient&`$count=true" -OutputType PSObject | Select-Object -Expand Value
 $credentials | ForEach-Object {
-    $ownerdata = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/applications/$($_.id)/owners" -OutputType PSObject | Select -Expand Value
+    $ownerdata = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/applications/$($_.id)/owners" -OutputType PSObject | Select-Object -Expand Value
     $owner = $ownerdata.userPrincipalName
     $_ | Add-Member -MemberType NoteProperty -Name "Owners" -Value $owner
     $_ | Add-Member -MemberType NoteProperty -Name "RedirectUris" -Value $_.publicClient.RedirectUris
@@ -327,7 +327,7 @@ $AllfilteredPermissions | ForEach-Object {
     if ($($appcredentials.passwordCredentials).count -gt 0) {
         $credentialsToAdd += "Client Secret"
     }
-    
+
     # Combine redirect URIs from both application and service principal
     $combinedRedirectUris = @()
     if ($null -ne $appcredentials.RedirectUris -and $appcredentials.RedirectUris.Count -gt 0) {
@@ -338,7 +338,7 @@ $AllfilteredPermissions | ForEach-Object {
     }
     # Remove duplicates and keep only unique URIs
     $uniqueRedirectUris = $combinedRedirectUris | Sort-Object -Unique
-    
+
     $_ | Add-Member -MemberType NoteProperty -Name "App Credentials" -Value $credentialsToAdd
     $_ | Add-Member -MemberType NoteProperty -Name "Owners" -Value $appcredentials.Owners
     $_ | Add-Member -MemberType NoteProperty -Name "RedirectUris" -Value $uniqueRedirectUris
@@ -352,18 +352,18 @@ Write-Host "Generating security risk indicators..." -ForegroundColor Yellow
 # Third-party apps with insecure sign-in methods
 $WeakSignInMethods = @("clientSecret", "clientAssertion", "certificate")
 $WeakAppCredentials = @("Client Secret", "Client Certificate")
-$InsecureThirdPartyApps = $AllfilteredPermissions | Where { ($_.appOwnerOrganizationId -ne $organisationInfo.id) -and ($_.LastSignInType -in $WeakSignInMethods) } | Select DisplayName -Unique
+$InsecureThirdPartyApps = $AllfilteredPermissions | Where-Object { ($_.appOwnerOrganizationId -ne $organisationInfo.id) -and ($_.LastSignInType -in $WeakSignInMethods) } | Select-Object DisplayName -Unique
 # first-party apps with insecure sign-in methods
-$InsecureFirstPartyApps = $AllfilteredPermissions | Where { ($_.appOwnerOrganizationId -eq $organisationInfo.id) -and ($_.'App Credentials' -in $WeakAppCredentials) } | Select DisplayName -Unique
+$InsecureFirstPartyApps = $AllfilteredPermissions | Where-Object { ($_.appOwnerOrganizationId -eq $organisationInfo.id) -and ($_.'App Credentials' -in $WeakAppCredentials) } | Select-Object DisplayName -Unique
 # Third-party apps with application permissions
-$ThirdPartyAppsWithAppPermissions = $AllfilteredPermissions | Where { ($_.appOwnerOrganizationId -ne $organisationInfo.id) -and ($_.ScopeType -eq "Application") } | Select DisplayName -Unique
+$ThirdPartyAppsWithAppPermissions = $AllfilteredPermissions | Where-Object { ($_.appOwnerOrganizationId -ne $organisationInfo.id) -and ($_.ScopeType -eq "Application") } | Select-Object DisplayName -Unique
 # Applications with no sign-in activity
-$NonActiveApps = $AllfilteredPermissions | Where { ($null -eq $_.DelegatedLastSignIn) -and ($null -eq $_.ApplicationLastSignIn) } | Select DisplayName -Unique
+$NonActiveApps = $AllfilteredPermissions | Where-Object { ($null -eq $_.DelegatedLastSignIn) -and ($null -eq $_.ApplicationLastSignIn) } | Select-Object DisplayName -Unique
 # First-party apps with no owners
-$FirstPartyAppsWithNoOwners = $AllfilteredPermissions | Where { ($_.appOwnerOrganizationId -eq $organisationInfo.id) -and ([string]::IsNullOrEmpty($_.Owners) -or $_.Owners.Count -eq 0) } | Select DisplayName -Unique
+$FirstPartyAppsWithNoOwners = $AllfilteredPermissions | Where-Object { ($_.appOwnerOrganizationId -eq $organisationInfo.id) -and ([string]::IsNullOrEmpty($_.Owners) -or $_.Owners.Count -eq 0) } | Select-Object DisplayName -Unique
 
 # Applications with insecure redirect URIs
-$AppsWithInsecureRedirectUris = $AllfilteredPermissions | Where-Object { 
+$AppsWithInsecureRedirectUris = $AllfilteredPermissions | Where-Object {
     $hasInsecureUri = $false
     if ($null -ne $_.RedirectUris -and $_.RedirectUris.Count -gt 0) {
         foreach ($uri in $_.RedirectUris) {
@@ -395,21 +395,21 @@ $AppsWithInsecureRedirectUris = $AllfilteredPermissions | Where-Object {
         }
     }
     $hasInsecureUri
-} | Select DisplayName -Unique
+} | Select-Object DisplayName -Unique
 
 # Generate HTML Report for Entra Applications
 function Export-EntraAppHTMLReport {
     param (
         [Parameter(Mandatory = $true)]
         [Array]$ReportData,
-        
+
         [Parameter(Mandatory = $false)]
         [string]$ReportTitle = "Entra Application Permissions Report",
-        
+
         [Parameter(Mandatory = $false)]
         [string]$OutputPath
     )
-    
+
     # Define CSS for the report
     $css = @"
     <style>
@@ -1067,7 +1067,7 @@ function Export-EntraAppHTMLReport {
         else {
             $scopeList = "<span class='no-activity'>None</span>"
         }
-        
+
         # Format App Credentials as bullet points similar to permissions
         $credentialsList = ""
         if ($null -ne $item.'App Credentials' -and $item.'App Credentials'.Count -gt 0) {
@@ -1080,7 +1080,7 @@ function Export-EntraAppHTMLReport {
         else {
             $credentialsList = "<span class='no-activity'>None</span>"
         }
-        
+
         # Format Owners as bullet points similar to permissions
         $ownersList = ""
         if ($null -ne $item.Owners -and $item.Owners.Count -gt 0) {
@@ -1093,7 +1093,7 @@ function Export-EntraAppHTMLReport {
         else {
             $ownersList = "<span class='no-activity'>None</span>"
         }
-        
+
         # Format Redirect URIs as bullet points similar to permissions
         $redirectUrisList = ""
         if ($null -ne $item.RedirectUris -and $item.RedirectUris.Count -gt 0) {
@@ -1106,23 +1106,23 @@ function Export-EntraAppHTMLReport {
         else {
             $redirectUrisList = "<span class='no-activity'>None</span>"
         }
-        
+
         $delegatedLastSignIn = Format-DateForDisplay $item.DelegatedLastSignIn
         $applicationLastSignIn = Format-DateForDisplay $item.ApplicationLastSignIn
         $lastSignInType = if ($item.LastSignInType) { $item.LastSignInType } else { "<span class='no-activity'>Unknown</span>" }
-        
+
         # Determine app source and apply styling based on criteria
         $appSource = "First Party"
         $rowClass = ""
         $warningIcon = ""
-        
+
         # Check if it's a third-party application
         $isThirdParty = (($null -eq $item.appOwnerOrganizationId) -or ($item.appOwnerOrganizationId -ne $organisationInfo.id))
-        
+
         if ($isThirdParty) {
             $appSource = "Third Party"
             $rowClass = "class='third-party expandable-row'"
-            
+
             # Only add warning icon for third-party apps with application permissions
             if ($item.ScopeType -eq "Application") {
                 $warningIcon = "<span class='warning-icon' title='Third-Party App with Application Permissions'>!</span>"
@@ -1131,7 +1131,7 @@ function Export-EntraAppHTMLReport {
         else {
             $rowClass = "class='expandable-row'"
         }
-        
+
         # Main row with core information
         $tableRows += @"
         <tr $rowClass data-row-index="$rowIndex">
@@ -1262,7 +1262,7 @@ function Export-EntraAppHTMLReport {
                 Security Risk Indicators
             </h3>
 "@
-        
+
         if ($InsecureThirdPartyApps.Count -gt 0) {
             $html += @"
             <div class="red-flag-item">
@@ -1279,7 +1279,7 @@ function Export-EntraAppHTMLReport {
             </div>
 "@
         }
-        
+
         if ($InsecureFirstPartyApps.Count -gt 0) {
             $html += @"
             <div class="red-flag-item">
@@ -1296,7 +1296,7 @@ function Export-EntraAppHTMLReport {
             </div>
 "@
         }
-        
+
         if ($ThirdPartyAppsWithAppPermissions.Count -gt 0) {
             $html += @"
             <div class="red-flag-item">
@@ -1313,7 +1313,7 @@ function Export-EntraAppHTMLReport {
             </div>
 "@
         }
-        
+
         if ($NonActiveApps.Count -gt 0) {
             $html += @"
             <div class="red-flag-item">
@@ -1330,7 +1330,7 @@ function Export-EntraAppHTMLReport {
             </div>
 "@
         }
-        
+
         if ($FirstPartyAppsWithNoOwners.Count -gt 0) {
             $html += @"
             <div class="red-flag-item">
@@ -1347,7 +1347,7 @@ function Export-EntraAppHTMLReport {
             </div>
 "@
         }
-        
+
         if ($AppsWithInsecureRedirectUris.Count -gt 0) {
             $html += @"
             <div class="red-flag-item">
@@ -1364,7 +1364,7 @@ function Export-EntraAppHTMLReport {
             </div>
 "@
         }
-        
+
         $html += " </div>`n"
     }
 
@@ -1963,16 +1963,16 @@ function Export-EntraAppHTMLReport {
         if ([string]::IsNullOrEmpty($OutputPath)) {
             $OutputPath = Join-Path $PSScriptRoot "EntraAppReport_$(Get-Date -Format 'yyyy-MM-dd_HH-mm').html"
         }
-        
+
         # Ensure directory exists
         $directory = Split-Path -Path $OutputPath -Parent
         if (!(Test-Path $directory)) {
             New-Item -ItemType Directory -Path $directory -Force | Out-Null
         }
-        
+
         $html | Out-File -FilePath $OutputPath -Encoding UTF8 -Force
         Write-Output "HTML Report saved to: $OutputPath"
-        
+
         # Open the report in the default browser
         Start-Process $OutputPath
     }

@@ -225,221 +225,12 @@ function Add-LauncherOutputProfile {
     return $resolvedProfiles.ToArray()
 }
 
-function Test-LauncherManifestHasSnapshotArtifact {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ManifestPath
-    )
-
-    if (-not (Test-Path -Path $ManifestPath -PathType Leaf)) {
-        return $false
-    }
-
-    try {
-        $resolvedManifestPath = (Resolve-Path -Path $ManifestPath -ErrorAction Stop).Path
-        $manifest = Get-Content -Path $resolvedManifestPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -Depth 10 -ErrorAction Stop
-    }
-    catch {
-        return $false
-    }
-
-    if (-not $manifest -or -not $manifest.PSObject.Properties['Artifacts']) {
-        return $false
-    }
-
-    foreach ($artifact in @($manifest.Artifacts)) {
-        if (-not $artifact) {
-            continue
-        }
-
-        $artifactType = [string]$artifact.Type
-        if ($artifactType -notin @('Assessment Snapshot JSON', 'JSON')) {
-            continue
-        }
-
-        $artifactPath = [string]$artifact.Path
-        if ([string]::IsNullOrWhiteSpace($artifactPath)) {
-            continue
-        }
-
-        $resolvedArtifactPath = if ([System.IO.Path]::IsPathRooted($artifactPath)) {
-            $artifactPath
-        }
-        else {
-            Join-Path -Path (Split-Path -Path $resolvedManifestPath -Parent) -ChildPath $artifactPath
-        }
-
-        if (Test-Path -Path $resolvedArtifactPath -PathType Leaf) {
-            return $true
-        }
-    }
-
-    return $false
-}
-
-function Resolve-LauncherLatestManifestPath {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ExportPath
-    )
-
-    function Add-LauncherManifestCandidatesFromSupportDirectory {
-        param(
-            [Parameter(Mandatory = $true)]
-            [string]$SupportPath,
-            [Parameter(Mandatory = $true)]
-            [AllowEmptyCollection()]
-            [System.Collections.Generic.List[string]]$Candidates
-        )
-
-        $Candidates.Add((Join-Path -Path $SupportPath -ChildPath 'Run.manifest.json'))
-        if (Test-Path -Path $SupportPath -PathType Container) {
-            foreach ($manifest in @(Get-ChildItem -Path $SupportPath -Filter '*-Run.manifest.json' -File -ErrorAction SilentlyContinue)) {
-                $Candidates.Add($manifest.FullName)
-            }
-        }
-    }
-
-    function Add-LauncherManifestCandidatesFromDirectory {
-        param(
-            [Parameter(Mandatory = $true)]
-            [string]$DirectoryPath,
-            [Parameter(Mandatory = $true)]
-            [AllowEmptyCollection()]
-            [System.Collections.Generic.List[string]]$Candidates
-        )
-
-        Add-LauncherManifestCandidatesFromSupportDirectory -SupportPath (Join-Path -Path $DirectoryPath -ChildPath 'Support') -Candidates $Candidates
-        if ([string]::Equals((Split-Path -Path $DirectoryPath -Leaf), 'Deliverables', [System.StringComparison]::OrdinalIgnoreCase)) {
-            $runRoot = Split-Path -Path $DirectoryPath -Parent
-            if (-not [string]::IsNullOrWhiteSpace($runRoot)) {
-                Add-LauncherManifestCandidatesFromSupportDirectory -SupportPath (Join-Path -Path $runRoot -ChildPath 'Support') -Candidates $Candidates
-            }
-        }
-    }
-
-    $candidateManifestPaths = New-Object System.Collections.Generic.List[string]
-    $fullExportPath = [System.IO.Path]::GetFullPath($ExportPath)
-    if (Test-Path -Path $fullExportPath -PathType Container) {
-        Add-LauncherManifestCandidatesFromDirectory -DirectoryPath $fullExportPath -Candidates $candidateManifestPaths
-    }
-    $fullExportPathParent = Split-Path -Path $fullExportPath -Parent
-    if (-not [string]::IsNullOrWhiteSpace($fullExportPathParent)) {
-        Add-LauncherManifestCandidatesFromDirectory -DirectoryPath $fullExportPathParent -Candidates $candidateManifestPaths
-    }
-
-    if (Test-Path -Path $fullExportPath -PathType Leaf) {
-        if ($fullExportPath -match '\.manifest\.json$') {
-            $candidateManifestPaths.Add($fullExportPath)
-        }
-        elseif ($fullExportPath -match '\.xlsx$') {
-            $candidateManifestPaths.Add(($fullExportPath -replace '\.xlsx$', '.manifest.json'))
-            $leafBaseName = [System.IO.Path]::GetFileNameWithoutExtension($fullExportPath)
-            foreach ($suffix in @('-Assess', ' - Tenant Details', '-Tenant Details')) {
-                if ($leafBaseName.EndsWith($suffix, [System.StringComparison]::OrdinalIgnoreCase)) {
-                    $manifestLeaf = '{0}-Run.manifest.json' -f $leafBaseName.Substring(0, $leafBaseName.Length - $suffix.Length)
-                    $candidateManifestPaths.Add((Join-Path -Path (Join-Path -Path (Split-Path -Path $fullExportPath -Parent) -ChildPath 'Support') -ChildPath $manifestLeaf))
-                    if (-not [string]::IsNullOrWhiteSpace($fullExportPathParent) -and [string]::Equals((Split-Path -Path $fullExportPathParent -Leaf), 'Deliverables', [System.StringComparison]::OrdinalIgnoreCase)) {
-                        $runRoot = Split-Path -Path $fullExportPathParent -Parent
-                        if (-not [string]::IsNullOrWhiteSpace($runRoot)) {
-                            $candidateManifestPaths.Add((Join-Path -Path (Join-Path -Path $runRoot -ChildPath 'Support') -ChildPath $manifestLeaf))
-                        }
-                    }
-                    break
-                }
-            }
-        }
-        else {
-            $candidateManifestPaths.Add("$fullExportPath.manifest.json")
-        }
-    }
-    else {
-        if ([System.IO.Path]::HasExtension($fullExportPath)) {
-            if ($fullExportPath -match '\.xlsx$') {
-                $candidateManifestPaths.Add(($fullExportPath -replace '\.xlsx$', '.manifest.json'))
-            }
-            elseif ($fullExportPath -match '\.manifest\.json$') {
-                $candidateManifestPaths.Add($fullExportPath)
-            }
-            else {
-                $candidateManifestPaths.Add("$fullExportPath.manifest.json")
-            }
-        }
-    }
-
-    $existingManifestPaths = New-Object System.Collections.Generic.List[string]
-    $seenManifestPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($candidatePath in $candidateManifestPaths) {
-        if (Test-Path -Path $candidatePath -PathType Leaf) {
-            $resolvedCandidatePath = (Resolve-Path -Path $candidatePath).Path
-            if ($seenManifestPaths.Add($resolvedCandidatePath)) {
-                $existingManifestPaths.Add($resolvedCandidatePath)
-            }
-        }
-    }
-
-    foreach ($candidatePath in $existingManifestPaths) {
-        if (Test-LauncherManifestHasSnapshotArtifact -ManifestPath $candidatePath) {
-            return $candidatePath
-        }
-    }
-
-    if ($existingManifestPaths.Count -gt 0) {
-        return $existingManifestPaths[0]
-    }
-
-    $searchedManifestPaths = New-Object System.Collections.Generic.List[string]
-    $seenSearchedManifestPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-    $searchRoot = if (Test-Path -Path $fullExportPath -PathType Container) {
-        $fullExportPath
-    }
-    else {
-        $parent = Split-Path -Path $fullExportPath -Parent
-        if (-not [string]::IsNullOrWhiteSpace($parent) -and (Test-Path -Path $parent -PathType Container)) {
-            $parent
-        }
-        else {
-            $null
-        }
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($searchRoot)) {
-        foreach ($manifest in @(Get-ChildItem -Path $searchRoot -Recurse -Filter '*.manifest.json' -File -ErrorAction SilentlyContinue | Sort-Object -Property LastWriteTimeUtc -Descending)) {
-            if ($seenSearchedManifestPaths.Add($manifest.FullName)) {
-                $searchedManifestPaths.Add($manifest.FullName)
-            }
-        }
-
-        foreach ($manifestPath in $searchedManifestPaths) {
-            if (Test-LauncherManifestHasSnapshotArtifact -ManifestPath $manifestPath) {
-                return $manifestPath
-            }
-        }
-
-        if ($searchedManifestPaths.Count -gt 0) {
-            return $searchedManifestPaths[0]
-        }
-    }
-
-    return $null
-}
-
-function Resolve-LauncherRunRootFromManifestPath {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ManifestPath
-    )
-
-    $manifestDirectory = Split-Path -Path $ManifestPath -Parent
-    if ([string]::Equals((Split-Path -Path $manifestDirectory -Leaf), 'Support', [System.StringComparison]::OrdinalIgnoreCase)) {
-        return (Split-Path -Path $manifestDirectory -Parent)
-    }
-
-    return $manifestDirectory
-}
+# The manifest-resolution helpers this script calls below are imported from
+# Arraya.M365.AssessmentRunner. Local Launcher-prefixed copies of them used to live here
+# and had already begun to drift from the module originals, so the module now exports them
+# and the launcher and the runner resolve a prior run through one implementation.
+# Test-LauncherModuleMatchesManifestPath above stays local on purpose: it runs before the
+# module is imported and cannot come from it.
 
 function Invoke-LauncherImproveFromLatestRun {
     [CmdletBinding()]
@@ -452,7 +243,7 @@ function Invoke-LauncherImproveFromLatestRun {
         [switch]$UseGraphFallback
     )
 
-    $manifestPath = Resolve-LauncherLatestManifestPath -ExportPath $ExportPath
+    $manifestPath = Resolve-AssessmentLatestManifestPath -ExportPath $ExportPath
     if ([string]::IsNullOrWhiteSpace($manifestPath)) {
         throw "Could not find a run manifest for the completed assessment under: $ExportPath. The workbook alone is not enough for Improve; rerun a JSON-enabled output profile and check the export log for manifest write warnings."
     }
@@ -466,7 +257,7 @@ function Invoke-LauncherImproveFromLatestRun {
 
     $resolvedOutputFolder = $OutputFolder
     if ([string]::IsNullOrWhiteSpace($resolvedOutputFolder)) {
-        $resolvedOutputFolder = Resolve-LauncherRunRootFromManifestPath -ManifestPath $manifestPath
+        $resolvedOutputFolder = Resolve-AssessmentRunRootFromManifestPath -ManifestPath $manifestPath
     }
 
     Write-Host ("Launching Improve from manifest: {0}" -f $manifestPath) -ForegroundColor Cyan

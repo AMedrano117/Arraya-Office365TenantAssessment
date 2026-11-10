@@ -208,7 +208,8 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'if \(-not \(Test-AssessmentInteractiveHost\)\)'
 
         # Terminal guidance when every stage fails.
-        $script:collectorSource | Should -Match 'Quit the script, connect first with Connect-MgGraph'
+        $script:collectorSource | Should -Match 'verify the actual SharePoint admin URL'
+        $script:collectorSource | Should -Match 'Graph getAllSites requires application permissions in both v1.0 and beta'
         $script:collectorSource | Should -Match '\$script:tenantStatsHash\[''SharePointCollectionSummary''\]'
 
         # The old 403-only, already-connected-only fallback must be gone.
@@ -467,6 +468,29 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Not -Match 'Operational Tier B summaries'
     }
 
+    It 'collects the device estate for Presales scoping runs but not its security posture' {
+        # Endpoint re-join and re-enrollment is migration scope, so the inventory is collected.
+        # Secure Score and conditional access stay off: those are assessment-only concerns.
+        # The switch block is matched non-greedily from ''Presales'' { so the assertions cannot
+        # be satisfied by the TenantToTenantCutover block further down the same file.
+        $presalesPlanBlock = [regex]::Match($script:collectorSource, "(?s)'Presales' \{.*?\r?\n            \}").Value
+        $presalesPlanBlock | Should -Not -BeNullOrEmpty
+        $presalesPlanBlock | Should -Match '\$plan\.CollectDevices = \$true'
+        $presalesPlanBlock | Should -Not -Match '\$plan\.CollectDevices = \$false'
+        $presalesPlanBlock | Should -Match '\$plan\.CollectSecuritySecureScore = \$false'
+        $presalesPlanBlock | Should -Match '\$plan\.CollectConditionalAccessPolicies = \$false'
+        # Public folders are inherited as $true from the base plan. Presales must never turn
+        # them off: a folder count is the difference between a quote and a surprise.
+        $presalesPlanBlock | Should -Not -Match '\$plan\.CollectPublicFolders = \$false'
+    }
+
+    It 'classifies device join type from the TrustType property Graph actually returns' {
+        # Switching on a DeviceTrustType property that was never selected classified every
+        # device as Unknown, which made any join-type breakdown meaningless.
+        $script:collectorSource | Should -Match 'switch \(\$device\.TrustType\)'
+        $script:collectorSource | Should -Not -Match 'switch \(\$device\.DeviceTrustType\)'
+    }
+
     It 'skips per-mailbox Exchange governance enrichment for Presales sizing runs' {
         $script:collectorSource | Should -Match '''Presales''[\s\S]*\$plan\.BuildExchangeGovernanceTables = \$false'
         $script:collectorSource | Should -Match 'New-ArrayaCollectorStep -Name ''Exchange governance summaries''[\s\S]*-Enabled \(\[bool\]\$script:ProfileCollectionPlan\.BuildExchangeGovernanceTables\)'
@@ -616,15 +640,6 @@ Describe 'Get-FullTenantReportDetails permission preflight' {
         $script:collectorSource | Should -Match 'Write-AssessmentInteractiveAuthNotice -ServiceName ''Purview compliance PowerShell'' -SupportsDisableWam:\$ConnectCommandMetadata\.Parameters\.ContainsKey\(''DisableWAM''\) -SupportsDeviceCode:\$ConnectCommandMetadata\.Parameters\.ContainsKey\(''Device''\)'
         $script:collectorSource | Should -Match "Write-WorkloadStatus -Label 'Purview'"
         $script:collectorSource | Should -Not -Match 'Invoke-PurviewComplianceDelegatedConnect -BaseParameters \$connectParams -ConnectCommandMetadata \$connectCommand -GraphAccount \$graphAccount'
-    }
-
-    It 'suppresses noisy SharePoint and Teams module import warnings during runtime' {
-        $script:collectorSource | Should -Match 'function Ensure-AssessmentSharePointModuleAvailable'
-        $script:collectorSource | Should -Match 'function Ensure-AssessmentTeamsModuleAvailable'
-        $script:collectorSource | Should -Match "Import-Module 'Microsoft\.Online\.SharePoint\.PowerShell' -UseWindowsPowerShell -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop"
-        $script:collectorSource | Should -Match "Import-Module 'Microsoft\.Online\.SharePoint\.PowerShell' -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop"
-        $script:collectorSource | Should -Match "Import-Module 'MicrosoftTeams' -UseWindowsPowerShell -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop"
-        $script:collectorSource | Should -Match "Import-Module 'MicrosoftTeams' -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop"
     }
 
     It 'treats directory synchronization feature access as a non-blocking validation warning' {

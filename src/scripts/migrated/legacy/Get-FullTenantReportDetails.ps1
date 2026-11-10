@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 This script is designed to automate the process of gathering, processing, and exporting data related to a Microsoft 365 tenant environment.
 
@@ -627,12 +627,17 @@ function Resolve-AssessmentProfileCollectionPlan {
                 $plan.CollectSharePointAndOneDriveSites = $true
                 $plan.BuildMigrationReadinessTables = $true
 
-                # Security and device posture is an assessment concern, not a scoping one.
+                # The device estate is scope, not security posture: every joined or registered
+                # device is a re-join, re-enrollment, or rebuild task in a tenant move, and the
+                # OS and join-type mix decides whether that is a script or a desk-side visit.
+                # Collect the inventory; assessment-only compliance scoring stays off.
+                $plan.CollectDevices = $true
+
+                # Security posture is an assessment concern, not a scoping one.
                 $plan.CollectAdmins = $false
                 $plan.CollectConditionalAccessPolicies = $false
                 $plan.CollectMfaRegistrationDetails = $false
                 $plan.CollectSecuritySecureScore = $false
-                $plan.CollectDevices = $false
                 $plan.CollectGovernanceCompliancePolicies = $false
                 $plan.CollectEmailActivityDetails = $false
                 $plan.CollectTeamsVoiceDetails = $false
@@ -1362,6 +1367,29 @@ function Get-AssessmentSharePointAdminUrl {
         [string]$InitialDomain
     )
 
+    # SharePoint can have a different hostname after a tenant rename. The initial
+    # onmicrosoft.com domain is only a fallback, not the source of truth for SPO.
+    try {
+        $rootSite = Get-ArrayaGraphResource `
+            -Uri 'https://graph.microsoft.com/v1.0/sites/root?$select=id,webUrl,displayName' `
+            -Activity 'SharePoint admin URL discovery' `
+            -SuppressProgress -SuppressAccessDeniedWarning -ErrorAction Stop |
+            Select-Object -First 1
+        $rootSiteUrl = [string](Get-ArrayaObjectValue -Object $rootSite -Names @('webUrl'))
+        $rootSiteUri = $null
+        if (
+            [uri]::TryCreate($rootSiteUrl, [System.UriKind]::Absolute, [ref]$rootSiteUri) -and
+            $rootSiteUri.Scheme -eq 'https' -and
+            $rootSiteUri.Host -match '^(?<tenant>[a-z0-9][a-z0-9-]*)\.(?<service>sharepoint\.(?:com|us|cn)|sharepoint-mil\.us)$'
+        ) {
+            return ('https://{0}-admin.{1}' -f $Matches['tenant'], $Matches['service'])
+        }
+        Write-Verbose 'Microsoft Graph did not return a usable SharePoint root site URL.'
+    }
+    catch {
+        Write-Verbose "SharePoint root site discovery failed: $($_.Exception.Message)"
+    }
+
     if ([string]::IsNullOrWhiteSpace($InitialDomain)) {
         return $null
     }
@@ -1375,7 +1403,9 @@ function Get-AssessmentSharePointAdminUrl {
         return $null
     }
 
-    return ('https://{0}-admin.sharepoint.com' -f $tenantName)
+    $fallbackAdminUrl = 'https://{0}-admin.sharepoint.com' -f $tenantName
+    Write-Warning "Could not discover the SharePoint hostname through Graph. Trying $fallbackAdminUrl from the initial tenant domain; verify the actual admin URL if SharePoint has been renamed."
+    return $fallbackAdminUrl
 }
 
 function Test-AssessmentInteractiveHost {
@@ -1999,20 +2029,53 @@ function Ensure-AssessmentSharePointModuleAvailable {
     [CmdletBinding()]
     param()
 
-    if (-not (Get-Module -ListAvailable -Name 'Microsoft.Online.SharePoint.PowerShell')) {
+    if (Get-Module -Name 'Microsoft.Online.SharePoint.PowerShell') {
+        return $true
+    }
+
+    $sharePointModule = Get-Module -ListAvailable -Name 'Microsoft.Online.SharePoint.PowerShell' |
+        Sort-Object Version -Descending | Select-Object -First 1
+    if (-not $sharePointModule) {
         return $false
     }
 
-    if (-not (Get-Module -Name 'Microsoft.Online.SharePoint.PowerShell')) {
-        if ($PSVersionTable.PSVersion.Major -ge 7) {
-            Import-Module 'Microsoft.Online.SharePoint.PowerShell' -UseWindowsPowerShell -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
+    try {
+        # Recent SharePoint builds can load natively. Retain the compatibility
+        # import for installations that still require Windows PowerShell.
+        try {
+            Import-Module -Name $sharePointModule.Path -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
         }
-        else {
-            Import-Module 'Microsoft.Online.SharePoint.PowerShell' -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
+        catch {
+            if ($PSVersionTable.PSVersion.Major -lt 7) { throw }
+            Write-Verbose "Native SharePoint module import failed; retrying with Windows PowerShell compatibility: $($_.Exception.Message)"
+            # The compatibility session may not search the PS7 user module directory.
+            Import-Module -Name $sharePointModule.Path -UseWindowsPowerShell -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
         }
+    }
+    catch {
+        Write-Warning "SharePoint Online module import failed: $($_.Exception.Message). Full site inventory may be limited."
+        return $false
     }
 
     return $true
+}
+
+function Invoke-AssessmentSharePointDelegatedConnect {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Url
+    )
+
+    $connectParams = @{
+        Url         = $Url
+        ErrorAction = 'Stop'
+    }
+    $connectCommand = Get-Command -Name 'Connect-SPOService' -ErrorAction Stop
+    if ($connectCommand.Parameters.ContainsKey('UseSystemBrowser')) {
+        $connectParams.UseSystemBrowser = $true
+    }
+    Connect-SPOService @connectParams
 }
 
 function Test-AssessmentSharePointSessionReady {
@@ -2083,17 +2146,22 @@ function Ensure-AssessmentTeamsModuleAvailable {
     [CmdletBinding()]
     param()
 
+    if (Get-Module -Name 'MicrosoftTeams') {
+        return $true
+    }
+
     if (-not (Get-Module -ListAvailable -Name 'MicrosoftTeams')) {
         return $false
     }
 
-    if (-not (Get-Module -Name 'MicrosoftTeams')) {
-        if ($PSVersionTable.PSVersion.Major -ge 7) {
-            Import-Module 'MicrosoftTeams' -UseWindowsPowerShell -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
-        }
-        else {
-            Import-Module 'MicrosoftTeams' -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
-        }
+    try {
+        # Teams supports PowerShell 7 natively. A Windows PowerShell compatibility
+        # session cannot discover modules installed only in the PS7 user directory.
+        Import-Module 'MicrosoftTeams' -DisableNameChecking -WarningAction SilentlyContinue -ErrorAction Stop
+    }
+    catch {
+        Write-Warning "MicrosoftTeams module import failed: $($_.Exception.Message). Graph-only Teams collection remains active."
+        return $false
     }
 
     return $true
@@ -2176,7 +2244,7 @@ function Connect-AssessmentSharePoint {
         return [pscustomobject]@{
             SharePointOnline = $false
             Status           = 'SkippedByDesign'
-            Message          = 'Microsoft.Online.SharePoint.PowerShell is not installed. Graph fallback remains active.'
+            Message          = 'Microsoft.Online.SharePoint.PowerShell is not installed or could not be imported. Graph fallback remains active.'
         }
     }
 
@@ -2202,9 +2270,9 @@ function Connect-AssessmentSharePoint {
     }
 
     try {
-        Write-Host '  → SharePoint admin (full inventory)...' -ForegroundColor DarkGray
+        Write-Host "  → SharePoint admin (full inventory): $spoAdminUrl ..." -ForegroundColor DarkGray
         Write-AssessmentInteractiveAuthNotice -ServiceName 'SharePoint admin' -PromptDescription 'browser sign-in prompt should appear'
-        Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
+        Invoke-AssessmentSharePointDelegatedConnect -Url $spoAdminUrl
         Write-Host '  ✓ SharePoint admin connected' -ForegroundColor Green
         return [pscustomobject]@{
             SharePointOnline = $true
@@ -2221,7 +2289,7 @@ function Connect-AssessmentSharePoint {
         return [pscustomobject]@{
             SharePointOnline = $false
             Status           = 'GraphFallback'
-            Message          = $(if (-not [string]::IsNullOrWhiteSpace($sharePointOperatorMessage)) { "$sharePointOperatorMessage Continuing without the SharePoint admin session." } else { 'SharePoint admin connection was not available. Continuing without the SharePoint admin session.' })
+            Message          = $(if (-not [string]::IsNullOrWhiteSpace($sharePointOperatorMessage)) { "$sharePointOperatorMessage Continuing without the SharePoint admin session." } else { "SharePoint admin connection failed: $sharePointError Continuing without the SharePoint admin session." })
         }
     }
 }
@@ -2248,7 +2316,7 @@ function Connect-AssessmentTeams {
         return [pscustomobject]@{
             Teams   = $false
             Status  = 'GraphOnly'
-            Message = 'MicrosoftTeams module is not installed. Graph-only Teams collection remains active.'
+            Message = 'MicrosoftTeams module is not installed or could not be imported. Graph-only Teams collection remains active.'
         }
     }
 
@@ -2613,6 +2681,7 @@ function Initialize-AssessmentAuthentication {
             'GraphFallback' {
                 if ($authResult.FallbackWorkloads -notcontains 'SharePointOnline') { $authResult.FallbackWorkloads += 'SharePointOnline' }
                 Write-Host 'SharePoint admin unavailable; continuing with Graph/SPO fallback coverage. Full site inventory may be limited.' -ForegroundColor Yellow
+                Write-Host $sharePointResult.Message -ForegroundColor Yellow
             }
             default {
                 $authResult.SkippedWorkloads += 'SharePointOnline'
@@ -3032,72 +3101,15 @@ function Invoke-QuietWebRequest {
     }
 }
 
-function Invoke-QuietCommand {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [scriptblock]$ScriptBlock
-    )
+# Invoke-QuietCommand is deliberately NOT defined here. It is exported by Arraya.M365.Common
+# and imported above. A script-scope copy shadows the module version for every call site
+# below it, and the copy that used to live here only set $ProgressPreference. The Graph SDK
+# cmdlets (Get-Mg*) emit progress through ProgressAction, which $ProgressPreference does not
+# suppress, so the local copy silently defeated the progress suppression at exactly the
+# Get-MgUser -All call sites it was added for.
 
-    $savedProgressPreference = $ProgressPreference
-    try {
-        $ProgressPreference = 'SilentlyContinue'
-        return (& $ScriptBlock)
-    }
-    finally {
-        $ProgressPreference = $savedProgressPreference
-    }
-}
-
-function Convert-DataSizeToBytes {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)]
-        [AllowNull()]
-        $Value
-    )
-
-    if ($null -eq $Value) {
-        return [int64]0
-    }
-
-    if ($Value -is [int64] -or $Value -is [int32] -or $Value -is [double] -or $Value -is [decimal]) {
-        try { return [int64]$Value } catch { return [int64]0 }
-    }
-
-    foreach ($propertyName in @('Bytes', 'ByteCount', 'Value')) {
-        if ($Value.PSObject -and $Value.PSObject.Properties[$propertyName]) {
-            $nestedValue = $Value.PSObject.Properties[$propertyName].Value
-            if ($nestedValue -is [int64] -or $nestedValue -is [int32] -or $nestedValue -is [double] -or $nestedValue -is [decimal]) {
-                try { return [int64]$nestedValue } catch {}
-            }
-        }
-    }
-
-    $text = [string]$Value
-    if ([string]::IsNullOrWhiteSpace($text)) {
-        return [int64]0
-    }
-
-    if ($text -match '\((?<bytes>[0-9,]+)\s+bytes\)') {
-        try { return [int64](($Matches['bytes'] -replace ',', '')) } catch {}
-    }
-
-    if ($text -match '^\s*(?<number>[0-9]+(?:\.[0-9]+)?)\s*(?<unit>KB|MB|GB|TB|PB)\b') {
-        $number = [double]$Matches['number']
-        $multiplier = switch ($Matches['unit'].ToUpperInvariant()) {
-            'KB' { 1KB }
-            'MB' { 1MB }
-            'GB' { 1GB }
-            'TB' { 1TB }
-            'PB' { 1PB }
-            default { 1 }
-        }
-        try { return [int64]($number * $multiplier) } catch { return [int64]0 }
-    }
-
-    return [int64]0
-}
+# Convert-DataSizeToBytes now comes from Arraya.M365.Exchange (imported above). The copy that
+# used to live here was byte-identical to the module version.
 
 function Get-ArrayaCollectionDepthPolicy {
     [CmdletBinding()]
@@ -4098,28 +4110,8 @@ function Test-AssessmentConditionalAccessRequiresMfa {
     return (Test-AssessmentMeaningfulNestedValue -Value $authenticationStrength)
 }
 
-function Get-AssessmentConditionalAccessPolicyState {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)]
-        [AllowNull()]
-        $Policy
-    )
-
-    $rawState = [string](Get-ArrayaObjectValue -Object $Policy -Names @('State', 'state', 'PolicyState', 'policyState'))
-    if ([string]::IsNullOrWhiteSpace($rawState)) {
-        return 'unknown'
-    }
-
-    switch ($rawState.Trim().ToLowerInvariant()) {
-        'enabled' { return 'enabled' }
-        'enabledforreportingbutnotenforced' { return 'enabledForReportingButNotEnforced' }
-        'reportonly' { return 'enabledForReportingButNotEnforced' }
-        'report-only' { return 'enabledForReportingButNotEnforced' }
-        'disabled' { return 'disabled' }
-        default { return 'unknown' }
-    }
-}
+# Conditional Access policy state normalization now comes from Arraya.M365.Analytics
+# (Get-ArrayaConditionalAccessPolicyState). Three copies of this switch used to exist.
 
 function Get-AssessmentEnabledAuthenticationMethodNames {
     [CmdletBinding()]
@@ -4170,11 +4162,11 @@ function Get-AssessmentMfaEnforcementEvidence {
     )
     $enabledMfaPolicies = @(
         $mfaPolicies |
-            Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'enabled' }
+            Where-Object { (Get-ArrayaConditionalAccessPolicyState -Policy $_) -eq 'enabled' }
     )
     $reportOnlyMfaPolicies = @(
         $mfaPolicies |
-            Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'enabledForReportingButNotEnforced' }
+            Where-Object { (Get-ArrayaConditionalAccessPolicyState -Policy $_) -eq 'enabledForReportingButNotEnforced' }
     )
 
     $conditionalAccessEnforced = $enabledMfaPolicies.Count -gt 0
@@ -6705,109 +6697,15 @@ function Write-ExoStatisticsFailureSummary {
     Write-Log -Type WARNING -Message "[$OperationName] Skipped $($Failures.Count) object(s). Sample failures: $sampleText" -ExportFileLocation $ExportDetails
 }
 
-function Convert-ToMailboxGuidKey {
-    [CmdletBinding()]
-    param(
-        [AllowNull()]
-        $GuidValue
-    )
+# Convert-ToMailboxGuidKey now comes from Arraya.M365.Exchange (imported above). The copy that
+# used to live here was byte-identical to the module version.
 
-    if ($null -eq $GuidValue) {
-        return $null
-    }
-
-    $text = [string]$GuidValue
-    if ([string]::IsNullOrWhiteSpace($text)) {
-        return $null
-    }
-
-    return $text.Trim().Trim('{}').ToLowerInvariant()
-}
-
-function Get-MailboxGuidCandidateKeys {
-    [CmdletBinding()]
-    param(
-        [AllowNull()]
-        $MailboxRecord,
-        [switch]$IncludeArchiveGuid
-    )
-
-    if ($null -eq $MailboxRecord) {
-        return @()
-    }
-
-    $candidateKeys = New-Object System.Collections.Generic.List[string]
-    if (
-        $IncludeArchiveGuid -and
-        $MailboxRecord.PSObject.Properties['ArchiveGuid'] -and
-        $MailboxRecord.ArchiveGuid
-    ) {
-        $archiveKey = Convert-ToMailboxGuidKey -GuidValue $MailboxRecord.ArchiveGuid
-        if ($archiveKey -and -not $candidateKeys.Contains($archiveKey)) {
-            $candidateKeys.Add($archiveKey)
-        }
-    }
-
-    foreach ($propertyName in @('ExchangeGuid', 'Guid', 'MailboxGuid')) {
-        if (-not ($MailboxRecord.PSObject.Properties[$propertyName])) {
-            continue
-        }
-
-        $value = $MailboxRecord.PSObject.Properties[$propertyName].Value
-        if (-not $value) {
-            continue
-        }
-
-        $key = Convert-ToMailboxGuidKey -GuidValue $value
-        if ($key -and -not $candidateKeys.Contains($key)) {
-            $candidateKeys.Add($key)
-        }
-    }
-
-    return @($candidateKeys)
-}
-
-function Test-MailboxStatCached {
-    [CmdletBinding()]
-    param(
-        [AllowNull()]
-        $MailboxRecord,
-        [AllowNull()]
-        $StatsHash,
-        [switch]$IncludeArchiveGuid
-    )
-
-    if ($null -eq $MailboxRecord -or $null -eq $StatsHash) {
-        return $false
-    }
-
-    $candidateKeys = Get-MailboxGuidCandidateKeys -MailboxRecord $MailboxRecord -IncludeArchiveGuid:$IncludeArchiveGuid
-    if (-not $candidateKeys -or $candidateKeys.Count -eq 0) {
-        return $false
-    }
-
-    foreach ($key in $candidateKeys) {
-        if ([string]::IsNullOrWhiteSpace($key)) {
-            continue
-        }
-
-        if ($StatsHash.PSObject.Methods['ContainsKey']) {
-            if ($StatsHash.ContainsKey($key)) {
-                return $true
-            }
-            continue
-        }
-
-        if (
-            $StatsHash -is [System.Collections.IDictionary] -and
-            ([System.Collections.IDictionary]$StatsHash).Contains($key)
-        ) {
-            return $true
-        }
-    }
-
-    return $false
-}
+# Get-MailboxGuidCandidateKeys and Test-MailboxStatCached used to be defined here as copies
+# of the helpers in Arraya.M365.Exchange (Private/Invoke-ExchangeMailboxStatHelpers.ps1).
+# Nothing in this script called them: Test-MailboxStatCached had no callers at all, and the
+# only caller of Get-MailboxGuidCandidateKeys was Test-MailboxStatCached itself. The module
+# copies are the live implementation and are what
+# tests/unit/LegacyExchangeDictionaryHardening.Tests.ps1 exercises.
 
 function Test-ShouldCollectUnifiedGroupMailboxStats {
     [CmdletBinding()]
@@ -6892,52 +6790,8 @@ function Get-Office365GroupsActivityMailboxLookup {
     return $script:Office365GroupsActivityMailboxLookup
 }
 
-function Get-GroupMailboxActivityRowForUnifiedGroup {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [object]$GroupRecord,
-        [Parameter(Mandatory = $true)]
-        [object]$ActivityLookup
-    )
-
-    if (-not $GroupRecord -or -not $ActivityLookup) {
-        return $null
-    }
-
-    if ($ActivityLookup.PSObject.Properties['ByGroupId'] -and $ActivityLookup.ByGroupId) {
-        $groupIdCandidates = @(
-            if ($GroupRecord.PSObject.Properties['ExternalDirectoryObjectId']) { [string]$GroupRecord.ExternalDirectoryObjectId }
-            if ($GroupRecord.PSObject.Properties['ExternalDirectoryObjectID']) { [string]$GroupRecord.ExternalDirectoryObjectID }
-            if ($GroupRecord.PSObject.Properties['GroupId']) { [string]$GroupRecord.GroupId }
-            if ($GroupRecord.PSObject.Properties['Id']) { [string]$GroupRecord.Id }
-        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-
-        foreach ($candidateId in $groupIdCandidates) {
-            $groupIdKey = $candidateId.Trim().ToLowerInvariant()
-            if ($ActivityLookup.ByGroupId.ContainsKey($groupIdKey)) {
-                return $ActivityLookup.ByGroupId[$groupIdKey]
-            }
-        }
-    }
-
-    if ($ActivityLookup.PSObject.Properties['ByPrimarySmtpAddress'] -and $ActivityLookup.ByPrimarySmtpAddress) {
-        $smtpCandidates = @(
-            if ($GroupRecord.PSObject.Properties['PrimarySmtpAddress']) { [string]$GroupRecord.PrimarySmtpAddress }
-            if ($GroupRecord.PSObject.Properties['WindowsEmailAddress']) { [string]$GroupRecord.WindowsEmailAddress }
-            if ($GroupRecord.PSObject.Properties['UserPrincipalName']) { [string]$GroupRecord.UserPrincipalName }
-        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-
-        foreach ($candidateSmtp in $smtpCandidates) {
-            $smtpKey = $candidateSmtp.Trim().ToLowerInvariant()
-            if ($ActivityLookup.ByPrimarySmtpAddress.ContainsKey($smtpKey)) {
-                return $ActivityLookup.ByPrimarySmtpAddress[$smtpKey]
-            }
-        }
-    }
-
-    return $null
-}
+# Get-GroupMailboxActivityRowForUnifiedGroup now comes from Arraya.M365.Exchange (imported
+# above). The copy that used to live here was byte-identical to the module version.
 
 function New-GroupMailboxStatFromActivityRow {
     [CmdletBinding()]
@@ -7467,7 +7321,7 @@ function Get-AllUnifiedGroups {
     param (
         [Parameter(Mandatory=$True,HelpMessage='Provide the level of detail')]
         [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
-        [string]$detailLevel     
+        [string]$detailLevel
     )
     #Get Office 365 Group / Group Mailbox data with SharePoint URL data
     $start = Get-Date
@@ -7496,7 +7350,7 @@ function Get-AllUnifiedGroups {
             Write-Host "  Querying unified groups from Exchange Online..." -ForegroundColor DarkGray
             Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Status "Starting query"
             switch ($detailLevel) {
-                {$_ -in "minimum", "operator", "combined", "automation", "all"} { 
+                {$_ -in "minimum", "operator", "combined", "automation", "all"} {
                     $DesiredProperties = @(
                         "PrimarySmtpAddress", "DisplayName", "AccessType", "RecipientTypeDetails",
                         "ExternalDirectoryObjectId",
@@ -7533,7 +7387,7 @@ function Get-AllUnifiedGroups {
         }
         Write-Progress -Id $fetchProgressId -Activity "Querying unified groups from Exchange Online" -Completed
         #Write-Host ("  Phase 1/3 complete: fetched {0} unified groups" -f $allUnifiedGroups.Count) -ForegroundColor DarkGray
-        
+
         $totalUnifiedGroups = $allUnifiedGroups.Count
         Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Adding Unified Group data to Hash" -ExportFileLocation $ExportDetails
         #Write-Host "  Phase 2/3: Adding unified group data to hash..." -ForegroundColor DarkGray
@@ -7644,7 +7498,7 @@ function Get-AllUnifiedGroups {
                 }
                 $fetchedStatsCount = @($allUnifiedGroupStatisticsResult.Results).Count
                 Write-ExoStatisticsFailureSummary -OperationName 'Get-AllUnifiedGroups mailbox statistics' -Failures $allUnifiedGroupStatisticsResult.Failures
-            
+
             }
             elseif ($groupsNeedingStats.Count -gt 0) {
                 Write-Log -Type INFO -Message "[Get-AllUnifiedGroups] Unified group mailbox EXO fallback is disabled for this profile/depth. Reused $cachedStatsCount cached stat(s), populated $graphGroupsActivityFilledCount via Office 365 Groups activity report and $graphMailboxUsageFilledCount via mailbox usage report, leaving $($groupsNeedingStats.Count) group(s) unresolved." -ExportFileLocation $ExportDetails
@@ -7681,7 +7535,7 @@ function Get-AllUnifiedGroups {
             Write-Host "  No unified groups found" -ForegroundColor DarkGray
         }
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
-    }    
+    }
     catch {
         Write-Log -Type ERROR -Message "[Get-AllUnifiedGroups] An error occurred in running Get-AllUnifiedGroups function. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
     }
@@ -8635,8 +8489,8 @@ function Get-SharePointAndOneDriveSites {
         }
 
         if (-not (Ensure-AssessmentSharePointModuleAvailable)) {
-            Write-AssessmentConsoleSubstep -Message "Microsoft.Online.SharePoint.PowerShell is not installed. Install it with: Install-Module Microsoft.Online.SharePoint.PowerShell" -ForegroundColor Yellow
-            Write-Log -Type WARNING -Message '[Get-SharePointAndOneDriveSites] Stage 3 unavailable: Microsoft.Online.SharePoint.PowerShell is not installed.' -ExportFileLocation $ExportDetails
+            Write-AssessmentConsoleSubstep -Message 'Microsoft.Online.SharePoint.PowerShell is not installed or could not be imported. Review the module import warning or run .\tools\install-dependencies.ps1 -Scope Runtime.' -ForegroundColor Yellow
+            Write-Log -Type WARNING -Message '[Get-SharePointAndOneDriveSites] Stage 3 unavailable: Microsoft.Online.SharePoint.PowerShell is not installed or could not be imported.' -ExportFileLocation $ExportDetails
             return $false
         }
 
@@ -8673,7 +8527,7 @@ function Get-SharePointAndOneDriveSites {
 
         try {
             Write-AssessmentConsoleSubstep -Message "Connecting to SharePoint Online PowerShell at $spoAdminUrl ..."
-            Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
+            Invoke-AssessmentSharePointDelegatedConnect -Url $spoAdminUrl
             Write-Log -Type INFO -Message "[Get-SharePointAndOneDriveSites] Connected to SharePoint Online PowerShell at $spoAdminUrl." -ExportFileLocation $ExportDetails
             return $true
         }
@@ -8699,12 +8553,12 @@ function Get-SharePointAndOneDriveSites {
             switch ($detailLevel) {
                 'geek' { $sites = Get-SPOSite -IncludePersonalSite $True -Limit All }
                 'all' { $sites = Get-SPOSite -IncludePersonalSite $True -Limit All }
-                Default {  
+                Default {
                     $DesiredProperties = @("Template", "IsHubSite", "Title", "LastContentModifiedDate", "Status", "ArchiveStatus", "StorageUsageCurrent", "LockState", "Url", "Owner", "StorageQuota", "GroupId", "IsTeamsConnected", "IsTeamsChannelConnected", "SharingCapability", "DefaultLinkPermission", "DefaultSharingLinkType")
                     $sites = Get-SPOSite -IncludePersonalSite $True -Limit All | Select-Object -Property $DesiredProperties
                 }
             }
-            
+
             $totalCount = ($sites | Measure-Object).count
             foreach ($site in $sites) {
                 Write-ProgressHelper -Total $totalCount -Id $siteDetailsProgressId -Activity "Gather Additional Site Details" -Operation "Gathering Site Details for $($site.Title)"
@@ -8772,7 +8626,7 @@ function Get-SharePointAndOneDriveSites {
                 ErrorAction = 'Stop'
             }
         }
-        
+
         try {
             Write-Verbose "Fetching initial SharePoint and OneDrive sites via Graph getAllSites API"
             $pageCount++
@@ -8940,7 +8794,7 @@ function Get-SharePointAndOneDriveSites {
     }
 
     if (-not $sharePointInventoryCollected) {
-        $operatorGuidance = 'Quit the script, connect first with Connect-MgGraph (Sites.Read.All) or Connect-SPOService -Url https://<tenant>-admin.sharepoint.com, then rerun the assessment.'
+        $operatorGuidance = 'For delegated runs, verify the actual SharePoint admin URL (it can differ from the initial onmicrosoft.com domain), then connect with Connect-SPOService -Url https://<actual-sharepoint-name>-admin.sharepoint.com -UseSystemBrowser $true using a SharePoint Administrator account. Graph getAllSites requires application permissions in both v1.0 and beta; adding delegated scopes will not enable tenant-wide inventory.'
         Write-AssessmentConsoleSubstep -Message 'SharePoint/OneDrive inventory could not be collected by any method.' -ForegroundColor Yellow
         Write-AssessmentConsoleSubstep -Message $operatorGuidance -ForegroundColor Yellow
         Write-Log -Type WARNING -Message "[Get-SharePointAndOneDriveSites] All inventory stages failed (Graph SDK, Graph getAllSites, SharePoint Online PowerShell). $operatorGuidance" -ExportFileLocation $ExportDetails
@@ -8993,7 +8847,7 @@ function Get-SharePointAndOneDriveSites {
         [GC]::Collect()
         [GC]::WaitForPendingFinalizers()
     }
-   
+
     $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
     Write-AssessmentCollectorCompletionBanner -Message "Completed in $($CompletedTime)"
     Write-Log -Type Info -Message "[Get-SharePointAndOneDriveSites] COMPLETED: Gathering all SharePoint and OneDrive Details ($($ServiceName)) in $($CompletedTime)" -ExportFileLocation $ExportDetails
@@ -9905,8 +9759,8 @@ function Get-AllLicenseSKUs {
     }
     $script:tenantStatsHash["LicenseSKUs"] = @{}
     Write-Log -Type Info -Message "[Get-AllLicenseSKUs] Gathering all License SKUs from tenant" -ExportFileLocation $ExportDetails
-    # Get License SKUs using MGGraph   
-    $skus = Get-MgSubscribedSku -ProgressAction SilentlyContinue -ErrorAction Continue | ? {$_.AppliesTo}
+    # Get License SKUs using MGGraph
+    $skus = Get-MgSubscribedSku -ProgressAction SilentlyContinue -ErrorAction Continue | Where-Object {$_.AppliesTo}
     $script:SkuLookupById = @{}
     $script:ServicePlanLookupById = @{}
 
@@ -9921,7 +9775,7 @@ function Get-AllLicenseSKUs {
             $subscriptionLookup[$sub.SkuId.ToString()] = $sub
         }
     }
-    
+
     Write-Log -Type Info -Message "[Get-AllLicenseSKUs] Found $($skus.count) License SKUs from tenant" -ExportFileLocation $ExportDetails
 
     #Add License SKUs to Hash Table and Service Plans under each SKU to another Hash Table
@@ -10452,7 +10306,7 @@ function Get-AllUserDetails {
             Write-AssessmentConsoleSubstep -Message ("Users: {0} licensed, {1} unlicensed of {2} processed." -f $userCollectionState.LicensedUserCount, $userCollectionState.UnlicensedUserCount, $userCollectionState.ProcessedUserCount)
         }
         Write-Log -Type Info -Message "[Get-allUserDetails] COMPLETED: Gathering all  User Details in $($CompletedTime)" -ExportFileLocation $ExportDetails
-    }     
+    }
     catch {
         Write-Log -Type ERROR -Message "[Get-allUserDetails] An error occurred in running Get-allUserDetails function. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
     }
@@ -10476,13 +10330,13 @@ function Get-AllOffice365Admins {
 
     try {
         # Gather all Admin Roles
-        $adminRoles = Get-MgDirectoryRole -ProgressAction SilentlyContinue | Select DisplayName, ID, Description | ? {$null -ne $_.DisplayName}
+        $adminRoles = Get-MgDirectoryRole -ProgressAction SilentlyContinue | Select-Object DisplayName, ID, Description | Where-Object {$null -ne $_.DisplayName}
         $totalCount = $adminRoles.count
         Write-Log -Type INFO -Message "[Get-AllOffice365Admins] Admin Roles Found: $($adminRoles.count)" -ExportFileLocation $ExportDetails
         foreach ($role in $adminRoles) {
             $roleName = $role.DisplayName
             Write-Log -Type DEBUG -Message "[Get-AllOffice365Admins] $($roleName): Gathering Admins in Role" -ExportFileLocation $ExportDetails
-            Write-ProgressHelper -Total $totalCount -Id 1 -Activity "Gathering Admins in Roles" -Operation "Checking Role: $($roleName)" 
+            Write-ProgressHelper -Total $totalCount -Id 1 -Activity "Gathering Admins in Roles" -Operation "Checking Role: $($roleName)"
             $roleMemberList = Invoke-ArrayaCollectionStepSafe -OperationName "Get-AllOffice365Admins role membership for $roleName" -DefaultValue @() -ExportFileLocation $ExportDetails -ScriptBlock {
                 @(Get-MgDirectoryRoleMember -DirectoryRoleId $role.Id -ProgressAction SilentlyContinue -ErrorAction Stop | Where-Object { $null -ne $_.Id })
             }
@@ -10553,15 +10407,15 @@ function Get-AllOffice365Admins {
                         GroupMailNickname = if ($GroupMailNickname) { $GroupMailNickname } else { $null }
                         GroupType = if ($GroupType) { $GroupType } else { $null }
                     })
-                        
+
                     Write-ProgressHelper -Total $totalCount2 -Id 2 -ParentId 1 -Activity "Gathering Admin Details" -Operation "Gathering Admin Role Details: $($roleMember.DisplayName)"
-    
+
                     $adminResults.Add($currentAdmin)
                 }
             }
-            
+
         }
-        
+
         #Group by DisplayName or UserPrincipalName and combine roles into a comma-separated list
         $groupedResults = $adminResults | Group-Object -Property DisplayName,UserPrincipalName
         Write-Log -Type INFO -Message "[Get-AllOffice365Admins] Combining roles across $($groupedResults.Count) grouped admin entries" -ExportFileLocation $ExportDetails
@@ -10615,16 +10469,16 @@ function Get-AllOffice365Domains {
         param (
             [Parameter(Mandatory = $true)]
             [array]$Recipients, # Array of recipient objects
-    
+
             [Parameter(Mandatory = $true)]
             [string]$DomainName # The domain name to filter on
         )
-    
+
         # Initialize counts
         $RecipientsWithPrimarySMTPCount = 0
         $DomainRecipientsCount = 0
         $RecipientsAliasOnlyCount = 0
-    
+
         try {
             Write-Log -Type INFO -Message "[Get-AllOffice365Domains] Calculating recipient counts for domain: $DomainName" -ExportFileLocation $ExportDetails
             # Count recipients with Primary SMTP using the domain
@@ -10632,7 +10486,7 @@ function Get-AllOffice365Domains {
                 $_.PrimarySmtpAddress -like "*@$($DomainName)"
             }).Count
             Write-Log -Type INFO -Message "[Get-AllOffice365Domains] '$($DomainName)' Recipients with Primary SMTP Count: $RecipientsWithPrimarySMTPCount" -ExportFileLocation $ExportDetails
-    
+
             # Count recipients with the domain in any of their aliases (EmailAddresses)
             $DomainRecipientsCount = ($Recipients | Where-Object {
                 # Split EmailAddresses into an array
@@ -10641,26 +10495,26 @@ function Get-AllOffice365Domains {
                 $emailArray -like "*@$($DomainName)*"
             }).Count
             Write-Log -Type INFO -Message "[Get-AllOffice365Domains] '$($DomainName)' Recipients with Alias Count: $DomainRecipientsCount" -ExportFileLocation $ExportDetails
-    
+
             # Count recipients with the domain as alias only (not primary)
             $RecipientsAliasOnlyCount = ($Recipients | Where-Object {
                 # Split EmailAddresses into an array
                 $emailArray = $_.EmailAddresses -split ','
-    
+
                 # Check if there is at least one lowercase smtp alias with the domain
                 $hasAlias = $emailArray -like "smtp:*@$($DomainName)"
                 # Ensure the primary SMTP is not the domain
                 $notPrimarySMTP = $_.PrimarySmtpAddress -notlike "*@$($DomainName)"
-    
+
                 # Return true only if the alias exists and it's not the primary SMTP
                 $hasAlias -and $notPrimarySMTP
             }).Count
             Write-Log -Type INFO -Message "[Get-AllOffice365Domains] '$($DomainName)' Recipients with Alias Only Count: $RecipientsAliasOnlyCount" -ExportFileLocation $ExportDetails
-    
+
         } catch {
             Write-Host "An error occurred while calculating recipient counts: $($_.Exception.Message)" -ForegroundColor Red
         }
-    
+
         # Return results as a custom object
         return [PSCustomObject]@{
             PrimarySMTPCount = $RecipientsWithPrimarySMTPCount
@@ -10695,7 +10549,7 @@ function Get-AllOffice365Domains {
             'namecheaphosting.com' = 'Namecheap'
             # Add more mappings as needed
         }
-    
+
         # Function to get the main domain from a DNS host
         function Get-MainDomain {
             param (
@@ -10709,12 +10563,12 @@ function Get-AllOffice365Domains {
         if (-not $nsRecords) {
             return @()
         }
-    
+
         # Ensure nsRecords is an array
         if (-not ($nsRecords -is [array])) {
             $nsRecords = @($nsRecords)
         }
-    
+
         # Get NS records and company names
         $mainDomains = $nsRecords | ForEach-Object { Get-MainDomain -DNSHost $_.NameHost }
         $uniqueMainDomains = $mainDomains | Select-Object -Unique
@@ -10725,7 +10579,7 @@ function Get-AllOffice365Domains {
                 $_
             }
         })
-    
+
         return $nsCompanies
     }
 
@@ -10741,22 +10595,22 @@ function Get-AllOffice365Domains {
     Write-Log -Type INFO -Message "[Get-AllOffice365Domains] START: Gathering All Domains from tenant" -ExportFileLocation $ExportDetails
     try {
         # Get all the domains
-        $domains = Get-MgDomain -ProgressAction SilentlyContinue | ? {$null -ne $_.ID}
+        $domains = Get-MgDomain -ProgressAction SilentlyContinue | Where-Object {$null -ne $_.ID}
         #Gather Exchange Online Domain Details
         try {
             Write-Log -Type INFO -Message "[Get-AllOffice365Domains] Gathering Exchange Online Domain Details" -ExportFileLocation $ExportDetails
             $acceptedDomains = Get-AcceptedDomain
-            $remoteDomains = Get-RemoteDomain | select Identity, DomainName, IsInternal, TargetDeliveryDomain, AllowedOOFType, AutoReplyEnabled, AutoForwardEnabled, DeliveryReportEnabled, NDREnabled, MeetingForwardNotificationEnabled, ContentType, TNEFEnabled, TrustedMailOutboundEnabled, TrustedMailInboundEnabled
+            $remoteDomains = Get-RemoteDomain | Select-Object Identity, DomainName, IsInternal, TargetDeliveryDomain, AllowedOOFType, AutoReplyEnabled, AutoForwardEnabled, DeliveryReportEnabled, NDREnabled, MeetingForwardNotificationEnabled, ContentType, TNEFEnabled, TrustedMailOutboundEnabled, TrustedMailInboundEnabled
             if ($script:tenantStatsHash['AllRecipients']) {
                 $recipients = $script:tenantStatsHash['AllRecipients'].values
             } else {$recipients = Get-EXORecipient -ResultSize Unlimited}
-                        
+
             $exchangeOnline = $True
         }
-        catch {  
+        catch {
             if ($_.Exception.Message -like "*The term 'Get-AcceptedDomain' is not recognized*") {
                 Write-Log -Type ERROR -Message "An error occurred in running Get-AllOffice365Domains function. Exception: Not Properly Connected to Exchange Online Tenant. Check Permissions and reconnect to Exchange Online. Skipping Exchange portion" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
-                
+
                 $exchangeOnline = $False
             }
             else {
@@ -10772,7 +10626,7 @@ function Get-AllOffice365Domains {
             try {
                 # Get the DNS records
                 $domainName = $domain.ID
-                $domainVerified = $domain.IsVerified       
+                $domainVerified = $domain.IsVerified
                 $AuthenticationType = if ($null -ne $domain.AuthenticationType -and -not [string]::IsNullOrWhiteSpace([string]$domain.AuthenticationType)) { [string]$domain.AuthenticationType } else { 'Unknown' }
                 Write-Log -Type DEBUG -Message "[Get-AllOffice365Domains] Gathering '$($domainName)' domain details" -ExportFileLocation $ExportDetails
                 Write-ProgressHelper -Total $totalCount -Id 1 -Activity "Gathering Domain Details" -Operation "'$($domainName)'"
@@ -10886,7 +10740,7 @@ function Get-AllOffice365Domains {
                     Verified           = $domainVerified
                     IsDefault          = $domain.IsDefault
                     AuthenticationType = $AuthenticationType
-            
+
                     # ===== DNS Records =====
                     DNSCompanies           = $DNSCompanies -join ","
                     NSRecords              = ($NSRecords.NameHost -join ",") -replace "`n|`r",     ""
@@ -10905,7 +10759,7 @@ function Get-AllOffice365Domains {
                     DkimSelector1          = $selector1Host
                     DkimSelector2          = $selector2Host
                     DkimSelectorRecords    = (($selectorRecords | Where-Object { $_.NameHost } | Select-Object -ExpandProperty NameHost) -join ",")
-            
+
                     # ===== Recipient Counts =====
                     PrimarySMTPRecipients = $RecipientCounts.PrimarySMTPCount
                     AliasOnlyRecipients   = $RecipientCounts.AliasOnlyCount
@@ -11199,7 +11053,7 @@ function Report-UserAndMailboxStats {
     }
 
     $statsSizeCache = @{}
-    
+
     # Combine User and Mailbox Stats with Progress
     function Combine-UserAndMailboxStats {
         param (
@@ -11216,7 +11070,7 @@ function Report-UserAndMailboxStats {
         $TenantStatsStore["MailboxFullDetails"] = @{}
         $combinedUserProgressId = 81
         $combinedMailboxProgressId = 82
-        
+
         # Process Users
         $usersTable = Get-LookupTable -TenantStatsStore $TenantStatsStore -Key 'Users'
         $userEntries = @()
@@ -11901,6 +11755,7 @@ function Get-AssessmentMailboxStatsLookup {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [object[]]$StatsRows
     )
 
@@ -12814,6 +12669,7 @@ function Update-MigrationComplexityFlags {
         $Reconciliation,
         [Parameter(Mandatory = $true)]
         [AllowNull()]
+        [AllowEmptyCollection()]
         [object[]]$MailboxPlanningRows,
         [Parameter(Mandatory = $true)]
         $Estimate
@@ -15065,12 +14921,12 @@ function Get-AllDevicesReport {
 
     Write-AssessmentCollectorBanner -Message 'Getting Device Details ...' -NoNewline
     Write-Log -Type INFO -Message "[Get-AllDevicesReport] START: Gathering all Device with $($detailLevel) details" -ExportFileLocation $ExportDetails
-    
+
     try {
         $savedProgressPreference = $ProgressPreference
         try {
             $ProgressPreference = 'SilentlyContinue'
-            $devices = Get-MgDevice -All -ProgressAction SilentlyContinue -ErrorAction Stop | ? {$null -ne $_.ID}
+            $devices = Get-MgDevice -All -ProgressAction SilentlyContinue -ErrorAction Stop | Where-Object {$null -ne $_.ID}
         }
         finally {
             $ProgressPreference = $savedProgressPreference
@@ -15083,8 +14939,8 @@ function Get-AllDevicesReport {
 
         # Filter for Desired Attributes
         switch ($detailLevel) {
-            {$_ -in "minimum", "operator", "combined", "automation", "all"} { 
-                $devices = $devices | Select $DesiredProperties
+            {$_ -in "minimum", "operator", "combined", "automation", "all"} {
+                $devices = $devices | Select-Object $DesiredProperties
             }
             geek {$devices = $devices}
         }
@@ -15106,9 +14962,11 @@ function Get-AllDevicesReport {
                         $device | Add-Member -MemberType NoteProperty -Name "MDMSolution" -Value "Not Managed" -Force
                     }
                 Write-Log -Type DEBUG -Message ("[Get-AllDevicesReport] Adding Device Details for '{0}': Added {1} MDM Solution value" -f $device.DisplayName, $device.MDMSolution) -ExportFileLocation $ExportDetails
-        
+
                 #Add Join Type
-                switch ($device.DeviceTrustType) {
+                # Graph returns this as TrustType. Switching on a DeviceTrustType property that
+                # is never selected silently classified every device as Unknown.
+                switch ($device.TrustType) {
                     AzureAD {
                         $device | Add-Member -MemberType NoteProperty -Name "DeviceJoinType" -Value "Entra AD joined" -Force
                     }
@@ -15123,7 +14981,7 @@ function Get-AllDevicesReport {
                     }
                 }
                 Write-Log -Type DEBUG -Message ("[Get-AllDevicesReport] ({0}/{1}) Adding Device Details for '{2}': Added {3} Join Type value" -f $progressCounter, $devices.count, $device.DisplayName, $device.MDMSolution) -ExportFileLocation $ExportDetails
-        
+
                 #Add if Stale Device (Approximate login time older than 6 months)
                 $lastLogin = $device.ApproximateLastSignInDateTime
                 if ($lastLogin) {
@@ -15141,7 +14999,7 @@ function Get-AllDevicesReport {
                     $device | Add-Member -MemberType NoteProperty -Name "DeviceStale" -Value "N/A" -Force
                 }
                 Write-Log -Type DEBUG -Message ("[Get-AllDevicesReport] ({0}/{1}) Adding Device Details for '{2}': Added {3} Device Stale value" -f $progressCounter, $devices.count, $device.DisplayName, $device.MDMSolution) -ExportFileLocation $ExportDetails
-                
+
                 #Add Compliant State
                 if ($null -eq $device.IsCompliant) {
                     $device | Add-Member -MemberType NoteProperty -Name "IsCompliant" -Value "NotApplied" -Force
@@ -15166,7 +15024,7 @@ function Get-AllDevicesReport {
         Write-ProgressHelper -Total $deviceProgressTotal -Id $deviceProgressId -Activity "Processing all Found Devices" -Completed
         Write-AssessmentCollectorCompletionBanner -Message "Completed in $($CompletedTime)"
         Write-Log -Type INFO -Message "[Get-AllDevicesReport] COMPLETED: Gathering all Entra Devices with $($detailLevel) details" -ExportFileLocation $ExportDetails
-    }   
+    }
 }
 
 # Function to Retrieve Conditional Access Policies from Microsoft Graph
@@ -15443,7 +15301,7 @@ function Get-SecuritySecureScoreReport {
         [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel,
         [Parameter(Mandatory=$false,HelpMessage='Should It Only Pull the Most Recent?')]
-        [Switch]$MostRecent 
+        [Switch]$MostRecent
     )
     $start = Get-Date
     $secureScoreProgressId = 75
@@ -15547,7 +15405,7 @@ function Get-SecuritySecureScoreReport {
                 VendorProvider = $score.VendorInformation.Provider
                 VendorName = $score.VendorInformation.Vendor
             }
-            
+
             # Add Comparitive Scores - TotalSeats, AllTenants
             Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] Gathering Score Details for $($score.ID): Add Comparitive Scores" -ExportFileLocation $ExportDetails
             $comparativeScores = $score.AverageComparativeScores
@@ -15578,7 +15436,7 @@ function Get-SecuritySecureScoreReport {
                 }
             }
 
-            
+
             #Add to Hash Table
             Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] Gathering Score Details for $($score.ID): Add Score to Tenant Stats Hash Table" -ExportFileLocation $ExportDetails
             $script:tenantStatsHash["SecuritySecureScore"][$score.ID] = $currentSecurityScores
@@ -15666,7 +15524,7 @@ function Get-SecuritySecureScoreReport {
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
         Write-AssessmentCollectorCompletionBanner -Message "Completed in $($CompletedTime)"
         Write-Log -Type INFO -Message "[Get-SecuritySecureScoreReport] COMPLETED: Gathering Security Score details" -ExportFileLocation $ExportDetails
-    }   
+    }
 }
 
 
@@ -15677,7 +15535,7 @@ function Get-AuthenticationConfiguration {
         [ValidateSet('minimum', 'operator', 'combined', 'automation', 'all', 'geek')]
         [string]$detailLevel
     )
-    
+
     $start = Get-Date
     # Ensure global hash table structure
     if (-not $script:tenantStatsHash) {
@@ -15692,10 +15550,10 @@ function Get-AuthenticationConfiguration {
     $script:tenantStatsHash["SecurityDefaultsPolicy"] = @{}
     $script:tenantStatsHash["GuestSignInSummary"] = @{}
     $script:tenantStatsHash["PrivilegedAccessSummary"] = @{}
-    
+
     Write-AssessmentCollectorBanner -Message 'Checking Authentication and SSO Configuration ...' -NoNewline
     Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] START: Checking Authentication Configuration" -ExportFileLocation $ExportDetails
-    
+
     try {
         $depthPolicy = if ($script:CollectionDepthPolicy) {
             $script:CollectionDepthPolicy
@@ -16563,7 +16421,7 @@ function Get-AuthenticationConfiguration {
         foreach ($servicePrincipal in @($servicePrincipals)) {
             Add-AssessmentEnterpriseApplicationRecord -ServicePrincipal $servicePrincipal
         }
-        
+
         # Get authentication methods policy
         $authMethodsPolicy = [PSCustomObject]@{
             MFAEnabled = $false
@@ -16586,17 +16444,17 @@ function Get-AuthenticationConfiguration {
             AdminConsentWorkflowReviewerCount = 0
         }
         $conditionalAccessPoliciesForMfaEvaluation = @()
-        
+
         # Check for federated domains (indicates SSO)
         $domains = $script:tenantStatsHash["Domains"].Values
         $federatedDomains = $domains | Where-Object {$_.AuthenticationType -eq "Federated"}
-        
+
         if ($federatedDomains) {
             $authMethodsPolicy.SSOEnabled = $true
             $authMethodsPolicy.FederatedDomains = $federatedDomains.Domain
             Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] Found $($federatedDomains.Count) federated domains" -ExportFileLocation $ExportDetails
         }
-        
+
         # Get Enterprise Applications configured for SSO
         if ($collectSsoAppDetails) {
             try {
@@ -16635,19 +16493,19 @@ function Get-AuthenticationConfiguration {
                     $authMethodsPolicy.SSOApplications = $ssoAppDetails.ToArray()
                     Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] Found $($ssoAppDetails.Count) SSO-enabled applications" -ExportFileLocation $ExportDetails
                 }
-                
+
             } catch {
                 Write-Log -Type WARNING -Message "[Get-AuthenticationConfiguration] Unable to retrieve SSO applications: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
             }
         } else {
             Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] Skipping detailed SSO application inventory in minimum reporting mode." -ExportFileLocation $ExportDetails
         }
-        
+
         # Check MFA/Authentication methods policies
         try {
             $authMethodsPolicyUri = "https://graph.microsoft.com/v1.0/policies/authenticationMethodsPolicy"
             $authPolicyData = Get-ArrayaGraphResource -Uri $authMethodsPolicyUri -Activity "Fetching Authentication Methods Policy"
-            
+
             if ($authPolicyData) {
                 # Extract enabled authentication methods
                 $authenticationMethodConfigurations = Get-ArrayaObjectValue -Object $authPolicyData -Names @('AuthenticationMethodConfigurations', 'authenticationMethodConfigurations')
@@ -16665,11 +16523,11 @@ function Get-AuthenticationConfiguration {
                     Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] Found $($authMethodsPolicy.AuthenticationMethodCount) enabled authentication methods. Method availability alone does not establish MFA enforcement." -ExportFileLocation $ExportDetails
                 }
             }
-            
+
         } catch {
             Write-Log -Type WARNING -Message "[Get-AuthenticationConfiguration] Unable to retrieve authentication methods policy: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
         }
-        
+
         # Check Conditional Access policies for MFA requirements
         if ($script:tenantStatsHash["ConditionalAccessPolicies"]) {
             $conditionalAccessPoliciesForMfaEvaluation = @($script:tenantStatsHash["ConditionalAccessPolicies"].Values)
@@ -17255,7 +17113,7 @@ function Get-AuthenticationConfiguration {
             ActivitySignalPartialCount       = $activitySignalPartialCount
             ActivitySignalUnavailableCount   = $activitySignalUnavailableCount
         }
-        
+
         $normalizedAuthenticationConfig = [pscustomobject]@{
             MFAEnabled                        = [bool]$authMethodsPolicy.MFAEnabled
             MFAEnforcementEvidenced            = [bool]$authMethodsPolicy.MFAEnforcementEvidenced
@@ -17425,11 +17283,11 @@ function Get-AuthenticationConfiguration {
             GuestPrivilegedAccounts   = $guestAdmins.Count
             GlobalAdministratorCount  = @($privilegedAdmins | Where-Object { ([string]$_.Role) -match 'Global Administrator' }).Count
         }
-        
+
     } catch {
         Write-Log -Type ERROR -Message "An error occurred checking authentication configuration. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
     }
-    
+
     $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
     Write-AssessmentCollectorCompletionBanner -Message "Completed in $($CompletedTime)"
     Write-Log -Type INFO -Message "[Get-AuthenticationConfiguration] COMPLETED: Checking Authentication Configuration in $($CompletedTime)" -ExportFileLocation $ExportDetails
@@ -17605,18 +17463,18 @@ function Get-TenantOverviewInfo {
 function Get-AdConnectSyncDetails {
     [CmdletBinding()]
     param ()
-    
+
     $start = Get-Date
     if (-not $script:tenantStatsHash) { $script:tenantStatsHash = @{} }
     $script:tenantStatsHash["AdConnectConfiguration"] = @{}
-    
+
     Write-AssessmentCollectorBanner -Message 'Checking AD Connect/Sync status ...' -NoNewline
     Write-Log -Type INFO -Message "[Get-AdConnectSyncDetails] START" -ExportFileLocation $ExportDetails
-    
+
     try {
         $org = $null
         try { $org = Get-AssessmentTenantOrganization } catch {}
-        
+
         $getNamedPropertyValue = {
             param(
                 $Object,
@@ -17683,7 +17541,7 @@ function Get-AdConnectSyncDetails {
             UserWritebackEnabled                     = $null
             PassThroughAuthenticationEnabled         = $null
         }
-        
+
         $serviceDetails = @()
         $syncErrors = @()
 
@@ -17772,7 +17630,7 @@ function Get-AdConnectSyncDetails {
             OnPremisesLastSyncDateTime                 = & $firstPopulatedValue @($summary.OnPremisesLastSyncDateTime, (Get-ArrayaObjectValue -Object $existingPasswordLifecycleSummary -Names @('OnPremisesLastSyncDateTime')))
             FeatureCollectionNote                      = $syncFeatureCollectionNote
         }
-        
+
         $healthSyncServicesCommand = Get-Command Get-AzureADConnectHealthSyncServices -ErrorAction Ignore
         $healthSyncErrorsCommand = Get-Command Get-AzureADConnectHealthSyncErrors -ErrorAction Ignore
         $healthSyncAlertCommand = Get-Command Get-AzureADConnectHealthSyncAlert -ErrorAction Ignore
@@ -17792,7 +17650,7 @@ function Get-AdConnectSyncDetails {
                 }
             } catch {}
         }
-        
+
         if ($healthSyncErrorsCommand) {
             try {
                 $syncErrors = Get-AzureADConnectHealthSyncErrors -ErrorAction SilentlyContinue
@@ -17802,17 +17660,17 @@ function Get-AdConnectSyncDetails {
                 $syncErrors = Get-AzureADConnectHealthSyncAlert -ErrorAction SilentlyContinue
             } catch {}
         }
-        
+
         $script:tenantStatsHash["AdConnectConfiguration"]["Summary"] = $summary
         $script:tenantStatsHash["AdConnectConfiguration"]["SyncServices"] = $serviceDetails
         $script:tenantStatsHash["AdConnectConfiguration"]["RecentErrors"] = $syncErrors | Select-Object -First 10
         $script:tenantStatsHash["AdConnectConfiguration"]["ErrorCount"] = ($syncErrors | Measure-Object).Count
-        
+
         Write-Log -Type INFO -Message "[Get-AdConnectSyncDetails] DirSyncEnabled=$($summary.OnPremisesSyncEnabled) LastSync=$($summary.OnPremisesLastSyncDateTime) Services=$($serviceDetails.Count) Errors=$(($syncErrors | Measure-Object).Count)" -ExportFileLocation $ExportDetails
     } catch {
         Write-Log -Type WARNING -Message "[Get-AdConnectSyncDetails] Error: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
     }
-    
+
     $elapsed = ((Get-Date) - $start).ToString('hh\:mm\:ss')
     Write-AssessmentCollectorCompletionBanner -Message " Completed in $elapsed"
     Write-Log -Type INFO -Message "[Get-AdConnectSyncDetails] COMPLETED in $elapsed" -ExportFileLocation $ExportDetails
@@ -18371,7 +18229,7 @@ function Get-PurviewCompliancePolicies {
 function Get-MfaRegistrationDetails {
     [CmdletBinding()]
     param ()
-    
+
     $start = Get-Date
     if (-not $script:tenantStatsHash) { $script:tenantStatsHash = @{} }
     $script:tenantStatsHash["MfaRegistrationDetails"] = @{}
@@ -18383,10 +18241,10 @@ function Get-MfaRegistrationDetails {
     $script:tenantStatsHash["AdminMfaSummary"] = $null
     $script:tenantStatsHash["AdminMfaRegistrationGaps"] = @{}
     $script:tenantStatsHash["AdminMfaEnforcementGaps"] = @{}
-    
+
     Write-AssessmentCollectorBanner -Message 'Gathering MFA registration details ...' -NoNewline
     Write-Log -Type INFO -Message "[Get-MfaRegistrationDetails] START: Gathering MFA registration details" -ExportFileLocation $ExportDetails
-    
+
     try {
         $regData = @()
         try {
@@ -18394,7 +18252,7 @@ function Get-MfaRegistrationDetails {
                 $regData = Get-MgReportAuthenticationMethodUserRegistrationDetail -All -ProgressAction SilentlyContinue -ErrorAction Stop
             }
         } catch {}
-        
+
         if (-not $regData -or $regData.Count -eq 0) {
             try {
                 $uri = "https://graph.microsoft.com/v1.0/reports/authenticationMethods/userRegistrationDetails"
@@ -18403,7 +18261,7 @@ function Get-MfaRegistrationDetails {
                 Write-Log -Type WARNING -Message "[Get-MfaRegistrationDetails] Unable to retrieve registration report: $($_.Exception.Message)" -ExportFileLocation $ExportDetails
             }
         }
-        
+
         $methodCounts = @{}
         $weakMethodCounts = @{}
         $strongMethodCounts = @{}
@@ -18415,7 +18273,7 @@ function Get-MfaRegistrationDetails {
         $usersWithWeakDefaultMethod = 0
         $usersWithStrongMethods = 0
         $usersWithPhishingResistantMethods = 0
-        
+
         foreach ($user in $regData) {
             $totalUsers++
             $upn = $user.UserPrincipalName
@@ -18474,7 +18332,7 @@ function Get-MfaRegistrationDetails {
                 if ($userHasPhishingResistantMethod) { $usersWithPhishingResistantMethods++ }
                 if ($defaultMethodProfile.IsWeak -eq $true) { $usersWithWeakDefaultMethod++ }
             }
-            
+
             if ($upn) {
                 $script:tenantStatsHash["MfaRegistrationDetails"][$upn] = [pscustomobject]@{
                     UserPrincipalName = $upn
@@ -18488,7 +18346,7 @@ function Get-MfaRegistrationDetails {
                 }
             }
         }
-        
+
         if ($totalUsers -gt 0) {
             $summary = [pscustomobject]@{
                 TotalUsers = $totalUsers
@@ -18536,8 +18394,8 @@ function Get-MfaRegistrationDetails {
             $conditionalAccessPolicies |
                 Where-Object { Test-AssessmentConditionalAccessRequiresMfa -Policy $_ }
         )
-        $enabledMfaPolicies = @($mfaPolicies | Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'enabled' })
-        $reportOnlyMfaPolicies = @($mfaPolicies | Where-Object { (Get-AssessmentConditionalAccessPolicyState -Policy $_) -eq 'enabledForReportingButNotEnforced' })
+        $enabledMfaPolicies = @($mfaPolicies | Where-Object { (Get-ArrayaConditionalAccessPolicyState -Policy $_) -eq 'enabled' })
+        $reportOnlyMfaPolicies = @($mfaPolicies | Where-Object { (Get-ArrayaConditionalAccessPolicyState -Policy $_) -eq 'enabledForReportingButNotEnforced' })
         $mfaCoverageAnalysis = Get-AssessmentMfaEnforcementCoverageSummary -EnabledMfaPolicies $enabledMfaPolicies -Users $script:tenantStatsHash["Users"] -Groups $script:tenantStatsHash["EntraIDGroups"] -OperationName 'Get-MfaRegistrationDetails' -IncludeDetails
         $mfaCoverageSummary = if ($mfaCoverageAnalysis -and $mfaCoverageAnalysis.PSObject.Properties['Summary']) { $mfaCoverageAnalysis.Summary } else { $mfaCoverageAnalysis }
         $securityDefaultsEnabled = $null
@@ -18732,7 +18590,7 @@ function Get-MfaRegistrationDetails {
         }
         Write-Log -Type WARNING -Message ($message + $stackSuffix) -ExportFileLocation $ExportDetails
     }
-    
+
     $elapsed = ((Get-Date) - $start).ToString('hh\:mm\:ss')
     Write-AssessmentCollectorCompletionBanner -Message " Completed in $elapsed"
     Write-Log -Type INFO -Message "[Get-MfaRegistrationDetails] COMPLETED in $elapsed" -ExportFileLocation $ExportDetails
@@ -18931,13 +18789,13 @@ function Get-FederationAndCrossTenantConfiguration {
                 [Parameter(Mandatory = $true)][string]$TenantId,
                 [Parameter(Mandatory = $false)][object]$PartnerObject
             )
-            
+
             # 1) Partner object might already include a display name
             if ($PartnerObject -and $PartnerObject.PSObject.Properties['DisplayName']) {
                 $name = $PartnerObject.DisplayName
                 if (-not [string]::IsNullOrWhiteSpace($name)) { return $name }
             }
-            
+
             # 2) Try Graph v1.0 findTenantInformationByTenantId (preferred)
             $tenantLookupUri = "https://graph.microsoft.com/v1.0/tenantRelationships/findTenantInformationByTenantId(tenantId='$TenantId')"
             try {
@@ -18970,7 +18828,7 @@ function Get-FederationAndCrossTenantConfiguration {
             } catch {
                 Write-Log -Type WARNING -Message "[Get-FederationAndCrossTenantConfiguration] Unable to resolve tenant name for $($TenantId): $($_.Exception.Message)" -ExportFileLocation $ExportDetails
             }
-            
+
             return $null
         }
 
@@ -19231,7 +19089,7 @@ try {
     if ($PSVersionTable.PSVersion.Major -lt 7) {
         Write-Verbose "Importing Office 365 Custom Module for PowerShell Version 5.1"
         #Import-Module -Name Office365Custom
-        
+
     } else {
         Write-Verbose "Importing Office 365 Custom Module for PowerShell Version 7"
         #Import-Module -Name Office365Custom -UseWindowsPowerShell

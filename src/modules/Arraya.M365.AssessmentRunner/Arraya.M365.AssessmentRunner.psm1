@@ -1303,5 +1303,9 @@ Export-ModuleMember -Function @(
     'Invoke-ADTenantAssessment',
     'Invoke-GraphActivityAssessment',
     'Invoke-M365ImprovementPlan',
-    'Invoke-M365AssessmentComparison'
+    'Invoke-M365AssessmentComparison',
+    # Manifest resolution helpers. Exported so the interactive launcher can locate a prior
+    # run the same way the runner does, instead of carrying its own copy of this logic.
+    'Resolve-AssessmentLatestManifestPath',
+    'Resolve-AssessmentRunRootFromManifestPath'
 )

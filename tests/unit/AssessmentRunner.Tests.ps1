@@ -152,9 +152,24 @@ Describe 'Arraya.M365.AssessmentRunner' {
 
     It 'uses the same usable-snapshot manifest guard in the launcher handoff' {
         $launcherSource = Get-Content -Raw -Path $script:launcherPath
-        $launcherSource | Should -Match 'function Test-LauncherManifestHasSnapshotArtifact'
         $launcherSource | Should -Match 'Import-ArrayaTenantSnapshotContext -Path \$manifestPath -Purpose ImprovementPlan'
         $launcherSource | Should -Match 'The completed assessment run did not produce a usable JSON snapshot, so Improve cannot continue from the manifest'
+    }
+
+    It 'resolves a prior run through the module helpers instead of launcher-local copies' {
+        # These helpers used to exist twice: once in the runner module and once inline in the
+        # launcher under Launcher-prefixed names. The copies had already drifted. The launcher
+        # now calls the module exports, and must not grow its own copies again.
+        $launcherSource = Get-Content -Raw -Path $script:launcherPath
+        $launcherSource | Should -Match 'Resolve-AssessmentLatestManifestPath'
+        $launcherSource | Should -Match 'Resolve-AssessmentRunRootFromManifestPath'
+        $launcherSource | Should -Not -Match 'function Test-LauncherManifestHasSnapshotArtifact'
+        $launcherSource | Should -Not -Match 'function Resolve-LauncherLatestManifestPath'
+        $launcherSource | Should -Not -Match 'function Resolve-LauncherRunRootFromManifestPath'
+
+        $manifest = Import-PowerShellDataFile -Path $script:manifestPath
+        $manifest.FunctionsToExport | Should -Contain 'Resolve-AssessmentLatestManifestPath'
+        $manifest.FunctionsToExport | Should -Contain 'Resolve-AssessmentRunRootFromManifestPath'
     }
 
     It 'normalizes improve outputs back into the assessment run when a broad export root is supplied' {

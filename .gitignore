@@ -24,6 +24,10 @@ TestRuns/
 /runs/
 
 # Python tooling
+# Approved customer inputs and generated MVP deliverables stay local.
+/inputs/assessment-package/
+/generated/
+
 .venv/
 __pycache__/
 *.pyc

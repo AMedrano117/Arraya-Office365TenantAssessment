@@ -1113,19 +1113,19 @@ function Get-AllExchangeMailboxDetails {
                     "ExternalDirectoryObjectId", "DisplayName", "Office", "UserPrincipalName", "RecipientTypeDetails", "PrimarySmtpAddress",
                     "WhenMailboxCreated", "UsageLocation", "IsInactiveMailbox", "WasInactiveMailbox", "WhenSoftDeleted",
                     @{Name="InPlaceHolds"; Expression={$_.InPlaceHolds -join ","}},"AccountDisabled", "IsDirSynced", "HiddenFromAddressListsEnabled", "Alias",
-                    @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}}, 
-                    @{Name="GrantSendOnBehalfTo"; Expression={$_.GrantSendOnBehalfTo -join ";"}}, 
-                    @{Name="AcceptMessagesOnlyFrom"; Expression={$_.AcceptMessagesOnlyFrom -join ","}}, 
-                    @{Name="AcceptMessagesOnlyFromDLMembers"; Expression={$_.AcceptMessagesOnlyFromDLMembers -join ","}}, 
-                    @{Name="AcceptMessagesOnlyFromSendersOrMembers"; Expression={$_.AcceptMessagesOnlyFromSendersOrMembers -join ","}}, 
-                    @{Name="RejectMessagesFrom"; Expression={$_.RejectMessagesFrom -join ","}}, 
-                    @{Name="RejectMessagesFromDLMembers"; Expression={$_.RejectMessagesFromDLMembers -join ","}}, 
-                    @{Name="RejectMessagesFromSendersOrMembers"; Expression={$_.RejectMessagesFromSendersOrMembers -join ","}}, 
+                    @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}},
+                    @{Name="GrantSendOnBehalfTo"; Expression={$_.GrantSendOnBehalfTo -join ";"}},
+                    @{Name="AcceptMessagesOnlyFrom"; Expression={$_.AcceptMessagesOnlyFrom -join ","}},
+                    @{Name="AcceptMessagesOnlyFromDLMembers"; Expression={$_.AcceptMessagesOnlyFromDLMembers -join ","}},
+                    @{Name="AcceptMessagesOnlyFromSendersOrMembers"; Expression={$_.AcceptMessagesOnlyFromSendersOrMembers -join ","}},
+                    @{Name="RejectMessagesFrom"; Expression={$_.RejectMessagesFrom -join ","}},
+                    @{Name="RejectMessagesFromDLMembers"; Expression={$_.RejectMessagesFromDLMembers -join ","}},
+                    @{Name="RejectMessagesFromSendersOrMembers"; Expression={$_.RejectMessagesFromSendersOrMembers -join ","}},
                     "RequireSenderAuthenticationEnabled", "WindowsEmailAddress",
                     "DistinguishedName", "Identity", "WhenChanged", "WhenCreated", "ExchangeObjectId", "LegacyExchangeDN",
                     "Guid", "DeliverToMailboxAndForward", "ForwardingAddress", "ForwardingSmtpAddress", "LitigationHoldEnabled",
                     "RetentionHoldEnabled", "DelayHoldApplied", "RetentionPolicy", "ExchangeGuid", "IsResource",
-                    "IsShared", "ResourceType", "RoomMailboxAccountEnabled", "WindowsLiveID", "MicrosoftOnlineServicesID", "EffectivePublicFolderMailbox", "MailboxPlan", 
+                    "IsShared", "ResourceType", "RoomMailboxAccountEnabled", "WindowsLiveID", "MicrosoftOnlineServicesID", "EffectivePublicFolderMailbox", "MailboxPlan",
                     "ArchiveStatus", "ArchiveState", @{Name="ArchiveName"; Expression={$_.ArchiveName -join ","}}, "ArchiveGuid", "AutoExpandingArchiveEnabled", "DisabledArchiveGuid",
                     @{Name="PersistedCapabilities"; Expression={$_.PersistedCapabilities -join ","}}
                 )
@@ -1182,7 +1182,7 @@ function Get-AllExchangeMailboxDetails {
         }
 
         Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] Gathering all mailboxes (Get-EXOMailbox) including Inactive Mailboxes" -ExportFileLocation $exportDetails
-        
+
         $tenantStatsHash["AllMailboxes"] = @{}
         $tenantStatsHash["AllMailboxes-MailIdentity"] = @{}
         $tenantStatsHash["AllMailboxes-UserPrincipalName"] = @{}
@@ -1208,7 +1208,7 @@ function Get-AllExchangeMailboxDetails {
             }
             Write-ProgressHelper -Total $totalCount -Id $mailboxInventoryProgressId -Activity "Gathering All Exchange Mailbox Details" -Operation "Gathering Mailbox Details for $($key)"
             Add-MailboxMigrationAddressProperties -Mailbox $mailbox
-            
+
             # Set the key based on the mailbox type
             #$MailboxTypeKey = $mailbox.RecipientTypeDetails.tostring() # Use RecipientTypeDetails as the key
             $tenantStatsHash["AllMailboxes"][$key] = $mailbox
@@ -1838,7 +1838,7 @@ function Get-AllExchangeMailboxDetails {
         Write-ArrayaExchangeCollectorCompletionBanner -Message "[Get-AllExchangeMailboxDetails] COMPLETED: Gathering All Primary Mailbox Statistics in $($CompletedTime)" -ExportFileLocation $exportDetails
         Write-Log -Type INFO -Message "[Get-AllExchangeMailboxDetails] COMPLETED: Gathering All Primary Mailbox Statistics in $($CompletedTime)" -ExportFileLocation $exportDetails
     }
-    
+
     ## Archive Mailbox Stats to Hash Table
     if ($tenantStatsHash['AllMailboxes'].Values | Where-Object {$_.ArchiveStatus -ne "None"}) {
         try {
@@ -1852,7 +1852,7 @@ function Get-AllExchangeMailboxDetails {
             $archiveMailboxStats = @($archiveMailboxStatsResult.Results)
             if ($archiveMailboxStats) {
                 $tenantStatsHash["ArchiveMailboxStats"] = @{}
-                
+
                 #Add to Tenant Stats Hash
                 $archiveMailboxStats | ForEach-Object {
                     # Using MailboxGUID from the Mailbox Statistics as the key; matches against the ExchangeGUID from the Mailbox
@@ -1873,7 +1873,7 @@ function Get-AllExchangeMailboxDetails {
                 Write-Log -Type ERROR -Message "[Get-AllExchangeMailboxDetails] An error occurred in Gathering Archive Mailbox Satistics and adding to Hash Table. $($_.Exception.Message)" -ExportFileLocation $exportDetails -CaptureError -ErrorRecordVar $_
             }
         }
-        finally { 
+        finally {
             Write-Progress -Id $archiveStatsProgressId -Activity "Gathering All Archive Mailbox Statistics" -Completed
             $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
             Write-ArrayaExchangeCollectorCompletionBanner -Message "[Get-AllExchangeMailboxDetails] COMPLETED: Gathering All Archive Mailbox Statistics in $($CompletedTime)" -ExportFileLocation $exportDetails

@@ -37,16 +37,16 @@ function Get-AllRecipientDetails {
                 # Properties for Select-Object
                 $DesiredProperties = @(
                     "ExternalDirectoryObjectId", "DisplayName", "Identity", "RecipientTypeDetails", "PrimarySMTPAddress",
-                    @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}}, 
+                    @{Name="EmailAddresses"; Expression={$_.EmailAddresses -join ","}},
                     "HiddenFromAddressListsEnabled", "AddressBookPolicy",
-                    @{Name="ManagedBy"; Expression={$_.ManagedBy -join ","}}, 
+                    @{Name="ManagedBy"; Expression={$_.ManagedBy -join ","}},
                     "SKUAssigned", "WhenCreated", "WhenSoftDeleted", "GUID",
                     "alias", "Notes"
                 )
                 $allRecipients = Invoke-QuietCommand -ScriptBlock {
-                    Get-EXORecipient -Properties $Properties -ResultSize Unlimited -Filter "RecipientTypeDetails -ne 'DiscoveryMailbox' -and RecipientTypeDetails -ne 'MailContact' -and RecipientTypeDetails -ne 'GuestMailUser' -and RecipientTypeDetails -ne 'MailUser'" -ErrorAction Stop | select $DesiredProperties
+                    Get-EXORecipient -Properties $Properties -ResultSize Unlimited -Filter "RecipientTypeDetails -ne 'DiscoveryMailbox' -and RecipientTypeDetails -ne 'MailContact' -and RecipientTypeDetails -ne 'GuestMailUser' -and RecipientTypeDetails -ne 'MailUser'" -ErrorAction Stop | Select-Object $DesiredProperties
                 }
-            }           
+            }
             geek {
                 $allRecipients = Invoke-QuietCommand -ScriptBlock {
                     Get-EXORecipient -PropertySets All -ResultSize Unlimited -Filter "RecipientTypeDetails -ne 'DiscoveryMailbox' -and RecipientTypeDetails -ne 'MailContact' -and RecipientTypeDetails -ne 'GuestMailUser' -and RecipientTypeDetails -ne 'MailUser'" -ErrorAction Stop

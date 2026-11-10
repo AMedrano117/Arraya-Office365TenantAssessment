@@ -322,7 +322,7 @@ function Convert-ToCustomerAssessmentBooleanLabel {
         [Parameter(Mandatory = $false)][string]$Default = 'Not validated from the reviewed data'
     )
 
-    $booleanValue = Convert-ToArrayaBoolean $Value
+    $booleanValue = Convert-ArrayaToBoolean $Value
     if ($null -ne $booleanValue) {
         return $(if ($booleanValue) { $TrueText } else { $FalseText })
     }
@@ -554,7 +554,7 @@ function Test-CustomerEnterpriseApplicationSsoEnabled {
     )
 
     $preferredSingleSignOnMode = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('SSOMode', 'PreferredSingleSignOnMode')) -Default ''
-    $explicitSsoEnabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('SsoEnabled'))
+    $explicitSsoEnabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('SsoEnabled'))
     return (
         ($explicitSsoEnabled -eq $true) -or
         (-not [string]::IsNullOrWhiteSpace($preferredSingleSignOnMode) -and $preferredSingleSignOnMode -ne 'notSupported')
@@ -646,7 +646,7 @@ function Get-CustomerEnterpriseApplicationActivityText {
     )
 
     $activitySignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $ApplicationRow -Name 'ActivitySignalState'
-    $hasRecentActivity = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasRecentActivity'))
+    $hasRecentActivity = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasRecentActivity'))
     $latestActivityDate = Get-CustomerEnterpriseApplicationLatestActivityDate -ApplicationRow $ApplicationRow
 
     if ($null -ne $latestActivityDate) {
@@ -677,7 +677,7 @@ function Test-CustomerEnterpriseApplicationHasExpiredCredentials {
 
     return (
         (Get-CustomerEnterpriseApplicationCredentialReviewState -ApplicationRow $ApplicationRow) -eq 'Collected' -and
-        ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasExpiredCredentials'))) -eq $true -or
+        ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasExpiredCredentials'))) -eq $true -or
         (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('ExpiredCredentialCount'))) -gt 0)
     )
 }
@@ -691,7 +691,7 @@ function Test-CustomerEnterpriseApplicationHasCredentialsExpiringSoon {
 
     return (
         (Get-CustomerEnterpriseApplicationCredentialReviewState -ApplicationRow $ApplicationRow) -eq 'Collected' -and
-        ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasCredentialsExpiringSoon'))) -eq $true -or
+        ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasCredentialsExpiringSoon'))) -eq $true -or
         (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('ExpiringCredentialCount'))) -gt 0)
     )
 }
@@ -777,8 +777,8 @@ function Get-CustomerEnterpriseApplicationObservationText {
     $redirectSignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $ApplicationRow -Name 'RedirectUriSignalState'
     $insecureRedirectUriCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('InsecureRedirectUriCount'))
     $activitySignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $ApplicationRow -Name 'ActivitySignalState'
-    $hasRecentActivity = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasRecentActivity'))
-    $appRoleAssignmentRequired = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('AppRoleAssignmentRequired'))
+    $hasRecentActivity = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasRecentActivity'))
+    $appRoleAssignmentRequired = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('AppRoleAssignmentRequired'))
 
     if ($ssoEnabled -eq $true) {
         $observationParts.Add("$displayName uses SSO via $ssoMode.") | Out-Null
@@ -858,7 +858,7 @@ function Test-CustomerEnterpriseApplicationRow {
         }
     }
 
-    return (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('SsoEnabled'))) -eq $true
+    return (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('SsoEnabled'))) -eq $true
 }
 
 function Merge-CustomerEnterpriseApplicationRows {
@@ -989,12 +989,12 @@ function Get-CustomerEnterpriseApplicationSummaryFromRows {
         }).Count
         ApplicationsWithNoRecentActivity = @($rows | Where-Object {
             ((Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ActivitySignalState') -eq 'Collected') -and
-            ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))) -eq $false)
+            ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))) -eq $false)
         }).Count
         ApplicationsWithInsecureRedirectUris = @($rows | Where-Object {
             $redirectSignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'RedirectUriSignalState'
             (($redirectSignalState -eq 'Collected') -or ($redirectSignalState -eq 'Partial')) -and
-            ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasInsecureRedirectUris'))) -eq $true)
+            ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasInsecureRedirectUris'))) -eq $true)
         }).Count
         SsoEnabledApplications           = @($rows | Where-Object { Test-CustomerEnterpriseApplicationSsoEnabled -ApplicationRow $_ }).Count
         ApplicationsWithExpiredCredentials = @($rows | Where-Object { Test-CustomerEnterpriseApplicationHasExpiredCredentials -ApplicationRow $_ }).Count
@@ -1031,10 +1031,10 @@ function Test-CustomerEnterpriseApplicationNoteworthy {
     $ownerSignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $ApplicationRow -Name 'OwnerSignalState'
     $ownerCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('OwnerCount'))
     $redirectSignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $ApplicationRow -Name 'RedirectUriSignalState'
-    $hasInsecureRedirectUris = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasInsecureRedirectUris'))
+    $hasInsecureRedirectUris = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasInsecureRedirectUris'))
     $activitySignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $ApplicationRow -Name 'ActivitySignalState'
-    $hasRecentActivity = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasRecentActivity'))
-    $appRoleAssignmentRequired = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('AppRoleAssignmentRequired'))
+    $hasRecentActivity = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasRecentActivity'))
+    $appRoleAssignmentRequired = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('AppRoleAssignmentRequired'))
     $hasExpiredCredentials = Test-CustomerEnterpriseApplicationHasExpiredCredentials -ApplicationRow $ApplicationRow
     $hasCredentialsExpiringSoon = Test-CustomerEnterpriseApplicationHasCredentialsExpiringSoon -ApplicationRow $ApplicationRow
 
@@ -1083,19 +1083,19 @@ function Get-CustomerNoteworthyEnterpriseApplications {
                 }; Descending = $true }, `
                 @{ Expression = {
                     $redirectState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'RedirectUriSignalState'
-                    $hasRisk = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasInsecureRedirectUris'))
+                    $hasRisk = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasInsecureRedirectUris'))
                     if ((($redirectState -eq 'Collected') -or ($redirectState -eq 'Partial')) -and ($hasRisk -eq $true)) { 1 } else { 0 }
                 }; Descending = $true }, `
                 @{ Expression = {
                     $activityState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ActivitySignalState'
-                    $hasRecentActivity = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))
+                    $hasRecentActivity = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))
                     if (($activityState -eq 'Collected') -and ($hasRecentActivity -eq $false)) { 1 } else { 0 }
                 }; Descending = $true }, `
                 @{ Expression = {
                     $latestActivity = Get-CustomerEnterpriseApplicationLatestActivityDate -ApplicationRow $_
                     if ($null -eq $latestActivity) { [datetime]::MinValue } else { $latestActivity }
                 }; Descending = $true }, `
-                @{ Expression = { if ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AppRoleAssignmentRequired'))) -eq $true) { 1 } else { 0 } }; Descending = $true }, `
+                @{ Expression = { if ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AppRoleAssignmentRequired'))) -eq $true) { 1 } else { 0 } }; Descending = $true }, `
                 @{ Expression = { Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('DisplayName')) -Default 'Unnamed application' } }
     )
 
@@ -2490,12 +2490,12 @@ function Get-CustomerDataFootprintChartRows {
     )
     $teamConnectedSharePointRows = @(
         $SharePointRows | Where-Object {
-            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsTeamsConnected'))) -eq $true
+            (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsTeamsConnected'))) -eq $true
         }
     )
     $standaloneSharePointRows = @(
         $SharePointRows | Where-Object {
-            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsTeamsConnected'))) -ne $true
+            (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsTeamsConnected'))) -ne $true
         }
     )
 
@@ -3218,7 +3218,7 @@ function Get-CustomerApplicationPrimaryRiskSignalText {
     $highPrivilegeCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HighPrivilegePermissionCount'))
     $applicationPermissionCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('ApplicationPermissionCount'))
     $activitySignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $ApplicationRow -Name 'ActivitySignalState'
-    $hasRecentActivity = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasRecentActivity'))
+    $hasRecentActivity = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('HasRecentActivity'))
     $redirectSignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $ApplicationRow -Name 'RedirectUriSignalState'
     $insecureRedirectUriCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $ApplicationRow -Names @('InsecureRedirectUriCount'))
     $ownerSignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $ApplicationRow -Name 'OwnerSignalState'
@@ -4323,10 +4323,10 @@ function New-CustomerAssessmentDocumentBlocks {
 
     $guestUsers = @($userRows | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('UserType'))).ToLowerInvariant() -eq 'guest' })
     $memberUsers = @($userRows | Where-Object { ([string](Get-ArrayaObjectValue -Object $_ -Names @('UserType'))).ToLowerInvariant() -ne 'guest' })
-    $enabledUsers = @($userRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false })
-    $enabledGuestUsers = @($guestUsers | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false })
-    $enabledMemberUsers = @($memberUsers | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false })
-    $enabledAdminRows = @($adminRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false })
+    $enabledUsers = @($userRows | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false })
+    $enabledGuestUsers = @($guestUsers | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false })
+    $enabledMemberUsers = @($memberUsers | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false })
+    $enabledAdminRows = @($adminRows | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false })
     $inactiveMemberUsers = @(
         $enabledMemberUsers | Where-Object {
             $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime', 'SignInActivityLastSignInDateTime'))
@@ -4336,7 +4336,7 @@ function New-CustomerAssessmentDocumentBlocks {
     $inactiveGuestUsers = @(
         $guestUsers | Where-Object {
             $lastSignIn = Convert-ArrayaToDate (Get-ArrayaObjectValue -Object $_ -Names @('LastSignInDateTime', 'LastSuccessfulSignInDateTime', 'SignInActivityLastSignInDateTime'))
-            $enabled = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
+            $enabled = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))
             ($enabled -ne $false) -and ($null -eq $lastSignIn -or $lastSignIn -lt (Get-Date).AddDays(-90))
         }
     )
@@ -4411,7 +4411,7 @@ function New-CustomerAssessmentDocumentBlocks {
                 Where-Object {
                     $redirectSignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'RedirectUriSignalState'
                     (($redirectSignalState -eq 'Collected') -or ($redirectSignalState -eq 'Partial')) -and
-                    ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasInsecureRedirectUris'))) -eq $true)
+                    ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasInsecureRedirectUris'))) -eq $true)
                 }
         ).Count
     }
@@ -4420,7 +4420,7 @@ function New-CustomerAssessmentDocumentBlocks {
             $enterpriseApplications |
                 Where-Object {
                     ((Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ActivitySignalState') -eq 'Collected') -and
-                    ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))) -eq $false)
+                    ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))) -eq $false)
                 }
         ).Count
     }
@@ -4485,13 +4485,13 @@ function New-CustomerAssessmentDocumentBlocks {
             Where-Object {
                 ((Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('HighPrivilegePermissionCount'))) -gt 0) -or
                 ((Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('ApplicationPermissionCount'))) -gt 0) -or
-                (((Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ActivitySignalState') -eq 'Collected') -and ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))) -eq $false)) -or
+                (((Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ActivitySignalState') -eq 'Collected') -and ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))) -eq $false)) -or
                 (Test-CustomerEnterpriseApplicationHasExpiredCredentials -ApplicationRow $_)
             } |
             Sort-Object `
                 @{ Expression = {
                     $activityState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ActivitySignalState'
-                    $hasRecentActivity = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))
+                    $hasRecentActivity = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))
                     if (($activityState -eq 'Collected') -and ($hasRecentActivity -eq $false)) { 1 } else { 0 }
                 }; Descending = $true }, `
                 @{ Expression = { if (Test-CustomerEnterpriseApplicationHasExpiredCredentials -ApplicationRow $_) { 1 } else { 0 } }; Descending = $true }, `
@@ -4511,7 +4511,7 @@ function New-CustomerAssessmentDocumentBlocks {
                 (
                     -not [string]::IsNullOrWhiteSpace((Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('AppCredentials')) -Default '')) -and
                     ((Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ActivitySignalState') -eq 'Collected') -and
-                    ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))) -eq $false)
+                    ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))) -eq $false)
                 )
             } |
             Sort-Object `
@@ -4519,7 +4519,7 @@ function New-CustomerAssessmentDocumentBlocks {
                 @{ Expression = { if (Test-CustomerEnterpriseApplicationHasCredentialsExpiringSoon -ApplicationRow $_) { 1 } else { 0 } }; Descending = $true }, `
                 @{ Expression = {
                     $activityState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $_ -Name 'ActivitySignalState'
-                    $hasRecentActivity = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))
+                    $hasRecentActivity = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasRecentActivity'))
                     if (($activityState -eq 'Collected') -and ($hasRecentActivity -eq $false)) { 1 } else { 0 }
                 }; Descending = $true }, `
                 @{ Expression = { $value = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('HighPrivilegePermissionCount')); if ($null -eq $value) { 0 } else { $value } }; Descending = $true }, `
@@ -4562,7 +4562,7 @@ function New-CustomerAssessmentDocumentBlocks {
     )
     $verifiedDomains = @(
         $domainRows | Where-Object {
-            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsVerified', 'Verified'))) -eq $true
+            (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsVerified', 'Verified'))) -eq $true
         }
     )
 
@@ -4669,15 +4669,15 @@ function New-CustomerAssessmentDocumentBlocks {
     $archiveMailboxesOverFiftyGb = @($archiveMailboxStatsRows | Where-Object { (Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('TotalItemSizeBytes'))) -ge 50GB }).Count
     $archiveMailboxesWithHolds = @(
         $archiveMailboxRows | Where-Object {
-            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('LitigationHoldEnabled'))) -eq $true -or
-            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RetentionHoldEnabled'))) -eq $true -or
-            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DelayHoldApplied'))) -eq $true
+            (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('LitigationHoldEnabled'))) -eq $true -or
+            (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RetentionHoldEnabled'))) -eq $true -or
+            (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DelayHoldApplied'))) -eq $true
         }
     ).Count
 
     $smtpAuthMailboxRows = @(
         $mailboxRows | Where-Object {
-            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('SmtpClientAuthenticationDisabled'))) -eq $false
+            (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('SmtpClientAuthenticationDisabled'))) -eq $false
         }
     )
     $smtpAuthMailboxLookup = @{}
@@ -4722,7 +4722,7 @@ function New-CustomerAssessmentDocumentBlocks {
             $lastActivity -and $lastActivity -lt (Get-Date).AddDays(-90)
         }
     ).Count
-    $archivedTeams = @($teamRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsArchived'))) -eq $true }).Count
+    $archivedTeams = @($teamRows | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsArchived'))) -eq $true }).Count
     $largestSharePointSites = @($sharePointRows | Sort-Object { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('StorageUsedGB', 'StorageUsageCurrent')) } -Descending | Select-Object -First 5)
     $sharePointSitesExternalSharingEnabled = @(
         $sharePointRows | Where-Object {
@@ -4730,7 +4730,7 @@ function New-CustomerAssessmentDocumentBlocks {
             -not [string]::IsNullOrWhiteSpace($sharingCapability) -and $sharingCapability -notmatch 'Disabled|Internal'
         }
     ).Count
-    $teamConnectedSites = @($sharePointRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsTeamsConnected'))) -eq $true }).Count
+    $teamConnectedSites = @($sharePointRows | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsTeamsConnected'))) -eq $true }).Count
     $guestInvitationControlText = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $guestAccessConfigurationRecord -Names @('GuestInvitationControl')) -Default ''
     if ([string]::IsNullOrWhiteSpace($guestInvitationControlText) -or $guestInvitationControlText -eq 'Not validated from the reviewed data') {
         $guestInvitationControlText = Convert-ToCustomerAssessmentDisplayText -Value (Get-ArrayaObjectValue -Object $authenticationConfigRecord -Names @('AllowInvitesFrom')) -Default ''
@@ -4767,16 +4767,16 @@ function New-CustomerAssessmentDocumentBlocks {
             Sort-Object { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $_ -Names @('TotalDomainRecipients')) } -Descending |
             Select-Object -First 5
     )
-    $dmarcEnabledDomains = @($domainRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DmarcConfigured'))) -eq $true }).Count
-    $dkimEnabledDomains = @($domainRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DkimConfigured'))) -eq $true }).Count
+    $dmarcEnabledDomains = @($domainRows | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DmarcConfigured'))) -eq $true }).Count
+    $dkimEnabledDomains = @($domainRows | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DkimConfigured'))) -eq $true }).Count
     $domainsWithoutDmarc = @(
         $domainRows | Where-Object {
-            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DmarcConfigured'))) -ne $true
+            (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DmarcConfigured'))) -ne $true
         }
     )
     $domainsWithoutDkim = @(
         $domainRows | Where-Object {
-            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DkimConfigured'))) -ne $true
+            (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DkimConfigured'))) -ne $true
         }
     )
     $domainsWithoutSpfSignal = @(
@@ -4791,9 +4791,9 @@ function New-CustomerAssessmentDocumentBlocks {
     ).Count
     $mailboxesWithHoldSignals = @(
         $mailboxRows | Where-Object {
-            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('LitigationHoldEnabled'))) -eq $true -or
-            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RetentionHoldEnabled'))) -eq $true -or
-            (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DelayHoldApplied'))) -eq $true
+            (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('LitigationHoldEnabled'))) -eq $true -or
+            (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RetentionHoldEnabled'))) -eq $true -or
+            (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('DelayHoldApplied'))) -eq $true
         }
     ).Count
     $uniqueRetentionPolicyNames = @(
@@ -4886,7 +4886,7 @@ function New-CustomerAssessmentDocumentBlocks {
     )
     $userComparisonRows = @(
         @('Internal members', $(if ($memberUsers.Count -gt 0 -or $userRows.Count -gt 0) { $memberUsers.Count } else { 'Not surfaced in current source' }), $(if ($enabledMemberUsers.Count -gt 0 -or $userRows.Count -gt 0) { $enabledMemberUsers.Count } else { 'Not surfaced in current source' }), $(if ($enabledMemberUsers.Count -gt 0 -or $userRows.Count -gt 0) { $inactiveMemberUsers.Count } else { 'Not surfaced in current source' })),
-        @('Guest accounts', $(if ($guestUsers.Count -gt 0 -or $userRows.Count -gt 0) { $guestUsers.Count } else { 'Not surfaced in current source' }), $(if ($guestUsers.Count -gt 0 -or $userRows.Count -gt 0) { @($guestUsers | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false }).Count } else { 'Not surfaced in current source' }), $(if ($guestUsers.Count -gt 0 -or $userRows.Count -gt 0) { $inactiveGuestUsers.Count } else { 'Not surfaced in current source' }))
+        @('Guest accounts', $(if ($guestUsers.Count -gt 0 -or $userRows.Count -gt 0) { $guestUsers.Count } else { 'Not surfaced in current source' }), $(if ($guestUsers.Count -gt 0 -or $userRows.Count -gt 0) { @($guestUsers | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('AccountEnabled', 'Enabled'))) -ne $false }).Count } else { 'Not surfaced in current source' }), $(if ($guestUsers.Count -gt 0 -or $userRows.Count -gt 0) { $inactiveGuestUsers.Count } else { 'Not surfaced in current source' }))
     )
     $deviceSummaryRows = @(
         @('Total devices reviewed', (Get-CustomerObservationState -Observation $deviceObservation -Signal 'Devices represented in current source')),
@@ -4968,7 +4968,7 @@ function New-CustomerAssessmentDocumentBlocks {
                 $highPrivilegeCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('HighPrivilegePermissionCount'))
                 $applicationPermissionCount = Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('ApplicationPermissionCount'))
                 $activitySignalState = Get-CustomerEnterpriseApplicationSignalState -ApplicationRow $enterpriseApplication -Name 'ActivitySignalState'
-                $hasRecentActivity = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('HasRecentActivity'))
+                $hasRecentActivity = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $enterpriseApplication -Names @('HasRecentActivity'))
                 $cleanupSignals = New-Object System.Collections.Generic.List[string]
                 if ($activitySignalState -eq 'Collected' -and $hasRecentActivity -eq $false) {
                     $cleanupSignals.Add('No recent activity') | Out-Null
@@ -5038,7 +5038,7 @@ function New-CustomerAssessmentDocumentBlocks {
             foreach ($domainRow in $domainRows) {
                 $dmarcValue = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $domainRow -Names @('DmarcPolicy', 'DmarcRecord')) -Default ''
                 if ([string]::IsNullOrWhiteSpace($dmarcValue)) {
-                    $dmarcConfigured = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $domainRow -Names @('DmarcConfigured'))
+                    $dmarcConfigured = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $domainRow -Names @('DmarcConfigured'))
                     if ($null -eq $dmarcConfigured) {
                         $dmarcValue = 'Not surfaced in current source'
                     }
@@ -5068,7 +5068,7 @@ function New-CustomerAssessmentDocumentBlocks {
                 $dnsDmarcCell    = if (-not [string]::IsNullOrWhiteSpace($dnsDmarcPolicy)) {
                     if ($null -ne $dnsDmarcPercent) { "$dnsDmarcPolicy (pct=$dnsDmarcPercent%)" } else { $dnsDmarcPolicy }
                 } else {
-                    $dnsDmarcConfigured = Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $domainRow -Names @('DmarcConfigured'))
+                    $dnsDmarcConfigured = Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $domainRow -Names @('DmarcConfigured'))
                     if ($null -eq $dnsDmarcConfigured) { 'Not surfaced in current source' } elseif ($dnsDmarcConfigured) { 'Configured' } else { 'Not configured' }
                 }
                 New-CustomerWordTableRow -Cells @(
@@ -5092,13 +5092,13 @@ function New-CustomerAssessmentDocumentBlocks {
     $relayConnectorCount = if ($relayConnectorRows.Count -gt 0) { $relayConnectorRows.Count } else { Convert-ArrayaToNumber (Get-ArrayaObjectValue -Object $smtpRelayConfigRecord -Names @('RelayConnectorCount')) }
     $smtpRelayHasServiceAccountEvidence = $relayServiceAccountRows.Count -gt 0
     $smtpRelayHasActionableEvidence = $smtpRelayHasServiceAccountEvidence
-    if ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $smtpRelayConfigRecord -Names @('SMTPAuthEnabled'))) -eq $true) {
+    if ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $smtpRelayConfigRecord -Names @('SMTPAuthEnabled'))) -eq $true) {
         $smtpRelayHasActionableEvidence = $true
     }
     if ($null -ne $smtpAuthUsersCount -and [double]$smtpAuthUsersCount -gt 0) {
         $smtpRelayHasActionableEvidence = $true
     }
-    if ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $smtpRelayConfigRecord -Names @('ConnectorBasedRelay'))) -eq $true) {
+    if ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $smtpRelayConfigRecord -Names @('ConnectorBasedRelay'))) -eq $true) {
         $smtpRelayHasActionableEvidence = $true
     }
     if ($null -ne $relayConnectorCount -and [double]$relayConnectorCount -gt 0) {
@@ -6093,11 +6093,11 @@ function New-CustomerAssessmentDocumentBlocks {
         )
         if ($matchedAdminRegistrationRows.Count -eq $enabledAdminRows.Count) {
             if ($null -eq $adminUsersRegisteredForMfa) {
-                $adminUsersRegisteredForMfa = @($matchedAdminRegistrationRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsMfaRegistered'))) -eq $true }).Count
+                $adminUsersRegisteredForMfa = @($matchedAdminRegistrationRows | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsMfaRegistered'))) -eq $true }).Count
                 $adminRegistrationWasEstimated = $true
             }
             if ($null -eq $adminUsersNotRegisteredForMfa) {
-                $adminUsersNotRegisteredForMfa = @($matchedAdminRegistrationRows | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsMfaRegistered'))) -ne $true }).Count
+                $adminUsersNotRegisteredForMfa = @($matchedAdminRegistrationRows | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('IsMfaRegistered'))) -ne $true }).Count
                 $adminRegistrationWasEstimated = $true
             }
         }
@@ -6500,8 +6500,8 @@ function New-CustomerAssessmentDocumentBlocks {
                 'enabledforreportingbutnotenforced' { 'Report-only' }
                 default                             { if ([string]::IsNullOrWhiteSpace($policyStateRaw)) { 'Unknown' } else { $policyStateRaw } }
             }
-            $policyMfaRequired = if ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RequiresMfaEnforcement'))) -eq $true) { 'Yes' } else { 'No' }
-            $policyHasExclusions = if ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasExclusions'))) -eq $true) { 'Yes' } else { 'No' }
+            $policyMfaRequired = if ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RequiresMfaEnforcement'))) -eq $true) { 'Yes' } else { 'No' }
+            $policyHasExclusions = if ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasExclusions'))) -eq $true) { 'Yes' } else { 'No' }
             ,@($policyDisplayName, $policyStateLabel, $policyMfaRequired, $policyHasExclusions)
         })
         $blocks.Add((New-CustomerWordTableBlock -Headers @('Policy Name', 'State', 'MFA Required', 'Has Exclusions') -Rows $caPolicyTableRows)) | Out-Null
@@ -6509,7 +6509,7 @@ function New-CustomerAssessmentDocumentBlocks {
     else {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'Conditional Access policy inventory was not surfaced in the reviewed data.' -Style 'Normal')) | Out-Null
     }
-    $caPoliciesWithExclusions = @($caPolicies | Where-Object { (Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasExclusions'))) -eq $true })
+    $caPoliciesWithExclusions = @($caPolicies | Where-Object { (Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('HasExclusions'))) -eq $true })
     if ($caPoliciesWithExclusions.Count -gt 0) {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'Policies with Exclusions' -Style 'Heading3')) | Out-Null
         $blocks.Add((New-CustomerWordParagraphBlock -Text ("The following {0} policy or policies have user or group exclusions configured. Exclusions reduce effective coverage and should be reviewed to confirm they are intentional, documented, and scoped as narrowly as possible." -f $caPoliciesWithExclusions.Count) -Style 'Normal')) | Out-Null
@@ -6522,7 +6522,7 @@ function New-CustomerAssessmentDocumentBlocks {
                 'enabledforreportingbutnotenforced' { 'Report-only' }
                 default                             { if ([string]::IsNullOrWhiteSpace($exStateRaw)) { 'Unknown' } else { $exStateRaw } }
             }
-            $exMfa = if ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RequiresMfaEnforcement'))) -eq $true) { 'MFA enforcement' } else { 'no MFA enforcement' }
+            $exMfa = if ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('RequiresMfaEnforcement'))) -eq $true) { 'MFA enforcement' } else { 'no MFA enforcement' }
             "$exPolicyName — $exStateLabel, $exMfa"
         }))) | Out-Null
     }
@@ -6787,7 +6787,7 @@ function New-CustomerAssessmentDocumentBlocks {
         $blocks.Add((New-CustomerWordParagraphBlock -Text 'DLP Policy Inventory' -Style 'Heading2')) | Out-Null
         $dlpInventoryTableRows = @($dlpPolicyRows | ForEach-Object {
             $dlpPolicyName  = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('PolicyName')) -Default 'Unnamed policy'
-            $dlpEnabled     = if ((Convert-ToArrayaBoolean (Get-ArrayaObjectValue -Object $_ -Names @('Enabled'))) -eq $true) { 'Yes' } else { 'No' }
+            $dlpEnabled     = if ((Convert-ArrayaToBoolean (Get-ArrayaObjectValue -Object $_ -Names @('Enabled'))) -eq $true) { 'Yes' } else { 'No' }
             $dlpMode        = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Mode')) -Default 'Not surfaced'
             $dlpWorkload    = Convert-ToArrayaDisplayText -Value (Get-ArrayaObjectValue -Object $_ -Names @('Workload')) -Default 'Not surfaced'
 

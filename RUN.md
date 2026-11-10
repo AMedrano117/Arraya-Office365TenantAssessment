@@ -295,6 +295,8 @@ This separates environment setup issues from tenant authentication issues.
 
 **Exchange or Purview auth fails after Graph**: close the PowerShell window and start a fresh session. The assessment authenticates `Exchange Online → Purview → Microsoft Graph` by design, but if Graph already ran in the shell, Exchange-family auth in that same session may fail.
 
+**SharePoint fails before opening a sign-in window**: verify the admin URL in the console. A renamed SharePoint hostname can differ from the original `onmicrosoft.com` tenant domain. The assessment discovers the hostname using Graph `GET /v1.0/sites/root` and only falls back to the initial domain if discovery fails. Connect to the actual admin URL with `Connect-SPOService -Url 'https://<actual-sharepoint-name>-admin.sharepoint.com' -UseSystemBrowser $true`, using a SharePoint Administrator account. Graph sign-in is separate from SPO sign-in; Graph `getAllSites` requires application permissions in both v1.0 and beta, so switching to beta does not enable delegated tenant-wide inventory.
+
 **Run stops at the permission gate**: add `-SkipPermissionPreflight` to let collection continue on a best-effort basis.
 
 **PDF output missing**: PDF generation requires a locally installed Chromium-based browser (Google Chrome or Microsoft Edge). The assessment still completes successfully without it.

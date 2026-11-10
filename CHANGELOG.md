@@ -25,6 +25,9 @@ All notable changes to this repository are tracked here. The detailed commit led
 - Recalculated targeted-run progress totals from the filtered collector plan and emitted only matching section headers.
 
 ### Authentication And Preflight
+- Discover the SharePoint admin hostname from Graph's delegated-safe root site endpoint before falling back to the initial tenant domain, so renamed SharePoint tenants connect to the correct URL. Corrected inventory failure guidance to distinguish SPO sign-in from Graph application-only site enumeration.
+- Fixed delegated Teams imports to run natively in PowerShell 7, made SharePoint try native import before compatibility import by manifest path, and kept optional module import failures from terminating assessment runs.
+- Enabled SharePoint system-browser sign-in when supported and surfaced SharePoint connection failure details in the console.
 - Added staged workload connection/preflight behavior for Graph, Exchange Online, Purview compliance, SharePoint admin, and Teams PowerShell.
 - Improved interactive-auth console output with clearer tenant/session summaries and less noisy progress text.
 - Added existing-session tenant confirmation and session reuse validation for Graph, Exchange, Purview, SharePoint, and Teams.
@@ -56,10 +59,19 @@ All notable changes to this repository are tracked here. The detailed commit led
 - Preserved leading `+` on phone numbers in flattened configuration sheets by opting those columns out of Excel number coercion.
 
 ### Tenant-To-Tenant And Migration Outputs
+- Fixed migration export preparation failing on empty primary/archive mailbox statistics or an empty mailbox inventory; absent sizing remains unknown rather than being converted to zero.
 - Added and refined tenant-to-tenant migration readiness outputs, cutover checklist data, mailbox migration columns, and reduced-scope T2T reporting.
 - Added migration-focused workbook/export behavior and clearer not-collected guidance for reduced profiles.
 - Fixed tenant-to-tenant export shaping when live Microsoft Graph objects expose `AdditionalProperties` as a generic dictionary, avoiding the `Contains` overload failure seen during workbook and cutover preparation.
 - Reworked the Presales migration scope questionnaire into a compact source-only overview: aggregate workload sizing, exceptional complexity callouts, conditional single-event versus phased guidance, current Microsoft/ShareGate/BitTitan purchasing options, ShareGate tier fit, and suggested billable project milestones. Removed tenant IDs, target-readiness and decision-status fields, preset wave tables, and mailbox/group inventory dumps from the customer-facing Markdown.
+- Added source-tenant licensing, public folder, and device estate sections to the Presales migration scoping brief, which previously reported neither the SKUs the source carries, the public folders no migration path covers, nor any endpoint count. Licensing totals paid SKUs only and flags subscriptions whose assigned seats exceed purchased seats; public folders are sized and item-counted rather than only counted; devices are broken down by operating system and join type with stale objects called out separately.
+- Enabled device collection for the Presales profile and added `DeviceDetails`/`DeviceManagementSummary` to the Presales workbook. Endpoint re-join and re-enrollment is migration scope, so the inventory is collected while assessment-only Secure Score and conditional access collection stays off.
+- Fixed device join-type classification, which switched on a `DeviceTrustType` property the collector never selected and so labelled every device `Unknown`. It now reads the `TrustType` property Microsoft Graph actually returns, making the Entra joined, hybrid joined, and registered breakdown meaningful.
+- Extended the Presales Markdown scope overview with public folder size and item counts, a source licensing line covering paid seats and the largest products by assignment, and an endpoint line covering hybrid-joined and stale devices. The overview stays aggregate: no folder, device, or tenant identifiers are emitted.
+- Separated uncollected inventories from measured-empty ones throughout the Presales brief. A missing `LicenseSKUs`, `PublicFolderDetails`, or `DeviceDetails` key now renders as `Not collected` with an explanatory callout instead of a green zero, and a public folder whose statistics were unavailable reports `Needs data` rather than `0 GB`.
+- Fixed source-tenant subscription lifecycle dates rendering a day early when the report machine ran west of UTC.
+- Added a `TrustType` fallback for the Presales device join-type breakdown. `DeviceJoinType` is classified during collection, so every snapshot captured before the classification fix records `Unknown` for the whole estate; the brief now derives Entra joined, hybrid joined, and registered from the raw Graph value when the stored classification is missing or `Unknown`, which makes existing snapshots replay correctly instead of reporting no directory dependency.
+- Fixed empty public folders reporting as `Not collected` in the Presales Markdown overview. Exchange returns `0 B (0 bytes)` for an empty folder and the shared size parser recognizes only TB/GB/MB/KB, so a measured zero was presented as a collection gap.
 
 ### Governance, Identity, And Security Collection
 - Expanded MFA registration/enforcement reporting, admin MFA assessments, Conditional Access role expansion, and guest MFA reporting.

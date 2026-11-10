@@ -177,6 +177,108 @@ Describe 'Presales migration scope overview' {
         ) | ForEach-Object { $script:content | Should -Not -Match ([regex]::Escape($_)) }
     }
 
+    It 'sizes public folders and reports source licensing and endpoints without naming objects' {
+        $overviewPath = Join-Path $TestDrive 'source-insight-overview.md'
+        $overview = Export-TestMigrationOverview -Snapshot @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Insight Tenant'; DefaultDomain = 'insight.example' }
+            MigrationExecutiveSummary = @(
+                [pscustomobject]@{ Metric = 'Enabled member users'; Value = 180 }
+                [pscustomobject]@{ Metric = 'Mailboxes'; Value = 160 }
+            )
+            PublicFolderDetails = @{
+                'pf1' = [pscustomobject]@{ Identity = 'PUBLIC-FOLDER-NAME-MUST-NOT-LEAK'; MailEnabled = $false; ItemCount = 41200; TotalItemSize = '18.4 GB (19,756,834,816 bytes)' }
+                'pf2' = [pscustomobject]@{ Identity = 'PUBLIC-FOLDER-NAME-MUST-NOT-LEAK-2'; MailEnabled = $true; ItemCount = 8100; TotalItemSize = '2.6 GB (2,791,728,742 bytes)' }
+            }
+            LicenseSKUs = @{
+                'sku-1' = [pscustomobject]@{ SkuPartNumber = 'SPE_E3'; SkuFriendlyName = 'Microsoft 365 E3'; PurchasedUnits = 250; ConsumedUnits = 238; LicenseClass = 'Paid' }
+                'sku-2' = [pscustomobject]@{ SkuPartNumber = 'FLOW_FREE'; SkuFriendlyName = 'Microsoft Power Automate Free'; PurchasedUnits = 10000; ConsumedUnits = 12; LicenseClass = 'FreeTrialBenefit' }
+            }
+            DeviceDetails = @{
+                'd1' = [pscustomobject]@{ DisplayName = 'DEVICE-NAME-MUST-NOT-LEAK'; OperatingSystem = 'Windows'; DeviceJoinType = 'Hybrid Entra AD joined'; DeviceStale = $false }
+                'd2' = [pscustomobject]@{ DisplayName = 'DEVICE-NAME-MUST-NOT-LEAK-2'; OperatingSystem = 'Windows'; DeviceJoinType = 'Entra AD joined'; DeviceStale = $true }
+            }
+        } -OutputPath $overviewPath
+
+        # Public folder scope is sized, not merely counted.
+        $overview | Should -Match '2 public folder object\(s\) holding 21\.00 GB across 49,300 item\(s\); 1 mail-enabled'
+        $overview | Should -Match 'their data is not included in the mailbox figures above'
+        $overview | Should -Match '1 folder\(s\) are mail-enabled and carry addresses in the source domains'
+
+        # Only paid SKUs are totalled; trial seats would otherwise inflate the basis.
+        $overview | Should -Match '2 subscribed SKU\(s\); 238 assigned paid seat\(s\) of 250 purchased'
+        $overview | Should -Match 'Microsoft 365 E3 \(238\)'
+        $overview | Should -Match 'These are source subscriptions, not a destination requirement'
+        $overview | Should -Not -Match 'Microsoft Power Automate Free'
+
+        # Endpoints are reported as scope with the stale caveat attached.
+        $overview | Should -Match '2 registered device object\(s\); 1 hybrid-joined; 1 not signed in for six months or more'
+
+        # The overview stays aggregate: no object names leak into a customer-facing document.
+        @(
+            'PUBLIC-FOLDER-NAME-MUST-NOT-LEAK',
+            'DEVICE-NAME-MUST-NOT-LEAK'
+        ) | ForEach-Object { $overview | Should -Not -Match ([regex]::Escape($_)) }
+    }
+
+    It 'reports an empty public folder as measured zero rather than uncollected' {
+        # Exchange returns "0 B (0 bytes)" for an empty folder. The shared size parser only
+        # recognizes TB/GB/MB/KB, so that genuine zero previously rendered as "Not collected"
+        # and made a measured fact look like a collection gap.
+        $emptyFolderPath = Join-Path $TestDrive 'empty-public-folders.md'
+        $emptyFolders = Export-TestMigrationOverview -Snapshot @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Empty PF Tenant'; DefaultDomain = 'emptypf.example' }
+            MigrationExecutiveSummary = @(
+                [pscustomobject]@{ Metric = 'Enabled member users'; Value = 20 }
+                [pscustomobject]@{ Metric = 'Mailboxes'; Value = 20 }
+            )
+            PublicFolderDetails = @{
+                'pf1' = [pscustomobject]@{ Identity = 'Test PF 2'; MailEnabled = $false; ItemCount = 0; TotalItemSize = '0 B (0 bytes)' }
+                'pf2' = [pscustomobject]@{ Identity = 'Existing PF 1'; MailEnabled = $false; ItemCount = 0; TotalItemSize = '0 B (0 bytes)' }
+            }
+        } -OutputPath $emptyFolderPath
+
+        $emptyFolders | Should -Match '2 public folder object\(s\) holding 0\.00 GB across 0 item\(s\)'
+        $emptyFolders | Should -Not -Match 'public folder object\(s\) holding Not collected'
+    }
+
+    It 'derives hybrid-joined device counts from TrustType when the stored join type is Unknown' {
+        # DeviceJoinType is classified during collection. Snapshots taken before that
+        # classification was fixed carry Unknown for every device, so the raw Graph TrustType
+        # has to be the fallback or a replayed estate reports zero hybrid dependency.
+        $legacyDevicePath = Join-Path $TestDrive 'legacy-device-overview.md'
+        $legacyDevices = Export-TestMigrationOverview -Snapshot @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Legacy Device Tenant'; DefaultDomain = 'legacydevice.example' }
+            MigrationExecutiveSummary = @(
+                [pscustomobject]@{ Metric = 'Enabled member users'; Value = 20 }
+                [pscustomobject]@{ Metric = 'Mailboxes'; Value = 20 }
+            )
+            DeviceDetails = @{
+                'd1' = [pscustomobject]@{ DisplayName = 'D1'; TrustType = 'ServerAd'; DeviceJoinType = 'Unknown'; DeviceStale = $false }
+                'd2' = [pscustomobject]@{ DisplayName = 'D2'; TrustType = 'ServerAd'; DeviceJoinType = 'Unknown'; DeviceStale = $false }
+                'd3' = [pscustomobject]@{ DisplayName = 'D3'; TrustType = 'AzureAd'; DeviceJoinType = 'Unknown'; DeviceStale = $true }
+                'd4' = [pscustomobject]@{ DisplayName = 'D4'; TrustType = 'Workplace'; DeviceJoinType = 'Unknown'; DeviceStale = $false }
+            }
+        } -OutputPath $legacyDevicePath
+
+        $legacyDevices | Should -Match '4 registered device object\(s\); 2 hybrid-joined; 1 not signed in for six months or more'
+    }
+
+    It 'omits licensing and endpoint lines when those inventories were never collected' {
+        $quietPath = Join-Path $TestDrive 'no-inventory-overview.md'
+        $quiet = Export-TestMigrationOverview -Snapshot @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Quiet Tenant'; DefaultDomain = 'quiet.example' }
+            MigrationExecutiveSummary = @(
+                [pscustomobject]@{ Metric = 'Enabled member users'; Value = 12 }
+                [pscustomobject]@{ Metric = 'Mailboxes'; Value = 12 }
+            )
+        } -OutputPath $quietPath
+
+        # Silence beats a fabricated zero: an absent inventory is not evidence of an empty one.
+        $quiet | Should -Not -Match '\*\*Source licensing:\*\*'
+        $quiet | Should -Not -Match '\*\*Endpoints:\*\*'
+        $quiet | Should -Not -Match '\*\*Special content:\*\*'
+    }
+
     It 'keeps every Markdown table to three columns or fewer' {
         $tableLines = @($script:content -split '\r?\n' | Where-Object { $_ -match '^\|' })
         $tableLines.Count | Should -BeGreaterThan 0

@@ -50,6 +50,12 @@ foreach ($file in @($private) + @($public)) {
 }
 
 Export-ModuleMember -Function @(
+    # Shared helpers rather than collectors. They are exported because the legacy
+    # Get-FullTenantReportDetails collector needs the same mailbox-key and size parsing the
+    # module uses, and previously carried byte-identical copies of them.
+    'Convert-DataSizeToBytes',
+    'Convert-ToMailboxGuidKey',
+    'Get-GroupMailboxActivityRowForUnifiedGroup',
     'Get-AllExchangeMailboxDetails',
     'Get-AllPublicFolderDetails',
     'Get-AllRecipientDetails',

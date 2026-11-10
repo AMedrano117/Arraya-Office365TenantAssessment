@@ -192,7 +192,7 @@ Describe 'Arraya.M365.Reporting' {
         Get-AssessmentRuleValue -Record $concurrentUser -Names @('LicenseAssignmentStates') | Should -Be $licenseState
         Get-AssessmentRuleValue -Record $concurrentUser -Names @('Missing') | Should -BeNullOrEmpty
 
-        $assignmentRows = @(Get-AssessmentUserLicenseAssignmentRows -User $concurrentUser)
+        $assignmentRows = @(Get-ArrayaUserLicenseAssignmentRows -User $concurrentUser)
         $assignmentRows.Count | Should -Be 1
         $assignmentRows[0].SkuId | Should -Be 'sku-1'
         $assignmentRows[0].State | Should -Be 'Active'
@@ -213,6 +213,130 @@ Describe 'Arraya.M365.Reporting' {
         $html | Should -Match '(?s)<div class="kpi-card kpi-warning">\s*<div class="kpi-title">Unresolved Blockers</div>\s*<div class="kpi-value">Needs Data'
         $html | Should -Match '(?s)<div class="kpi-card kpi-warning">\s*<div class="kpi-title">Customer Inputs Needed</div>\s*<div class="kpi-value">Needs Data'
         $html | Should -Not -Match '(?s)<div class="kpi-card kpi-success">\s*<div class="kpi-title">Unresolved Blockers</div>\s*<div class="kpi-value">0'
+    }
+
+    It 'reports source tenant licensing, public folders, and the device estate in the Presales brief' {
+        Import-Module (Join-Path $script:repoRoot 'src\modules\Arraya.M365.Common\Arraya.M365.Common.psd1') -Force -ErrorAction Stop
+        . (Join-Path $script:repoRoot 'src\scripts\assessments\HTML Scripts\Invoke-HTMLHelperFunctions.ps1')
+
+        $outputPath = Join-Path $TestDrive 'presales-source-insight.html'
+        $result = New-TenantMigrationScopeHtmlReport -TenantStatsHash @{
+            TenantInfo = [ordered]@{ DisplayName = 'Source Insight'; DefaultDomain = 'insight.example' }
+            LicenseSKUs = @{
+                'sku-1' = [pscustomobject]@{ SkuPartNumber = 'SPE_E3'; SkuFriendlyName = 'Microsoft 365 E3'; PurchasedUnits = 250; ConsumedUnits = 238; LicenseClass = 'Paid'; NextLifecycleDateTime = '2027-03-01T00:00:00Z' }
+                'sku-2' = [pscustomobject]@{ SkuPartNumber = 'EXCHANGESTANDARD'; SkuFriendlyName = 'Exchange Online (Plan 1)'; PurchasedUnits = 40; ConsumedUnits = 44; LicenseClass = 'Paid'; NextLifecycleDateTime = '9999-12-31T23:59:59Z' }
+                'sku-3' = [pscustomobject]@{ SkuPartNumber = 'FLOW_FREE'; SkuFriendlyName = 'Microsoft Power Automate Free'; PurchasedUnits = 10000; ConsumedUnits = 12; LicenseClass = 'FreeTrialBenefit'; NextLifecycleDateTime = $null }
+            }
+            PublicFolderDetails = @{
+                'pf1' = [pscustomobject]@{ Identity = 'Shared\Archive'; FolderPath = '\Shared\Archive'; MailEnabled = $false; ItemCount = 41200; TotalItemSize = '18.4 GB (19,756,834,816 bytes)'; TotalDeletedItemSize = '1.1 GB (1,181,116,006 bytes)' }
+                'pf2' = [pscustomobject]@{ Identity = 'Shared\Orders'; FolderPath = '\Shared\Orders'; MailEnabled = $true; ItemCount = 8100; TotalItemSize = '2.6 GB (2,791,728,742 bytes)'; TotalDeletedItemSize = $null }
+                'pf3' = [pscustomobject]@{ Identity = 'Shared\Legacy'; FolderPath = '\Shared\Legacy'; MailEnabled = $false; ItemCount = $null; TotalItemSize = $null; TotalDeletedItemSize = $null }
+            }
+            DeviceDetails = @{
+                'd1' = [pscustomobject]@{ DisplayName = 'WS-001'; OperatingSystem = 'Windows'; DeviceJoinType = 'Entra AD joined'; IsManaged = $true; DeviceStale = $false }
+                'd2' = [pscustomobject]@{ DisplayName = 'WS-002'; OperatingSystem = 'Windows'; DeviceJoinType = 'Hybrid Entra AD joined'; IsManaged = $true; DeviceStale = $false }
+                'd3' = [pscustomobject]@{ DisplayName = 'WS-003'; OperatingSystem = 'Windows'; DeviceJoinType = 'Hybrid Entra AD joined'; IsManaged = $false; DeviceStale = $true }
+                'd4' = [pscustomobject]@{ DisplayName = 'MAC-01'; OperatingSystem = 'MacMDM'; DeviceJoinType = 'Entra AD registered'; IsManaged = $true; DeviceStale = $false }
+            }
+        } -OutputPath $outputPath
+
+        $result.Success | Should -BeTrue
+        $html = Get-Content -LiteralPath $outputPath -Raw
+
+        # Sections exist and are navigable.
+        $html | Should -Match '<h2>Source Tenant Licensing</h2>'
+        $html | Should -Match '<h2>Public Folders</h2>'
+        $html | Should -Match '<h2>Device Estate</h2>'
+
+        # Licensing totals count paid SKUs only and flag the over-assigned subscription.
+        $html | Should -Match '(?s)<div class="kpi-title">Paid Seats Assigned</div>\s*<div class="kpi-value">282'
+        $html | Should -Match '(?s)<div class="kpi-title">Paid Seats Purchased</div>\s*<div class="kpi-value">290'
+        $html | Should -Match '(?s)<div class="kpi-title">Free or Trial SKUs</div>\s*<div class="kpi-value">1'
+        $html | Should -Match 'Assigned seats exceed purchased seats'
+        $html | Should -Match '<td class="risk-cell">-4</td>'
+
+        # Lifecycle dates are published in UTC and must not shift into the report machine's zone.
+        $html | Should -Match '<td>2027-03-01</td>'
+        $html | Should -Match '<td>No scheduled expiry</td>'
+
+        # Public folders are sized and item-counted, not just counted.
+        $html | Should -Match '(?s)<div class="kpi-title">Public Folders</div>\s*<div class="kpi-value">3'
+        $html | Should -Match '(?s)<div class="kpi-title">Mail-Enabled Folders</div>\s*<div class="kpi-value">1'
+        $html | Should -Match '(?s)<div class="kpi-title">Items</div>\s*<div class="kpi-value">49,300'
+        $html | Should -Match 'Public folders are a separate priced workstream'
+
+        # A folder with no statistics is reported as needing data, never as a measured zero.
+        $html | Should -Match '(?s)<td>\\Shared\\Legacy</td>.*?<td>Needs data</td><td>Needs data</td><td>Needs data</td>'
+
+        # Device counts carry an OS and a join-type breakdown.
+        $html | Should -Match '(?s)<div class="kpi-title">Total Devices</div>\s*<div class="kpi-value">4'
+        $html | Should -Match '(?s)<div class="kpi-title">Stale Devices</div>\s*<div class="kpi-value">1'
+        $html | Should -Match '(?s)<div class="kpi-title">Hybrid Joined</div>\s*<div class="kpi-value">2'
+        $html | Should -Match 'Breakdown by operating system'
+        $html | Should -Match 'Breakdown by join type'
+        $html | Should -Match '<tr><td>Windows</td><td>3</td><td>75.0%</td><td>2</td><td>1</td></tr>'
+        $html | Should -Match '<tr><td>Hybrid Entra AD joined</td><td>2</td><td>50.0%</td><td>1</td><td>1</td></tr>'
+    }
+
+    It 'falls back to TrustType for the join-type breakdown when snapshots record Unknown' {
+        Import-Module (Join-Path $script:repoRoot 'src\modules\Arraya.M365.Common\Arraya.M365.Common.psd1') -Force -ErrorAction Stop
+        . (Join-Path $script:repoRoot 'src\scripts\assessments\HTML Scripts\Invoke-HTMLHelperFunctions.ps1')
+
+        # Replaying an older snapshot must not report an entire estate as unclassified just
+        # because DeviceJoinType was baked in before the classification bug was fixed.
+        $outputPath = Join-Path $TestDrive 'presales-legacy-devices.html'
+        $result = New-TenantMigrationScopeHtmlReport -TenantStatsHash @{
+            TenantInfo = [ordered]@{ DisplayName = 'Legacy Devices'; DefaultDomain = 'legacy.example' }
+            DeviceDetails = @{
+                'd1' = [pscustomobject]@{ DisplayName = 'D1'; OperatingSystem = 'Windows'; TrustType = 'AzureAd'; DeviceJoinType = 'Unknown'; IsManaged = $true; DeviceStale = $false }
+                'd2' = [pscustomobject]@{ DisplayName = 'D2'; OperatingSystem = 'Windows'; TrustType = 'ServerAd'; DeviceJoinType = 'Unknown'; IsManaged = $false; DeviceStale = $true }
+                'd3' = [pscustomobject]@{ DisplayName = 'D3'; OperatingSystem = 'iOS'; TrustType = 'Workplace'; DeviceJoinType = 'Unknown'; IsManaged = $false; DeviceStale = $false }
+            }
+        } -OutputPath $outputPath
+
+        $result.Success | Should -BeTrue
+        $html = Get-Content -LiteralPath $outputPath -Raw
+
+        $html | Should -Match '<tr><td>Entra AD joined</td><td>1</td>'
+        $html | Should -Match '<tr><td>Hybrid Entra AD joined</td><td>1</td>'
+        $html | Should -Match '<tr><td>Entra AD registered</td><td>1</td>'
+        $html | Should -Not -Match '<tr><td>Unknown</td><td>3</td>'
+        $html | Should -Match '(?s)<div class="kpi-title">Hybrid Joined</div>\s*<div class="kpi-value">1'
+    }
+
+    It 'distinguishes uncollected licensing, public folder, and device inventories from measured zero' {
+        Import-Module (Join-Path $script:repoRoot 'src\modules\Arraya.M365.Common\Arraya.M365.Common.psd1') -Force -ErrorAction Stop
+        . (Join-Path $script:repoRoot 'src\scripts\assessments\HTML Scripts\Invoke-HTMLHelperFunctions.ps1')
+
+        $absentPath = Join-Path $TestDrive 'presales-inventory-absent.html'
+        $absent = New-TenantMigrationScopeHtmlReport -TenantStatsHash @{
+            TenantInfo = [ordered]@{ DisplayName = 'Legacy Snapshot'; DefaultDomain = 'legacy.example' }
+        } -OutputPath $absentPath
+        $absent.Success | Should -BeTrue
+        $absentHtml = Get-Content -LiteralPath $absentPath -Raw
+
+        $absentHtml | Should -Match 'License inventory was not collected in this run'
+        $absentHtml | Should -Match 'Public folder inventory was not collected in this run'
+        $absentHtml | Should -Match 'Device inventory was not collected in this run'
+        $absentHtml | Should -Match '(?s)<div class="kpi-card kpi-warning">\s*<div class="kpi-title">Total Devices</div>\s*<div class="kpi-value">Not collected'
+        $absentHtml | Should -Not -Match '(?s)<div class="kpi-card kpi-success">\s*<div class="kpi-title">Public Folders</div>\s*<div class="kpi-value">0'
+
+        # A collector that ran and found nothing is a different, reportable answer.
+        $emptyPath = Join-Path $TestDrive 'presales-inventory-empty.html'
+        $empty = New-TenantMigrationScopeHtmlReport -TenantStatsHash @{
+            TenantInfo = [ordered]@{ DisplayName = 'Clean Tenant'; DefaultDomain = 'clean.example' }
+            PublicFolderDetails = @{}
+            DeviceDetails = @{}
+            LicenseSKUs = @{}
+        } -OutputPath $emptyPath
+        $empty.Success | Should -BeTrue
+        $emptyHtml = Get-Content -LiteralPath $emptyPath -Raw
+
+        $emptyHtml | Should -Match 'No public folders were found'
+        $emptyHtml | Should -Not -Match 'Public folder inventory was not collected in this run'
+        $emptyHtml | Should -Not -Match 'Device inventory was not collected in this run'
+        $emptyHtml | Should -Match 'The device collector ran and returned no device objects'
+        $emptyHtml | Should -Match 'The license collector ran and returned no subscribed SKUs'
     }
 
     It 'presents Presales HTML as source-only effort scoping and prioritizes discovered blockers' {

@@ -164,7 +164,7 @@ function Set-ReportMode {
     $selectedMode = $null
     do {
         $selectedMode = Read-Host "Please select a reporting mode (Minimum, Combined, All, Geek) or type 'help' for explanations"
-        
+
         # Check if the user wants to see the explanations again
         if ($selectedMode -eq 'help') {
             ShowModeExplanations
@@ -188,11 +188,11 @@ function Convert-HashToArray {
     param ( [Parameter(Mandatory=$true)]
         [Hashtable]$HashToConvert,
         [Parameter(Mandatory=$False)]
-        [String]$table        
+        [String]$table
     )
     $ExportArray = @()
     $start = Get-Date
-    $totalCount = ($HashToConvert.keys | measure).count    
+    $totalCount = ($HashToConvert.keys | Measure-Object).count
     $progresscounter = 0
 
     foreach ($nestedKey in $HashToConvert.Keys) {
@@ -209,9 +209,9 @@ function Convert-HashToArray {
             foreach ($attribute in $attributes.keys) {
                 $customObject | Add-Member -MemberType NoteProperty -Name "$($attribute)" -Value ($attributes[$attribute] -join ';')
             }
-            
+
             $ExportArray += $customObject
-        } 
+        }
         # If the attributes are an array, add them to the export array
         elseif ($attributes -is [array] -or $attributes -is [PSCustomObject] ) {
             $ExportArray += $attributes
@@ -244,24 +244,24 @@ function Export-HashTables {
         #Combine files with global tnenant value from temp folder
         Write-Progress -Activity "Combine All CSV Files into One Excel" -Status (((Get-Date) - $global:initialStart).ToString('hh\:mm\:ss'))
         $ExportedCSVFiles = Get-ChildItem -Path $env:TEMP -Filter "*$global:ActiveDirectory*.csv"
-    
+
         if (-not $ExportedCSVFiles) {
             $ExportedCSVFiles = Get-ChildItem -Path $env:TEMP -Filter "*ArrayaDiscoveryReport*.csv"
         }
-        
+
         # Check again if no files are found
         if (-not $ExportedCSVFiles) {
             Write-Warning "No CSV files found in $env:TEMP matching the provided patterns."
         }
-        
-        
-        $totalCount = ($ExportedCSVFiles | Measure).count
+
+
+        $totalCount = ($ExportedCSVFiles | Measure-Object).count
         $progresscounter = 0
         $start = Get-Date
         foreach ($file in $ExportedCSVFiles) {
             $progresscounter++
             $worksheetName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
-    
+
             # Check if the filename contains $global:ActiveDirectory and replace if it exists
             if ($file.Name -like "*$global:ActiveDirectory*") {
                 $worksheetName = $worksheetName.Replace("_$global:ActiveDirectory","")
@@ -270,28 +270,28 @@ function Export-HashTables {
             elseif ($file.Name -like "*_ArrayaDiscoveryReport*") {
                 $worksheetName = $worksheetName.Replace("_ArrayaDiscoveryReport","")
             }
-            
+
             Write-ProgressHelper -Total $totalCount -Index $progresscounter -Activity "Adding Worksheets to Excel File" -Operation "Adding Worksheet $($worksheetName) to $($ExportDetails[0])"
             Import-Csv -Path $file.FullName | Export-Excel -Path $ExportDetails[0] -WorksheetName $worksheetName -ClearSheet
             Write-ProgressHelper -Total $totalCount -Activity "Adding Worksheets to Excel File" -Completed
-    
+
         }
         #Delete the temporary CSV files
         Get-ChildItem -Path $env:TEMP -Filter "*$global:ActiveDirectory*.csv" | Remove-Item
     }
 
     # Progress Bar
-    $totalCount = ($hashtable.keys | measure).count
+    $totalCount = ($hashtable.keys | Measure-Object).count
     $progresscounter = 0
     $start = Get-Date
 
     # Check if the Excel module is available
     $excelModuleAvailable = Get-Module -ListAvailable -Name "ImportExcel" -ErrorAction SilentlyContinue
-  
+
     if (-not $excelModuleAvailable) {
         Write-Warning "Excel module 'ImportExcel' is not available. Exporting to CSV."
         # Export each hashtable to a separate CSV file in the $ExportDetails path
-        $directory = [System.IO.Path]::GetDirectoryName($ExportDetails)        
+        $directory = [System.IO.Path]::GetDirectoryName($ExportDetails)
         foreach ($table in $hashtable.Keys) {
             $ExportStatsArray = Convert-HashToArray -table $table -HashToConvert $hashtable[$table]
             Write-Log -Type DEBUG -Message ("({0}/{1}) Export '{2}' Array to CSV in temp folder {3}" -f $progressCounter, $totalCount, $table, $tempPath) -ExportFileLocation $ExportDetails[0]
@@ -301,7 +301,7 @@ function Export-HashTables {
         Write-Host "ActiveDirectory Report located at: $($directory)" -ForegroundColor Green
         return
     }
-    
+
     ## Combine all CSV files into a single Excel file
     # Export each hashtable to a separate CSV file
     foreach ($table in $hashtable.Keys){
@@ -309,18 +309,18 @@ function Export-HashTables {
             $progresscounter++
             #Export All provided Tables
             Write-ProgressHelper -Id 2 -Total $totalCount -Index $progresscounter -Activity "Exporting '$($table)' Hash To Excel"
-            Write-Log -Type DEBUG -Message ("({0}/{1}) Converting '{2}' Hash Table to Array" -f $progressCounter, $totalCount, $table) -ExportFileLocation $ExportDetails[0]            
+            Write-Log -Type DEBUG -Message ("({0}/{1}) Converting '{2}' Hash Table to Array" -f $progressCounter, $totalCount, $table) -ExportFileLocation $ExportDetails[0]
 
             $ExportStatsArray = Convert-HashToArray -table $table -HashToConvert $hashtable[$table]
-                        
+
             # Use the table name to create a unique temporary file
             $tempPath = Join-Path -Path $env:TEMP -ChildPath ("{0}_{1}.csv" -f $table, "ArrayaDiscoveryReport")
-            Write-Log -Type DEBUG -Message ("({0}/{1}) Export '{2}' Array to CSV in temp folder {3}" -f $progressCounter, $totalCount, $table, $tempPath) -ExportFileLocation $ExportDetails[0]            
+            Write-Log -Type DEBUG -Message ("({0}/{1}) Export '{2}' Array to CSV in temp folder {3}" -f $progressCounter, $totalCount, $table, $tempPath) -ExportFileLocation $ExportDetails[0]
             $ExportStatsArray | Export-Csv -Path $tempPath -NoTypeInformation -Encoding UTF8
             Write-ProgressHelper -Id 2 -Total $totalCount -Activity "Exporting $($table) Hash To Temp Folder" -Completed
         }
         catch {
-            Write-Log -Type Error -Message "An error occurred in converting Hash to Array for $($table). $($_.Exception.Message)" -ExportFileLocation $ExportDetails[0]            
+            Write-Log -Type Error -Message "An error occurred in converting Hash to Array for $($table). $($_.Exception.Message)" -ExportFileLocation $ExportDetails[0]
             Capture-ErrorHelper -ErrorRecordVar $_ -errorMessage "An error occurred in converting Hash To Array for $($table). $($_.Exception.Message)"`r`n            throw $_
         }
     }
@@ -334,9 +334,9 @@ function Export-HashTables {
         Get-ChildItem -Path $env:TEMP -Filter "*ArrayaDiscoveryReport*.csv" | Remove-Item
     }
     catch {
-        Write-Log -Type Error -Message "An error occurred in Exporting the ActiveDirectory Statistics to $($ExportDetails[0]). $($_.Exception.Message)" -ExportFileLocation $ExportDetails[0]            
+        Write-Log -Type Error -Message "An error occurred in Exporting the ActiveDirectory Statistics to $($ExportDetails[0]). $($_.Exception.Message)" -ExportFileLocation $ExportDetails[0]
         Capture-ErrorHelper -ErrorRecordVar $_ -errorMessage "An error occurred in Exporting the ActiveDirectory Statistics to $($ExportDetails[0]). Please check if the location is valid or if the file is open in another application. $($_.Exception.Message)"`r`n        try {
-            Write-Log -Type DEBUG -Message "Attempt Number 2 to Export ActiveDirectory Statistics to $($ExportDetails[0])" -ExportFileLocation $ExportDetails[0]            
+            Write-Log -Type DEBUG -Message "Attempt Number 2 to Export ActiveDirectory Statistics to $($ExportDetails[0])" -ExportFileLocation $ExportDetails[0]
             $ExportDetails = Get-ExportPath
             #Combine files with global tnenant value from temp folder
             Combine-TempCSVFiles -errorAction Stop
@@ -346,10 +346,10 @@ function Export-HashTables {
             Get-ChildItem -Path $env:TEMP -Filter "*ArrayaDiscoveryReport*.csv" | Remove-Item
         }
         catch {
-            Write-Log -Type Error -Message "Second Attempt to Export ActiveDirectory Statistics failed to $($ExportDetails[0]). $($_.Exception.Message)" -ExportFileLocation $ExportDetails[0]            
+            Write-Log -Type Error -Message "Second Attempt to Export ActiveDirectory Statistics failed to $($ExportDetails[0]). $($_.Exception.Message)" -ExportFileLocation $ExportDetails[0]
             Capture-ErrorHelper -ErrorRecordVar $_ -errorMessage "Second Attempt to Export ActiveDirectory Statistics failed to $($ExportDetails[0]). $($_.Exception.Message)"`r`n            throw $_
-        } 
-    }  
+        }
+    }
 }
 
 #Function to get Export Path
@@ -389,9 +389,9 @@ function Get-AllADForests {
     param (
         [Parameter(Mandatory=$false,HelpMessage='Provide the level of detail')]
         [ValidateSet('minimum', 'combined', 'all', 'geek')]
-        [string]$detailLevel     
+        [string]$detailLevel
     )
-    
+
     # Instantiate the hash table
     $ADReportHash["ADForests"] = @{}
 
@@ -403,15 +403,15 @@ function Get-AllADForests {
     # AD Recycle BIN Status
     $ADRecycleBIN = Get-ADOptionalFeature -filter {Name -eq 'Recycle Bin Feature'} | Select-Object -ExpandProperty EnabledScopes
     Write-Log -Type INFO -Message "[Get-AllADForests] Getting AD Recycle Bin details" -ExportFileLocation $ExportDetails[0]
-    
+
     If (!$ADRecycleBIN){
         $ADRecycleBIN = 'Disabled'
     } else {
         $ADRecycleBIN = 'Enabled'
     }
 
-    # Get the Domain Functional Level 
-    $DomainMode = ($global:DNSRoot | foreach { Get-ADDomain -Identity $_ }  | Select-Object -ExpandProperty DomainMode) -join ' , '
+    # Get the Domain Functional Level
+    $DomainMode = ($global:DNSRoot | ForEach-Object { Get-ADDomain -Identity $_ }  | Select-Object -ExpandProperty DomainMode) -join ' , '
     Write-Log -Type INFO -Message "[Get-AllADForests] Getting Domain Mode details" -ExportFileLocation $ExportDetails[0]
 
     # Get the Domain NetBIOS Name
@@ -459,7 +459,7 @@ function Get-AllADDomains {
     param (
         [Parameter(Mandatory=$false,HelpMessage='Provide the level of detail')]
         [ValidateSet('minimum', 'combined', 'all', 'geek')]
-        [string]$detailLevel     
+        [string]$detailLevel
     )
 
     # Instantiate the hash table
@@ -471,7 +471,7 @@ function Get-AllADDomains {
     Write-Log -Type INFO -Message "[Get-AllADDomains] START: Getting All Domains with $($detailLevel) details" -ExportFileLocation $ExportDetails[0]
 
     $allDomains = $global:forestInfo.Domains
-    $allDomains | foreach {
+    $allDomains | ForEach-Object {
         $domainInfo = Get-ADDomain -Identity $_
         $ADReportHash["DomainSites"][$domainInfo.DNSRootame] = $domainInfo
     }
@@ -489,7 +489,7 @@ function Get-AllDomainControllers {
     param (
         [Parameter(Mandatory=$false,HelpMessage='Provide the level of detail')]
         [ValidateSet('minimum', 'combined', 'all', 'geek')]
-        [string]$detailLevel     
+        [string]$detailLevel
     )
 
     # Instantiate the hash table
@@ -501,9 +501,9 @@ function Get-AllDomainControllers {
     Write-Log -Type INFO -Message "[Get-AllDomainControllers] START: Getting All Domain Controllers with $($detailLevel) details" -ExportFileLocation $ExportDetails[0]
 
     #Get Domain Controllers
-    $allDomainControllers = Get-ADDomainController -Filter * | Sort Name
+    $allDomainControllers = Get-ADDomainController -Filter * | Sort-Object Name
     Write-Log -Type INFO -Message "[Get-AllDomainControllers] Gathered All Domain Controllers" -ExportFileLocation $ExportDetails[0]
-    
+
     #Add to Hash
     foreach ($DC in $allDomainControllers) {
         $allDCComputerProperties = Get-ADComputer -Identity $DC.Name -Properties *
@@ -527,7 +527,7 @@ function Get-ADFSMORoles {
     param (
         [Parameter(Mandatory=$false,HelpMessage='Provide the level of detail')]
         [ValidateSet('minimum', 'combined', 'all', 'geek')]
-        [string]$detailLevel     
+        [string]$detailLevel
     )
 
     # Instantiate the hash table
@@ -567,7 +567,7 @@ function Get-DNSInfo {
     param (
         [Parameter(Mandatory=$false,HelpMessage='Provide the level of detail')]
         [ValidateSet('minimum', 'combined', 'all', 'geek')]
-        [string]$detailLevel     
+        [string]$detailLevel
     )
     #Start - Start Time, Screen Output, and Log
     $start = Get-Date
@@ -621,7 +621,7 @@ function Get-DNSInfo {
     # Aging (Returns True or False)
     $DNSAging = (Get-DnsServerZoneAging -Name $global:DNSRoot -ComputerName $global:PDCEmulator).AgingEnabled
     $ADReportHash["DNS"]["DNSAging"] = $DNSAging
-    
+
     # Completed Details - Output and Log
     $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
     Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
@@ -634,7 +634,7 @@ function Get-DHCPInfo {
     param (
         [Parameter(Mandatory=$false,HelpMessage='Provide the level of detail')]
         [ValidateSet('minimum', 'combined', 'all', 'geek')]
-        [string]$detailLevel    
+        [string]$detailLevel
     )
 
      # Suppress progress bar
@@ -686,10 +686,10 @@ function Get-DHCPInfo {
                 PercentageinInuse = $DHCPScopeStat.PercentageInUse
                 ReservedAddress = $DHCPScopeStat.Reserved
                 InstallState = $dhcp.InstallState
-                
+
             }
             #Collate report details
-            $ADReportHash["DHCP"][$dhcp.Name] = $DHCPObject          
+            $ADReportHash["DHCP"][$dhcp.Name] = $DHCPObject
         }
 
         # Completed Details - Output and Log
@@ -711,13 +711,13 @@ function Get-DHCPInfo {
     }
 }
 
-# Get GPO Information 
+# Get GPO Information
 function Get-GPOInformation {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory=$false,HelpMessage='Provide the level of detail')]
         [ValidateSet('minimum', 'combined', 'all', 'geek')]
-        [string]$detailLevel     
+        [string]$detailLevel
     )
 
     # Instantiate the hash table
@@ -727,7 +727,7 @@ function Get-GPOInformation {
     $start = Get-Date
     Write-Host "Getting Group Policy Object with $($detailLevel) details ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-GPOInformation] START: Getting Group Policy Object with $($detailLevel) details" -ExportFileLocation $ExportDetails[0]
-    
+
     $GPOs = Get-GPO -all
     foreach ($gpo in $GPOS) {
         $GPOObject = [PSCustomObject]@{
@@ -738,14 +738,14 @@ function Get-GPOInformation {
             ModificationTime = $gpo.ModificationTime
             Owner = $gpo.Owner
             DomainName = $gpo.DomainName
-            UserVersion = ("AD Version: $($gpo.User.DSversion) , SysVol Version: $($gpo.User.sysvolversion)")  
+            UserVersion = ("AD Version: $($gpo.User.DSversion) , SysVol Version: $($gpo.User.sysvolversion)")
             ComputerVersion = ("AD Version: $($gpo.Computer.DSversion) , SysVol Version: $($gpo.Computer.sysvolversion)"             )
         }
         $ADReportHash["GPO"][$gpo.DisplayName] = $GPOObject
     }
     Write-Log -Type INFO -Message "[Get-GPOInformation] Getting All Group Policy Objects" -ExportFileLocation $ExportDetails[0]
 
-    # Completed Details - Output and Log    
+    # Completed Details - Output and Log
     $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
     Write-Host "Completed in $($CompletedTime)" -ForegroundColor Green
     Write-Log -Type INFO -Message "[Get-GPOInformation] COMPLETED: Gathering Group Policy Object in $($CompletedTime)" -ExportFileLocation $ExportDetails[0]
@@ -757,7 +757,7 @@ function Get-ADSiteInventory {
     param (
         [Parameter(Mandatory=$false,HelpMessage='Provide the level of detail')]
         [ValidateSet('minimum', 'combined', 'all', 'geek')]
-        [string]$detailLevel     
+        [string]$detailLevel
     )
 
     # Instantiate the hash table
@@ -767,7 +767,7 @@ function Get-ADSiteInventory {
     $start = Get-Date
     Write-Host "Getting Active Directory Site Inventory with $($detailLevel) details ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-ADSiteInventory] START: Getting Active Directory Site Inventory with $($detailLevel) details" -ExportFileLocation $ExportDetails[0]
-    
+
     Try {
         $Forest = [System.DirectoryServices.ActiveDirectory.Forest]::GetCurrentForest()
         $SiteInfo = $Forest.Sites
@@ -782,13 +782,13 @@ function Get-ADSiteInventory {
 
         # Gather Site Link Details
         $progresscounter = 0
-        $totalCount = ($SiteInfo | measure).count
+        $totalCount = ($SiteInfo | Measure-Object).count
         foreach ($site in $SiteInfo) {
             $progresscounter++
             Write-Log -Type DEBUG -Message "[Get-ADSiteInventory] Gathering Site Details for $($Site.Name): $($progresscounter2)/$($totalCount2)" -ExportFileLocation $ExportDetails[0]
             $LinksInfo = ([System.DirectoryServices.ActiveDirectory.ActiveDirectorySite]::FindByName($ForestContext, $($site.name))).SiteLinks
             $progresscounter2 = 0
-            $totalCount2 = ($LinksInfo | measure).count
+            $totalCount2 = ($LinksInfo | Measure-Object).count
             foreach ($link in $LinksInfo) {
                 #Write-Host "Processing Site Link: $($link.Name) in Site: $($site.Name)"
                 $progresscounter2++
@@ -881,7 +881,7 @@ function Invoke-DcDiagCheck {
     )
     $AllDomainControllers = Get-ADDomainController -Filter *
     Write-Log -Type INFO -Message "[Invoke-DcDiagCheck] Getting All Domain Controllers" -ExportFileLocation $ExportDetails[0]
-    
+
 
     # Prompt for the parent output directory
     if (!($parentOutputDirectory)) {
@@ -934,7 +934,7 @@ function Invoke-DcDiagCheck {
             foreach ($testName in $DCDiagTests) {
                 $progressCounter2++
                 Write-ProgressHelper -Id 2 -Total $TotalCount2 -Index $progresscounter2 -Activity "Running Test: $testName"
- 
+
                 # Run the test
                 Write-Host "Running Test: $testName  "  -NoNewLine # Debugging output
                 Write-Log -Type DEBUG -Message "[Invoke-DcDiagCheck] Running Test: $testName. $($progresscounter2)/$($TotalCount2)" -ExportFileLocation $ExportDetails[0]
@@ -964,7 +964,7 @@ function Invoke-DcDiagCheck {
 
                 #Add current test to DC's list of all test results
                 $DCtestResults += $currentTest
-               
+
                 # Export test results to text files in the domain controller's folder
                 $outputFileName = "$testName.txt"
                 $outputFilePath = Join-Path -Path $dcOutputDirectory -ChildPath $outputFileName
@@ -1001,7 +1001,7 @@ function Get-AllADAdmins {
     param (
         [Parameter(Mandatory=$false,HelpMessage='Provide the level of detail')]
         [ValidateSet('minimum', 'combined', 'all', 'geek')]
-        [string]$detailLevel     
+        [string]$detailLevel
     )
 
     function Add-AdminGroupMembers {
@@ -1038,7 +1038,7 @@ function Get-AllADAdmins {
     $start = Get-Date
     Write-Host "Getting Admin Accounts with $($detailLevel) details ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-AllADAdmins] START: Getting Admin Accounts with $($detailLevel) details" -ExportFileLocation $ExportDetails[0]
-    
+
     # Admin groups to process
     $adminGroups = @(
         @{ Name = 'Domain Admins'; LogMessage = '[Get-AllADAdmins] Getting all Domain Admins' },
@@ -1061,7 +1061,7 @@ function Get-AllADAdmins {
 
     #Combine All AD ADmins
     $progresscounter = 0
-    $totalCount = ($ADAdmins | measure).count
+    $totalCount = ($ADAdmins | Measure-Object).count
     foreach ($user in $ADAdmins) {
         $progresscounter++
         Write-Log -Type DEBUG -Message "[Get-AllADAdmins] Processing user $($progresscounter)/$($totalCount): '$($user.Name)' in the group '$($user.Group)' for Active Directory Admin Group analysis." -ExportFileLocation $ExportDetails[0]
@@ -1080,7 +1080,7 @@ function Get-AllADUsers {
     param (
         [Parameter(Mandatory=$false,HelpMessage='Provide the level of detail')]
         [ValidateSet('minimum', 'combined', 'all', 'geek')]
-        [string]$detailLevel     
+        [string]$detailLevel
     )
 
     # Instantiate the hash table
@@ -1090,7 +1090,7 @@ function Get-AllADUsers {
     $start = Get-Date
     Write-Host "Getting All User Accounts with $($detailLevel) details ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-AllADUsers] START: Getting All User Accounts with $($detailLevel) details" -ExportFileLocation $ExportDetails[0]
-    
+
     # Get Password Expiry Info
     function Get-PasswordExpiryInfo {
         param (
@@ -1098,53 +1098,53 @@ function Get-AllADUsers {
             [string]$sAMAccountName
         )
         $PSO= Get-ADUserResultantPasswordPolicy -Identity $sAMAccountName  # store ad user's current password policy
-        $defaultDomainPolicy = Get-ADDefaultDomainPasswordPolicy   # get and store the domain's current default password policy        
-        $passwordexpirydefaultdomainpolicy = $defaultDomainPolicy.MaxPasswordAge.Days -ne 0  # make sure the default policy is anything but zero        
+        $defaultDomainPolicy = Get-ADDefaultDomainPasswordPolicy   # get and store the domain's current default password policy
+        $passwordexpirydefaultdomainpolicy = $defaultDomainPolicy.MaxPasswordAge.Days -ne 0  # make sure the default policy is anything but zero
         # Collect and store the default domain policy, in case no PSO was applied to the user
-        if($passwordexpirydefaultdomainpolicy)            
-        {            
-            $defaultdomainpolicyMaxPasswordAge = $defaultDomainPolicy.MaxPasswordAge.Days  # set max password age      
-        }  
+        if($passwordexpirydefaultdomainpolicy)
+        {
+            $defaultdomainpolicyMaxPasswordAge = $defaultDomainPolicy.MaxPasswordAge.Days  # set max password age
+        }
         # if resulting password policy is anything but null
-        if ($PSO) {  
+        if ($PSO) {
             $PSOMaxPasswordAge = $PSO.MaxPasswordAge.days  # store password age
             $pwdlastset = [datetime]::FromFileTime((Get-ADUser -LDAPFilter "(&(samaccountname=$sAMAccountName))" -properties pwdLastSet).pwdLastSet) # get password last set time
-            $expirydate = ($pwdlastset).AddDays($PSOMaxPasswordAge) # get expiry date    
+            $expirydate = ($pwdlastset).AddDays($PSOMaxPasswordAge) # get expiry date
             $delta = ($expirydate - (Get-Date)).Days  # store the delta between today and the expiry date to find how many days are remaining
             $ResultingPasswordObject = New-object -TypeName PSObject
             $ResultingPasswordObject | Add-Member -MemberType NoteProperty -Name MaxPasswordAge -Value $PSOMaxPasswordAge -Force
             $ResultingPasswordObject | Add-Member -MemberType NoteProperty -Name PwdExpiryDate -Value $pwdlastset -Force
             $ResultingPasswordObject | Add-Member -MemberType NoteProperty -Name PwdExpiryDate -Value $expirydate -Force
             $ResultingPasswordObject | Add-Member -MemberType NoteProperty -Name PwdsRemaining -Value $delta -Force
-        }        
-        # if the password policy was not defined, use the default policy    
+        }
+        # if the password policy was not defined, use the default policy
         else {
-            if($passwordexpirydefaultdomainpolicy) {            
-                $pwdlastset = [datetime]::FromFileTime((Get-ADUser -LDAPFilter "(&(samaccountname=$samaccountname))" -properties pwdLastSet).pwdLastSet)            
-                $expirydate = ($pwdlastset).AddDays($defaultdomainpolicyMaxPasswordAge)            
-                $delta = ($expirydate - (Get-Date)).Days      
+            if($passwordexpirydefaultdomainpolicy) {
+                $pwdlastset = [datetime]::FromFileTime((Get-ADUser -LDAPFilter "(&(samaccountname=$samaccountname))" -properties pwdLastSet).pwdLastSet)
+                $expirydate = ($pwdlastset).AddDays($defaultdomainpolicyMaxPasswordAge)
+                $delta = ($expirydate - (Get-Date)).Days
                 $ResultingPasswordObject = New-object -TypeName PSObject
                 $ResultingPasswordObject | Add-Member -MemberType NoteProperty -Name MaxPasswordAge -Value $defaultdomainpolicyMaxPasswordAge -Force
                 $ResultingPasswordObject | Add-Member -MemberType NoteProperty -Name PwdExpiryDate -Value $pwdlastset -Force
                 $ResultingPasswordObject | Add-Member -MemberType NoteProperty -Name PwdExpiryDate -Value $expirydate -Force
                 $ResultingPasswordObject | Add-Member -MemberType NoteProperty -Name PwdsRemaining -Value $delta -Force
                 return $ResultingPasswordObject
-            }            
-        }  
+            }
+        }
         return $ResultingPasswordObject
     }
-    
+
     # This command could take some time, depending on the size of the AD
-    
+
     switch ($detailLevel) {
-        {$_ -in "minimum", "combined","all"} { 
+        {$_ -in "minimum", "combined","all"} {
             $DesiredProperties = @(
                 "DisplayName", "AccountStatus", "PasswordChangeAtNextLogOn", "MaxPasswordAge"
                 "ExpiryDate", "DaysRemaining"
                 "AccountExpirationDate", "accountExpires", "AccountLockoutTime"
                 "AccountNotDelegated", "BadLogonCount", "badPasswordTime", "badPwdCount"
                 "CannotChangePassword", "CanonicalName", "City", "CN"
-                "Company", "Country", "countryCode"  
+                "Company", "Country", "countryCode"
                 "Deleted", "Department", "Description", "DistinguishedName", "EmailAddress"
                 "EmployeeID", "EmployeeNumber", "Enabled", "Fax", "GivenName"
                 "HomeDirectory", "HomeDrive", "HomePhone", "Initials",
@@ -1160,7 +1160,7 @@ function Get-AllADUsers {
                 "Surname", "Title", "TrustedForDelegation", "UserPrincipalName"
                 "whenChanged", "whenCreated", "ObjectCategory", "ObjectGUID"
             )
-            $AllADUsers = Get-ADUser -Filter * -Properties * | Select $DesiredProperties
+            $AllADUsers = Get-ADUser -Filter * -Properties * | Select-Object $DesiredProperties
         }
         {$_ -in "geek"} {
             $AllADUsers = Get-ADUser -Filter * -Properties *
@@ -1171,7 +1171,7 @@ function Get-AllADUsers {
     Write-Log -Type INFO -Message "[Get-AllADUsers] Gathered All Users with $($detailLevel) details" -ExportFileLocation $ExportDetails[0]
 
     $progressCounter = 0
-    $totalCount = ($AllADUsers | measure).count
+    $totalCount = ($AllADUsers | Measure-Object).count
     foreach ($User in $AllADUsers) {
         $progressCounter++
         Write-ProgressHelper -Total $totalCount -Index $progresscounter -Activity "Gathering All Active Directory Users" -Operation "Gathering User Details for $($User.SamAccountName)"
@@ -1199,7 +1199,7 @@ function Get-AllADUsers {
         $passwordChangeAtNextLogOn = if ($User.pwdLastSet -eq 0) { 'TRUE' } else { 'FALSE' }
         $user | Add-Member -MemberType NoteProperty -Name PasswordChangeAtNextLogOn -Value $passwordChangeAtNextLogOn -Force
         Write-Log -Type DEBUG -Message "[Get-AllADUsers] Gathered Password Change Info for $($user.SamAccountName) : $($progresscounter)/$($totalCount)" -ExportFileLocation $ExportDetails[0]
- 
+
         #Check Password Expiry Info
         $passwordExpiryInfo = Get-PasswordExpiryInfo -sAMAccountName $user.SamAccountName
         $user | Add-Member -MemberType NoteProperty -Name MaxPasswordAge -Value $passwordExpiryInfo.MaxPasswordAge -Force
@@ -1207,9 +1207,9 @@ function Get-AllADUsers {
         $user | Add-Member -MemberType NoteProperty -Name ExpiryDate -Value $passwordExpiryInfo.ExpiryDate -Force
         $user | Add-Member -MemberType NoteProperty -Name DaysRemaining -Value $passwordExpiryInfo.DaysRemaining -Force
         Write-Log -Type DEBUG -Message "[Get-AllADUsers] Gathered Password Expiration Info for $($user.SamAccountName) : $($progresscounter)/$($totalCount)" -ExportFileLocation $ExportDetails[0]
- 
+
         # Get group memberships
-        $groupMemberships = (Get-ADPrincipalGroupMembership -Identity $User.SamAccountName -ea SilentlyContinue | Sort-Object | Select-Object -ExpandProperty Name) -join ', ' 
+        $groupMemberships = (Get-ADPrincipalGroupMembership -Identity $User.SamAccountName -ea SilentlyContinue | Sort-Object | Select-Object -ExpandProperty Name) -join ', '
         $user | Add-Member -MemberType NoteProperty -Name GroupMemberships -Value $groupMemberships -Force
         Write-Log -Type DEBUG -Message "[Get-AllADUsers] Gathered Group Membership for $($user.SamAccountName) : $($progresscounter)/$($totalCount)" -ExportFileLocation $ExportDetails[0]
 
@@ -1230,7 +1230,7 @@ function Get-AllADGroups {
     param (
         [Parameter(Mandatory=$false,HelpMessage='Provide the level of detail')]
         [ValidateSet('minimum', 'combined', 'all', 'geek')]
-        [string]$detailLevel     
+        [string]$detailLevel
     )
 
     # Instantiate the hash table
@@ -1240,7 +1240,7 @@ function Get-AllADGroups {
     $start = Get-Date
     Write-Host "Getting All AD Groups with $($detailLevel) details ..." -ForegroundColor Cyan -nonewline
     Write-Log -Type INFO -Message "[Get-AllADGroups] START: Getting All AD Groups with $($detailLevel) details" -ExportFileLocation $ExportDetails[0]
-    
+
     function Test-PrivilegedGroup {
         param(
             [Parameter(Mandatory=$True)]
@@ -1256,7 +1256,7 @@ function Get-AllADGroups {
                             "S-1-5-32-550", "S-1-5-32-551", "S-1-5-32-552",
                             "S-1-5-32-556", "S-1-5-32-557", "S-1-5-32-573",
                             "S-1-5-32-578", "S-1-5-32-580"
-        $IsPrivileged = "Standard"  
+        $IsPrivileged = "Standard"
         ForEach($PrivilegedGroup in $PrivilegedGroups) {
             if ($PrivilegedGroup -eq $groupSID)
             {
@@ -1265,13 +1265,13 @@ function Get-AllADGroups {
         }
         return $IsPrivileged
     }
-    
+
     # Get all Group data with all extended properties
     $AllADGroups = Get-ADGroup -Filter *
     Write-Log -Type INFO -Message "[Get-AllADGroups] Gathered All AD Groups." -ExportFileLocation $ExportDetails[0]
 
     $progressCounter = 0
-    $totalCount = ($AllADGroups | measure).count
+    $totalCount = ($AllADGroups | Measure-Object).count
     foreach ($group in $AllADGroups) {
         $progressCounter++
         Write-ProgressHelper -Total $totalCount -Index $progresscounter -Activity "Gathering All Active Directory Groups" -Operation "Gathering Group Details for '$($group.Name)'"
@@ -1283,7 +1283,7 @@ function Get-AllADGroups {
 
         # Add Member Count
         try {
-            $GroupMemberCount = (Get-ADGroupMember -Identity $group.DistinguishedName -ea Stop | measure).Count
+            $GroupMemberCount = (Get-ADGroupMember -Identity $group.DistinguishedName -ea Stop | Measure-Object).Count
         }
         catch {
             if ($_.Exception.Message -eq "The size limit for this request was exceeded") {
@@ -1293,7 +1293,7 @@ function Get-AllADGroups {
         }
         $group | Add-Member -MemberType NoteProperty -Name MemberCount -Value $GroupMemberCount -Force
         Write-Log -Type DEBUG -Message "[Get-AllADGroups] Gathered Group Membership for '$($group.Name)' : $($progresscounter)/$($totalCount)" -ExportFileLocation $ExportDetails[0]
-        
+
         # Add Restricted Access
         if ($user.Enabled -eq 'TRUE') {$RestrictedAccess = 'Enabled'} Else {$RestrictedAccess = 'Disabled'}
         $group | Add-Member -MemberType NoteProperty -Name RestrictedAccess -Value $RestrictedAccess -Force # the 'if statement replaces $_.Enabled output with a user-friendly readout
@@ -1314,7 +1314,7 @@ function Get-AllADComputers {
     param (
         [Parameter(Mandatory=$false,HelpMessage='Provide the level of detail')]
         [ValidateSet('minimum', 'combined', 'all', 'geek')]
-        [string]$detailLevel     
+        [string]$detailLevel
     )
 
     # Instantiate the hash table
@@ -1330,7 +1330,7 @@ function Get-AllADComputers {
     Write-Log -Type INFO -Message "[Get-AllADComputers] Gathered All AD Computers." -ExportFileLocation $ExportDetails[0]
 
     $progressCounter = 0
-    $totalCount = ($AllADComputers | measure).count
+    $totalCount = ($AllADComputers | Measure-Object).count
     foreach ($computer in $AllADComputers) {
         $progressCounter++
         Write-ProgressHelper -Total $totalCount -Index $progresscounter -Activity "Gathering All Active Directory Computers" -Operation "Gathering Computers Details for $($group.Name)"
@@ -1353,7 +1353,7 @@ function Get-AllADOUs {
     param (
         [Parameter(Mandatory=$false,HelpMessage='Provide the level of detail')]
         [ValidateSet('minimum', 'combined', 'all', 'geek')]
-        [string]$detailLevel     
+        [string]$detailLevel
     )
 
     # Instantiate the hash table
@@ -1369,19 +1369,19 @@ function Get-AllADOUs {
     Write-Log -Type INFO -Message "[Get-AllADOUs] Gathered All AD Organizational Units." -ExportFileLocation $ExportDetails[0]
 
     $progressCounter = 0
-    $totalCount = ($ADOUs | measure).count
+    $totalCount = ($ADOUs | Measure-Object).count
     foreach ($OU in $ADOUs) {
         $progressCounter++
         Write-ProgressHelper -Total $totalCount -Index $progresscounter -Activity "Gathering All Active Directory OrganizationalUnits" -Operation "Gathering OU Details for $($OU.Name)"
         $OU | Add-Member -MemberType NoteProperty -Name "LinkedGroupPolicyObjects" -Value ($OU.LinkedGroupPolicyObjects -join "; ") -Force
-        $OU | Add-Member -MemberType NoteProperty -Name "LinkedGroupPolicyObjectCount" -Value (($OU.LinkedGroupPolicyObjects | measure).count) -Force
+        $OU | Add-Member -MemberType NoteProperty -Name "LinkedGroupPolicyObjectCount" -Value (($OU.LinkedGroupPolicyObjects | Measure-Object).count) -Force
         $OU | Add-Member -MemberType NoteProperty -Name "OU" -Value ($OU.OU -join "; ") -Force
         $GPOInheritance = Get-GPInheritance -target $OU.DistinguishedName
         $OU | Add-Member -MemberType NoteProperty -Name "Inheritance Blocked" -Value $GPOInheritance.GpoInheritanceBlocked -Force
         $OU | Add-Member -MemberType NoteProperty -Name "Linked GPOs" -Value ($GPOInheritance.GPOLinks.DisplayName -join ";") -Force
-        $OU | Add-Member -MemberType NoteProperty -Name "Linked GPO Count" -Value (($GPOInheritance.GPOLinks |measure).count) -Force
+        $OU | Add-Member -MemberType NoteProperty -Name "Linked GPO Count" -Value (($GPOInheritance.GPOLinks |Measure-Object).count) -Force
         $OU | Add-Member -MemberType NoteProperty -Name "Inherited GPO Links" -Value ($GPOInheritance.InheritedGpoLinks.DisplayName -join "; ") -Force
-        $OU | Add-Member -MemberType NoteProperty -Name "Inherited GPO Count" -Value (($GPOInheritance.InheritedGpoLinks |measure).count) -Force
+        $OU | Add-Member -MemberType NoteProperty -Name "Inherited GPO Count" -Value (($GPOInheritance.InheritedGpoLinks |Measure-Object).count) -Force
         Write-Log -Type DEBUG -Message "[Get-AllADOUs] Gather Organization Unit Details for $($OU.Name) : $($progresscounter)/$($totalCount)" -ExportFileLocation $ExportDetails[0]
         $ADReportHash["ADOUs"][$OU.Name] = $OU
     }
@@ -1446,7 +1446,7 @@ Get-DNSInfo -detailLevel $reportingMode
 Get-DHCPInfo -detailLevel $reportingMode
 Get-GPOInformation -detailLevel $reportingMode
 
-Write-Host 
+Write-Host
 Write-Host "Running DC Diagnostic Check" -ForegroundColor Black -BackgroundColor Yellow
 Invoke-DcDiagCheck -parentOutputDirectory $directory
 
@@ -1553,5 +1553,5 @@ foreach ($key in $ADReportHash.Keys) {
     # Add the custom object to the array
     $ADStatsOutput += $object
 }
-$ADStatsOutput | ft
+$ADStatsOutput | Format-Table
 
