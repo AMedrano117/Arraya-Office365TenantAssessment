@@ -3,14 +3,20 @@
 Review date: 2026-11-10
 Related documents: [coverage](T2T-Migration-Assessment-Coverage.md), [synthetic scenario spec](T2T-Synthetic-Scenario-Spec.md), [discovery questionnaire](T2T-Migration-Discovery-Questionnaire.md), [review summary](T2T-Review-Summary.md)
 
-Nothing in this backlog has been implemented. P0 items are the proposed change set for the first implementation slice and need authorization before any code is changed. P1 to P3 items are a reviewed backlog.
+Status: the P0 batch is implemented on branch `feature/t2t-p0-correctness`. P0-01 to P0-05 and P0-07 are implemented in code with regression tests. P0-06 is handled as a documentation and profile-contract correction plus an "Evidence coverage" disclosure in the checklist; the profile expansion itself is P1-01. Details, semantic changes, and test coverage are in [T2T-P0-Implementation-Status.md](T2T-P0-Implementation-Status.md). P1 to P3 items are a reviewed backlog and are not implemented.
+
+## Design principles for every item
+
+- **Milestone-neutral.** The assessment does not define "Day 1", fixed phases, or a required cutover. Engagements differ: phased, coexistence, wave-based, single cutover, identity-first, messaging-first, collaboration-later, endpoint work during or after, or no single business date. Milestones, waves, dates, and acceptance criteria are supplied by the engagement through decisions, questionnaires, and wave plans. Use neutral terms: migration readiness, target-state readiness, migration dependency, sequencing dependency, migration blocker, migration risk, coexistence requirement, customer decision required, migration wave, post-migration requirement, and cutover-specific requirement only when the engagement defines a cutover.
+- **Evidence semantics.** Unknown is not Ready. Not collected is not "not configured". A collection failure is not absence. Partial evidence is not a confirmed state. Not applicable is not "not detected". Insufficient permission is not absence. Unsupported automatic collection does not mean the customer does not use a feature. Use the shared helpers `Get-ArrayaDatasetEvidenceState`, `Get-ArrayaDirectorySyncEvidence`, `Get-ArrayaExchangeHybridEvidence`, `Get-ArrayaMailExchangerClassification`, and `Get-ArrayaMailboxHoldEvidence` instead of re-deriving these states.
+- **Two distinct migration profiles.** `Presales` is for scoping, complexity, quotation inputs, and effort estimation. `TenantToTenantMigration` is for the evidence needed to design and execute a migration. They share collectors, normalized evidence, and interpretation logic, and may differ in depth, runtime, report detail, and artifacts. They are not to be merged or renamed.
 
 ## Priority definitions
 
 | Priority | Meaning |
 | --- | --- |
 | P0 | Required to avoid materially incorrect migration planning. A current output is wrong or unsupported. |
-| P1 | Required for Day 1 readiness and risk identification. |
+| P1 | Required for migration readiness and risk identification. |
 | P2 | Valuable for detailed migration design and estimation. |
 | P3 | Optional usability, reporting, or future enhancement. |
 
@@ -23,9 +29,11 @@ Nothing in this backlog has been implemented. P0 items are the proposed change s
 - New Graph permissions must be added in three places together: `Get-AssessmentGraphDelegatedScopes`, the preflight probe table in `Test-AssessmentPermissionPreflight`, and `RUN.md` plus `docs/runbooks/app-registration-setup.md`. Mark every new permission optional so existing app registrations keep working, and emit `Needs Data` with a permission note when it is absent.
 - A missing permission, a failed call, and a genuinely empty result are three different states and must stay distinguishable in the snapshot.
 
-## P0: proposed change set
+## P0: change set (implemented; original specification kept for reference)
 
 All seven items are narrow, have a reproduction (R ids in the coverage document), need no new permission, and add no runtime. They change values in existing columns and add rows that use existing columns. They do not change the snapshot schema or worksheet schemas. P0-06 also changes two documentation files.
+
+The text below is the specification written during the review. Where the implementation differs, [T2T-P0-Implementation-Status.md](T2T-P0-Implementation-Status.md) is authoritative. The differences are: P0-02 adds no evidence-state field and instead treats the organization read as successful when `TenantInfo` carries a tenant id or display name; P0-06 item (c), the merged-profile warning, was not implemented and moved to P1-18; P0-07 keeps the item name "Mailboxes on hold" and never scores it Ready.
 
 ### P0-01 Complexity flags report AD Connect and Exchange hybrid as configured for every tenant
 
@@ -98,7 +106,7 @@ All seven items are narrow, have a reproduction (R ids in the coverage document)
 - Tests: R10 fixture as a fail-first test (S20, N07).
 - Acceptance criteria: the R10 fixture yields `Review` with a count of two and names the evaluated hold types.
 
-## P1: Day 1 readiness and risk identification
+## P1: migration readiness and risk identification
 
 ### P1-01 Give the tenant-to-tenant profile the evidence it needs
 
@@ -112,6 +120,8 @@ All seven items are narrow, have a reproduction (R ids in the coverage document)
 - Privacy: more identity data in the T2T workbook; keep the existing curated user columns.
 - Tests: collection-plan unit tests; workbook sheet-order test; E2E synthetic export.
 - Acceptance criteria: one T2T run produces the registers and the application, group, and device inventories.
+- Direction: the profile should gain migration-relevant evidence: Entra groups, Microsoft 365 Groups, enterprise applications and SSO, application assignments, hybrid identity detail, the Conditional Access and MFA dependencies that affect migrated identities, a device and endpoint summary, fuller SharePoint detail, B2B and cross-tenant evidence, destination licensing evidence, and tenant rename evidence. It may take longer to run than `Presales`. It should not become a full security assessment: full Secure Score analysis, broad security posture findings, unrelated Purview maturity analysis, Teams Voice with no migration dependency, and unrelated usage analytics stay conditional on migration relevance.
+- The profile contract test in `tests/unit/T2TP0Correctness.Tests.ps1` pins the current collector flags and the `RUN.md` profile table. Update the code, both documents, and that test together.
 
 ### P1-02 Enterprise application SSO evidence
 
@@ -173,6 +183,7 @@ All seven items are narrow, have a reproduction (R ids in the coverage document)
 - Privacy: two tenants' identity data in one output; label the workbook accordingly and keep it in the engineer pack.
 - Tests: S01, S05, S06, S07 with a paired synthetic fixture.
 - Acceptance criteria: seeded duplicates are each reported once with both object identifiers, and a run without a destination snapshot keeps the existing placeholder.
+- Design notes: build the comparison on reusable normalized objects and explicit matching keys for users, UPNs, SMTP and proxy addresses, mailboxes, groups, guests, Microsoft 365 Groups, Teams, SharePoint, enterprise applications, domains, and licensing. Candidate comparison states: `Matched`, `SourceOnly`, `DestinationOnly`, `Conflict`, `NeedsMapping`, `NeedsRecreation`, `NeedsDecision`, `NotComparable`. These states are a proposal only and are not in any production schema.
 
 ### P1-06 Hybrid identity evidence and explicit unknowns
 
@@ -194,11 +205,11 @@ All seven items are narrow, have a reproduction (R ids in the coverage document)
 
 - Files: `Update-MigrationPlanningRegisters`; `Get-ArrayaLicenseAnalytics.ps1` (reuse); new decision keys.
 - Change type: analysis, report.
-- Change: add decision `LIC-01` "Destination SKU and add-ons approved" as a blocking Day 1 requirement, split from ID-03. Add evidence rows, each labeled as source-tenant evidence: in-scope licensed member count; count against the 300-seat limit of Microsoft 365 Business Premium (a consideration, not a verdict, with a re-verify note); mailboxes above 50 GB, archive-enabled mailboxes, and shared mailboxes above 50 GB or with archives (license-profile populations); whether assigned SKUs contain a Teams service plan; groups used for licensing. Rename the "Target licensing readiness" row to "Source license utilization".
+- Change: add decision `LIC-01` "Destination SKU and add-ons approved" as a blocking migration dependency, split from ID-03. Add evidence rows, each labeled as source-tenant evidence: in-scope licensed member count; count against the 300-seat limit of Microsoft 365 Business Premium (a consideration, not a verdict, with a re-verify note); mailboxes above 50 GB, archive-enabled mailboxes, and shared mailboxes above 50 GB or with archives (license-profile populations); whether assigned SKUs contain a Teams service plan; groups used for licensing. Rename the "Target licensing readiness" row to "Source license utilization".
 - Permissions: none new. Runtime: none.
 - Compatibility: one renamed row label in `MigrationReadiness`.
 - Tests: S04 and a negative case where `LIC-01` is confirmed.
-- Acceptance criteria: with no license decision, the output contains a `Blocker` of type "Target-state decision" in phase Day 1 and never names a recommended SKU.
+- Acceptance criteria: with no license decision, the output contains a `Blocker` of type "Target-state decision" and never names a recommended SKU.
 
 ### P1-08 Mail flow, gateway, and migration-endpoint evidence
 
@@ -214,8 +225,8 @@ All seven items are narrow, have a reproduction (R ids in the coverage document)
 
 - Files: new collector function in `Arraya.M365.Exchange` or `Arraya.M365.Graph`; `Update-TenantToTenantMigrationExportData`; cutover pack `PackSummary`.
 - Change type: report first, then optional collection.
-- Change, part A (no collection): add fixed semantics rows to the checklist and pack summary: calendar items are copied content; organizer identity, updates, cancellations, and responses for existing series are not preserved by a copy; Teams meeting links created in the source tenant continue to point at it; critical recurring meetings should be recreated by their organizers in the destination. Mark each as "Requirement" or "Risk" with phase Day 1 and state that third-party tool behavior must be confirmed with the vendor.
-- Change, part B (opt-in switch, off by default): per in-scope mailbox, count series masters where the user is organizer, how many are online meetings, and how many have an end date beyond the planned Day 1. Counts only; no subject, body, attendee addresses, or locations.
+- Change, part A (no collection): add fixed semantics rows to the checklist and pack summary: calendar items are copied content; organizer identity, updates, cancellations, and responses for existing series are not preserved by a copy; Teams meeting links created in the source tenant continue to point at it; critical recurring meetings should be recreated by their organizers in the destination. Mark each as "Requirement" or "Risk" and state that third-party tool behavior must be confirmed with the vendor.
+- Change, part B (opt-in switch, off by default): per in-scope mailbox, count series masters where the user is organizer, how many are online meetings, and how many have an end date beyond a cutover date, when the engagement supplies one. Counts only; no subject, body, attendee addresses, or locations.
 - Permissions: part B needs application read access to calendars. `Calendars.ReadBasic.All` is the least-privileged candidate and must be verified; treat as optional.
 - Runtime: one filtered query per mailbox; significant on large tenants. Throttling: mailbox-scoped limits apply; use batching and back-off.
 - Privacy: calendar metadata is sensitive even as counts; opt-in, documented, engineer pack only.
@@ -242,15 +253,15 @@ All seven items are narrow, have a reproduction (R ids in the coverage document)
 - Tests: S07; `Common.Tests.ps1` cutover pack assertions.
 - Acceptance criteria: no cutover pack column contains a pre-filled design decision.
 
-### P1-12 Readiness output model: phase, item type, workstream, governance keys
+### P1-12 Readiness output model: item type, workstream, engagement-supplied milestones, governance keys
 
 - Files: `Update-MigrationPlanningRegisters`, `Update-MigrationComplexityFlags`, `Update-TenantToTenantMigrationExportData`; workbook column lists; presales questionnaire exporter; `Merge-M365MigrationScopeDecisions.ps1`.
 - Change type: analysis, report.
-- Change: add the attributes defined in the coverage document (`ItemType`, `Phase`, `Workstream`, `TenantRole`, `EvidenceClass`, `EvidenceSource`, `DependencyType`, `BlockedBy`, `OwnerState`, `DateState`). Add decision keys: `HYB-01` Entra Connect server confirmed, `HYB-02` AD administration server and writable domain controller confirmed, `HYB-03` destination OU and sync scope confirmed, `LIC-01` (P1-07), `ACC-01` administrative access granted in both tenants and on-premises, `TOOL-01` migration-tool licensing procured, `DNS-01` DNS authority and registrar access confirmed, `APP-01` application owners identified, `APP-02` SAML and SCIM matching behavior confirmed per application, `EP-01` endpoint transition phase and date confirmed, `COM-01` user communication plan approved, `RB-01` rollback tested, `SRC-01` source-access coexistence period and method confirmed, `REN-01` SharePoint rename and fallback domain decision. Each defaults to `Needs Input` with empty owner and date.
+- Change: add the attributes defined in the coverage document (`ItemType`, `Milestone`, `Workstream`, `TenantRole`, `EvidenceClass`, `EvidenceSource`, `DependencyType`, `BlockedBy`, `OwnerState`, `DateState`). Add decision keys: `HYB-01` Entra Connect server confirmed, `HYB-02` AD administration server and writable domain controller confirmed, `HYB-03` destination OU and sync scope confirmed, `LIC-01` (P1-07), `ACC-01` administrative access granted in both tenants and on-premises, `TOOL-01` migration-tool licensing procured, `DNS-01` DNS authority and registrar access confirmed, `APP-01` application owners identified, `APP-02` SAML and SCIM matching behavior confirmed per application, `EP-01` endpoint transition approach confirmed, `COM-01` user communication plan approved, `RB-01` rollback tested, `SRC-01` source-access coexistence period and method confirmed, `REN-01` SharePoint rename and fallback domain decision. Each defaults to `Needs Input` with empty owner and date.
 - Permissions, runtime: none.
 - Compatibility: additive columns on register worksheets; `Status` values unchanged.
 - Tests: S04, S18 to S21; negative cases for defaults.
-- Acceptance criteria: every seeded governance gap in the scenario spec appears as a separate row with the expected item type and phase, and no owner or date is ever generated.
+- Acceptance criteria: every seeded governance gap in the scenario spec appears as a separate row with the expected item type, and no owner, date, or milestone is ever generated.
 
 ### P1-13 Tool-neutral mailbox routing guidance
 
@@ -297,18 +308,33 @@ All seven items are narrow, have a reproduction (R ids in the coverage document)
 - Tests: S03, S19.
 - Acceptance criteria: a source tenant with zero hybrid-joined devices and no AD evidence reports domain-joined device count as "Not collected", not zero.
 
+### P1-18 Multi-profile composition
+
+- Problem: requesting several profiles runs once at the highest depth, but the collection scope and workbook policy reset to `Default`. When `TenantToTenantMigration` is combined with another profile, the tenant-to-tenant shaping is skipped, mailbox and calendar delegate permissions are not collected, the planning registers are not built, and the cutover pack is still written from unshaped data. A combined run can yield less migration evidence than the same profiles run separately. The limitation is documented in `RUN.md`; no code was changed.
+- Change surface: profile merge in `src/modules/Arraya.M365.AssessmentRunner/Arraya.M365.AssessmentRunner.psm1` (the block that sets `WorkbookExportPolicy`, `CollectionScopePolicy`, and `GenerateMigrationPack` for merged selections); `Resolve-AssessmentProfileCollectionPlan` (the `IsMergedOutputProfileSelection` branches); `Get-ArrayaCollectionDepthPolicy` (scope-specific depth flags, including delegate collection); `Prepare-AssessmentExportData` (the `isTenantToTenantCutover` and `isPresalesScope` tests); `Invoke-M365TenantAssessmentExportPipeline.ps1` (one workbook policy per run); `Export-HashTableToExcel.ps1` (policy-specific sheet lists).
+- Target invariant: requesting several profiles never yields less evidence than any one of them alone. Likely design, to be reviewed before implementation: collectors are the safe union of the requested profiles; depth is the highest required; outputs are the union where compatible; each requested deliverable gets the shaping it needs.
+- Interim option: log a warning and add a checklist row when a migration profile is merged with another profile.
+- Tests: plan and depth-policy tests for each pair of profiles; a test that the union never drops a collector or depth flag.
+
+### P1-19 Evidence state for collectors that catch their own errors
+
+- Problem: several collectors log an error and return, so the collector plan records the step as Completed and leaves an empty container. `Get-ArrayaDatasetEvidenceState` cannot tell that apart from a genuinely empty result. Affected today: `Get-AllPublicFolderDetails.ps1`, `Get-MailFlowRulesandConnectors.ps1`, the Exchange portion of `Get-AllOffice365Domains`, and mailbox enumeration in `Get-AllExchangeMailboxDetails.ps1` (errors suppressed).
+- Change: have each collector record an evidence state the way `Get-ExchangeHybridConfiguration.ps1` and `Get-SMTPRelayConfiguration.ps1` already do, or return a failed step result, and read it in `Get-ArrayaDatasetEvidenceState`. Decide where the state is stored so it does not add worksheets.
+- Until then: a collected-empty result for public folders, connectors, and transport rules is trusted when the step reports Completed. Domains and remote domains are protected by the rule that they cannot be empty.
+- Tests: mocked cmdlet failures per collector.
+
 ## P2: detailed design and estimation
 
 | ID | Change | Files or modules | Type | New permissions or access | Runtime and throttling | Compatibility | Privacy and security | Tests and acceptance |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | P2-01 | Optional endpoint and AD discovery with an import contract (join state on the device, BitLocker protector and escrow location, local administrators, mapped drives, printers, VPN, certificates, Wi-Fi profiles, Windows Hello state, services and scheduled tasks using domain or user credentials, work or school account registrations, profile SID). Tenant side: BitLocker recovery key metadata per device. | New module outside the tenant collector; import function in `Arraya.M365.Common`; snapshot `Data.Endpoint` | Collection, normalization | On-premises or endpoint management tooling; `BitLockerKey.ReadBasic.All` (verify) for metadata | Endpoint side is asynchronous; tenant metadata is one paged call | Additive; import is optional | Never collect recovery key values; device names and users are personal data | Import schema test; S03, S19. Accept when an import produces device counts by join state with evidence class "Imported" |
-| P2-02 | Optional file-server discovery module with an import contract (server, share, source path, size, file and folder counts, age buckets, invalid characters, path length, large files, blocked types, locked files, NTFS groups and nested groups, home drives, departmental shares, stale data, owner, destination mapping, migration worker placement). Prefer importing the migration tool's own source analysis where one exists. | New module; import function; register `MigrationFileShareDisposition` | Collection, normalization, report | On-premises read on shares; local administrator for share enumeration | Long-running on-premises scan; out of band | Additive | File names and ACLs are sensitive; keep aggregates in customer documents | Import schema test; S18. Accept when a share marked critical with no Day 1 plan raises a Day 1 risk |
+| P2-02 | Optional file-server discovery module with an import contract (server, share, source path, size, file and folder counts, age buckets, invalid characters, path length, large files, blocked types, locked files, NTFS groups and nested groups, home drives, departmental shares, stale data, owner, destination mapping, migration worker placement). Prefer importing the migration tool's own source analysis where one exists. | New module; import function; register `MigrationFileShareDisposition` | Collection, normalization, report | On-premises read on shares; local administrator for share enumeration | Long-running on-premises scan; out of band | Additive | File names and ACLs are sensitive; keep aggregates in customer documents | Import schema test; S18. Accept when a share marked critical with no plan for its agreed milestone raises a migration risk |
 | P2-03 | Link the AD workflow and Entra Connect server export to the snapshot: export AD report tables to a documented JSON, import as `Data.OnPremises`; accept an optional sync-server export (connectors, filtering, rules, staging mode, version). | `Get-ActiveDirectoryReport.ps1`; `Arraya.M365.Common` import | Normalization | On-premises: domain user with RSAT; local administrator on the sync server | Out of band | Additive | Directory data; engineer pack only | Import tests; S02, S03 |
 | P2-04 | SharePoint permission and item-level evidence by import (sharing links, external users, long paths, large and checked-out files, workflows). Do not rebuild a scanner. | Import function; `SharePoint` enrichment columns | Normalization | None in the tenant collector | None | Additive | Aggregates only | Import schema test |
 | P2-05 | Teams membership and chat readiness: owner and member identities per Team and channel; per-user private chat, meeting, and call counts from activity reports; neutral method comparison rows (rehydrated chats, group-chat conversion, reference exports) as vendor questions. | `Get-TeamsDetails`; reports collector | Collection, report | `ChannelMember.Read.All` (new, optional); `TeamMember.Read.All` (optional today) | One call per channel; batch; large tenants add notable time | Additive | Membership lists in engineer pack only; activity reports may be anonymized by tenant setting, which must be reported as an evidence state | S08; mocked responses |
 | P2-06 | Additional Exchange evidence: non-calendar folder permissions (opt-in), mailbox audit settings, `Get-CalendarProcessing` for resource mailboxes, room lists, mobile device partnerships (counts), IRM and message-encryption configuration, full inbox-rule counts, Recoverable Items subfolder sizes. | `Arraya.M365.Exchange` | Collection | Existing Exchange read | Per-mailbox calls; opt-in for folder permissions | Additive | Rule and folder names can be sensitive | Mocked cmdlet tests |
 | P2-07 | SMTP AUTH actual usage from sign-in logs (client app "Authenticated SMTP") and relay volume. | `Get-SMTPRelayConfiguration.ps1` | Collection, analysis | None new (`AuditLog.Read.All`) | Filtered sign-in query; retention-limited | Additive | None beyond existing sign-in data | Mocked responses |
-| P2-08 | Pre-stage split and Day 1 first wave pattern: optional mailbox age evidence; a second wave template where Day 1 identity and mail flow precede history backfill; phase tags on wave rows. | `Update-MigrationPlanningRegisters` | Analysis, report | None | Age evidence is per-mailbox and costly; opt-in | New wave template selected by decision DC-02 | None | S20; render-only |
+| P2-08 | Pre-stage split and alternative sequencing: optional mailbox age evidence; optional wave templates for other sequences (for example identity and mail flow before history backfill), chosen by the engagement; engagement-supplied milestone names on wave rows. | `Update-MigrationPlanningRegisters` | Analysis, report | None | Age evidence is per-mailbox and costly; opt-in | New wave template selected by decision DC-02 | None | S20; render-only |
 | P2-09 | Sensitivity labels and label policies; resolve site label ids to names. | Purview collector | Collection | Existing Purview session or Graph label read (verify) | Small | Additive | None | Mocked responses |
 | P2-10 | Security detail: named location definitions, PIM eligibility, per-application failed sign-in summary. | Legacy collector | Collection | None new | Sign-in summary is the costly part; cap by window | Additive | IP ranges are sensitive | Mocked responses |
 | P2-11 | User-experience readiness register with the fixed classification from the questionnaire document. | `Update-MigrationPlanningRegisters` | Report | None | None | Additive | None | Render-only |
@@ -340,8 +366,8 @@ P0 items and P1-01, P1-03 to P1-08, P1-10 to P1-13, and P1-15 to P1-17 need no n
 
 ## Recommended sequence
 
-1. P0-01 to P0-07 as one change set, each with its fail-first test.
-2. P1-01 and P1-12 (profile scope and output model), because later items report into them.
+1. Done: P0-01 to P0-07 as one change set, each with its fail-first test.
+2. P1-01 with P1-18 and P1-19 (profile scope, profile composition, collector evidence states), then P1-12 (output model), because later items report into them.
 3. P1-02, P1-04, P1-03 (application evidence, certificate expiry, mapping worksheet).
 4. P1-05 and P1-11 (two-tenant comparison and guest replacement).
 5. P1-06, P1-15, P1-16, P1-07 (hybrid identity, domains, rename, licensing).

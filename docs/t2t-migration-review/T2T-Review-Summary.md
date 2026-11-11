@@ -6,7 +6,7 @@ Documents: [coverage](T2T-Migration-Assessment-Coverage.md), [backlog](T2T-Migra
 
 ## Final assessment
 
-The assessment does not yet capture enough evidence to plan a complex tenant-to-tenant migration with a short Day 1, a hybrid destination, new sign-in and mail domains, guest replacement, a SharePoint rename, and SAML application continuity. It is a sound base for the Exchange and collaboration parts of that plan and has the right decision-register design to grow into the rest.
+The assessment does not yet capture enough evidence to plan a complex tenant-to-tenant migration with a short customer-defined deadline, a hybrid destination, new sign-in and mail domains, guest replacement, a SharePoint rename, and SAML application continuity. It is a sound base for the Exchange and collaboration parts of that plan and has the right decision-register design to grow into the rest.
 
 Three things stand between the current state and an adequate one:
 
@@ -14,7 +14,9 @@ Three things stand between the current state and an adequate one:
 2. The profile intended for migration work collects no application, group, device, Conditional Access, or compliance evidence and omits the planning registers.
 3. There is no two-tenant model, so nothing about the destination or about collisions between the tenants can be evaluated.
 
-No code was changed in this review.
+No code was changed in this review. The P0 corrections were implemented afterwards on branch `feature/t2t-p0-correctness`; see [T2T-P0-Implementation-Status.md](T2T-P0-Implementation-Status.md). The sections below describe the state at the time of the review.
+
+Design correction: the reusable assessment is milestone-neutral. It defines no "Day 1", no fixed phases, and no required cutover. Deadlines, waves, and cutover dates are engagement inputs.
 
 ## What is already adequate
 
@@ -33,7 +35,7 @@ No code was changed in this review.
 - Hybrid identity detail: sync client, server, staging mode, health, filtering, rules.
 - Calendar and meeting evidence and the report language that separates copied content from operational continuity.
 - A group disposition register and cross-references from groups to their consumers.
-- A phase model (Day 1, Phase 1, Phase 2, out of scope) and governance decisions for licensing, access, tooling, DNS authority, application owners, endpoints, communications, and rollback.
+- A way to attach engagement-defined milestones, waves, and sequencing dependencies to items, and governance decisions for licensing, access, tooling, DNS authority, application owners, endpoints, communications, and rollback.
 - Licensing readiness, tenant rename readiness, domain removal dependencies.
 - Endpoint and file-server discovery, which the tenant cannot provide.
 

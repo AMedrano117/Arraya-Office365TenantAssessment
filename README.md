@@ -199,10 +199,12 @@ Profiles tune how much data is collected and which deliverables are created.
 | --- | --- |
 | `SolutionsEngineer` | Standard consultant run and the default choice for most assessments. |
 | `ExecutiveLevel` | Leadership-friendly summary depth. |
-| `Presales` | Lighter discovery and presales posture review. |
-| `TenantToTenantMigration` | Deep migration readiness and cutover planning. |
+| `Presales` | Migration scoping: sizing, complexity, and quote readiness. |
+| `TenantToTenantMigration` | Exchange and collaboration cutover preparation: mailbox delegates, routing attributes, and the cutover pack. Not yet a complete migration assessment. |
 | `Geek` | Detailed engineer troubleshooting. |
 | `Machine` | JSON-first automation, replay, and downstream processing. |
+
+`TenantToTenantMigration` does not collect enterprise applications, SSO, Entra groups, Microsoft 365 Groups, devices, Conditional Access, or Purview policies today. See [RUN.md](RUN.md#output-profiles) for what each migration profile collects, and [the tenant-to-tenant review](docs/t2t-migration-review/T2T-Review-Summary.md) for the planned expansion.
 
 You can request more than one profile in a single run:
 
@@ -211,6 +213,8 @@ You can request more than one profile in a single run:
   -Action Full `
   -OutputProfile SolutionsEngineer,ExecutiveLevel
 ```
+
+Run `Presales` and `TenantToTenantMigration` on their own. Combining either with another profile resets the collection scope, which turns off the tenant-to-tenant shaping and delegate collection. [RUN.md](RUN.md#combining-profiles) lists the limitations.
 
 ## What Gets Created
 

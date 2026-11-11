@@ -204,16 +204,48 @@ Run with a specific output profile:
 
 ## Output Profiles
 
-| Profile | Scope | Best for |
-| ------- | ----- | -------- |
-| `SolutionsEngineer` | Operator | Default. Standard consultant depth. |
-| `ExecutiveLevel` | Minimum | Leadership summaries. |
-| `Presales` | Minimum | Lighter presales discovery. |
-| `TenantToTenantMigration` | All | Deep migration readiness. |
-| `Geek` | Geek | Detailed engineer troubleshooting. |
-| `Machine` | Automation | JSON-first automation and replay. |
+| Profile | Depth | Collection scope | Best for |
+| ------- | ----- | ---------------- | -------- |
+| `SolutionsEngineer` | Operator | Default: every collector | Default. Standard consultant depth. |
+| `ExecutiveLevel` | Minimum | Default, without recipients, Exchange groups, mail flow, public folders, SMTP relay, and Microsoft 365 Groups | Leadership summaries. |
+| `Presales` | Operator | Presales: migration scoping | Migration scoping, sizing, complexity, and quote readiness. |
+| `TenantToTenantMigration` | All | TenantToTenantCutover: Exchange and collaboration cutover | Mailbox cutover preparation and the cutover pack. Not yet a complete migration assessment. |
+| `Geek` | Geek | Default: every collector | Detailed engineer troubleshooting. |
+| `Machine` | Automation | Default: every collector | JSON-first automation and replay. |
 
-Pass multiple profiles as a comma-separated list. When multiple profiles are supplied, the assessment runs once at the highest required scope.
+Depth is the `ReportingMode` returned by `Get-ArrayaAssessmentOutputProfilePolicy`. Collection scope decides which collectors run. A unit test compares this table with the code.
+
+### What the two migration profiles collect
+
+`Presales` and `TenantToTenantMigration` are separate profiles with different purposes. Neither is a superset of the other today.
+
+| Evidence | `Presales` | `TenantToTenantMigration` |
+| -------- | ---------- | ------------------------- |
+| Mailboxes, sizes, archives, inactive mailboxes | Yes | Yes |
+| Full Access, Send As, and calendar folder permissions | No | Yes (only this profile collects them) |
+| Domains, connectors, remote domains, SMTP relay, public folders, hybrid signals | Yes | Yes |
+| Teams, SharePoint, and OneDrive inventories | Yes, with full SharePoint detail and Microsoft 365 Group mailbox statistics | Yes, without full SharePoint detail or Microsoft 365 Group mailbox statistics |
+| Enterprise applications and SSO | Yes | No |
+| Microsoft 365 Groups inventory | Yes | No |
+| Devices | Yes | No |
+| Entra groups | Yes | No |
+| Administrators, Conditional Access, MFA registration, Purview retention and DLP | No | No |
+| Migration planning registers (decisions, identity mapping, domain dependencies, object disposition, effort, waves) | Workbook and scoping brief | JSON snapshot only |
+| Cutover pack, cutover checklist, delegate worksheets | No | Yes |
+
+When a collector is skipped or fails, the tenant-to-tenant readiness checklist lists it under "Evidence coverage" with status `Needs Data`. Evidence that was not collected is never reported as absent or ready.
+
+`TenantToTenantMigration` does not yet represent all the evidence needed to plan a tenant-to-tenant migration. The gaps and the planned expansion are recorded in [T2T-Migration-Assessment-Coverage.md](docs/t2t-migration-review/T2T-Migration-Assessment-Coverage.md) and [T2T-Migration-Assessment-Backlog.md](docs/t2t-migration-review/T2T-Migration-Assessment-Backlog.md). Until that work lands, run `TenantToTenantMigration` for cutover preparation and a second, separate run of `Presales` or `SolutionsEngineer` for application, group, and device evidence.
+
+### Combining profiles
+
+Pass multiple profiles as a comma-separated list. The assessment then runs once at the highest required depth, with these current limitations:
+
+- The collection scope and the workbook layout reset to `Default`. Profile-specific scopes (`Presales`, `TenantToTenantCutover`) are not applied.
+- When `TenantToTenantMigration` is combined with another profile, the tenant-to-tenant shaping does not run, mailbox and calendar delegate permissions are not collected, and the migration planning registers are not built. The cutover pack is still written, from unshaped data.
+- A combined run can therefore produce less migration evidence than the same profiles run separately.
+
+Run the migration profiles on their own until profile composition is redesigned. The intended rule, tracked in the backlog, is that requesting several profiles never yields less evidence than any one of them alone.
 
 ## Default Output Location
 

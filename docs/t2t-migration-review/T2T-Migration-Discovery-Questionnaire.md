@@ -35,7 +35,7 @@ Rules:
 | ID-Q09 | Does the source organization still operate an on-premises Active Directory although the source tenant is cloud-only? How many domain-joined devices and servers depend on it? | Source | Customer | Graph cannot see directories that are not synchronized | EP-01* |
 | ID-Q10 | What is the naming rule for new UPNs and primary SMTP addresses? Which existing destination users keep their UPN and receive only a new primary SMTP address? | Both | Customer | Target-state decision | ID-02 |
 | ID-Q11 | Are Seamless SSO, pass-through authentication agents, or federation used for any domain, and who operates them? | Both | Customer | Partly collected; agent placement and operation are not | HYB-01* |
-| ID-Q12 | Which accounts are service, break-glass, or shared sign-in accounts that must exist on Day 1? | Both | Customer | Account purpose is not an attribute | ID-04 |
+| ID-Q12 | Which accounts are service, break-glass, or shared sign-in accounts that must exist when users transition? | Both | Customer | Account purpose is not an attribute | ID-04 |
 | ID-Q13 | Has administrative access been granted to the migration team in both tenants and on-premises? By whom and until when? | Both | Customer | Preflight covers only the assessed tenant | ACC-01* |
 
 ## 2. Licensing
@@ -46,7 +46,7 @@ Rules:
 | LIC-Q02 | Under which agreement are licenses purchased (CSP, Enterprise Agreement, direct), and what is the lead time to add seats? | Destination | Customer | Commercial information is not in the tenant | LIC-01* |
 | LIC-Q03 | Is Teams included in the chosen suite or purchased separately under that agreement? | Destination | Customer and vendor | Agreement terms are not in the tenant | LIC-01* |
 | LIC-Q04 | If Microsoft 365 Business Premium is considered, will the total licensed population stay within its seat limit after the migration? | Destination | Customer | Depends on the final in-scope population and current product terms | LIC-01* |
-| LIC-Q05 | Which features in use today must be licensed on Day 1 (archive, large mailbox, Conditional Access, Defender, Purview, Intune, audio conferencing, phone)? | Both | Customer | A service plan is not proof of use | LIC-01* |
+| LIC-Q05 | Which features in use today must be licensed when users transition (archive, large mailbox, Conditional Access, Defender, Purview, Intune, audio conferencing, phone)? | Both | Customer | A service plan is not proof of use | LIC-01* |
 | LIC-Q06 | Are licenses assigned by group in the destination, and which groups will new users join? | Destination | Customer | Target-state decision | ID-03 |
 | LIC-Q07 | Have migration-tool licenses been procured, for which workloads, and when do they expire? | Not applicable | Customer and vendor | Not in either tenant | TOOL-01* |
 
@@ -54,8 +54,8 @@ Rules:
 
 | ID | Question | Tenant | Audience | Why collection cannot answer | Feeds |
 | --- | --- | --- | --- | --- | --- |
-| EX-Q01 | How much mail history must be available on Day 1, and how much may arrive afterwards? | Both | Customer | Business requirement | DC-02 |
-| EX-Q02 | Must users keep access to their source mailbox after Day 1? For how long, by which method, and under whose approval? | Source | Customer | Coexistence decision | SRC-01* |
+| EX-Q01 | How much mail history must be available when users transition, and how much may arrive afterwards? | Both | Customer | Business requirement | DC-02 |
+| EX-Q02 | Must users keep access to their source mailbox after users transition? For how long, by which method, and under whose approval? | Source | Customer | Coexistence decision | SRC-01* |
 | EX-Q03 | Which mailboxes are under legal, regulatory, or investigation hold, and who authorizes moving, copying, or retiring them? | Source | Customer | Hold purpose and authority are legal matters | CP-01 |
 | EX-Q04 | Which recurring meetings are business critical, and who will recreate them in the destination? | Source | Customer | Calendar items are not collected | DC-02 |
 | EX-Q05 | How does the selected tool treat calendar items, recurring series, organizer identity, meeting responses, and Teams meeting links? | Not applicable | Vendor | Third-party behavior; changes between releases | BT-01 |
@@ -72,7 +72,7 @@ Rules:
 | MF-Q01 | Who administers public DNS for each domain, and has registrar access been confirmed by a test change? | Both | Customer | Tenant verification does not prove current DNS authority | DNS-01* |
 | MF-Q02 | Which email security gateway or filtering service fronts each domain, who owns the contract, and what is the change lead time? | Both | Customer and vendor | Connectors show routes, not owners | DC-03 |
 | MF-Q03 | Does the gateway support both tenants during coexistence (domain-based routing, recipient verification, per-domain policies)? | Both | Vendor | Third-party capability | DC-02 |
-| MF-Q04 | Which applications, devices, and scanners send mail (SMTP AUTH, relay connector, direct send)? Who owns each, and what address will they use after Day 1? | Source | Customer | Enabled is not usage; owners are unknown | DC-03 |
+| MF-Q04 | Which applications, devices, and scanners send mail (SMTP AUTH, relay connector, direct send)? Who owns each, and what address will they use after users transition? | Source | Customer | Enabled is not usage; owners are unknown | DC-03 |
 | MF-Q05 | Are journaling, third-party archiving, or supervision products fed by mail flow, and must they continue without a gap? | Both | Customer and vendor | Product and obligation are outside the tenant | CP-03 |
 | MF-Q06 | Is a phishing-report add-in or third-party reporting mailbox in use? | Both | Customer | Partly collectible; ownership is not | DC-03 |
 | MF-Q07 | What is the routing design between the tenants until the source domain moves (forwarding, address rewriting, shared namespace)? | Both | Customer | Target-state decision | DC-02 |
@@ -95,7 +95,7 @@ Answers in this section populate the [application identity mapping template](../
 | ID | Question | Tenant | Audience | Why collection cannot answer | Feeds |
 | --- | --- | --- | --- | --- | --- |
 | SSO-Q01 | Who are the business owner and the technical or vendor contact of each application? | Source | Customer | Directory owners are often absent or not the business owner | APP-01*; worksheet |
-| SSO-Q02 | How critical is each application on Day 1? | Source | Customer | Business judgment | Worksheet |
+| SSO-Q02 | How critical is each application when users transition? | Source | Customer | Business judgment | Worksheet |
 | SSO-Q03 | Which attribute does the application use as the account key (NameID, email claim, employee id, internal id)? Is that key immutable? | Source | Vendor | Service-provider behavior | APP-02*; worksheet |
 | SSO-Q04 | What happens when an assertion arrives for an unknown identifier: rejected, or a new account is created (JIT)? Can JIT be turned off? | Source | Vendor | Service-provider behavior | APP-02*; worksheet |
 | SSO-Q05 | Can an existing account be renamed or its login identifier changed without losing data, history, licenses, or entitlements? | Source | Vendor | Service-provider behavior | Worksheet |
@@ -125,13 +125,13 @@ Answers in this section populate the [application identity mapping template](../
 
 | ID | Question | Tenant | Audience | Why collection cannot answer | Feeds |
 | --- | --- | --- | --- | --- | --- |
-| SP-Q01 | Is a SharePoint domain rename planned? In which tenant, to which name, and on what date relative to Day 1? | Both | Customer | Target-state decision | REN-01* |
+| SP-Q01 | Is a SharePoint domain rename planned? In which tenant, to which name, and on what date relative to the other migration milestones? | Both | Customer | Target-state decision | REN-01* |
 | SP-Q02 | Has the tenant been renamed before, or was Multi-Geo ever enabled, including during a trial? | Both | Customer | History is not reliably exposed | REN-01* |
 | SP-Q03 | Which Power Automate flows, Power Apps, and Power BI reports use SharePoint or OneDrive URLs, and who owns them? | Both | Customer | Not collected; owner validation required | REN-01* |
 | SP-Q04 | Which Forms, SPFx solutions, custom applications, scripts, and line-of-business integrations contain hard-coded tenant URLs? | Both | Customer | Not discoverable from the tenant inventory | REN-01* |
 | SP-Q05 | Which backup, archiving, DLP, CASB, or eDiscovery products are connected to SharePoint and OneDrive, and how does each vendor handle a domain rename? | Both | Customer and vendor | Third-party behavior | REN-01* |
 | SP-Q06 | Has each integration owner acknowledged the impact, including integrations that are outside the migration scope? | Both | Customer | Acknowledgment is a governance record | REN-01* |
-| SP-Q07 | Which sites must be available on Day 1 and which can follow? | Source | Customer | Business priority | ID-04 |
+| SP-Q07 | Which sites must be available when users transition and which can follow? | Source | Customer | Business priority | ID-04 |
 | SP-Q08 | Which external sharing relationships must survive, and will guests be re-invited or replaced? | Source | Customer | Business relationship | SG-02 |
 | SP-Q09 | Will a new fallback onmicrosoft.com domain be created, and has the limit on such domains been checked? | Both | Customer | Target-state decision | REN-01* |
 
@@ -140,7 +140,7 @@ Answers in this section populate the [application identity mapping template](../
 | ID | Question | Tenant | Audience | Why collection cannot answer | Feeds |
 | --- | --- | --- | --- | --- | --- |
 | FS-Q01 | Which file servers and shares are in scope, who owns each, and what is the destination (SharePoint site, library, or OneDrive)? | Source | Customer | Outside the tenant | P2-02 register |
-| FS-Q02 | Which shares are critical on Day 1, and what is the fallback if they are not migrated by then? | Source | Customer | Business priority | P2-02 register |
+| FS-Q02 | Which shares are critical when users transition, and what is the fallback if they are not migrated by then? | Source | Customer | Business priority | P2-02 register |
 | FS-Q03 | Are home drives redirected (Folder Redirection, offline files, Known Folder Move)? | Source | Customer | Endpoint and GPO configuration | EP-01* |
 | FS-Q04 | Which applications open files by UNC path or mapped drive letter? | Source | Customer | Application configuration | P2-02 register |
 | FS-Q05 | Where will the migration tool workers run, and do they have network access to the source shares and to Microsoft 365? | Source | Customer and vendor | Network placement | SG-04 |
@@ -152,7 +152,7 @@ Answers in this section populate the [application identity mapping template](../
 | ID | Question | Tenant | Audience | Why collection cannot answer | Feeds |
 | --- | --- | --- | --- | --- | --- |
 | EP-Q01 | How many Windows devices are joined to the source on-premises domain, and are any hybrid joined or only registered? | Source | Customer | Devices joined only to AD are invisible to Entra | EP-01* |
-| EP-Q02 | Is endpoint migration a separate phase? What is its target date, and what must keep working on existing devices from Day 1 until then? | Both | Customer | Scope decision | EP-01* |
+| EP-Q02 | Is endpoint migration a separate phase? What is its target date, and what must keep working on existing devices from the user transition until then? | Both | Customer | Scope decision | EP-01* |
 | EP-Q03 | Which management tools are in use (Intune, Configuration Manager, third-party MDM or RMM)? | Both | Customer | Entra exposes only a managed flag | EP-01* |
 | EP-Q04 | Where are BitLocker recovery keys and local administrator passwords stored today, and where will they be stored after the move? | Source | Customer | Key location is not collected | EP-01* |
 | EP-Q05 | Is a local administrator account available on each device for recovery if domain trust or cached credentials fail? | Source | Customer | Endpoint state | EP-01* |
@@ -160,7 +160,7 @@ Answers in this section populate the [application identity mapping template](../
 | EP-Q07 | Which VPN, Wi-Fi, or network access controls authenticate with user or device certificates or domain credentials? | Source | Customer | Network configuration | EP-01* |
 | EP-Q08 | Are Windows Hello for Business, EFS, or credential-bound applications in use? | Source | Customer | Endpoint state | EP-01* |
 | EP-Q09 | Which scheduled tasks, services, and line-of-business applications run under user or domain accounts? | Source | Customer | Endpoint and server state | EP-01* |
-| EP-Q10 | Will users sign in to Windows with the same account after Day 1 while using a new account for Microsoft 365? Has that dual-identity experience been tested? | Both | Customer | The email-domain change and the Windows sign-in change are separate events | EP-01*, COM-01* |
+| EP-Q10 | Will users sign in to Windows with the same account after users transition while using a new account for Microsoft 365? Has that dual-identity experience been tested? | Both | Customer | The email-domain change and the Windows sign-in change are separate events | EP-01*, COM-01* |
 | EP-Q11 | How will old work or school account registrations be removed from devices, and by whom? | Source | Customer | Endpoint action | EP-01* |
 | EP-Q12 | Is a device reset acceptable, or must user profiles be preserved? Absence of Intune enrollment does not answer this. | Both | Customer | Depends on join state, tooling, and business tolerance | EP-01* |
 
@@ -171,8 +171,8 @@ Answers in this section populate the [application identity mapping template](../
 | SEC-Q01 | Which regulatory or contractual obligations govern the data being moved, and who is the compliance owner for the migration? | Both | Customer | Legal determination | CP-01 |
 | SEC-Q02 | Which retention periods and holds must be reproduced in the destination before data arrives? | Both | Customer | Policy intent and authority | CP-03 |
 | SEC-Q03 | Are there active eDiscovery cases or investigations that restrict moving or deleting data? | Source | Customer | Case status is a legal matter | CP-01 |
-| SEC-Q04 | Which Conditional Access dependencies exist on trusted IP ranges, compliant devices, or locations that new accounts will not satisfy on Day 1? | Destination | Customer | Policy intent and Day 1 device state | DC-02 |
-| SEC-Q05 | How will users register MFA and passwordless methods in the destination, and what is the fallback on Day 1? | Destination | Customer | Registrations do not move between tenants | COM-01* |
+| SEC-Q04 | Which Conditional Access dependencies exist on trusted IP ranges, compliant devices, or locations that new accounts will not satisfy when users transition? | Destination | Customer | Policy intent and device state at transition | DC-02 |
+| SEC-Q05 | How will users register MFA and passwordless methods in the destination, and what is the fallback when users transition? | Destination | Customer | Registrations do not move between tenants | COM-01* |
 | SEC-Q06 | Which privileged roles are needed by the migration team, for how long, and who approves and removes them? | Both | Customer | Governance decision | ACC-01* |
 | SEC-Q07 | Which security tools (SIEM, CASB, endpoint detection, DLP) read from the source tenant and must be re-pointed? | Both | Customer and vendor | Integration ownership | PM-01 |
 | SEC-Q08 | Must audit logs from the source tenant be exported or retained after decommissioning? | Source | Customer | Legal and compliance decision | CP-01 |
@@ -205,14 +205,14 @@ Classification values: automatically collectible; inferable with limitations; cu
 | User communications | User communication requirement | Decision COM-01* |
 | Help-desk readiness | Implementation-runbook item | See section 13 |
 | Pilot population | Customer questionnaire | Decision PM-03 |
-| Day 1 support bridge | Implementation-runbook item | See section 13 |
+| cutover support bridge | Implementation-runbook item | See section 13 |
 | Rollback | Implementation-runbook item; post-migration validation item | Decision RB-01* |
 | Source-access coexistence | Customer questionnaire | Decision SRC-01* |
 
 | ID | Question | Tenant | Audience | Feeds |
 | --- | --- | --- | --- | --- |
 | UX-Q01 | Which signature, template, and add-in solutions are in use, and are they tied to the source tenant or domain? | Source | Customer | COM-01* |
-| UX-Q02 | What will users see on Day 1 on each device type, and has that been tested with pilot users? | Both | Customer | PM-03 |
+| UX-Q02 | What will users see when users transition on each device type, and has that been tested with pilot users? | Both | Customer | PM-03 |
 | UX-Q03 | Which user groups have special needs (executives and assistants, shared workstations, frontline, remote without VPN)? | Both | Customer | PM-03 |
 | UX-Q04 | How will old profiles, cached credentials, and old account registrations be removed, and when? | Source | Customer | EP-01* |
 
@@ -220,8 +220,8 @@ Classification values: automatically collectible; inferable with limitations; cu
 
 | ID | Question | Tenant | Audience | Feeds |
 | --- | --- | --- | --- | --- |
-| SUP-Q01 | Who staffs the Day 1 support bridge, in which hours, and with which escalation path to each vendor? | Both | Customer and vendor | COM-01* |
-| SUP-Q02 | Has the help desk received scripts for the known Day 1 issues, and can it reset MFA and passwords in the destination? | Destination | Customer | COM-01* |
+| SUP-Q01 | Who staffs the cutover support bridge, in which hours, and with which escalation path to each vendor? | Both | Customer and vendor | COM-01* |
+| SUP-Q02 | Has the help desk received scripts for the known transition issues, and can it reset MFA and passwords in the destination? | Destination | Customer | COM-01* |
 | SUP-Q03 | What is the freeze period for changes in both tenants and on-premises? | Both | Customer | PM-01 |
 | SUP-Q04 | Which monitoring will confirm mail flow, sign-in, and application access during cutover? | Both | Customer | DC-03 |
 | SUP-Q05 | What are the vendor support entitlements and response times for the migration tools and gateways during the cutover window? | Not applicable | Vendor | TOOL-01* |
@@ -230,7 +230,7 @@ Classification values: automatically collectible; inferable with limitations; cu
 
 | ID | Question | Tenant | Audience | Feeds |
 | --- | --- | --- | --- | --- |
-| GOV-Q01 | What is the legal Day 1 date, and which outcomes are mandatory on that date as opposed to Phase 1 or Phase 2? | Both | Customer | PM-01 |
+| GOV-Q01 | Which milestones, deadlines, waves, or cutover dates does the engagement define, if any, and which outcomes are mandatory at each? | Both | Customer | PM-01 |
 | GOV-Q02 | Who are the accountable customer, vendor, and internal technical owners for each workstream? | Both | Customer and vendor | Every decision key |
 | GOV-Q03 | Which items are explicitly out of scope, and has each affected owner acknowledged the impact? | Both | Customer | ID-04 |
 | GOV-Q04 | Which decisions are still open, who decides, and by when? | Both | Customer | `MigrationScopeDecisions` |
