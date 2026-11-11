@@ -12,7 +12,8 @@ function New-ArrayaMigrationCriteriaRegister {
                                    complete collector state is Ready; Unknown, Unavailable,
                                    Unsupported, NotRequested, and SkippedByProfile are NeedsData.
           PresalesClassification - PresalesBlocker, NeedsData, PlanningGap, or Nonblocking.
-          MigrationTreatment     - for the mailbox hold criterion only; empty otherwise.
+          MigrationTreatment     - for the mailbox-level hold and organization-wide retention
+                                   policy criteria only; empty otherwise.
           CurrentStatus          - Blocker, Needs Data, Needs Input, Review, Ready, Confirmed,
                                    or Not Applicable.
           ActionId and Action    - one action per distinct condition. Rows share an action only
@@ -142,8 +143,11 @@ function New-ArrayaMigrationCriteriaRegister {
                 return (& $fromDatasetState $state 'Exchange hybrid state not established. ')
             }
             'MailboxHolds' {
+                # Mailbox-level hold fields only; organization-wide retention policies are the
+                # OrganizationRetentionPolicies rule, so a profile that does not collect Purview
+                # can still establish this evidence.
                 if (-not $evidenceCache.ContainsKey('MailboxHolds')) {
-                    $evidenceCache['MailboxHolds'] = Get-ArrayaMailboxHoldTreatment -TenantStatsHash $TenantStatsHash -Mailbox $mailboxRows -Catalog $Catalog
+                    $evidenceCache['MailboxHolds'] = Get-ArrayaMailboxHoldTreatment -TenantStatsHash $TenantStatsHash -Mailbox $mailboxRows -Catalog $Catalog -EvidenceScope 'MailboxFields'
                 }
                 $hold = $evidenceCache['MailboxHolds']
                 $collectorState = switch ($hold.EvidenceStatus) {
@@ -154,6 +158,22 @@ function New-ArrayaMigrationCriteriaRegister {
                     default { if ($mailboxEvidence.CollectorState -in $completeStates) { 'Unknown' } else { [string]$mailboxEvidence.CollectorState } }
                 }
                 return (& $newEvidence $collectorState $hold.MissingEvidence $hold.MigrationTreatment $hold.Summary ([string]$hold.EvidenceStatus))
+            }
+            'OrganizationRetentionPolicies' {
+                if (-not $evidenceCache.ContainsKey('OrganizationRetentionPolicies')) {
+                    $evidenceCache['OrganizationRetentionPolicies'] = Get-ArrayaMailboxHoldTreatment -TenantStatsHash $TenantStatsHash -Mailbox $mailboxRows -Catalog $Catalog -EvidenceScope 'OrganizationPolicies'
+                }
+                $policies = $evidenceCache['OrganizationRetentionPolicies']
+                $states = @(foreach ($datasetKey in $Criterion.Datasets) {
+                        Get-ArrayaDatasetEvidenceState -TenantStatsHash $TenantStatsHash -DatasetKey $datasetKey -CollectorStepName $Criterion.CollectorSteps
+                    })
+                $incomplete = @($states | Where-Object { $_.CollectorState -notin $completeStates })
+                $collectorState = if ($incomplete.Count -gt 0) {
+                    [string](@($incomplete | Sort-Object @{ Expression = { $stateRank[[string]$_.CollectorState] }; Descending = $true } | Select-Object -First 1)[0].CollectorState)
+                }
+                elseif (@($states | Where-Object { $_.CollectorState -eq 'CompleteWithRecords' }).Count -gt 0) { 'CompleteWithRecords' }
+                else { 'CompleteEmpty' }
+                return (& $newEvidence $collectorState $policies.MissingEvidence $policies.MigrationTreatment $policies.Summary ([string]$policies.EvidenceStatus))
             }
             'MailboxDelegates' {
                 if ($mailboxRows.Count -eq 0) {

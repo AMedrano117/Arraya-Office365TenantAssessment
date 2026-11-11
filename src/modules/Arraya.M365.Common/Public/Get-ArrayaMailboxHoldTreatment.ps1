@@ -7,10 +7,12 @@ function Get-ArrayaMailboxHoldTreatment {
         Two independent answers:
 
         EvidenceStatus - how complete the hold evidence is.
-          Ready         - every mailbox carries all four hold fields and the Purview retention
-                          policy inventory was collected.
+          Ready         - every source in the evidence scope is complete: all four hold fields
+                          on every mailbox, the Purview retention policy inventory, or both
+                          (see EvidenceScope).
           Partial       - mailboxes were collected, but some hold fields or the retention
-                          policy inventory are missing.
+                          policy inventory are missing (or, for OrganizationPolicies, the
+                          retention collection was partial).
           NeedsData     - mailbox inventory was not collected.
           Failed        - mailbox collection failed.
           NotApplicable - mailbox collection completed and found no mailboxes.
@@ -40,6 +42,17 @@ function Get-ArrayaMailboxHoldTreatment {
 
     .PARAMETER Catalog
         Criteria catalog that holds HoldMethodRules. Defaults to the shipped catalog.
+
+    .PARAMETER EvidenceScope
+        Which hold sources to evaluate.
+          All                  - mailbox hold fields and organization-wide retention policies
+                                 together (the default; used by the cutover summary).
+          MailboxFields        - mailbox hold fields only. Evidence is Ready from a complete
+                                 Exchange mailbox collection; Purview is not required.
+          OrganizationPolicies - organization-wide Exchange retention policies only. Evidence is
+                                 Ready from a complete Purview retention policy collection.
+        The two partial scopes let a profile that does not collect Purview still establish
+        mailbox-level hold evidence, while the organization-wide gap stays visible on its own.
     #>
     [CmdletBinding()]
     param(
@@ -50,8 +63,14 @@ function Get-ArrayaMailboxHoldTreatment {
         [AllowEmptyCollection()]
         [object[]]$Mailbox,
         [Parameter(Mandatory = $false)]
-        $Catalog
+        $Catalog,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('All', 'MailboxFields', 'OrganizationPolicies')]
+        [string]$EvidenceScope = 'All'
     )
+
+    $includeMailboxFields = $EvidenceScope -in @('All', 'MailboxFields')
+    $includeOrganizationPolicies = $EvidenceScope -in @('All', 'OrganizationPolicies')
 
     $toRows = {
         param($Value)
@@ -77,8 +96,9 @@ function Get-ArrayaMailboxHoldTreatment {
     $holdEvidence = Get-ArrayaMailboxHoldEvidence -Mailbox $rows
 
     # ---- Organization-wide retention policies ---------------------------------------------
+    $retentionComplete = $retentionEvidence.CollectorState -in @('CompleteWithRecords', 'CompleteEmpty')
     $orgWidePolicyNames = @()
-    if ($retentionEvidence.CollectorState -in @('CompleteWithRecords', 'CompleteEmpty')) {
+    if ($includeOrganizationPolicies -and $retentionComplete) {
         $orgWidePolicyNames = @(
             & $toRows $TenantStatsHash['RetentionPolicies'] | Where-Object {
                 $enabled = Convert-ArrayaToBoolean -Value (Get-ArrayaObjectValue -Object $_ -Names @('Enabled'))
@@ -106,15 +126,17 @@ function Get-ArrayaMailboxHoldTreatment {
     $blockingRuleIds = New-Object System.Collections.Generic.List[string]
     foreach ($row in $rows) {
         $types = New-Object System.Collections.Generic.List[string]
-        if ((Convert-ArrayaToBoolean -Value (Get-ArrayaObjectValue -Object $row -Names @('LitigationHoldEnabled'))) -eq $true) { $types.Add('LitigationHold') | Out-Null }
-        if ((Convert-ArrayaToBoolean -Value (Get-ArrayaObjectValue -Object $row -Names @('DelayHoldApplied'))) -eq $true) { $types.Add('DelayHold') | Out-Null }
-        if ((Convert-ArrayaToBoolean -Value (Get-ArrayaObjectValue -Object $row -Names @('RetentionHoldEnabled'))) -eq $true) { $types.Add('RetentionHold') | Out-Null }
+        if ($includeMailboxFields) {
+            if ((Convert-ArrayaToBoolean -Value (Get-ArrayaObjectValue -Object $row -Names @('LitigationHoldEnabled'))) -eq $true) { $types.Add('LitigationHold') | Out-Null }
+            if ((Convert-ArrayaToBoolean -Value (Get-ArrayaObjectValue -Object $row -Names @('DelayHoldApplied'))) -eq $true) { $types.Add('DelayHold') | Out-Null }
+            if ((Convert-ArrayaToBoolean -Value (Get-ArrayaObjectValue -Object $row -Names @('RetentionHoldEnabled'))) -eq $true) { $types.Add('RetentionHold') | Out-Null }
 
-        $inPlaceValue = Get-ArrayaObjectValue -Object $row -Names @('InPlaceHolds')
-        $entries = if ($null -eq $inPlaceValue) { @() } elseif ($inPlaceValue -is [string]) { @($inPlaceValue -split '[,;]') } else { @($inPlaceValue | ForEach-Object { [string]$_ }) }
-        foreach ($entry in @($entries | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and -not $_.StartsWith('-') })) {
-            $type = if ($entry -match '^(?i)UniH' -or $entry -match '^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$') { 'eDiscoveryHold' } else { 'RetentionPolicyHold' }
-            if (-not $types.Contains($type)) { $types.Add($type) | Out-Null }
+            $inPlaceValue = Get-ArrayaObjectValue -Object $row -Names @('InPlaceHolds')
+            $entries = if ($null -eq $inPlaceValue) { @() } elseif ($inPlaceValue -is [string]) { @($inPlaceValue -split '[,;]') } else { @($inPlaceValue | ForEach-Object { [string]$_ }) }
+            foreach ($entry in @($entries | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and -not $_.StartsWith('-') })) {
+                $type = if ($entry -match '^(?i)UniH' -or $entry -match '^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$') { 'eDiscoveryHold' } else { 'RetentionPolicyHold' }
+                if (-not $types.Contains($type)) { $types.Add($type) | Out-Null }
+            }
         }
         if ($orgWidePolicyNames.Count -gt 0 -and -not $types.Contains('RetentionPolicyHold')) { $types.Add('RetentionPolicyHold') | Out-Null }
 
@@ -139,24 +161,42 @@ function Get-ArrayaMailboxHoldTreatment {
     }
 
     # ---- Evidence status -------------------------------------------------------------------
+    # Each entry is one sentence, so joined entries never run together.
     $missing = New-Object System.Collections.Generic.List[string]
+    $addMissing = {
+        param([string]$Text)
+        $sentence = ([string]$Text).Trim()
+        if ([string]::IsNullOrWhiteSpace($sentence)) { return }
+        if ($sentence -notmatch '[.!?]$') { $sentence += '.' }
+        $missing.Add($sentence) | Out-Null
+    }
+    $retentionGap = "Organization-wide retention policies were not evaluated: $($retentionEvidence.Reason)"
     $evidenceStatus = 'Ready'
-    if ($rows.Count -eq 0) {
+    if ($EvidenceScope -eq 'OrganizationPolicies') {
+        $evidenceStatus = switch ($retentionEvidence.CollectorState) {
+            { $_ -in @('CompleteWithRecords', 'CompleteEmpty') } { 'Ready' }
+            'Partial' { 'Partial' }
+            { $_ -in @('Failed', 'Unavailable') } { 'Failed' }
+            default { 'NeedsData' }
+        }
+        if ($evidenceStatus -ne 'Ready') { & $addMissing $retentionGap }
+    }
+    elseif ($rows.Count -eq 0) {
         $evidenceStatus = switch ($mailboxEvidence.CollectorState) {
             'CompleteEmpty' { 'NotApplicable' }
             { $_ -in @('Failed', 'Unavailable') } { 'Failed' }
             default { 'NeedsData' }
         }
-        if ($evidenceStatus -ne 'NotApplicable') { $missing.Add("Mailbox inventory: $($mailboxEvidence.Reason)") | Out-Null }
+        if ($evidenceStatus -ne 'NotApplicable') { & $addMissing "Mailbox inventory: $($mailboxEvidence.Reason)" }
     }
     else {
         if (@($holdEvidence.UnavailableSignals).Count -gt 0) {
             $evidenceStatus = 'Partial'
-            $missing.Add(('Mailbox hold fields not collected for every mailbox: {0}' -f (@($holdEvidence.UnavailableSignals) -join ', '))) | Out-Null
+            & $addMissing ('Mailbox hold fields not collected for every mailbox: {0}' -f (@($holdEvidence.UnavailableSignals) -join ', '))
         }
-        if ($retentionEvidence.CollectorState -notin @('CompleteWithRecords', 'CompleteEmpty')) {
+        if ($includeOrganizationPolicies -and -not $retentionComplete) {
             $evidenceStatus = 'Partial'
-            $missing.Add("Organization-wide retention policies were not evaluated: $($retentionEvidence.Reason)") | Out-Null
+            & $addMissing $retentionGap
         }
     }
 
@@ -169,6 +209,11 @@ function Get-ArrayaMailboxHoldTreatment {
     }
     elseif ($evidenceStatus -ne 'Ready') {
         'NotEstablished'
+    }
+    elseif ($EvidenceScope -eq 'OrganizationPolicies') {
+        # An organization-wide policy places every mailbox on a retention-policy hold, whether
+        # or not the mailbox inventory was collected.
+        if ($orgWidePolicyNames.Count -gt 0) { 'RequiresComplianceValidation' } else { 'Clear' }
     }
     elseif ($counts.LitigationHold -gt 0 -or $counts.eDiscoveryHold -gt 0) {
         'RequiresLegalDecision'
@@ -187,8 +232,29 @@ function Get-ArrayaMailboxHoldTreatment {
     $notEvaluated = 'Compliance tag holds and eDiscovery case detail are not evaluated.'
     $orgWideText = if ($orgWidePolicyNames.Count -gt 0) { ' Organization-wide Exchange retention policies: {0}.' -f ($orgWidePolicyNames -join ', ') } else { '' }
     $blockText = if ($blockingMailboxes.Count -gt 0) { ' {0} held mailbox(es) have a confirmed migration method that does not support holds ({1}).' -f $blockingMailboxes.Count, ($blockingRuleIds -join ', ') } else { '' }
+    $summary = switch ($EvidenceScope) {
+        'OrganizationPolicies' {
+            $policyText = if ($orgWidePolicyNames.Count -gt 0) {
+                'Organization-wide Exchange retention policies: {0}.' -f ($orgWidePolicyNames -join ', ')
+            }
+            elseif ($evidenceStatus -eq 'Ready') {
+                'No enabled retention policy applies to all Exchange mailboxes.'
+            }
+            else {
+                'Organization-wide retention policies not evaluated.'
+            }
+            ('{0}{1} Mailbox-level holds are reported separately.' -f $policyText, $blockText).Trim()
+        }
+        'MailboxFields' {
+            ('{0}.{1} Organization-wide retention policies are reported separately. {2}' -f $breakdown, $blockText, $notEvaluated).Trim()
+        }
+        default {
+            ('{0}.{1}{2} {3}' -f $breakdown, $orgWideText, $blockText, $notEvaluated).Trim()
+        }
+    }
 
     return [pscustomobject][ordered]@{
+        EvidenceScope             = $EvidenceScope
         EvidenceStatus            = $evidenceStatus
         MigrationTreatment        = $treatment
         MailboxCount              = $rows.Count
@@ -201,6 +267,6 @@ function Get-ArrayaMailboxHoldTreatment {
         UnavailableSignals        = @($holdEvidence.UnavailableSignals)
         MissingEvidence           = (@($missing.ToArray()) -join ' ')
         DecisionKey               = 'CP-01'
-        Summary                   = ('{0}.{1}{2} {3}' -f $breakdown, $orgWideText, $blockText, $notEvaluated).Trim()
+        Summary                   = $summary
     }
 }

@@ -39,13 +39,28 @@ function Get-ArrayaMigrationCriteriaCatalog {
         MissingEvidenceBehavior = @('PresalesBlocker', 'NeedsData', 'PlanningGap', 'Nonblocking')
         Impact                  = @('Readiness', 'Planning', 'Reference')
     }
-    $allowedRules = @('Dataset', 'DirectorySync', 'ExchangeHybrid', 'MailboxHolds', 'MailboxDelegates', 'MailboxSizing', 'Unsupported')
+    $allowedRules = @('Dataset', 'DirectorySync', 'ExchangeHybrid', 'MailboxHolds', 'OrganizationRetentionPolicies', 'MailboxDelegates', 'MailboxSizing', 'Unsupported')
 
     $problems = New-Object System.Collections.Generic.List[string]
     $seenIds = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $decisionText = @{}
     foreach ($criterion in @($catalog.Criteria)) {
         $id = [string]$criterion.CriterionId
         if (-not $seenIds.Add($id)) { $problems.Add("Duplicate CriterionId '$id'.") | Out-Null }
+
+        # A decision key names one decision. Two criteria that cite the same key with different
+        # decision text would let confirming one decision silently close the other.
+        $decisionKey = ([string]$criterion.DecisionKey).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($decisionKey)) {
+            $text = ([string]$criterion.RequiredDecision).Trim()
+            $normalizedKey = $decisionKey.ToUpperInvariant()
+            if (-not $decisionText.ContainsKey($normalizedKey)) {
+                $decisionText[$normalizedKey] = @{ Text = $text; CriterionId = $id }
+            }
+            elseif (-not [string]::Equals($decisionText[$normalizedKey].Text, $text, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $problems.Add("Criterion '$id' cites decision key '$decisionKey' with a RequiredDecision that differs from criterion '$($decisionText[$normalizedKey].CriterionId)'.") | Out-Null
+            }
+        }
         foreach ($field in $requiredFields) {
             if ($null -eq $criterion.PSObject.Properties[$field] -or $null -eq $criterion.$field -or ($criterion.$field -is [string] -and [string]::IsNullOrWhiteSpace($criterion.$field))) {
                 $problems.Add("Criterion '$id' is missing '$field'.") | Out-Null

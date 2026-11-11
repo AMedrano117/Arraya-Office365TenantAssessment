@@ -257,7 +257,7 @@ Every run that includes `Presales` or `TenantToTenantMigration`, alone or combin
 | `CollectorState` | `CompleteWithRecords`, `CompleteEmpty`, `Partial`, `Failed`, `Unavailable`, `NotRequested`, `Unsupported`, `NotApplicable`, `Unknown`, or `SkippedByProfile` |
 | `EvidenceStatus` | `Ready` only for a complete collector state; otherwise `Partial`, `Failed`, `NeedsData`, or `NotApplicable` |
 | `PresalesClassification` | `PresalesBlocker`, `NeedsData`, `PlanningGap`, or `Nonblocking` |
-| `MigrationTreatment` | Mailbox hold criterion only: `Clear`, `RequiresPreservationPlan`, `RequiresComplianceValidation`, `RequiresLegalDecision`, `BlocksMigration`, or `NotEstablished` |
+| `MigrationTreatment` | Mailbox-level hold and organization-wide retention policy criteria only: `Clear`, `RequiresPreservationPlan`, `RequiresComplianceValidation`, `RequiresLegalDecision`, `BlocksMigration`, or `NotEstablished` |
 | `RequiredDecision`, `DecisionKey`, `BlockerImpact`, `ResolutionEvidence`, `ResponsibleRole` | What is blocked, why it matters, what closes it, and who owns it |
 | `CurrentStatus`, `ActionId`, `Action` | `Blocker`, `Needs Data`, `Needs Input`, `Review`, `Ready`, `Confirmed`, or `Not Applicable`, and one action per distinct condition |
 
@@ -265,6 +265,8 @@ Rules the register applies:
 
 - A `PresalesBlocker` is raised only when required evidence is missing for a decision Presales cannot make without it. Missing optional evidence is shown but never blocks. Evidence that no collector gathers is a `PlanningGap`.
 - Hold evidence and migration treatment are separate. Holds do not make evidence unready, and ready evidence is not clearance. `RequiresLegalDecision` means a legal owner must decide; the assessment never records that decision. `BlocksMigration` is raised only when a mailbox's confirmed migration method is documented as incompatible with its holds.
+- Mailbox-level holds and organization-wide retention policies are separate criteria. Mailbox hold fields come from the Exchange mailbox collection, so a profile that does not collect Purview (Presales, or the cutover collection scope) still establishes them; the organization-wide policy row then shows `SkippedByProfile` and `Needs Data` instead of blocking.
+- A decision key names one decision: every criterion that cites a key states the same required decision, and the catalog fails to load otherwise.
 - Combined profiles merge only criteria with identical meaning, scope, population, period, decision, owner, and closure evidence. The strictest requirement wins. Each criterion is evaluated against its own evidence, so one profile never fills another profile's gap.
 - Skipped and unsupported collectors stay visible.
 

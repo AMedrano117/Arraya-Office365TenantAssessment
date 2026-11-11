@@ -146,6 +146,27 @@ Describe 'T2T profile composition and evidence states' {
             { Get-ArrayaMigrationCriteriaCatalog -Path $path } | Should -Throw '*must state*RequiredDecision*'
         }
 
+        It 'rejects a catalog that cites one decision key for two different decisions' {
+            $path = Join-Path $TestDrive 'conflicting-key-catalog.json'
+            $first = New-SyntheticCriterion -Id 'A' -Profile 'Presales' -DecisionKey 'ID-02'
+            $second = New-SyntheticCriterion -Id 'B' -Profile 'TenantToTenantMigration' -DecisionKey 'ID-02'
+            $second.RequiredDecision = 'A different decision'
+            New-SyntheticCatalog @($first, $second) | ConvertTo-Json -Depth 8 | Set-Content -Path $path
+            { Get-ArrayaMigrationCriteriaCatalog -Path $path } | Should -Throw "*decision key 'ID-02'*differs*"
+        }
+
+        It 'cites ID-02 only for the identity mapping decision' {
+            foreach ($criterion in @((Get-ArrayaMigrationCriteriaCatalog).Criteria | Where-Object { $_.DecisionKey -eq 'ID-02' })) {
+                $criterion.RequiredDecision | Should -Match 'source-to-target' -Because "$($criterion.CriterionId) cites ID-02"
+            }
+            @((Get-ArrayaMigrationCriteriaCatalog).Criteria | Where-Object { $_.SemanticKey -eq 'identity.directory-sync-state' -and $_.DecisionKey }).Count | Should -Be 0
+        }
+
+        It 'matches the native cross-tenant method only by an explicit method name' {
+            $patterns = @((Get-ArrayaMigrationCriteriaCatalog).HoldMethodRules | ForEach-Object { $_.MethodPatterns })
+            $patterns | Should -Not -Contain 'new-migrationbatch' -Because 'the cmdlet also runs hybrid, IMAP, staged, and cutover migrations'
+        }
+
         It 'resolves requested profiles from merged labels in canonical order' {
             Resolve-ArrayaRequestedOutputProfiles -OutputProfile 'Presales' -OutputProfileLabel 'Export-Merged(TenantToTenantMigration+Presales)' | Should -Be @('Presales', 'TenantToTenantMigration')
             Resolve-ArrayaRequestedOutputProfiles -OutputProfile 'TenantToTenantMigration' -OutputProfileLabel 'TenantToTenantMigration' | Should -Be @('TenantToTenantMigration')
@@ -169,6 +190,14 @@ Describe 'T2T profile composition and evidence states' {
             $sync[0].Profile | Should -Be 'Presales'
             $sync[0].ContributingProfiles | Should -Be @('TenantToTenantMigration')
             $sync[0].SourceCriterionIds | Should -Be @('PS-ID-001', 'T2T-ID-001')
+        }
+
+        It 'merges the split hold criteria across profiles into one mailbox row and one policy row' {
+            $holds = @(Resolve-ArrayaMigrationCriteria -OutputProfile @('Presales', 'TenantToTenantMigration') | Where-Object { $_.SemanticKey -like 'compliance.*' -and $_.EvidenceRule -in @('MailboxHolds', 'OrganizationRetentionPolicies') })
+            $holds.Count | Should -Be 2
+            @($holds | ForEach-Object { $_.SourceCriterionIds -join '; ' }) | Should -Be @('PS-CMP-001; T2T-CMP-001', 'PS-CMP-002; T2T-CMP-002')
+            (@($holds | Where-Object { $_.EvidenceRule -eq 'MailboxHolds' })[0]).MissingEvidenceBehavior | Should -Be 'PresalesBlocker'
+            (@($holds | Where-Object { $_.EvidenceRule -eq 'OrganizationRetentionPolicies' })[0]).MissingEvidenceBehavior | Should -Be 'NeedsData'
         }
 
         It 'keeps criteria with the same key but a different scope or meaning separate' {
@@ -441,6 +470,51 @@ Describe 'T2T profile composition and evidence states' {
             $unconfirmed = New-CompleteStore -Mailboxes @((New-Mailbox -Alias 'lit' -Holds @{ LitigationHoldEnabled = $true }))
             $unconfirmed.MigrationScopeDecisions = @([pscustomobject]@{ DecisionKey = 'MAILBOX:lit@contoso.example'; Status = 'Needs Input'; MigrationTool = 'Microsoft cross-tenant mailbox migration' })
             (Get-ArrayaMailboxHoldTreatment -TenantStatsHash $unconfirmed).MigrationTreatment | Should -Be 'RequiresLegalDecision'
+
+            $genericBatch = New-CompleteStore -Mailboxes @((New-Mailbox -Alias 'lit' -Holds @{ LitigationHoldEnabled = $true }))
+            $genericBatch.MigrationScopeDecisions = @([pscustomobject]@{ DecisionKey = 'MAILBOX:lit@contoso.example'; Status = 'Approved'; MigrationTool = 'New-MigrationBatch (IMAP)' })
+            (Get-ArrayaMailboxHoldTreatment -TenantStatsHash $genericBatch).MigrationTreatment | Should -Be 'RequiresLegalDecision' -Because 'a generic migration batch is not the native cross-tenant method'
+        }
+
+        It 'establishes mailbox-level hold evidence without Purview and reports organization-wide policies separately' {
+            $store = New-CompleteStore
+            $store.Remove('RetentionPolicies')
+            $store.CollectorPlanResults = @($store.CollectorPlanResults | Where-Object { $_.Name -ne 'Purview retention/DLP policies' }) + @(New-Step 'Purview retention/DLP policies' -Status 'Skipped' -Message 'Governance compliance collection is disabled for this profile.')
+
+            $mailboxLevel = Get-ArrayaMailboxHoldTreatment -TenantStatsHash $store -EvidenceScope 'MailboxFields'
+            $mailboxLevel.EvidenceStatus | Should -Be 'Ready'
+            $mailboxLevel.MigrationTreatment | Should -Be 'Clear'
+            $mailboxLevel.Summary | Should -Match 'reported separately'
+
+            $policies = Get-ArrayaMailboxHoldTreatment -TenantStatsHash $store -EvidenceScope 'OrganizationPolicies'
+            $policies.EvidenceStatus | Should -Be 'NeedsData'
+            $policies.MigrationTreatment | Should -Be 'NotEstablished'
+            $policies.MissingEvidence | Should -Match 'skipped'
+
+            (Get-ArrayaMailboxHoldTreatment -TenantStatsHash $store).MigrationTreatment | Should -Be 'NotEstablished' -Because 'the combined view still needs both sources'
+        }
+
+        It 'reports an organization-wide retention policy on the policy row, not the mailbox row' {
+            $store = New-CompleteStore
+            $store.RetentionPolicies = @{ '001-All' = [pscustomobject]@{ PolicyName = 'Synthetic retain all'; Enabled = $true; ExchangeLocation = 'All' } }
+            $rows = @(New-ArrayaMigrationCriteriaRegister -TenantStatsHash $store -OutputProfile 'TenantToTenantMigration')
+            (Get-Row $rows 'T2T-CMP-001').MigrationTreatment | Should -Be 'Clear'
+            $policyRow = Get-Row $rows 'T2T-CMP-002'
+            $policyRow.EvidenceStatus | Should -Be 'Ready'
+            $policyRow.MigrationTreatment | Should -Be 'RequiresComplianceValidation'
+            $policyRow.Notes | Should -Match 'Synthetic retain all'
+
+            $store.MigrationScopeDecisions = @([pscustomobject]@{ DecisionKey = 'MAILBOX:avery@contoso.example'; Status = 'Approved'; MigrationTool = 'Microsoft cross-tenant mailbox migration' })
+            (Get-Row @(New-ArrayaMigrationCriteriaRegister -TenantStatsHash $store -OutputProfile 'TenantToTenantMigration') 'T2T-CMP-002').MigrationTreatment | Should -Be 'BlocksMigration'
+        }
+
+        It 'writes each missing hold source as its own sentence' {
+            $store = New-CompleteStore -Mailboxes @((New-Mailbox -Alias 'bare' -OmitHoldFields))
+            $store.Remove('RetentionPolicies')
+            $store.CollectorPlanResults = @($store.CollectorPlanResults | Where-Object { $_.Name -ne 'Purview retention/DLP policies' })
+            $missing = (Get-ArrayaMailboxHoldTreatment -TenantStatsHash $store).MissingEvidence
+            $missing | Should -Match '\. Organization-wide retention policies were not evaluated'
+            $missing | Should -Match '\.$'
         }
     }
 
@@ -467,6 +541,35 @@ Describe 'T2T profile composition and evidence states' {
             (Get-Row $rows 'PS-EXO-003').PresalesClassification | Should -Be 'NeedsData' -Because 'collectible evidence for a non-gating decision'
             (Get-Row $rows 'PS-ID-002').PresalesClassification | Should -Be 'PlanningGap' -Because 'not collectible; needs customer input'
             @($rows | Where-Object { $_.PresalesClassification -eq 'PresalesBlocker' }).Count | Should -Be 0
+        }
+
+        It 'does not block a Presales-only run on Purview evidence the Presales profile does not collect' {
+            $store = New-CompleteStore
+            $store.Remove('RetentionPolicies')
+            $store.CollectorPlanResults = @($store.CollectorPlanResults | Where-Object { $_.Name -ne 'Purview retention/DLP policies' }) + @(New-Step 'Purview retention/DLP policies' -Status 'Skipped' -Message 'Governance compliance collection is disabled for this profile.')
+            $rows = @(New-ArrayaMigrationCriteriaRegister -TenantStatsHash $store -OutputProfile 'Presales')
+
+            $mailboxRow = Get-Row $rows 'PS-CMP-001'
+            $mailboxRow.EvidenceStatus | Should -Be 'Ready'
+            $mailboxRow.MigrationTreatment | Should -Be 'Clear'
+            $mailboxRow.PresalesClassification | Should -Not -Be 'PresalesBlocker'
+
+            $policyRow = Get-Row $rows 'PS-CMP-002'
+            $policyRow.CollectorState | Should -Be 'SkippedByProfile'
+            $policyRow.EvidenceStatus | Should -Be 'NeedsData'
+            $policyRow.PresalesClassification | Should -Be 'NeedsData'
+            $policyRow.CurrentStatus | Should -Be 'Needs Data'
+
+            @($rows | Where-Object { $_.PresalesClassification -eq 'PresalesBlocker' }).Count | Should -Be 0
+        }
+
+        It 'still blocks Presales when mailbox hold fields are missing' {
+            $store = New-CompleteStore -Mailboxes @((New-Mailbox -Alias 'bare' -OmitHoldFields))
+            $row = Get-Row @(New-ArrayaMigrationCriteriaRegister -TenantStatsHash $store -OutputProfile 'Presales') 'PS-CMP-001'
+            $row.EvidenceStatus | Should -Be 'Partial'
+            $row.PresalesClassification | Should -Be 'PresalesBlocker'
+            $row.CurrentStatus | Should -Be 'Blocker'
+            $row.MissingEvidence | Should -Match 'Mailbox hold fields not collected'
         }
 
         It 'never blocks Presales on a missing optional input' {
