@@ -126,10 +126,20 @@ Describe 'T2T P0 correctness' {
             $state.RowCount | Should -Be 1
         }
 
-        It 'treats a present but empty dataset as collected when no collector status contradicts it' {
+        It 'does not treat a present but empty dataset as collected when nothing shows the collection completed' {
+            # Tightened in the profile-composition pass: CompleteEmpty needs a completed
+            # collector step or the collector's own record, not just an empty container.
             $state = Get-ArrayaDatasetEvidenceState -TenantStatsHash @{ PublicFolderDetails = @{} } -DatasetKey 'PublicFolderDetails'
-            $state.State | Should -Be 'Collected'
+            $state.State | Should -Be 'Unknown'
+            $state.CollectorState | Should -Be 'Unknown'
             $state.RowCount | Should -Be 0
+        }
+
+        It 'treats a present but empty dataset as complete when its collector step completed' {
+            $store = @{ PublicFolderDetails = @{}; CollectorPlanResults = @(New-T2TCollectorResult -Name 'Public folders') }
+            $state = Get-ArrayaDatasetEvidenceState -TenantStatsHash $store -DatasetKey 'PublicFolderDetails' -CollectorStepName 'Public folders'
+            $state.State | Should -Be 'Collected'
+            $state.CollectorState | Should -Be 'CompleteEmpty'
         }
 
         It 'reports NotCollected when the dataset is absent' {

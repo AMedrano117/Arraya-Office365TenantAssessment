@@ -4,22 +4,33 @@ function Get-ArrayaDatasetEvidenceState {
         Tells whether a dataset in the assessment store was actually collected.
 
     .DESCRIPTION
-        A count of zero only means "none exist" when the data behind it was collected. This
-        function separates the cases that a bare row count hides:
+        A count of zero only means "none exist" when the data behind it was collected
+        completely. This function returns two views of the same evidence:
 
-          Collected    - rows exist, or the dataset is present and nothing contradicts it.
-          NotCollected - the dataset is absent, or its collector step was skipped.
-          Failed       - the collector step failed.
-          Unknown      - the collector step finished without producing the dataset, or the
-                         dataset is empty although it cannot legitimately be empty.
+        CollectorState, the detailed state:
 
-        Inputs are the dataset itself and, when present, the CollectorPlanResults rows that
-        Invoke-ArrayaCollectorPlan records. Stores without collector results (older snapshots,
-        hand-built data) fall back to dataset presence.
+          CompleteWithRecords - rows exist.
+          CompleteEmpty       - the collector answered with no rows, and completeness is known
+                                from a completed collector step or the collector's own record.
+          Partial             - the collector recorded that only part of the source answered.
+          Failed              - the collector step failed, or the collector recorded a failure.
+          Unavailable         - the source could not be reached (permission, session, missing
+                                dependency).
+          NotRequested        - collector results exist, but no step produced this dataset.
+          Unsupported         - the dataset is not supported in this collection mode.
+          SkippedByProfile    - the output profile skipped the collector step.
+          Unknown             - nothing establishes whether the dataset was collected.
 
-        Limitation: a collector that catches its own errors still reports Completed, so an
-        internal failure that leaves an empty container is indistinguishable from an empty
-        result here. Use -EmptyIsUnexpected for datasets that always have at least one entry.
+        State, the summary kept for existing callers:
+
+          Collected (CompleteWithRecords, CompleteEmpty, or rows present), Failed (Failed,
+          Unavailable), NotCollected (NotRequested, Unsupported, SkippedByProfile), Unknown.
+
+        Inputs, in order of authority: rows in the dataset; the collector's record in
+        CollectorEvidenceStates (see Set-ArrayaCollectorEvidenceState); the matching
+        CollectorPlanResults step; and presence of the dataset. A present but empty dataset
+        with no collector record and no step result is Unknown: nothing shows the collection
+        was complete.
 
     .PARAMETER CollectorStepName
         Name, or leading part of the name, of the collector step(s) that produce the dataset.
@@ -37,26 +48,41 @@ function Get-ArrayaDatasetEvidenceState {
         [Parameter(Mandatory = $true)]
         [string]$DatasetKey,
         [Parameter(Mandatory = $false)]
+        [AllowEmptyCollection()]
         [string[]]$CollectorStepName = @(),
         [Parameter(Mandatory = $false)]
         [switch]$EmptyIsUnexpected
     )
 
+    $legacyStateMap = @{
+        CompleteWithRecords = 'Collected'
+        CompleteEmpty       = 'Collected'
+        Partial             = 'Unknown'
+        Failed              = 'Failed'
+        Unavailable         = 'Failed'
+        NotRequested        = 'NotCollected'
+        Unsupported         = 'NotCollected'
+        SkippedByProfile    = 'NotCollected'
+        Unknown             = 'Unknown'
+    }
+
     $newResult = {
-        param([string]$State, [int]$RowCount, [string]$Reason, [string]$StepName, [string]$StepStatus)
+        param([string]$CollectorState, [int]$RowCount, [string]$Reason, [string]$StepName, [string]$StepStatus, [string]$StateOverride)
+        $state = if ([string]::IsNullOrWhiteSpace($StateOverride)) { $legacyStateMap[$CollectorState] } else { $StateOverride }
         [pscustomobject][ordered]@{
-            DatasetKey   = $DatasetKey
-            State        = $State
-            IsCollected  = ($State -eq 'Collected')
-            RowCount     = $RowCount
-            Reason       = $Reason
-            CollectorStep = $StepName
+            DatasetKey      = $DatasetKey
+            State           = $state
+            CollectorState  = $CollectorState
+            IsCollected     = ($state -eq 'Collected')
+            RowCount        = $RowCount
+            Reason          = $Reason
+            CollectorStep   = $StepName
             CollectorStatus = $StepStatus
         }
     }
 
     if ($null -eq $TenantStatsHash) {
-        return (& $newResult 'NotCollected' 0 'No assessment data was supplied.' $null $null)
+        return (& $newResult 'Unknown' 0 'No assessment data was supplied.' $null $null 'NotCollected')
     }
 
     $isPresent = $TenantStatsHash.Contains($DatasetKey) -and $null -ne $TenantStatsHash[$DatasetKey]
@@ -74,20 +100,50 @@ function Get-ArrayaDatasetEvidenceState {
         }
     }
 
-    # Rows are authoritative: whatever a step reported, the data exists.
+    $record = $null
+    if ($TenantStatsHash.Contains('CollectorEvidenceStates') -and ($TenantStatsHash['CollectorEvidenceStates'] -is [System.Collections.IDictionary])) {
+        $recordContainer = $TenantStatsHash['CollectorEvidenceStates']
+        if ($recordContainer.Contains($DatasetKey)) {
+            $record = $recordContainer[$DatasetKey]
+        }
+    }
+    $recordedState = [string](Get-ArrayaObjectValue -Object $record -Names @('State'))
+    $recordedReason = [string](Get-ArrayaObjectValue -Object $record -Names @('Reason'))
+    $recordedCollector = [string](Get-ArrayaObjectValue -Object $record -Names @('Collector'))
+    $recordSuffix = if ([string]::IsNullOrWhiteSpace($recordedReason)) { '' } else { ": $recordedReason" }
+
+    # Rows are authoritative that data exists, but a collector that recorded a partial or
+    # failed run still has gaps behind those rows.
     if ($rowCount -gt 0) {
-        return (& $newResult 'Collected' $rowCount 'Dataset contains collected rows.' $null $null)
+        if ($recordedState -in @('Partial', 'Failed', 'Unavailable')) {
+            return (& $newResult 'Partial' $rowCount ("Rows were collected, but the collector recorded an incomplete run{0}" -f $recordSuffix) $recordedCollector $recordedState 'Collected')
+        }
+        return (& $newResult 'CompleteWithRecords' $rowCount 'Dataset contains collected rows.' $null $null $null)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($recordedState)) {
+        switch ($recordedState) {
+            { $_ -in @('CompleteWithRecords', 'CompleteEmpty') } {
+                if ($EmptyIsUnexpected) {
+                    return (& $newResult 'Unknown' 0 ("'{0}' is empty although every tenant has at least one entry." -f $DatasetKey) $recordedCollector $recordedState $null)
+                }
+                return (& $newResult 'CompleteEmpty' 0 ("The collector answered and returned no rows{0}" -f $recordSuffix) $recordedCollector $recordedState $null)
+            }
+            'Partial' { return (& $newResult 'Partial' 0 ("The collector recorded a partial run{0}" -f $recordSuffix) $recordedCollector $recordedState $null) }
+            'Failed' { return (& $newResult 'Failed' 0 ("The collector recorded a failure{0}" -f $recordSuffix) $recordedCollector $recordedState $null) }
+            'Unavailable' { return (& $newResult 'Unavailable' 0 ("The source was unavailable{0}" -f $recordSuffix) $recordedCollector $recordedState $null) }
+            'Unsupported' { return (& $newResult 'Unsupported' 0 ("The source is not supported in this collection mode{0}" -f $recordSuffix) $recordedCollector $recordedState $null) }
+        }
     }
 
     $planRows = @()
     if ($TenantStatsHash.Contains('CollectorPlanResults') -and $null -ne $TenantStatsHash['CollectorPlanResults']) {
         $planValue = $TenantStatsHash['CollectorPlanResults']
-        $planRows = if ($planValue -is [System.Collections.IDictionary]) { @($planValue.Values) } else { @($planValue) }
+        $planRows = @(if ($planValue -is [System.Collections.IDictionary]) { $planValue.Values } else { $planValue }) | Where-Object { $null -ne $_ }
     }
 
     $matchedStep = $null
     foreach ($planRow in $planRows) {
-        if ($null -eq $planRow) { continue }
         $stepName = [string](Get-ArrayaObjectValue -Object $planRow -Names @('Name'))
         $producedKeys = @(Get-ArrayaObjectValue -Object $planRow -Names @('ProducedKeys')) | ForEach-Object { [string]$_ }
         $nameMatches = $false
@@ -111,34 +167,39 @@ function Get-ArrayaDatasetEvidenceState {
         $messageSuffix = if ([string]::IsNullOrWhiteSpace($stepMessage)) { '' } else { ": $stepMessage" }
         switch ($stepStatus) {
             'Skipped' {
-                return (& $newResult 'NotCollected' 0 ("Collector step '{0}' was skipped{1}" -f $stepName, $messageSuffix) $stepName $stepStatus)
+                if ($stepMessage -match '(?i)missing dependency') {
+                    return (& $newResult 'Unavailable' 0 ("Collector step '{0}' could not run{1}" -f $stepName, $messageSuffix) $stepName $stepStatus $null)
+                }
+                if ($stepMessage -match '(?i)requires microsoft graph sdk collection mode|not supported') {
+                    return (& $newResult 'Unsupported' 0 ("Collector step '{0}' is not supported in this collection mode{1}" -f $stepName, $messageSuffix) $stepName $stepStatus $null)
+                }
+                return (& $newResult 'SkippedByProfile' 0 ("Collector step '{0}' was skipped{1}" -f $stepName, $messageSuffix) $stepName $stepStatus $null)
             }
             'Failed' {
-                return (& $newResult 'Failed' 0 ("Collector step '{0}' failed{1}" -f $stepName, $messageSuffix) $stepName $stepStatus)
+                return (& $newResult 'Failed' 0 ("Collector step '{0}' failed{1}" -f $stepName, $messageSuffix) $stepName $stepStatus $null)
             }
             'Completed' {
                 if (-not $isPresent) {
-                    return (& $newResult 'Unknown' 0 ("Collector step '{0}' completed but did not produce '{1}'." -f $stepName, $DatasetKey) $stepName $stepStatus)
+                    return (& $newResult 'Unknown' 0 ("Collector step '{0}' completed but did not produce '{1}'." -f $stepName, $DatasetKey) $stepName $stepStatus $null)
                 }
+                if ($EmptyIsUnexpected) {
+                    return (& $newResult 'Unknown' 0 ("'{0}' is empty although every tenant has at least one entry; treat it as not collected." -f $DatasetKey) $stepName $stepStatus $null)
+                }
+                return (& $newResult 'CompleteEmpty' 0 ("Collector step '{0}' completed and returned no rows." -f $stepName) $stepName $stepStatus $null)
             }
             default {
-                return (& $newResult 'Unknown' 0 ("Collector step '{0}' reported status '{1}'." -f $stepName, $stepStatus) $stepName $stepStatus)
+                return (& $newResult 'Unknown' 0 ("Collector step '{0}' reported status '{1}'." -f $stepName, $stepStatus) $stepName $stepStatus $null)
             }
         }
+    }
 
-        if ($EmptyIsUnexpected) {
-            return (& $newResult 'Unknown' 0 ("'{0}' is empty although every tenant has at least one entry; treat it as not collected." -f $DatasetKey) $stepName $stepStatus)
-        }
-        return (& $newResult 'Collected' 0 ("Collector step '{0}' completed and returned no rows." -f $stepName) $stepName $stepStatus)
+    if ($planRows.Count -gt 0 -and -not $isPresent) {
+        return (& $newResult 'NotRequested' 0 ("No collector step in this run produced '{0}'." -f $DatasetKey) $null $null $null)
     }
 
     if (-not $isPresent) {
-        return (& $newResult 'NotCollected' 0 ("'{0}' is not present in the assessment data." -f $DatasetKey) $null $null)
+        return (& $newResult 'Unknown' 0 ("'{0}' is not present in the assessment data." -f $DatasetKey) $null $null 'NotCollected')
     }
 
-    if ($EmptyIsUnexpected) {
-        return (& $newResult 'Unknown' 0 ("'{0}' is empty although every tenant has at least one entry; treat it as not collected." -f $DatasetKey) $null $null)
-    }
-
-    return (& $newResult 'Collected' 0 ("'{0}' is present and empty; no collector status was recorded." -f $DatasetKey) $null $null)
+    return (& $newResult 'Unknown' 0 ("'{0}' is present and empty, but no collector result shows the collection was complete." -f $DatasetKey) $null $null $null)
 }

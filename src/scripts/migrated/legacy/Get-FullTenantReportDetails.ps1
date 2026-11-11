@@ -354,6 +354,11 @@ $requiredCommonCommands = @(
     'Get-ArrayaExchangeHybridEvidence',
     'Get-ArrayaMailExchangerClassification',
     'Get-ArrayaMailboxHoldEvidence',
+    'Get-ArrayaMailboxHoldTreatment',
+    'Get-ArrayaMigrationCriteriaCatalog',
+    'New-ArrayaMigrationCriteriaRegister',
+    'Resolve-ArrayaRequestedOutputProfiles',
+    'Set-ArrayaCollectorEvidenceState',
     'Get-ArrayaCollectorCacheValue',
     'Set-ArrayaCollectorCacheValue',
     'Invoke-ArrayaGraphCollectionRequest',
@@ -10473,6 +10478,7 @@ function Get-AllOffice365Domains {
     function Get-RecipientCounts {
         param (
             [Parameter(Mandatory = $true)]
+            [AllowEmptyCollection()]
             [array]$Recipients, # Array of recipient objects
 
             [Parameter(Mandatory = $true)]
@@ -10622,6 +10628,8 @@ function Get-AllOffice365Domains {
                 Write-Log -Type Error -Message "[Get-AllOffice365Domains] Exchange Online not connected for other reasons. $($_.Exception.Message)" -ExportFileLocation $ExportDetails
                 Write-Error $_.Exception.Message
             }
+            $exchangeOnline = $False
+            $domainExchangeFailure = $_.Exception.Message
         }
         # Get all Remote and Accepted domains
         $totalCount = $domains.count
@@ -10790,9 +10798,44 @@ function Get-AllOffice365Domains {
             # Add to the results Hash Table
             $script:tenantStatsHash["RemoteDomains"][$domain.Identity] = $domain
         }
+
+        # Domains come from Graph; accepted-domain types, recipient counts, and remote domains
+        # come from Exchange Online. Record each part so a failed Exchange call is not read as
+        # "no remote domains" or "no recipients on this domain".
+        $exchangeFailureReason = if ([string]::IsNullOrWhiteSpace([string]$domainExchangeFailure)) { 'Exchange Online accepted-domain and remote-domain cmdlets were unavailable.' } else { [string]$domainExchangeFailure }
+        if ($exchangeOnline -eq $true) {
+            Set-ArrayaCollectorEvidenceState -TenantStatsHash $script:tenantStatsHash -DatasetKey 'RemoteDomains' -State $(if ($script:tenantStatsHash["RemoteDomains"].Count -gt 0) { 'CompleteWithRecords' } else { 'CompleteEmpty' }) -Collector 'Get-AllOffice365Domains' | Out-Null
+        }
+        else {
+            Set-ArrayaCollectorEvidenceState -TenantStatsHash $script:tenantStatsHash -DatasetKey 'RemoteDomains' -State 'Unavailable' -Reason $exchangeFailureReason -Collector 'Get-AllOffice365Domains' | Out-Null
+        }
+        $domainRowCount = $script:tenantStatsHash["Domains"].Count
+        $domainState = if (@($domains).Count -gt 0 -and $domainRowCount -lt @($domains).Count) {
+            'Partial'
+        }
+        elseif ($exchangeOnline -ne $true -and $domainRowCount -gt 0) {
+            'Partial'
+        }
+        elseif ($domainRowCount -gt 0) {
+            'CompleteWithRecords'
+        }
+        else {
+            'CompleteEmpty'
+        }
+        $domainReason = if ($domainRowCount -lt @($domains).Count) {
+            '{0} of {1} domain(s) could not be processed.' -f (@($domains).Count - $domainRowCount), @($domains).Count
+        }
+        elseif ($exchangeOnline -ne $true) {
+            "Graph domains were collected; Exchange domain type and recipient counts were not. $exchangeFailureReason"
+        }
+        else {
+            ''
+        }
+        Set-ArrayaCollectorEvidenceState -TenantStatsHash $script:tenantStatsHash -DatasetKey 'Domains' -State $domainState -Reason $domainReason -Collector 'Get-AllOffice365Domains' | Out-Null
     }
     catch {
         Write-Log -Type ERROR -Message "An error occurred in running Get-AllOffice365Domains function. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
+        Set-ArrayaCollectorEvidenceState -TenantStatsHash $script:tenantStatsHash -DatasetKey 'Domains' -State $(if ($script:tenantStatsHash["Domains"].Count -gt 0) { 'Partial' } else { 'Failed' }) -Reason $_.Exception.Message -Collector 'Get-AllOffice365Domains' | Out-Null
     }
     finally {
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
@@ -11264,10 +11307,16 @@ function Prepare-AssessmentExportData {
         [string]$script:ProfileCollectionPlan.CollectionScopePolicy -eq 'Presales'
     )
 
+    # The criteria register is built for every run that includes a migration profile,
+    # including combined selections, after any profile shaping below.
+    $requestedOutputProfiles = @(Resolve-ArrayaRequestedOutputProfiles -OutputProfile $OutputProfile -OutputProfileLabel $script:EffectiveOutputProfileLabel)
+    $buildCriteriaRegister = @($requestedOutputProfiles | Where-Object { $_ -in @('Presales', 'TenantToTenantMigration') }).Count -gt 0
+
     if (
         (-not $BuildCombinedUserMailboxProjection -or -not $RequiresFilteredExportSnapshot) -and
         -not $isTenantToTenantCutover -and
-        -not $isPresalesScope
+        -not $isPresalesScope -and
+        -not $buildCriteriaRegister
     ) {
         return
     }
@@ -11284,6 +11333,11 @@ function Prepare-AssessmentExportData {
     elseif ($isPresalesScope) {
         Write-AssessmentConsoleSubstep -Message 'Export preparation: pre-sales migration scope and licensing'
         Update-MigrationScopeExportData -TenantStatsStore $script:tenantStatsHash
+    }
+
+    if ($buildCriteriaRegister) {
+        Write-AssessmentConsoleSubstep -Message ('Export preparation: migration criteria register ({0})' -f ($requestedOutputProfiles -join ', '))
+        $script:tenantStatsHash['MigrationCriteriaRegister'] = @(New-ArrayaMigrationCriteriaRegister -TenantStatsHash $script:tenantStatsHash -OutputProfile $requestedOutputProfiles)
     }
 }
 
@@ -13595,13 +13649,23 @@ function Update-MigrationPlanningRegisters {
         & $addReadinessCheck 'BitTitan optional TMB' 'BT-07' 'Document-library-to-Flex-Collaboration-License mapping completed' $true 'Blocker' 'Library-level inventory not collected' 'Customer library mapping; a SharePoint site count is not an FCL count' 'Map every in-scope Team/SharePoint document library and validate capacity before calculating FCL demand.' $null
     }
 
+    $presalesFlagBehavior = @{}
+    foreach ($catalogCriterion in @((Get-ArrayaMigrationCriteriaCatalog).Criteria | Where-Object { [string]$_.Profile -eq 'Presales' -and -not [string]::IsNullOrWhiteSpace([string]$_.ComplexityFlagItem) })) {
+        $presalesFlagBehavior[[string]$catalogCriterion.ComplexityFlagItem] = [string]$catalogCriterion.MissingEvidenceBehavior
+    }
     foreach ($complexityRow in $complexityRows) {
         $item = [string](Get-AssessmentExportPropertyValue -Record $complexityRow -Names @('Item'))
         $sourceStatus = [string](Get-AssessmentExportPropertyValue -Record $complexityRow -Names @('Status'))
         $flagKey = 'FLAG:{0}' -f (($item -replace '[^A-Za-z0-9]+', '-').Trim('-').ToLowerInvariant())
         $flagDecision = & $getDecision $flagKey $null
         $flagConfirmed = & $isDecisionConfirmed $flagDecision
-        $blocking = $sourceStatus -in @('Blocker', 'Needs Data')
+        # Missing evidence blocks the Presales quote only when the criteria catalog marks the
+        # decision it feeds as one Presales cannot make without it. Flags the catalog does not
+        # describe keep their existing behavior.
+        $blocking = $sourceStatus -eq 'Blocker' -or (
+            $sourceStatus -eq 'Needs Data' -and
+            (-not $presalesFlagBehavior.ContainsKey($item) -or $presalesFlagBehavior[$item] -eq 'PresalesBlocker')
+        )
         & $addReadinessCheck 'Complexity' $flagKey $item $blocking `
             $(if ($flagConfirmed) { 'Complete' } elseif ($blocking) { 'Blocker' } else { 'Condition' }) `
             (Get-AssessmentExportPropertyValue -Record $complexityRow -Names @('Value')) `
@@ -14496,22 +14560,38 @@ function Update-TenantToTenantMigrationExportData {
         }).Count
     $forwardingStatus = & $resolveMailboxStatus $mailboxesWithForwarding
 
-    # Litigation hold is one of several holds. Count every mailbox-level indicator the
-    # collector gathers, and never report "Ready": organization-wide retention policies and
-    # compliance tag holds are not collected, so zero indicators does not establish no hold.
-    $holdEvidence = Get-ArrayaMailboxHoldEvidence -Mailbox $mailboxPlanningRows
-    $mailboxesOnHold = [int]$holdEvidence.AnyHoldCount
-    $holdStatus = if ($mailboxesOnHold -gt 0) { 'Review' } else { 'Needs Data' }
-    $holdBreakdown = 'litigation hold: {0}; delay hold: {1}; in-place or retention-policy hold ids: {2}; retention hold (retention processing suspended): {3}' -f $holdEvidence.LitigationHoldCount, $holdEvidence.DelayHoldCount, $holdEvidence.InPlaceHoldCount, $holdEvidence.RetentionHoldCount
-    $holdChecklistValue = if (-not $mailboxEvidenceAvailable) { 'Mailbox inventory not collected' } else { '{0} mailbox(es) with mailbox-level hold indicators ({1})' -f $mailboxesOnHold, $holdBreakdown }
-    $holdNotes = 'Hold and retention signals can affect migration sequencing and validation.'
-    if (@($holdEvidence.EvaluatedSignals).Count -gt 0) {
-        $holdNotes += ' Evaluated mailbox fields: {0}.' -f (@($holdEvidence.EvaluatedSignals) -join ', ')
+    # Hold evidence and migration treatment are separate answers. Evidence status says how
+    # complete the hold sources are; treatment says what the holds found require. Hold
+    # presence never makes evidence unready, and ready evidence is not migration clearance.
+    $holdTreatment = Get-ArrayaMailboxHoldTreatment -TenantStatsHash $TenantStatsStore -Mailbox $mailboxPlanningRows
+    $mailboxesOnHold = [int]$holdTreatment.MailboxesWithHoldIndicators
+    $holdsFound = ($mailboxesOnHold -gt 0 -or @($holdTreatment.OrganizationWidePolicies).Count -gt 0)
+    $holdStatus = if ($holdTreatment.MigrationTreatment -eq 'BlocksMigration') {
+        'Blocker'
     }
-    if (@($holdEvidence.UnavailableSignals).Count -gt 0) {
-        $holdNotes += ' Not collected for every mailbox in this run: {0}.' -f (@($holdEvidence.UnavailableSignals) -join ', ')
+    elseif ($holdsFound) {
+        'Review'
     }
-    $holdNotes += ' {0} A count of zero does not establish that no hold applies.' -f $holdEvidence.NotEvaluated
+    elseif ($holdTreatment.EvidenceStatus -in @('Ready', 'NotApplicable')) {
+        'Ready'
+    }
+    else {
+        'Needs Data'
+    }
+    $holdChecklistValue = if (-not $mailboxEvidenceAvailable) { 'Mailbox inventory not collected' } else { '{0} mailbox(es) with mailbox-level hold indicators. Evidence status: {1}. Migration treatment: {2}.' -f $mailboxesOnHold, $holdTreatment.EvidenceStatus, $holdTreatment.MigrationTreatment }
+    $holdNotes = 'Hold and retention signals can affect migration sequencing and validation. {0}' -f $holdTreatment.Summary
+    if (@($holdTreatment.EvaluatedSignals).Count -gt 0) {
+        $holdNotes += ' Evaluated mailbox fields: {0}.' -f (@($holdTreatment.EvaluatedSignals) -join ', ')
+    }
+    if (@($holdTreatment.UnavailableSignals).Count -gt 0) {
+        $holdNotes += ' Not collected for every mailbox in this run: {0}.' -f (@($holdTreatment.UnavailableSignals) -join ', ')
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$holdTreatment.MissingEvidence)) {
+        $holdNotes += ' {0}' -f $holdTreatment.MissingEvidence
+    }
+    if ($holdTreatment.MigrationTreatment -eq 'RequiresLegalDecision') {
+        $holdNotes += ' A legal owner must decide the disposition; the assessment does not.'
+    }
 
     $delegateEvidenceIncomplete = (-not $mailboxEvidenceAvailable) -or (@($mailboxPlanningRows | Where-Object {
                 ([string](Get-AssessmentExportPropertyValue -Record $_ -Names @('FullAccessDelegateState'))) -ne 'Collected' -or
@@ -18290,6 +18370,9 @@ function Get-PurviewCompliancePolicies {
             if (-not [string]::IsNullOrWhiteSpace($purviewDiagnosticMessage)) {
                 $message = $purviewDiagnosticMessage
             }
+            foreach ($purviewDatasetKey in @('RetentionPolicies', 'DlpPolicies')) {
+                Set-ArrayaCollectorEvidenceState -TenantStatsHash $script:tenantStatsHash -DatasetKey $purviewDatasetKey -State 'Unavailable' -Reason $message -Collector 'Get-PurviewCompliancePolicies' | Out-Null
+            }
 
             return (New-AssessmentStepResult -Status Skipped -Message $message)
         }
@@ -18364,6 +18447,24 @@ function Get-PurviewCompliancePolicies {
         }
         catch {
             $issues.Add("DLP policy collection failed: $($_.Exception.Message)") | Out-Null
+        }
+
+        foreach ($purviewDataset in @(
+                @{ Key = 'RetentionPolicies'; Collected = $retentionCollected; Pattern = '(?i)retention' },
+                @{ Key = 'DlpPolicies'; Collected = $dlpCollected; Pattern = '(?i)dlp' }
+            )) {
+            $purviewRowCount = $script:tenantStatsHash[$purviewDataset.Key].Count
+            $purviewIssue = @($issues | Where-Object { $_ -match $purviewDataset.Pattern }) | Select-Object -First 1
+            $purviewState = if ($purviewDataset.Collected) {
+                if ($purviewRowCount -gt 0) { 'CompleteWithRecords' } else { 'CompleteEmpty' }
+            }
+            elseif ([string]$purviewIssue -match '(?i)not available|unavailable') {
+                'Unavailable'
+            }
+            else {
+                'Failed'
+            }
+            Set-ArrayaCollectorEvidenceState -TenantStatsHash $script:tenantStatsHash -DatasetKey $purviewDataset.Key -State $purviewState -Reason ([string]$purviewIssue) -Collector 'Get-PurviewCompliancePolicies' | Out-Null
         }
 
         $status = if ($issues.Count -eq 0) {

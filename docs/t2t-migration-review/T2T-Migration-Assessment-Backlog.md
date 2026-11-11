@@ -310,6 +310,8 @@ The text below is the specification written during the review. Where the impleme
 
 ### P1-18 Multi-profile composition
 
+Status: criteria composition is implemented (see [T2T-Composition-Status.md](T2T-Composition-Status.md)); combined runs build one deterministic register and show missing delegate evidence as `NotRequested`. Collection-level composition below is still open.
+
 - Problem: requesting several profiles runs once at the highest depth, but the collection scope and workbook policy reset to `Default`. When `TenantToTenantMigration` is combined with another profile, the tenant-to-tenant shaping is skipped, mailbox and calendar delegate permissions are not collected, the planning registers are not built, and the cutover pack is still written from unshaped data. A combined run can yield less migration evidence than the same profiles run separately. The limitation is documented in `RUN.md`; no code was changed.
 - Change surface: profile merge in `src/modules/Arraya.M365.AssessmentRunner/Arraya.M365.AssessmentRunner.psm1` (the block that sets `WorkbookExportPolicy`, `CollectionScopePolicy`, and `GenerateMigrationPack` for merged selections); `Resolve-AssessmentProfileCollectionPlan` (the `IsMergedOutputProfileSelection` branches); `Get-ArrayaCollectionDepthPolicy` (scope-specific depth flags, including delegate collection); `Prepare-AssessmentExportData` (the `isTenantToTenantCutover` and `isPresalesScope` tests); `Invoke-M365TenantAssessmentExportPipeline.ps1` (one workbook policy per run); `Export-HashTableToExcel.ps1` (policy-specific sheet lists).
 - Target invariant: requesting several profiles never yields less evidence than any one of them alone. Likely design, to be reviewed before implementation: collectors are the safe union of the requested profiles; depth is the highest required; outputs are the union where compatible; each requested deliverable gets the shaping it needs.
@@ -317,6 +319,8 @@ The text below is the specification written during the review. Where the impleme
 - Tests: plan and depth-policy tests for each pair of profiles; a test that the union never drops a collector or depth flag.
 
 ### P1-19 Evidence state for collectors that catch their own errors
+
+Status: implemented for public folders, mail flow rules and connectors, domains, remote domains, and Purview policies through `Set-ArrayaCollectorEvidenceState`. Mailbox enumeration remains open.
 
 - Problem: several collectors log an error and return, so the collector plan records the step as Completed and leaves an empty container. `Get-ArrayaDatasetEvidenceState` cannot tell that apart from a genuinely empty result. Affected today: `Get-AllPublicFolderDetails.ps1`, `Get-MailFlowRulesandConnectors.ps1`, the Exchange portion of `Get-AllOffice365Domains`, and mailbox enumeration in `Get-AllExchangeMailboxDetails.ps1` (errors suppressed).
 - Change: have each collector record an evidence state the way `Get-ExchangeHybridConfiguration.ps1` and `Get-SMTPRelayConfiguration.ps1` already do, or return a failed step result, and read it in `Get-ArrayaDatasetEvidenceState`. Decide where the state is stored so it does not add worksheets.

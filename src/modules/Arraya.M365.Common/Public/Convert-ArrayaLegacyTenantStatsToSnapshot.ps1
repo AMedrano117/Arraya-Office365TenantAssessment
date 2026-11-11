@@ -311,7 +311,7 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
         'ShareGateScopeSummary', 'GroupWorkloadReconciliation', 'MigrationComplexityFlags',
         'MigrationQuoteReadiness', 'MigrationTargetReadiness', 'MigrationIdentityMapping',
         'MigrationDomainDependencies', 'MigrationObjectDisposition', 'MigrationWorkloadEffort',
-        'MigrationWavePlan', 'MigrationScopeDecisions'
+        'MigrationWavePlan', 'MigrationScopeDecisions', 'MigrationCriteriaRegister'
     )) {
         $null = $derivedKeys.Add($key)
     }
@@ -320,7 +320,7 @@ function Convert-ArrayaLegacyTenantStatsToSnapshot {
     foreach ($key in @(
         'PrimaryMailboxStatsCollectionSummary', 'UnifiedGroupMailboxStatsCollectionSummary',
         'CollectorInventory', 'CollectorPerformance', 'CollectorMemoryImpact',
-        'CollectorGraphApiStats', 'CollectorCacheStats', 'CollectorPlanResults'
+        'CollectorGraphApiStats', 'CollectorCacheStats', 'CollectorPlanResults', 'CollectorEvidenceStates'
     )) {
         $null = $diagnosticKeys.Add($key)
     }

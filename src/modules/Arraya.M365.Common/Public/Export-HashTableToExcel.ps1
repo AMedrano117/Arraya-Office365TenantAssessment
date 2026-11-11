@@ -122,7 +122,9 @@ function Export-HashTableToExcel {
         'PrimaryMailboxStatsCollectionSummary',
         'UnifiedGroupMailboxStatsCollectionSummary',
         'PrimaryMailboxStatsCollectionSu',
-        'UnifiedGroupMailboxStatsCollect'
+        'UnifiedGroupMailboxStatsCollect',
+        # Collector diagnostics: kept in the snapshot, not shown as worksheets.
+        'CollectorEvidenceStates'
     )
 
     function Wait-ForExportFileAvailability {
@@ -782,6 +784,7 @@ function Export-HashTableToExcel {
             'DelegateSummary'                 = @('PermissionType', 'AffectedMailboxCount', 'AssignmentCount', 'CollectionStates', 'Notes')
             'CollaborationSummary'            = @('Workload', 'TotalCount', 'TotalStorageGB', 'UnknownStorageCount', 'LargestObjectName', 'LargestObjectSizeGB', 'Notes')
             'CutoverPrepSummary'              = @('Category', 'Item', 'Status', 'Value', 'Notes')
+            'MigrationCriteriaRegister'       = @('CriterionId', 'SourceCriterionIds', 'Profile', 'ContributingProfiles', 'Criterion', 'Workloads', 'Requirement', 'Phase', 'Applicability', 'Impact', 'CollectorOrSource', 'CollectorState', 'EvidenceStatus', 'MissingEvidence', 'PresalesClassification', 'MigrationTreatment', 'RequiredDecision', 'DecisionKey', 'BlockerImpact', 'ResolutionEvidence', 'ResponsibleRole', 'CurrentStatus', 'ActionId', 'Action', 'Notes')
             'AdConnectConfiguration'          = @('Section', 'Item', 'Value', 'Notes')
             'HybridConfiguration'             = @('Section', 'Item', 'Value', 'Notes')
             'Domains'                         = @('Name', 'IsDefault', 'IsInitial', 'Verified', 'AuthenticationType', 'SupportedServices', 'MXRecords', 'Office365MailExchanger', 'ThirdPartySpamFilterReview', 'HybridRoutingReview', 'RecipientCount', 'Notes')
@@ -867,6 +870,7 @@ function Export-HashTableToExcel {
                 'ShareGateScopeSummary'       = @('Workload', 'ObjectCount', 'TotalStorageGB', 'UnknownStorageCount', 'LargestObjectName', 'LargestObjectSizeGB', 'Notes')
                 'GroupWorkloadReconciliation' = @('DisplayName', 'PrimarySmtpAddress', 'IsTeam', 'HasSharedChannels', 'ChannelInventoryStatus', 'MemberInventoryStatus', 'SiteUrl', 'MailboxSizeGB', 'MailboxEvidenceStatus', 'MailboxEvidenceSource', 'SiteStorageGB', 'MailboxScope', 'SiteScope', 'Classification', 'Notes')
                 'MigrationComplexityFlags'    = @('Category', 'Item', 'Status', 'Value', 'Notes', 'MigrationAction', 'SourceWorksheet')
+                'MigrationCriteriaRegister'   = @('CriterionId', 'SourceCriterionIds', 'Profile', 'ContributingProfiles', 'Criterion', 'Workloads', 'Requirement', 'Phase', 'Applicability', 'Impact', 'CollectorOrSource', 'CollectorState', 'EvidenceStatus', 'MissingEvidence', 'PresalesClassification', 'MigrationTreatment', 'RequiredDecision', 'DecisionKey', 'BlockerImpact', 'ResolutionEvidence', 'ResponsibleRole', 'CurrentStatus', 'ActionId', 'Action', 'Notes')
                 'AllMailboxes'                = @('DisplayName', 'UserPrincipalName', 'PrimarySmtpAddress', 'RecipientTypeDetails', 'IsInactiveMailbox', 'MailboxSizeGB', 'DeletedItemsGB', 'ArchiveStatus', 'HasArchive', 'ArchiveSizeGB', 'ArchiveDeletedItemsGB', 'TotalDataToMigrateGB', 'BitTitanLicenseType', 'BitTitanLicenseCount', 'LitigationHoldEnabled', 'ForwardingSmtpAddress')
                 'GroupMailboxes'              = @('DisplayName', 'PrimarySmtpAddress', 'Alias', 'RecipientTypeDetails', 'ExchangeGuid', 'InventorySource', 'MailboxEvidenceStatus', 'MailboxEvidenceSource', 'MailboxSizeGB', 'DeletedItemsGB', 'ArchiveStatus', 'HasArchive', 'ArchiveSizeGB', 'TotalDataToMigrateGB', 'BitTitanLicenseType', 'BitTitanLicenseCount', 'WhenMailboxCreated', 'HiddenFromAddressListsEnabled')
                 'SharePoint'                  = @('Title', 'Url', 'Template', 'Owner', 'StorageUsedGB', 'StorageQuota', 'LastContentModifiedDate', 'LockState', 'SharingCapability')
@@ -1118,6 +1122,7 @@ function Export-HashTableToExcel {
         'DelegateSummary',
         'CollaborationSummary',
         'CutoverPrepSummary',
+        'MigrationCriteriaRegister',
         'Domains',
         'AdConnectConfiguration',
         'HybridConfiguration',
@@ -1159,6 +1164,7 @@ function Export-HashTableToExcel {
         'MigrationQuoteReadiness',
         'MigrationTargetReadiness',
         'MigrationComplexityFlags',
+        'MigrationCriteriaRegister',
         'MigrationScopeDecisions',
         'MigrationDomainDependencies',
         'MigrationIdentityMapping',
@@ -1210,7 +1216,8 @@ function Export-HashTableToExcel {
     # columns explain why; pruning those headers would hide that distinction on replay.
     $presalesEvidenceSchemaWorksheets = @(
         'AllTeams',
-        'GroupWorkloadReconciliation'
+        'GroupWorkloadReconciliation',
+        'MigrationCriteriaRegister'
     )
 
     $desiredOrder = $defaultDesiredOrder

@@ -22,6 +22,8 @@ function Get-AllPublicFolderDetails {
     Write-ArrayaExchangeCollectorBanner -Message ("[Get-AllPublicFolderDetails] START: Gathering all public folder details with {0} details" -f $detailLevel) -ExportFileLocation $exportDetails
     Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] START: Gathering all public folder details with $($detailLevel) details" -ExportFileLocation $exportDetails
 
+    $publicFolderErrors = [System.Collections.ArrayList]::new()
+    $publicFolderCollectionException = $null
     try {
         #Get Public Folder Data, Statistics, and Permissions
         switch ($detailLevel) {
@@ -33,16 +35,16 @@ function Get-AllPublicFolderDetails {
                     "FolderClass", "FolderPath", "ExtendedFolderFlags"
                 )
                 if ($ExchangeEnvironment -eq 'On-Premises') {
-                    $allPublicFolders = Get-PublicFolder -Recurse -ResultSize Unlimited -ErrorAction SilentlyContinue | Where-Object { $_.Name -NE "IPM_SUBTREE" } | Select-Object $DesiredProperties
+                    $allPublicFolders = Get-PublicFolder -Recurse -ResultSize Unlimited -ErrorAction SilentlyContinue -ErrorVariable +publicFolderErrors | Where-Object { $_.Name -NE "IPM_SUBTREE" } | Select-Object $DesiredProperties
                 } else {
-                    $allPublicFolders = Get-PublicFolder -Recurse -ResultSize Unlimited -ErrorAction SilentlyContinue | Where-Object { $_.Name -NE "IPM_SUBTREE" } | Select-Object $DesiredProperties
+                    $allPublicFolders = Get-PublicFolder -Recurse -ResultSize Unlimited -ErrorAction SilentlyContinue -ErrorVariable +publicFolderErrors | Where-Object { $_.Name -NE "IPM_SUBTREE" } | Select-Object $DesiredProperties
                 }
             }
             geek {
                 if ($ExchangeEnvironment -eq 'On-Premises') {
-                    $allPublicFolders = Get-PublicFolder -Recurse -ResultSize Unlimited -ErrorAction SilentlyContinue | Where-Object { $_.Name -NE "IPM_SUBTREE" }
+                    $allPublicFolders = Get-PublicFolder -Recurse -ResultSize Unlimited -ErrorAction SilentlyContinue -ErrorVariable +publicFolderErrors | Where-Object { $_.Name -NE "IPM_SUBTREE" }
                 } else {
-                    $allPublicFolders = Get-PublicFolder -Recurse -ResultSize Unlimited -ErrorAction SilentlyContinue | Where-Object { $_.Name -NE "IPM_SUBTREE" }
+                    $allPublicFolders = Get-PublicFolder -Recurse -ResultSize Unlimited -ErrorAction SilentlyContinue -ErrorVariable +publicFolderErrors | Where-Object { $_.Name -NE "IPM_SUBTREE" }
                 }
             }
         }
@@ -50,6 +52,7 @@ function Get-AllPublicFolderDetails {
     }
     catch {
         Write-Log -Type ERROR -Message "[Get-AllPublicFolderDetails] An error occurred in running Get-AllPublicFolderDetails function. $($_.Exception.Message)" -ExportFileLocation $exportDetails -CaptureError -ErrorRecordVar $_
+        $publicFolderCollectionException = $_
 
     }
 
@@ -140,6 +143,32 @@ function Get-AllPublicFolderDetails {
         $tenantStatsHash["PublicFolderDetails"][$pf.Identity] = $pf
     }
 
+    # Record how complete the inventory is. Get-PublicFolder reports a tenant without public
+    # folder mailboxes as an error; that is a complete, empty answer, not a failure.
+    $publicFolderErrorMessages = @(
+        @($publicFolderErrors) + @($publicFolderCollectionException) |
+            Where-Object { $null -ne $_ } |
+            ForEach-Object { if ($_.Exception) { [string]$_.Exception.Message } else { [string]$_ } }
+    )
+    $noPublicFolderMailboxMessages = @($publicFolderErrorMessages | Where-Object { $_ -match '(?i)no (active )?public folder mailbox' })
+    $otherPublicFolderErrors = @($publicFolderErrorMessages | Where-Object { $_ -notmatch '(?i)no (active )?public folder mailbox' })
+    $publicFolderRowCount = $tenantStatsHash['PublicFolderDetails'].Count
+    $publicFolderEvidenceState = if ($otherPublicFolderErrors.Count -eq 0) {
+        if ($publicFolderRowCount -gt 0) { 'CompleteWithRecords' } else { 'CompleteEmpty' }
+    }
+    elseif ($publicFolderRowCount -gt 0) {
+        'Partial'
+    }
+    elseif (@($otherPublicFolderErrors | Where-Object { $_ -match '(?i)access.?denied|not authorized|insufficient|forbidden|is not recognized' }).Count -gt 0) {
+        'Unavailable'
+    }
+    else {
+        'Failed'
+    }
+    $publicFolderEvidenceReason = if ($otherPublicFolderErrors.Count -gt 0) { $otherPublicFolderErrors[0] } elseif ($noPublicFolderMailboxMessages.Count -gt 0) { 'The tenant has no public folder mailboxes.' } else { '' }
+    if (Get-Command -Name Set-ArrayaCollectorEvidenceState -ErrorAction SilentlyContinue) {
+        Set-ArrayaCollectorEvidenceState -TenantStatsHash $tenantStatsHash -DatasetKey 'PublicFolderDetails' -State $publicFolderEvidenceState -Reason $publicFolderEvidenceReason -Collector 'Get-AllPublicFolderDetails' | Out-Null
+    }
     $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
     Write-ArrayaExchangeCollectorCompletionBanner -Message "[Get-AllPublicFolderDetails] COMPLETED: Gathering all public folder details in $($CompletedTime)" -ExportFileLocation $exportDetails
     Write-Log -Type INFO -Message "[Get-AllPublicFolderDetails] COMPLETED: Gathering all public folder details in $($CompletedTime)" -ExportFileLocation $exportDetails

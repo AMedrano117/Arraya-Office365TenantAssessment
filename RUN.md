@@ -245,7 +245,28 @@ Pass multiple profiles as a comma-separated list. The assessment then runs once 
 - When `TenantToTenantMigration` is combined with another profile, the tenant-to-tenant shaping does not run, mailbox and calendar delegate permissions are not collected, and the migration planning registers are not built. The cutover pack is still written, from unshaped data.
 - A combined run can therefore produce less migration evidence than the same profiles run separately.
 
-Run the migration profiles on their own until profile composition is redesigned. The intended rule, tracked in the backlog, is that requesting several profiles never yields less evidence than any one of them alone.
+Run the migration profiles on their own until profile collection is redesigned. The intended rule, tracked in the backlog, is that requesting several profiles never yields less evidence than any one of them alone.
+
+### Migration criteria register
+
+Every run that includes `Presales` or `TenantToTenantMigration`, alone or combined, writes a `MigrationCriteriaRegister` worksheet and the same rows to the JSON snapshot. The criteria come from [migration-evidence-criteria.json](src/config/baseline/migration-evidence-criteria.json), which states for each criterion its owning profile, workloads, whether it is required, the assessment stage it serves (Scoping, Design, Execution; not engagement milestones), its evidence source, when it applies, what happens when evidence is missing, and whether it affects readiness, planning, or reference only.
+
+| Column | Meaning |
+| ------ | ------- |
+| `Profile`, `ContributingProfiles` | Owning profile, and other requested profiles that need the same criterion |
+| `CollectorState` | `CompleteWithRecords`, `CompleteEmpty`, `Partial`, `Failed`, `Unavailable`, `NotRequested`, `Unsupported`, `NotApplicable`, `Unknown`, or `SkippedByProfile` |
+| `EvidenceStatus` | `Ready` only for a complete collector state; otherwise `Partial`, `Failed`, `NeedsData`, or `NotApplicable` |
+| `PresalesClassification` | `PresalesBlocker`, `NeedsData`, `PlanningGap`, or `Nonblocking` |
+| `MigrationTreatment` | Mailbox hold criterion only: `Clear`, `RequiresPreservationPlan`, `RequiresComplianceValidation`, `RequiresLegalDecision`, `BlocksMigration`, or `NotEstablished` |
+| `RequiredDecision`, `DecisionKey`, `BlockerImpact`, `ResolutionEvidence`, `ResponsibleRole` | What is blocked, why it matters, what closes it, and who owns it |
+| `CurrentStatus`, `ActionId`, `Action` | `Blocker`, `Needs Data`, `Needs Input`, `Review`, `Ready`, `Confirmed`, or `Not Applicable`, and one action per distinct condition |
+
+Rules the register applies:
+
+- A `PresalesBlocker` is raised only when required evidence is missing for a decision Presales cannot make without it. Missing optional evidence is shown but never blocks. Evidence that no collector gathers is a `PlanningGap`.
+- Hold evidence and migration treatment are separate. Holds do not make evidence unready, and ready evidence is not clearance. `RequiresLegalDecision` means a legal owner must decide; the assessment never records that decision. `BlocksMigration` is raised only when a mailbox's confirmed migration method is documented as incompatible with its holds.
+- Combined profiles merge only criteria with identical meaning, scope, population, period, decision, owner, and closure evidence. The strictest requirement wins. Each criterion is evaluated against its own evidence, so one profile never fills another profile's gap.
+- Skipped and unsupported collectors stay visible.
 
 ## Default Output Location
 
