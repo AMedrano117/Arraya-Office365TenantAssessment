@@ -290,6 +290,32 @@ function Export-TenantToTenantQuestionnaireMarkdown {
     [void][int]::TryParse([string](Prop $crossTenantAccess 'PartnerCount' 0), [ref]$partnerCount)
 
     $comments = New-Object System.Collections.Generic.List[string]
+
+    # ---- Evidence states -------------------------------------------------------------------
+    # An answer may state a count or a "No" only when the data behind it was collected.
+    # Otherwise it says the evidence was not collected, so a reader never mistakes an
+    # uncollected dataset for a negative finding.
+    function IsCollected([string[]]$Keys, [string[]]$Steps = @()) {
+        foreach ($datasetKey in $Keys) {
+            if ((Get-ArrayaDatasetEvidenceState -TenantStatsHash $TenantStatsHash -DatasetKey $datasetKey -CollectorStepName $Steps).State -eq 'Collected') {
+                return $true
+            }
+        }
+        return $false
+    }
+    $notCollectedAnswer = 'Not collected in this run; manual validation required.'
+    $tenantInfoCollected = -not [string]::IsNullOrWhiteSpace((Txt (Prop $tenantInfo 'TenantId') (Txt (Prop $tenantInfo 'DisplayName') '')))
+    $mailboxesCollected = ($mailboxes.Count -gt 0) -or (IsCollected @('MailboxFullDetails', 'AllMailboxes') @('Exchange mailboxes'))
+    $recipientsCollected = ($recipients.Count -gt 0) -or (IsCollected @('AllRecipients') @('Exchange recipients'))
+    $publicFoldersCollected = ($publicFolders.Count -gt 0) -or (IsCollected @('PublicFolderDetails', 'PublicFolders') @('Public folders'))
+    $mailFlowRulesCollected = ($mailFlowRules.Count -gt 0) -or (IsCollected @('MailFlowRules') @('Mail flow rules/connectors'))
+    $sharePointCollected = ($sharePointSites.Count -gt 0) -or (IsCollected @('SharePoint') @('SharePoint/OneDrive sites'))
+    $oneDriveCollected = ($oneDriveSites.Count -gt 0) -or (IsCollected @('OneDrive') @('SharePoint/OneDrive sites'))
+    $devicesCollected = ($devices.Count -gt 0) -or (IsCollected @('DeviceDetails') @('Devices'))
+    $usersCollected = ($users.Count -gt 0) -or (IsCollected @('Users') @('Users'))
+    $directorySyncEvidence = Get-ArrayaDirectorySyncEvidence -TenantStatsHash $TenantStatsHash
+    $multiGeoFlag = Convert-ArrayaToBoolean -Value (Prop $tenantInfo 'MultiGeoEnabled')
+    $federatedDomainNames = @($domains | Where-Object { (Txt (Prop $_ 'AuthenticationType') '') -match '^(?i)Federated$' } | ForEach-Object { Txt (Prop $_ 'Domain') (Txt (Prop $_ 'Name') '') })
     $comments.Add("- Automated tenant discovery generated on $(Get-Date -Format 'yyyy-MM-dd') for $tenantDisplayName.") | Out-Null
     $priorityMigration = @($migrationReadiness | Where-Object { (Prop $_ 'Status') -in @('Blocker','Review','Needs Data') } | Select-Object -First 6)
     if ($priorityMigration.Count -gt 0) {
@@ -339,7 +365,7 @@ function Export-TenantToTenantQuestionnaireMarkdown {
         $(if ($tenantInitialDomain) { "Initial domain: $tenantInitialDomain" })
     ) -join '; '
     $answers['is-your-tenant-homed-in-the-united-states-if-not-where'] = if ($tenantCountryCode -eq 'US' -or $tenantPreferredDataLocation -eq 'NAM') { 'Yes. Tenant country/data location indicates United States/North America.' } elseif ($tenantCountry -or $tenantPreferredDataLocation) { "No or unknown. Country: $(Txt $tenantCountry 'Unknown'); preferred data location: $(Txt $tenantPreferredDataLocation 'Unknown')." } else { 'Unknown. Country metadata was not fully populated in this run.' }
-    $answers['is-your-tenant-a-multi-geo-environment-if-so-where-is-your-central-location'] = if (Truthy (Prop $tenantInfo 'MultiGeoEnabled')) { "Yes. Central location: $(Txt (Prop $tenantInfo 'MultiGeoCentral') 'not provided by current discovery output')." } else { 'No multi-geo configuration detected in tenant overview data.' }
+    $answers['is-your-tenant-a-multi-geo-environment-if-so-where-is-your-central-location'] = if ($multiGeoFlag -eq $true) { "Yes. Microsoft Graph reports the tenant as Multi-Geo enabled. Central location: $(Txt (Prop $tenantInfo 'MultiGeoCentral') 'not provided by current discovery output')." } elseif ($multiGeoFlag -eq $false) { 'Microsoft Graph reports that the tenant is not Multi-Geo enabled. Confirm with the customer whether Multi-Geo was enabled in the past before planning a SharePoint domain rename.' } elseif ($tenantInfoCollected) { 'Not reported by Microsoft Graph: the Multi-Geo flag is not set, which is common for single-geography tenants but is not confirmation. Confirm with the customer, including whether Multi-Geo was ever enabled, before planning a SharePoint domain rename.' } else { $notCollectedAnswer }
     $answers['does-your-organization-utilize-microsoft-copilot'] = LicenseAnswer 'Microsoft Copilot' @('(?i)copilot|m365[_\s]*copilot')
     $answers['does-your-organization-utilize-copilot-studio'] = LicenseAnswer 'Copilot Studio' @('(?i)copilot[\s_]*studio|power[\s_]*virtual[\s_]*agents|pva|bots')
     $answers['do-your-users-utilize-microsoft-power-automate'] = LicenseAnswer 'Power Automate' @('(?i)power[\s_]*automate|flow_')
@@ -350,33 +376,33 @@ function Export-TenantToTenantQuestionnaireMarkdown {
     $answers['do-you-have-self-service-purchases-enabled'] = (Txt (Prop $selfServicePurchase 'Answer') 'Unknown') + $(if (Prop $selfServicePurchase 'Notes') { "; $(Txt (Prop $selfServicePurchase 'Notes') '')" } else { '' })
     $answers['does-the-organization-utilize-the-source-entra-tenant-for-azure-resources'] = (Txt (Prop $azureResourceUsage 'Answer') 'Not collected') + $(if (Prop $azureResourceUsage 'Notes') { "; $(Txt (Prop $azureResourceUsage 'Notes') '')" } else { '' })
 
-    $answers['what-identity-provider-is-used-for-sign-on'] = if ($federatedDomains) { "Federated sign-on detected. Federated domains: $(Txt ($federatedDomains -join ', ') 'Unknown')." } else { 'Entra ID cloud authentication appears to be the primary sign-on provider.' }
-    $answers['are-objects-synchronized-from-on-prem-active-directory'] = if (Truthy (Prop $adConnectSummary 'OnPremisesSyncEnabled')) { "Yes. Directory synchronization is enabled. Last reported sync: $(Txt (Prop $adConnectSummary 'OnPremisesLastSyncDateTime') 'Unknown')." } else { 'No active on-premises directory synchronization detected.' }
+    $answers['what-identity-provider-is-used-for-sign-on'] = if ($federatedDomains) { "Federated sign-on detected. Federated domains: $(Txt ($federatedDomains -join ', ') 'Unknown')." } elseif ($federatedDomainNames.Count -gt 0) { "Federated sign-on detected. Federated domains: $($federatedDomainNames -join ', ')." } elseif ($domains.Count -gt 0) { "No federated domain found among $($domains.Count) collected domain(s); sign-in uses Microsoft Entra ID cloud authentication (managed domains). The synchronization-side method is reported under directory synchronization." } elseif ($authConfig) { 'No federated domains were reported in the authentication configuration; the domain inventory was not collected to confirm.' } else { $notCollectedAnswer }
+    $answers['are-objects-synchronized-from-on-prem-active-directory'] = switch ($directorySyncEvidence.State) { 'Synchronized' { "Yes. Directory synchronization is enabled. Last reported sync: $(Txt (Prop $adConnectSummary 'OnPremisesLastSyncDateTime') 'Unknown'). Microsoft Entra Connect Sync and Cloud Sync are not distinguished by this evidence." } 'NotSynchronized' { 'No directory synchronization is reported by Microsoft Graph for this tenant. An on-premises directory that is not synchronized to this tenant cannot be detected from the tenant.' } default { "Not established: directory synchronization state was not collected. Confirm the identity model with the customer. ($($directorySyncEvidence.Reason))" } }
     $answers['is-self-service-password-reset-or-password-writeback-enabled'] = 'Not collected by current script; manual validation required.'
     $answers['what-mfa-solution-is-used'] = if (Truthy (Prop $authConfig 'MFAEnabled')) { "Entra ID MFA. Methods: $(Txt (($mfaMethods -join ', ')) 'Not listed'); CA policies requiring MFA: $(Txt (Prop $authConfig 'MFAConditionalAccessPolicies') '0'); registered users: $(Txt (Prop $mfaRegistrationSummary 'RegistrationPercent') 'Unknown')%." } else { 'MFA not clearly detected in current auth policy data; manual validation required.' }
-    $answers['is-entra-id-enterprise-sso-used-for-saas-applications'] = if (Truthy (Prop $authConfig 'SSOEnabled')) { "Yes. $(Txt ($ssoApps.Count) '0') SSO-enabled application(s) were discovered." } else { 'No enterprise SSO applications were detected in the current run.' }
+    $answers['is-entra-id-enterprise-sso-used-for-saas-applications'] = if (Truthy (Prop $authConfig 'SSOEnabled')) { "Yes. $(Txt ($ssoApps.Count) '0') SSO-enabled application(s) were discovered." } elseif ($authConfig) { 'No enterprise SSO applications were detected in the current run.' } else { $notCollectedAnswer }
     $answers['if-yes-provide-a-list-of-applications'] = if ($ssoApps -and $ssoApps.Count -gt 0) { Summary @($ssoApps) 'DisplayName' 12 } else { 'No SSO application list collected.' }
     $answers['is-entra-id-conditional-access-used'] = if ($conditionalAccessPolicies.Count -gt 0) { "Yes. $($conditionalAccessPolicies.Count) Conditional Access policy/policies collected." } else { 'No Conditional Access policies were collected in this run.' }
     $answers['is-entra-id-app-proxy-used'] = 'Not collected by current script; manual validation required.'
     $answers['is-entra-id-private-access-used'] = 'Not collected by current script; manual validation required.'
     $answers['is-privileged-identity-management-pim-used'] = 'Not collected by current script; manual validation required.'
 
-    $answers['active-user-mailboxes-to-migrate'] = "$(@($mailboxes | Where-Object { (Prop $_ 'RecipientTypeDetails') -eq 'UserMailbox' -and (Prop $_ 'IsInactiveMailbox') -ne $true }).Count) active user mailbox(es)."
-    $answers['inactive-user-mailboxes-to-migrate'] = "$($inactiveMailboxes.Count) inactive mailbox(es)."
-    $answers['shared-mailboxes-to-migrate'] = "$(@($mailboxes | Where-Object { (Txt (Prop $_ 'RecipientTypeDetails') '') -match 'SharedMailbox' }).Count) shared mailbox(es)."
-    $answers['resource-mailboxes-to-migrate'] = "$(@($mailboxes | Where-Object { Truthy (Prop $_ 'IsResource') -or (Txt (Prop $_ 'RecipientTypeDetails') '') -match 'Room|Equipment|Scheduling' }).Count) resource mailbox(es)."
-    $answers['archive-mailboxes-to-migrate'] = "$(@($mailboxes | Where-Object { $archiveStatus = Txt (Prop $_ 'ArchiveStatus') ''; -not [string]::IsNullOrWhiteSpace($archiveStatus) -and $archiveStatus -ne 'None' }).Count) archive-enabled mailbox(es)."
-    $answers['distribution-lists-to-migrate'] = "$(@($recipients | Where-Object { (Prop $_ 'RecipientTypeDetails') -eq 'MailUniversalDistributionGroup' }).Count) distribution list(s)."
-    $answers['dynamic-distribution-lists'] = "$(@($recipients | Where-Object { (Txt (Prop $_ 'RecipientTypeDetails') '') -match 'DynamicDistributionGroup' }).Count) dynamic distribution group(s)."
-    $answers['external-contacts-to-migrate'] = "$(@($recipients | Where-Object { (Txt (Prop $_ 'RecipientTypeDetails') '') -match 'Contact|MailUser' }).Count) external contact/mail user object(s)."
+    $answers['active-user-mailboxes-to-migrate'] = if ($mailboxesCollected) { "$(@($mailboxes | Where-Object { (Prop $_ 'RecipientTypeDetails') -eq 'UserMailbox' -and (Prop $_ 'IsInactiveMailbox') -ne $true }).Count) active user mailbox(es)." } else { $notCollectedAnswer }
+    $answers['inactive-user-mailboxes-to-migrate'] = if ($mailboxesCollected -or $inactiveMailboxes.Count -gt 0) { "$($inactiveMailboxes.Count) inactive mailbox(es)." } else { $notCollectedAnswer }
+    $answers['shared-mailboxes-to-migrate'] = if ($mailboxesCollected) { "$(@($mailboxes | Where-Object { (Txt (Prop $_ 'RecipientTypeDetails') '') -match 'SharedMailbox' }).Count) shared mailbox(es)." } else { $notCollectedAnswer }
+    $answers['resource-mailboxes-to-migrate'] = if ($mailboxesCollected) { "$(@($mailboxes | Where-Object { Truthy (Prop $_ 'IsResource') -or (Txt (Prop $_ 'RecipientTypeDetails') '') -match 'Room|Equipment|Scheduling' }).Count) resource mailbox(es)." } else { $notCollectedAnswer }
+    $answers['archive-mailboxes-to-migrate'] = if ($mailboxesCollected) { "$(@($mailboxes | Where-Object { $archiveStatus = Txt (Prop $_ 'ArchiveStatus') ''; -not [string]::IsNullOrWhiteSpace($archiveStatus) -and $archiveStatus -ne 'None' }).Count) archive-enabled mailbox(es)." } else { $notCollectedAnswer }
+    $answers['distribution-lists-to-migrate'] = if ($recipientsCollected) { "$(@($recipients | Where-Object { (Prop $_ 'RecipientTypeDetails') -eq 'MailUniversalDistributionGroup' }).Count) distribution list(s)." } else { $notCollectedAnswer }
+    $answers['dynamic-distribution-lists'] = if ($recipientsCollected) { "$(@($recipients | Where-Object { (Txt (Prop $_ 'RecipientTypeDetails') '') -match 'DynamicDistributionGroup' }).Count) dynamic distribution group(s)." } else { $notCollectedAnswer }
+    $answers['external-contacts-to-migrate'] = if ($recipientsCollected) { "$(@($recipients | Where-Object { (Txt (Prop $_ 'RecipientTypeDetails') '') -match 'Contact|MailUser' }).Count) external contact/mail user object(s)." } else { $notCollectedAnswer }
     $answers['email-domains-to-migrate'] = if ($customDomains.Count -gt 0) { "$($customDomains.Count) custom domain(s): " + (($customDomains | ForEach-Object { Prop $_ 'Domain' }) -join ', ') } else { 'No custom email domains were collected.' }
-    $answers['public-folders'] = "$($publicFolders.Count) public folder object(s)."
+    $answers['public-folders'] = if ($publicFoldersCollected) { "$($publicFolders.Count) public folder object(s)." } else { $notCollectedAnswer }
     $answers['average-mailbox-size'] = if ($null -ne $averageMailboxSizeGb) { "$averageMailboxSizeGb GB average primary mailbox size." } else { 'Mailbox size statistics were not available in this run.' }
     $answers['largest-mailbox-size'] = if ($largestMailbox.Count -gt 0) { "$($largestMailbox[0].SizeGB) GB ($($largestMailbox[0].DisplayName))." } else { 'Mailbox size statistics were not available in this run.' }
     $answers['hybrid-exchange-configuration'] = if ($hybridInfo) { "$(Txt (Prop $hybridInfo 'HybridStatus') 'Unknown'); type: $(Txt (Prop $hybridInfo 'HybridType') 'Unknown'); evidence: $(Txt (Prop $hybridInfo 'Evidence') 'Not provided')." } else { 'No hybrid Exchange summary was collected.' }
     $answers['on-prem-exchange-servers'] = 'Not collected by current script; manual validation required.'
     $answers['edge-transport-servers'] = 'Not collected by current script; manual validation required.'
-    $answers['mail-transport-rules'] = "$($mailFlowRules.Count) transport rule(s) collected."
+    $answers['mail-transport-rules'] = if ($mailFlowRulesCollected) { "$($mailFlowRules.Count) transport rule(s) collected." } else { $notCollectedAnswer }
     $answers['exchange-online-message-protection-encryption'] = if ((LicenseMatches @('(?i)rms|mip|purview|encryption|defender|atp')).Count -gt 0) { 'Microsoft-native protection/encryption capabilities are indicated by licensing, but specific OME or mail-flow encryption configuration was not collected.' } else { 'Exchange Online protection specifics were not collected; manual validation required.' }
     $answers['pst-usage'] = 'Not collected by current script; manual validation required.'
     $answers['3rd-party-mail-hygiene'] = if ($spamFilteringSummary) { if ($usesThirdPartyFiltering) { "Likely yes; mail flow analysis indicates third-party filtering. Inbound connectors: $(Txt (Prop $spamFilteringSummary 'InboundConnectorCount') '0'), outbound connectors: $(Txt (Prop $spamFilteringSummary 'OutboundConnectorCount') '0')." } else { "Not detected from current mail flow analysis. Inbound connectors: $(Txt (Prop $spamFilteringSummary 'InboundConnectorCount') '0'), outbound connectors: $(Txt (Prop $spamFilteringSummary 'OutboundConnectorCount') '0')." } } else { 'Not collected by current script; manual validation required.' }
@@ -388,18 +414,18 @@ function Export-TenantToTenantQuestionnaireMarkdown {
     $answers['sharepoint-online-storage-in-use'] = StorageAnswer $sharePointSites 'SharePoint'
     $answers['external-sharing-enabled'] = 'Not collected by current script; manual validation required.'
     $answers['data-sync-restricted-to-managed-devices'] = 'Not collected by current script; manual validation required.'
-    $answers['sharepoint-sites-to-migrate'] = "$($sharePointSites.Count) SharePoint site(s)."
+    $answers['sharepoint-sites-to-migrate'] = if ($sharePointCollected) { "$($sharePointSites.Count) SharePoint site(s)." } else { $notCollectedAnswer }
     $answers['all-sites-modern'] = 'Undetermined from current site inventory alone; manual validation recommended.'
     $answers['user-created-sharepoint-sites-allowed'] = 'Not collected by current script; manual validation required.'
     $answers['sharepoint-hybrid-configuration'] = 'Not collected by current script; manual validation required.'
-    $answers['active-onedrive-profiles'] = "$(@($oneDriveSites | Where-Object { $archiveStatus = Txt (Prop $_ 'ArchiveStatus') ''; [string]::IsNullOrWhiteSpace($archiveStatus) -or $archiveStatus -eq 'Active' }).Count) active OneDrive profile(s)."
-    $answers['archived-onedrive-profiles'] = "$(@($oneDriveSites | Where-Object { $archiveStatus = Txt (Prop $_ 'ArchiveStatus') ''; -not [string]::IsNullOrWhiteSpace($archiveStatus) -and $archiveStatus -ne 'Active' }).Count) archived OneDrive profile(s)."
+    $answers['active-onedrive-profiles'] = if ($oneDriveCollected) { "$(@($oneDriveSites | Where-Object { $archiveStatus = Txt (Prop $_ 'ArchiveStatus') ''; [string]::IsNullOrWhiteSpace($archiveStatus) -or $archiveStatus -eq 'Active' }).Count) active OneDrive profile(s)." } else { $notCollectedAnswer }
+    $answers['archived-onedrive-profiles'] = if ($oneDriveCollected) { "$(@($oneDriveSites | Where-Object { $archiveStatus = Txt (Prop $_ 'ArchiveStatus') ''; -not [string]::IsNullOrWhiteSpace($archiveStatus) -and $archiveStatus -ne 'Active' }).Count) archived OneDrive profile(s)." } else { $notCollectedAnswer }
     $answers['sharepoint-workflows'] = 'Not collected by current script; manual validation required.'
 
     $answers['microsoft-teams-to-migrate'] = if ($teams.Count -gt 0) { "$($teams.Count) Microsoft Teams team(s) collected." } else { "Teams topology was not collected in the current PowerShell 7 app-only run. Microsoft 365 groups detected: $m365GroupCount. Manual validation required." }
     $answers['non-teams-microsoft-365-groups'] = if ($teams.Count -gt 0) { "$([math]::Max($m365GroupCount - $teams.Count, 0)) non-Team Microsoft 365 group(s)." } else { "$m365GroupCount Microsoft 365 group(s) detected in Entra. Team association is incomplete in this run, so manual validation is required." }
     $answers['users-can-create-teams'] = 'Not collected by current script; manual validation required.'
-    $answers['external-guest-access-enabled'] = if ($guestCount -gt 0 -or $partnerCount -gt 0) { "Yes or likely yes. Guest/external users detected: $guestCount; cross-tenant partner relationships: $partnerCount." } else { 'No guest or external access indicators were detected in the collected data.' }
+    $answers['external-guest-access-enabled'] = if ($guestCount -gt 0 -or $partnerCount -gt 0) { "Yes or likely yes. Guest/external users detected: $guestCount; cross-tenant partner relationships: $partnerCount." } elseif (-not $usersCollected) { $notCollectedAnswer } else { 'No guest or external access indicators were detected in the collected data.' }
     $answers['teams-audio-conferencing'] = LicenseAnswer 'Teams Audio Conferencing' @('(?i)audio\s*conferencing|mcomeetadv|mcoaudio')
     $answers['teams-pstn-calling'] = if ($teamsVoiceSummary) { "Voice users: $(Txt (Prop $teamsVoiceSummary 'VoiceUserCount') '0'); data source: $(Txt (Prop $teamsVoiceSummary 'DataSource') 'Unknown'); notes: $(Txt (Prop $teamsVoiceSummary 'Notes') 'None')." } else { LicenseAnswer 'Teams PSTN/Phone System' @('(?i)pstn|phone\s*system|calling\s*plan|mcoev|mcopstn') }
     $answers['teams-rooms'] = LicenseAnswer 'Teams Rooms' @('(?i)teams\s*rooms|meeting\s*room|mtr')
@@ -424,7 +450,7 @@ function Export-TenantToTenantQuestionnaireMarkdown {
     $answers['other-purview-capabilities'] = if ((LicenseMatches @('(?i)purview|mip|rms|contentexplorer|discovery')).Count -gt 0) { 'Detected Purview-related licensing. Workbook and JSON outputs should be used for detailed follow-up.' } else { 'No additional Purview-specific capability was clearly detected from licenses alone.' }
     $answers['encryption-key-type'] = 'Not collected by current script. Default assumption is Microsoft-managed keys unless Customer Key has been separately configured.'
 
-    $answers['microsoft-intune-usage'] = if ($managedDevices -gt 0 -or $intuneOrSccmDevices -gt 0) { "Likely yes. Managed devices: $managedDevices; devices reporting MDM values of $(Txt $mdmSolutionSummary 'Unknown'): $intuneOrSccmDevices." } else { 'No Intune or SCCM managed devices were clearly identified in the current device inventory.' }
+    $answers['microsoft-intune-usage'] = if ($managedDevices -gt 0 -or $intuneOrSccmDevices -gt 0) { "Likely yes. Managed devices: $managedDevices; devices reporting MDM values of $(Txt $mdmSolutionSummary 'Unknown'): $intuneOrSccmDevices." } elseif (-not $devicesCollected) { $notCollectedAnswer } else { 'No Intune or SCCM managed devices were clearly identified in the current device inventory.' }
     $answers['device-configuration-policies'] = 'Not collected by current script; manual validation required.'
     $answers['device-compliance-policies'] = 'Not collected by current script; manual validation required.'
     $answers['defender-for-endpoint-via-intune'] = if ((LicenseMatches @('(?i)defender|mde|endpoint|atp')).Count -gt 0) { 'Defender licensing is present, but Defender for Endpoint deployment or configuration via Intune was not collected.' } else { 'Not clearly detected in current license inventory; manual validation required.' }
@@ -433,8 +459,8 @@ function Export-TenantToTenantQuestionnaireMarkdown {
     $answers['autopilot-usage'] = 'Not collected by current script; manual validation required.'
     $answers['apple-business-manager-android-enterprise'] = 'Not collected by current script; manual validation required.'
     $answers['co-management-enabled'] = 'Not collected by current script; manual validation required.'
-    $answers['supported-workstations'] = "$windowsDevices Windows and $macDevices macOS workstation device(s) discovered."
-    $answers['corporate-mobile-devices'] = "Mobile devices discovered: $mobileDeviceCount (iOS: $iosDevices, Android: $androidDevices). Ownership or corporate classification was not collected."
+    $answers['supported-workstations'] = if ($devicesCollected) { "$windowsDevices Windows and $macDevices macOS workstation device(s) discovered." } else { $notCollectedAnswer }
+    $answers['corporate-mobile-devices'] = if ($devicesCollected) { "Mobile devices discovered: $mobileDeviceCount (iOS: $iosDevices, Android: $androidDevices). Ownership or corporate classification was not collected." } else { $notCollectedAnswer }
     $answers['byod-mobile-devices'] = 'Not collected by current script; manual validation required.'
     $answers['employee-owned-device-management'] = 'Not collected by current script; manual validation required.'
     $answers['ios-vs-android-percentages'] = if ($mobileDeviceCount -gt 0) { "iOS: $([math]::Round((($iosDevices / [double]$mobileDeviceCount) * 100), 1))%; Android: $([math]::Round((($androidDevices / [double]$mobileDeviceCount) * 100), 1))%." } else { 'No mobile device inventory was collected.' }

@@ -28,6 +28,22 @@ function Get-MailFlowRulesandConnectors {
     }
     $tenantStatsHash['MailFlowRules'] = @{}
     $tenantStatsHash['MailFlowConnectors'] = @{}
+    $transportRuleErrors = [System.Collections.ArrayList]::new()
+    $transportRuleException = $null
+    $connectorException = $null
+    $recordMailFlowEvidence = {
+        param([string]$DatasetKey, [int]$RowCount, [object[]]$Errors)
+        if (-not (Get-Command -Name Set-ArrayaCollectorEvidenceState -ErrorAction SilentlyContinue)) { return }
+        $messages = @($Errors | Where-Object { $null -ne $_ } | ForEach-Object { if ($_.Exception) { [string]$_.Exception.Message } else { [string]$_ } })
+        $state = if ($messages.Count -eq 0) {
+            if ($RowCount -gt 0) { 'CompleteWithRecords' } else { 'CompleteEmpty' }
+        }
+        elseif ($RowCount -gt 0) { 'Partial' }
+        elseif (@($messages | Where-Object { $_ -match '(?i)access.?denied|not authorized|insufficient|forbidden|is not recognized' }).Count -gt 0) { 'Unavailable' }
+        else { 'Failed' }
+        $reason = if ($messages.Count -gt 0) { $messages[0] } else { '' }
+        Set-ArrayaCollectorEvidenceState -TenantStatsHash $tenantStatsHash -DatasetKey $DatasetKey -State $state -Reason $reason -Collector 'Get-MailFlowRulesandConnectors' | Out-Null
+    }
 
     function Add-ConnectorToHash {
         param (
@@ -70,18 +86,18 @@ function Get-MailFlowRulesandConnectors {
             { $_ -in 'minimum', 'operator', 'combined', 'automation', 'all' } {
                 $desiredProperties = @('Name', 'State', 'Mode', 'Priority', 'Description')
                 if ($supportsTransportRuleTestModeConnectors) {
-                    $mailFlowRules = Get-TransportRule -IncludeTestModeConnectors -ErrorAction Continue | Select-Object $desiredProperties
+                    $mailFlowRules = Get-TransportRule -IncludeTestModeConnectors -ErrorAction Continue -ErrorVariable +transportRuleErrors | Select-Object $desiredProperties
                 }
                 else {
-                    $mailFlowRules = Get-TransportRule -ErrorAction Continue | Select-Object $desiredProperties
+                    $mailFlowRules = Get-TransportRule -ErrorAction Continue -ErrorVariable +transportRuleErrors | Select-Object $desiredProperties
                 }
             }
             default {
                 if ($supportsTransportRuleTestModeConnectors) {
-                    $mailFlowRules = Get-TransportRule -IncludeTestModeConnectors -ErrorAction Continue
+                    $mailFlowRules = Get-TransportRule -IncludeTestModeConnectors -ErrorAction Continue -ErrorVariable +transportRuleErrors
                 }
                 else {
-                    $mailFlowRules = Get-TransportRule -ErrorAction Continue
+                    $mailFlowRules = Get-TransportRule -ErrorAction Continue -ErrorVariable +transportRuleErrors
                 }
             }
         }
@@ -97,7 +113,9 @@ function Get-MailFlowRulesandConnectors {
     }
     catch {
         Write-Log -Type ERROR -Message "[Get-MailFlowRulesandConnectors] An error occurred in gathering MailFlow Rules. $($_.Exception.Message)" -ExportFileLocation $exportDetails -CaptureError -ErrorRecordVar $_
+        $transportRuleException = $_
     }
+    & $recordMailFlowEvidence 'MailFlowRules' $tenantStatsHash['MailFlowRules'].Count (@($transportRuleErrors) + @($transportRuleException))
 
     try {
         Write-Log -Type INFO -Message '[Get-MailFlowRulesandConnectors] Gathering all Inbound Mail Connectors' -ExportFileLocation $exportDetails
@@ -153,8 +171,10 @@ function Get-MailFlowRulesandConnectors {
     }
     catch {
         Write-Log -Type ERROR -Message "[Get-MailFlowRulesandConnectors] An error occurred in MailFlow Connectors. $($_.Exception.Message)" -ExportFileLocation $exportDetails -CaptureError -ErrorRecordVar $_
+        $connectorException = $_
     }
     finally {
+        & $recordMailFlowEvidence 'MailFlowConnectors' $tenantStatsHash['MailFlowConnectors'].Count @($connectorException)
         Write-Progress -Id $mailFlowProgressId -Activity 'Getting all Mail Flow Rules details' -Completed
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
         Write-ArrayaExchangeCollectorCompletionBanner -Message "[Get-MailFlowRulesandConnectors] COMPLETED: Gathering All Mail Flow Rules and Connectors in $CompletedTime" -ExportFileLocation $exportDetails

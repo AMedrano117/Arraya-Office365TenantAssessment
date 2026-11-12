@@ -349,6 +349,16 @@ $requiredCommonCommands = @(
     'New-ArrayaCollectorStep',
     'Invoke-ArrayaCollectorPlan',
     'Get-ArrayaCollectorPlanStatus',
+    'Get-ArrayaDatasetEvidenceState',
+    'Get-ArrayaDirectorySyncEvidence',
+    'Get-ArrayaExchangeHybridEvidence',
+    'Get-ArrayaMailExchangerClassification',
+    'Get-ArrayaMailboxHoldEvidence',
+    'Get-ArrayaMailboxHoldTreatment',
+    'Get-ArrayaMigrationCriteriaCatalog',
+    'New-ArrayaMigrationCriteriaRegister',
+    'Resolve-ArrayaRequestedOutputProfiles',
+    'Set-ArrayaCollectorEvidenceState',
     'Get-ArrayaCollectorCacheValue',
     'Set-ArrayaCollectorCacheValue',
     'Invoke-ArrayaGraphCollectionRequest',
@@ -10468,6 +10478,7 @@ function Get-AllOffice365Domains {
     function Get-RecipientCounts {
         param (
             [Parameter(Mandatory = $true)]
+            [AllowEmptyCollection()]
             [array]$Recipients, # Array of recipient objects
 
             [Parameter(Mandatory = $true)]
@@ -10617,6 +10628,8 @@ function Get-AllOffice365Domains {
                 Write-Log -Type Error -Message "[Get-AllOffice365Domains] Exchange Online not connected for other reasons. $($_.Exception.Message)" -ExportFileLocation $ExportDetails
                 Write-Error $_.Exception.Message
             }
+            $exchangeOnline = $False
+            $domainExchangeFailure = $_.Exception.Message
         }
         # Get all Remote and Accepted domains
         $totalCount = $domains.count
@@ -10710,6 +10723,16 @@ function Get-AllOffice365Domains {
                 }
                 Write-Log -Type DEBUG -Message "[Get-AllOffice365Domains] Completed Gathering DNS Records for '$($domainName)'"
 
+                # Classify mail routing from the MX hosts themselves. A lookup that returned
+                # nothing is unknown (null), not third-party routing, and mx.microsoft is a
+                # Microsoft 365 endpoint. Only a well-formed non-Microsoft MX host yields false.
+                $mxHostNames = @($mxRecords | ForEach-Object { if ($null -ne $_ -and $_.PSObject.Properties['NameExchange']) { $_.NameExchange } } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+                $mxLookupAnswered = (@($mxRecords | Where-Object { $null -ne $_ }).Count -gt 0)
+                $mxClassification = Get-ArrayaMailExchangerClassification -MxHost $mxHostNames -LookupAnswered $mxLookupAnswered
+                if ($mxClassification.Classification -in @('Unknown', 'NoMxRecord')) {
+                    Write-Log -Type INFO -Message ("[Get-AllOffice365Domains] MX routing for '{0}' classified as {1}: {2}" -f $domainName, $mxClassification.Classification, $mxClassification.Reason) -ExportFileLocation $ExportDetails
+                }
+
                 $DomainType = 'Unknown'
                 $RecipientCounts = [PSCustomObject]@{
                     PrimarySMTPCount = 0
@@ -10746,7 +10769,7 @@ function Get-AllOffice365Domains {
                     NSRecords              = ($NSRecords.NameHost -join ",") -replace "`n|`r",     ""
                     ARecords               = ($aRecords.IPAddress -join ",") -replace "`n|`r",     ""
                     MXRecords              = ($mxRecords.NameExchange -join ",") -replace "`n|`r", ""
-                    Office365MailExchanger = ($mxRecords.NameExchange -join "," -like "*protection.outlook.com")
+                    Office365MailExchanger = $mxClassification.IsMicrosoft365
                     SpfRecord              = $spfRecord
                     SpfIncludesM365        = $spfConfigured
                     SpfPolicyMode          = $spfPolicyMode
@@ -10775,9 +10798,44 @@ function Get-AllOffice365Domains {
             # Add to the results Hash Table
             $script:tenantStatsHash["RemoteDomains"][$domain.Identity] = $domain
         }
+
+        # Domains come from Graph; accepted-domain types, recipient counts, and remote domains
+        # come from Exchange Online. Record each part so a failed Exchange call is not read as
+        # "no remote domains" or "no recipients on this domain".
+        $exchangeFailureReason = if ([string]::IsNullOrWhiteSpace([string]$domainExchangeFailure)) { 'Exchange Online accepted-domain and remote-domain cmdlets were unavailable.' } else { [string]$domainExchangeFailure }
+        if ($exchangeOnline -eq $true) {
+            Set-ArrayaCollectorEvidenceState -TenantStatsHash $script:tenantStatsHash -DatasetKey 'RemoteDomains' -State $(if ($script:tenantStatsHash["RemoteDomains"].Count -gt 0) { 'CompleteWithRecords' } else { 'CompleteEmpty' }) -Collector 'Get-AllOffice365Domains' | Out-Null
+        }
+        else {
+            Set-ArrayaCollectorEvidenceState -TenantStatsHash $script:tenantStatsHash -DatasetKey 'RemoteDomains' -State 'Unavailable' -Reason $exchangeFailureReason -Collector 'Get-AllOffice365Domains' | Out-Null
+        }
+        $domainRowCount = $script:tenantStatsHash["Domains"].Count
+        $domainState = if (@($domains).Count -gt 0 -and $domainRowCount -lt @($domains).Count) {
+            'Partial'
+        }
+        elseif ($exchangeOnline -ne $true -and $domainRowCount -gt 0) {
+            'Partial'
+        }
+        elseif ($domainRowCount -gt 0) {
+            'CompleteWithRecords'
+        }
+        else {
+            'CompleteEmpty'
+        }
+        $domainReason = if ($domainRowCount -lt @($domains).Count) {
+            '{0} of {1} domain(s) could not be processed.' -f (@($domains).Count - $domainRowCount), @($domains).Count
+        }
+        elseif ($exchangeOnline -ne $true) {
+            "Graph domains were collected; Exchange domain type and recipient counts were not. $exchangeFailureReason"
+        }
+        else {
+            ''
+        }
+        Set-ArrayaCollectorEvidenceState -TenantStatsHash $script:tenantStatsHash -DatasetKey 'Domains' -State $domainState -Reason $domainReason -Collector 'Get-AllOffice365Domains' | Out-Null
     }
     catch {
         Write-Log -Type ERROR -Message "An error occurred in running Get-AllOffice365Domains function. $($_.Exception.Message)" -ExportFileLocation $ExportDetails -CaptureError -ErrorRecordVar $_
+        Set-ArrayaCollectorEvidenceState -TenantStatsHash $script:tenantStatsHash -DatasetKey 'Domains' -State $(if ($script:tenantStatsHash["Domains"].Count -gt 0) { 'Partial' } else { 'Failed' }) -Reason $_.Exception.Message -Collector 'Get-AllOffice365Domains' | Out-Null
     }
     finally {
         $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))
@@ -11249,10 +11307,16 @@ function Prepare-AssessmentExportData {
         [string]$script:ProfileCollectionPlan.CollectionScopePolicy -eq 'Presales'
     )
 
+    # The criteria register is built for every run that includes a migration profile,
+    # including combined selections, after any profile shaping below.
+    $requestedOutputProfiles = @(Resolve-ArrayaRequestedOutputProfiles -OutputProfile $OutputProfile -OutputProfileLabel $script:EffectiveOutputProfileLabel)
+    $buildCriteriaRegister = @($requestedOutputProfiles | Where-Object { $_ -in @('Presales', 'TenantToTenantMigration') }).Count -gt 0
+
     if (
         (-not $BuildCombinedUserMailboxProjection -or -not $RequiresFilteredExportSnapshot) -and
         -not $isTenantToTenantCutover -and
-        -not $isPresalesScope
+        -not $isPresalesScope -and
+        -not $buildCriteriaRegister
     ) {
         return
     }
@@ -11269,6 +11333,11 @@ function Prepare-AssessmentExportData {
     elseif ($isPresalesScope) {
         Write-AssessmentConsoleSubstep -Message 'Export preparation: pre-sales migration scope and licensing'
         Update-MigrationScopeExportData -TenantStatsStore $script:tenantStatsHash
+    }
+
+    if ($buildCriteriaRegister) {
+        Write-AssessmentConsoleSubstep -Message ('Export preparation: migration criteria register ({0})' -f ($requestedOutputProfiles -join ', '))
+        $script:tenantStatsHash['MigrationCriteriaRegister'] = @(New-ArrayaMigrationCriteriaRegister -TenantStatsHash $script:tenantStatsHash -OutputProfile $requestedOutputProfiles)
     }
 }
 
@@ -12713,18 +12782,39 @@ function Update-MigrationComplexityFlags {
             'Inventory shared channels and their external members; plan manual recreation.' 'AllTeams'
     }
 
-    $adConnectRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'AdConnectConfiguration')
-    if ($adConnectRows.Count -gt 0) {
-        & $addFlag 'Identity' 'AD Connect directory synchronization' 'Review' 'Configured' `
-            'Synced objects are not writable in the cloud, so source of authority has to be re-pointed as part of the move.' `
-            'Plan source-of-authority transfer and target-side directory sync before user cutover.' 'AdConnectConfiguration'
+    # Both collectors always write a container, so a populated container proves nothing.
+    # The flags are raised from the evidence inside it: confirmed, absent, or not established.
+    $directorySyncEvidence = Get-ArrayaDirectorySyncEvidence -TenantStatsHash $TenantStatsStore
+    switch ($directorySyncEvidence.State) {
+        'Synchronized' {
+            & $addFlag 'Identity' 'AD Connect directory synchronization' 'Review' 'Configured' `
+                ("Synced objects are not writable in the cloud, so source of authority has to be re-pointed as part of the move. Evidence: {0}" -f $directorySyncEvidence.Reason) `
+                'Plan source-of-authority transfer and target-side directory sync before user cutover.' 'AdConnectConfiguration'
+        }
+        'Unknown' {
+            & $addFlag 'Identity' 'AD Connect directory synchronization' 'Needs Data' 'Not established' `
+                ("Directory synchronization state could not be established, so neither a synchronized nor a cloud-only identity model can be assumed. {0}" -f $directorySyncEvidence.Reason) `
+                'Collect tenant overview and directory synchronization details, or confirm the identity model with the customer.' 'AdConnectConfiguration'
+        }
     }
 
-    $hybridRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'HybridConfiguration')
-    if ($hybridRows.Count -gt 0) {
-        & $addFlag 'Exchange' 'Exchange hybrid' 'Review' 'Configured' `
-            'On-premises coexistence and mail routing have to be unwound alongside the cloud move.' `
-            'Map hybrid endpoints, connectors, and autodiscover before scheduling cutover.' 'HybridConfiguration'
+    $exchangeHybridEvidence = Get-ArrayaExchangeHybridEvidence -TenantStatsHash $TenantStatsStore
+    switch ($exchangeHybridEvidence.State) {
+        'Configured' {
+            & $addFlag 'Exchange' 'Exchange hybrid' 'Review' 'Configured' `
+                'On-premises coexistence and mail routing have to be unwound alongside the cloud move.' `
+                'Map hybrid endpoints, connectors, and autodiscover before scheduling cutover.' 'HybridConfiguration'
+        }
+        'Indicators' {
+            & $addFlag 'Exchange' 'Exchange hybrid' 'Review' 'Indicators detected' `
+                ("Hybrid or coexistence signals exist without confirmed hybrid configuration. {0}" -f $exchangeHybridEvidence.Reason) `
+                'Confirm whether each signal reflects active coexistence before scheduling cutover.' 'HybridConfiguration'
+        }
+        'Unknown' {
+            & $addFlag 'Exchange' 'Exchange hybrid' 'Needs Data' 'Not established' `
+                ("Exchange hybrid state could not be established, so its absence cannot be assumed. {0}" -f $exchangeHybridEvidence.Reason) `
+                'Collect Exchange hybrid configuration with sufficient Exchange permissions, or confirm with the customer.' 'HybridConfiguration'
+        }
     }
 
     $ssoApplicationRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'AuthenticationSSOApplications')
@@ -13559,13 +13649,23 @@ function Update-MigrationPlanningRegisters {
         & $addReadinessCheck 'BitTitan optional TMB' 'BT-07' 'Document-library-to-Flex-Collaboration-License mapping completed' $true 'Blocker' 'Library-level inventory not collected' 'Customer library mapping; a SharePoint site count is not an FCL count' 'Map every in-scope Team/SharePoint document library and validate capacity before calculating FCL demand.' $null
     }
 
+    $presalesFlagBehavior = @{}
+    foreach ($catalogCriterion in @((Get-ArrayaMigrationCriteriaCatalog).Criteria | Where-Object { [string]$_.Profile -eq 'Presales' -and -not [string]::IsNullOrWhiteSpace([string]$_.ComplexityFlagItem) })) {
+        $presalesFlagBehavior[[string]$catalogCriterion.ComplexityFlagItem] = [string]$catalogCriterion.MissingEvidenceBehavior
+    }
     foreach ($complexityRow in $complexityRows) {
         $item = [string](Get-AssessmentExportPropertyValue -Record $complexityRow -Names @('Item'))
         $sourceStatus = [string](Get-AssessmentExportPropertyValue -Record $complexityRow -Names @('Status'))
         $flagKey = 'FLAG:{0}' -f (($item -replace '[^A-Za-z0-9]+', '-').Trim('-').ToLowerInvariant())
         $flagDecision = & $getDecision $flagKey $null
         $flagConfirmed = & $isDecisionConfirmed $flagDecision
-        $blocking = $sourceStatus -in @('Blocker', 'Needs Data')
+        # Missing evidence blocks the Presales quote only when the criteria catalog marks the
+        # decision it feeds as one Presales cannot make without it. Flags the catalog does not
+        # describe keep their existing behavior.
+        $blocking = $sourceStatus -eq 'Blocker' -or (
+            $sourceStatus -eq 'Needs Data' -and
+            (-not $presalesFlagBehavior.ContainsKey($item) -or $presalesFlagBehavior[$item] -eq 'PresalesBlocker')
+        )
         & $addReadinessCheck 'Complexity' $flagKey $item $blocking `
             $(if ($flagConfirmed) { 'Complete' } elseif ($blocking) { 'Blocker' } else { 'Condition' }) `
             (Get-AssessmentExportPropertyValue -Record $complexityRow -Names @('Value')) `
@@ -14062,6 +14162,13 @@ function Update-TenantToTenantMigrationExportData {
     $relayAccountRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'SMTPRelayServiceAccounts')
     $calendarDelegateRows = @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'MailboxCalendarDelegatePermissions')
 
+    # Capture collaboration evidence states now. The scope shaping called further down
+    # normalizes these tables and can leave an empty placeholder behind, which would make an
+    # uncollected dataset look like a collected, empty one.
+    $teamsEvidence = Get-ArrayaDatasetEvidenceState -TenantStatsHash $TenantStatsStore -DatasetKey 'AllTeams' -CollectorStepName 'Teams inventory'
+    $sharePointEvidence = Get-ArrayaDatasetEvidenceState -TenantStatsHash $TenantStatsStore -DatasetKey 'SharePoint' -CollectorStepName 'SharePoint/OneDrive sites'
+    $oneDriveEvidence = Get-ArrayaDatasetEvidenceState -TenantStatsHash $TenantStatsStore -DatasetKey 'OneDrive' -CollectorStepName 'SharePoint/OneDrive sites'
+
     $smtpRelayConfigRecord = $null
     if ($TenantStatsStore.ContainsKey('SMTPRelayConfig') -and $TenantStatsStore['SMTPRelayConfig']) {
         $smtpRelayConfigRoot = $TenantStatsStore['SMTPRelayConfig']
@@ -14075,7 +14182,9 @@ function Update-TenantToTenantMigrationExportData {
     $smtpAuthUnknownMailboxCount = [int](Convert-ArrayaToNumber -Value (Get-AssessmentExportPropertyValue -Record $smtpRelayConfigRecord -Names @('SMTPAuthMailboxStateUnknown')) -AsInt64)
     $relayConnectorEvidenceState = [string](Get-AssessmentExportPropertyValue -Record $smtpRelayConfigRecord -Names @('RelayConnectorEvidenceState'))
     if ([string]::IsNullOrWhiteSpace($relayConnectorEvidenceState)) { $relayConnectorEvidenceState = 'Unavailable' }
-    $smtpRelayConnectorRows = @(Get-AssessmentExportPropertyValue -Record $smtpRelayConfigRecord -Names @('RelayConnectors'))
+    # @($null) has a count of one, which reported "1 confirmed relay connector" when no relay
+    # configuration was collected at all.
+    $smtpRelayConnectorRows = @(Get-AssessmentExportPropertyValue -Record $smtpRelayConfigRecord -Names @('RelayConnectors') | Where-Object { $null -ne $_ })
     $smtpRelayConnectorCount = $smtpRelayConnectorRows.Count
     $smtpRelayAccountStatus = if ($relayAccountRows.Count -gt 0) { 'Review' } elseif ($smtpAuthEvidenceState -ne 'Complete') { 'Needs Data' } else { 'Ready' }
     $smtpRelayConnectorStatus = if ($smtpRelayConnectorCount -gt 0) { 'Review' } elseif ($relayConnectorEvidenceState -ne 'Complete') { 'Needs Data' } else { 'Ready' }
@@ -14191,6 +14300,13 @@ function Update-TenantToTenantMigrationExportData {
             $hybridSignalsPresent = $true
         }
     }
+    # The collector stores its verdict under HybridConfiguration.ExchangeHybrid, which the
+    # lookup above never reads. Interpret that verdict so confirmed hybrid reaches the domain
+    # review and an unknown state is not presented as "no signal".
+    $exchangeHybridEvidence = Get-ArrayaExchangeHybridEvidence -TenantStatsHash $TenantStatsStore
+    if ($exchangeHybridEvidence.State -in @('Configured', 'Indicators')) {
+        $hybridSignalsPresent = $true
+    }
 
     foreach ($domainRecord in @($domainRows)) {
         $domainName = Get-AssessmentExportPropertyValue -Record $domainRecord -Names @('Name', 'Domain')
@@ -14222,8 +14338,11 @@ function Update-TenantToTenantMigrationExportData {
         Set-AssessmentExportProperty -Record $domainRecord -Name 'SupportedServices' -Value (Convert-AssessmentExportDisplayText -Value $supportedServices)
         Set-AssessmentExportProperty -Record $domainRecord -Name 'RecipientCount' -Value $recipientCount
         Set-AssessmentExportProperty -Record $domainRecord -Name 'MXRecords' -Value $mxRecords
-        Set-AssessmentExportProperty -Record $domainRecord -Name 'ThirdPartySpamFilterReview' -Value $(if ($thirdPartySpamFilteringDetected) { 'Review' } else { 'No immediate signal' })
-        Set-AssessmentExportProperty -Record $domainRecord -Name 'HybridRoutingReview' -Value $(if ($hybridRoutingReview) { 'Review' } else { 'No immediate signal' })
+        # An MX lookup that returned nothing is not evidence of Microsoft routing or of a
+        # third-party gateway, and an unknown hybrid state is not "no signal".
+        $mxEvidenceUnknown = ($null -eq $office365MailExchanger -or [string]::IsNullOrWhiteSpace([string]$office365MailExchanger))
+        Set-AssessmentExportProperty -Record $domainRecord -Name 'ThirdPartySpamFilterReview' -Value $(if ($thirdPartySpamFilteringDetected) { 'Review' } elseif ($mxEvidenceUnknown) { 'Needs Data' } else { 'No immediate signal' })
+        Set-AssessmentExportProperty -Record $domainRecord -Name 'HybridRoutingReview' -Value $(if ($hybridRoutingReview) { 'Review' } elseif ($exchangeHybridEvidence.State -eq 'Unknown') { 'Needs Data' } else { 'No immediate signal' })
         Set-AssessmentExportProperty -Record $domainRecord -Name 'Notes' -Value $null
     }
 
@@ -14397,28 +14516,109 @@ function Update-TenantToTenantMigrationExportData {
     }
     $TenantStatsStore['CollaborationSummary'] = @($collaborationSummaryRows.ToArray())
 
+    # ---- Evidence states -----------------------------------------------------------------
+    # A count of zero supports "Ready" only when the data behind it was collected. The states
+    # below come from collector step results, dataset presence, and the collectors' own
+    # evidence fields. See Get-ArrayaDatasetEvidenceState for the rules and their limits.
+    $mailboxEvidence = Get-ArrayaDatasetEvidenceState -TenantStatsHash $TenantStatsStore -DatasetKey 'AllMailboxes' -CollectorStepName 'Exchange mailboxes'
+    $mailboxEvidenceAvailable = ($mailboxPlanningRows.Count -gt 0)
+    $mailboxEvidenceReason = if ($mailboxEvidenceAvailable) { $null } else { "No mailbox rows were collected. $($mailboxEvidence.Reason)" }
+    $connectorEvidence = Get-ArrayaDatasetEvidenceState -TenantStatsHash $TenantStatsStore -DatasetKey 'MailFlowConnectors' -CollectorStepName 'Mail flow rules/connectors'
+    $remoteDomainEvidence = Get-ArrayaDatasetEvidenceState -TenantStatsHash $TenantStatsStore -DatasetKey 'RemoteDomains' -CollectorStepName 'Mail flow rules/connectors' -EmptyIsUnexpected
+    $publicFolderEvidence = Get-ArrayaDatasetEvidenceState -TenantStatsHash $TenantStatsStore -DatasetKey 'PublicFolderDetails' -CollectorStepName 'Public folders'
+    $domainEvidence = Get-ArrayaDatasetEvidenceState -TenantStatsHash $TenantStatsStore -DatasetKey 'Domains' -CollectorStepName 'Domains' -EmptyIsUnexpected
+    # $teamsEvidence, $sharePointEvidence, and $oneDriveEvidence were captured at the top of
+    # this function, before the scope shaping wrote placeholder tables.
+
+    $resolveCountStatus = {
+        param([int]$Count, $Evidence)
+        if ($Count -gt 0) { 'Review' } elseif ($Evidence.State -eq 'Collected') { 'Ready' } else { 'Needs Data' }
+    }
+    $resolveMailboxStatus = {
+        param([int]$Count)
+        if (-not $mailboxEvidenceAvailable) { 'Needs Data' } elseif ($Count -gt 0) { 'Review' } else { 'Ready' }
+    }
+    $addEvidenceGap = {
+        param([string]$Notes, [string]$Status, [string]$Reason)
+        if ($Status -eq 'Needs Data' -and -not [string]::IsNullOrWhiteSpace($Reason)) { '{0} Evidence gap: {1}' -f $Notes, $Reason } else { $Notes }
+    }
+
     $domainsNeedingSpamReview = @($domainRows | Where-Object { ([string]$_.ThirdPartySpamFilterReview) -eq 'Review' }).Count
+    $domainsNeedingSpamData = @($domainRows | Where-Object { ([string]$_.ThirdPartySpamFilterReview) -eq 'Needs Data' }).Count
     $domainsNeedingHybridReview = @($domainRows | Where-Object { ([string]$_.HybridRoutingReview) -eq 'Review' }).Count
+    $domainsNeedingHybridData = @($domainRows | Where-Object { ([string]$_.HybridRoutingReview) -eq 'Needs Data' }).Count
+    $domainEvidenceMissing = ($domainRows.Count -eq 0 -or $domainEvidence.State -ne 'Collected')
+    $domainSpamStatus = if ($domainsNeedingSpamReview -gt 0) { 'Review' } elseif ($domainEvidenceMissing -or $domainsNeedingSpamData -gt 0) { 'Needs Data' } else { 'Ready' }
+    $domainHybridStatus = if ($domainsNeedingHybridReview -gt 0) { 'Review' } elseif ($domainEvidenceMissing -or $domainsNeedingHybridData -gt 0) { 'Needs Data' } else { 'Ready' }
+    $domainEvidenceReason = if ($domainEvidenceMissing) { $domainEvidence.Reason } elseif ($domainsNeedingSpamData -gt 0 -or $domainsNeedingHybridData -gt 0) { 'MX or hybrid evidence was not established for one or more domains.' } else { $null }
+
     $mailboxesMissingOnMicrosoftAlias = @($mailboxPlanningRows | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.OnMicrosoftAlias) }).Count
     $mailboxesMissingLegacyX500 = @($mailboxPlanningRows | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.LegacyExchangeDnX500) }).Count
     $mailboxesWithForwarding = @($mailboxPlanningRows | Where-Object {
             -not [string]::IsNullOrWhiteSpace([string]$_.ForwardingSmtpAddress) -or
             -not [string]::IsNullOrWhiteSpace([string]$_.ForwardingAddress)
         }).Count
-    $mailboxesOnHold = @($mailboxPlanningRows | Where-Object { $_.LitigationHoldEnabled -eq $true }).Count
+    $forwardingStatus = & $resolveMailboxStatus $mailboxesWithForwarding
+
+    # Hold evidence and migration treatment are separate answers. Evidence status says how
+    # complete the hold sources are; treatment says what the holds found require. Hold
+    # presence never makes evidence unready, and ready evidence is not migration clearance.
+    $holdTreatment = Get-ArrayaMailboxHoldTreatment -TenantStatsHash $TenantStatsStore -Mailbox $mailboxPlanningRows
+    $mailboxesOnHold = [int]$holdTreatment.MailboxesWithHoldIndicators
+    $holdsFound = ($mailboxesOnHold -gt 0 -or @($holdTreatment.OrganizationWidePolicies).Count -gt 0)
+    $holdStatus = if ($holdTreatment.MigrationTreatment -eq 'BlocksMigration') {
+        'Blocker'
+    }
+    elseif ($holdsFound) {
+        'Review'
+    }
+    elseif ($holdTreatment.EvidenceStatus -in @('Ready', 'NotApplicable')) {
+        'Ready'
+    }
+    else {
+        'Needs Data'
+    }
+    $holdChecklistValue = if (-not $mailboxEvidenceAvailable) { 'Mailbox inventory not collected' } else { '{0} mailbox(es) with mailbox-level hold indicators. Evidence status: {1}. Migration treatment: {2}.' -f $mailboxesOnHold, $holdTreatment.EvidenceStatus, $holdTreatment.MigrationTreatment }
+    $holdNotes = 'Hold and retention signals can affect migration sequencing and validation. {0}' -f $holdTreatment.Summary
+    if (@($holdTreatment.EvaluatedSignals).Count -gt 0) {
+        $holdNotes += ' Evaluated mailbox fields: {0}.' -f (@($holdTreatment.EvaluatedSignals) -join ', ')
+    }
+    if (@($holdTreatment.UnavailableSignals).Count -gt 0) {
+        $holdNotes += ' Not collected for every mailbox in this run: {0}.' -f (@($holdTreatment.UnavailableSignals) -join ', ')
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$holdTreatment.MissingEvidence)) {
+        $holdNotes += ' {0}' -f $holdTreatment.MissingEvidence
+    }
+    if ($holdTreatment.MigrationTreatment -eq 'RequiresLegalDecision') {
+        $holdNotes += ' A legal owner must decide the disposition; the assessment does not.'
+    }
+
+    $delegateEvidenceIncomplete = (-not $mailboxEvidenceAvailable) -or (@($mailboxPlanningRows | Where-Object {
+                ([string](Get-AssessmentExportPropertyValue -Record $_ -Names @('FullAccessDelegateState'))) -ne 'Collected' -or
+                ([string](Get-AssessmentExportPropertyValue -Record $_ -Names @('SendAsDelegateState'))) -ne 'Collected' -or
+                ([string](Get-AssessmentExportPropertyValue -Record $_ -Names @('CalendarDelegateState'))) -ne 'Collected'
+            }).Count -gt 0)
+    $delegateSummaryStatus = if (($delegateAssignmentRows.Count + $calendarDelegateRows.Count) -gt 0) { 'Review' } elseif ($delegateEvidenceIncomplete) { 'Needs Data' } else { 'Ready' }
+
+    $connectorStatus = & $resolveCountStatus $mailFlowConnectors.Count $connectorEvidence
+    $remoteDomainSummaryStatus = & $resolveCountStatus $remoteDomainRows.Count $remoteDomainEvidence
+    $publicFolderStatus = & $resolveCountStatus $publicFolderRows.Count $publicFolderEvidence
+    $aliasStatus = & $resolveMailboxStatus $mailboxesMissingOnMicrosoftAlias
+    $legacyX500Status = & $resolveMailboxStatus $mailboxesMissingLegacyX500
+
     $cutoverPrepSummaryRows = @(
-        [pscustomobject]@{ Category = 'Routing'; Item = 'Mailboxes missing .onmicrosoft alias'; Status = if ($mailboxesMissingOnMicrosoftAlias -gt 0) { 'Review' } else { 'Ready' }; Value = $mailboxesMissingOnMicrosoftAlias; Notes = 'Each mailbox should expose a source .onmicrosoft routing address before target-side mail user prep.' },
-        [pscustomobject]@{ Category = 'Routing'; Item = 'Mailboxes missing LegacyExchangeDN x500'; Status = if ($mailboxesMissingLegacyX500 -gt 0) { 'Review' } else { 'Ready' }; Value = $mailboxesMissingLegacyX500; Notes = 'Cross-tenant mailbox moves commonly need x500:<LegacyExchangeDN> preserved.' },
-        [pscustomobject]@{ Category = 'Dependencies'; Item = 'Mailboxes with forwarding'; Status = if ($mailboxesWithForwarding -gt 0) { 'Review' } else { 'Ready' }; Value = $mailboxesWithForwarding; Notes = 'Forwarding requires cutover-day validation and restamping decisions.' },
-        [pscustomobject]@{ Category = 'Dependencies'; Item = 'Mailboxes on hold'; Status = if ($mailboxesOnHold -gt 0) { 'Review' } else { 'Ready' }; Value = $mailboxesOnHold; Notes = 'Hold and retention signals can affect migration sequencing and validation.' },
-        [pscustomobject]@{ Category = 'Dependencies'; Item = 'Mailbox delegate assignments'; Status = if ($delegateAssignmentRows.Count -gt 0 -or $calendarDelegateRows.Count -gt 0) { 'Review' } else { 'Ready' }; Value = ($delegateAssignmentRows.Count + $calendarDelegateRows.Count); Notes = 'Full Access, Send As, Send On Behalf, and calendar delegates need cutover tracking and possible reapplication.' },
-        [pscustomobject]@{ Category = 'Mail flow'; Item = 'Mail flow connectors'; Status = if ($mailFlowConnectors.Count -gt 0) { 'Review' } else { 'Ready' }; Value = $mailFlowConnectors.Count; Notes = 'Inbound and outbound connectors should be reviewed for routing changes during coexistence and cutover.' },
-        [pscustomobject]@{ Category = 'Mail flow'; Item = 'Remote domains'; Status = if ($remoteDomainRows.Count -gt 0) { 'Review' } else { 'Ready' }; Value = $remoteDomainRows.Count; Notes = 'Remote domain settings can affect auto-forwarding, TNEF, and cutover routing behavior.' },
+        [pscustomobject]@{ Category = 'Routing'; Item = 'Mailboxes missing .onmicrosoft alias'; Status = $aliasStatus; Value = $mailboxesMissingOnMicrosoftAlias; Notes = (& $addEvidenceGap 'Each mailbox should expose a source .onmicrosoft routing address before target-side mail user prep.' $aliasStatus $mailboxEvidenceReason) },
+        [pscustomobject]@{ Category = 'Routing'; Item = 'Mailboxes missing LegacyExchangeDN x500'; Status = $legacyX500Status; Value = $mailboxesMissingLegacyX500; Notes = (& $addEvidenceGap 'Cross-tenant mailbox moves commonly need x500:<LegacyExchangeDN> preserved.' $legacyX500Status $mailboxEvidenceReason) },
+        [pscustomobject]@{ Category = 'Dependencies'; Item = 'Mailboxes with forwarding'; Status = $forwardingStatus; Value = $mailboxesWithForwarding; Notes = (& $addEvidenceGap 'Forwarding requires cutover-day validation and restamping decisions.' $forwardingStatus $mailboxEvidenceReason) },
+        [pscustomobject]@{ Category = 'Dependencies'; Item = 'Mailboxes on hold'; Status = $holdStatus; Value = $mailboxesOnHold; Notes = (& $addEvidenceGap $holdNotes $holdStatus $mailboxEvidenceReason) },
+        [pscustomobject]@{ Category = 'Dependencies'; Item = 'Mailbox delegate assignments'; Status = $delegateSummaryStatus; Value = ($delegateAssignmentRows.Count + $calendarDelegateRows.Count); Notes = (& $addEvidenceGap 'Full Access, Send As, Send On Behalf, and calendar delegates need cutover tracking and possible reapplication.' $delegateSummaryStatus $(if ($mailboxEvidenceAvailable) { 'Delegate collection state is not Collected for every mailbox.' } else { $mailboxEvidenceReason })) },
+        [pscustomobject]@{ Category = 'Mail flow'; Item = 'Mail flow connectors'; Status = $connectorStatus; Value = $mailFlowConnectors.Count; Notes = (& $addEvidenceGap 'Inbound and outbound connectors should be reviewed for routing changes during coexistence and cutover.' $connectorStatus $connectorEvidence.Reason) },
+        [pscustomobject]@{ Category = 'Mail flow'; Item = 'Remote domains'; Status = $remoteDomainSummaryStatus; Value = $remoteDomainRows.Count; Notes = (& $addEvidenceGap 'Remote domain settings can affect auto-forwarding, TNEF, and cutover routing behavior.' $remoteDomainSummaryStatus $remoteDomainEvidence.Reason) },
         [pscustomobject]@{ Category = 'Mail flow'; Item = 'SMTP relay service accounts'; Status = $smtpRelayAccountStatus; Value = $relayAccountRows.Count; Notes = ("SMTP AUTH evidence={0}; unknown mailbox state={1}. Confirmed candidates need separate credential or application migration planning." -f $smtpAuthEvidenceState, $smtpAuthUnknownMailboxCount) },
         [pscustomobject]@{ Category = 'Mail flow'; Item = 'Microsoft 365 SMTP relay connectors'; Status = $smtpRelayConnectorStatus; Value = $smtpRelayConnectorCount; Notes = ("Relay connector evidence={0}. Only enabled OnPremises inbound connectors with sender-IP or TLS-certificate authentication are counted." -f $relayConnectorEvidenceState) },
-        [pscustomobject]@{ Category = 'Domains'; Item = 'Domains with third-party spam-filter review'; Status = if ($domainsNeedingSpamReview -gt 0) { 'Review' } else { 'Ready' }; Value = $domainsNeedingSpamReview; Notes = 'Heuristic review based on MX, connector, and spam-filter signals.' },
-        [pscustomobject]@{ Category = 'Domains'; Item = 'Domains with hybrid/coexistence review'; Status = if ($domainsNeedingHybridReview -gt 0) { 'Review' } else { 'Ready' }; Value = $domainsNeedingHybridReview; Notes = 'Heuristic review based on hybrid configuration, internal relay, or federated domain signals.' },
-        [pscustomobject]@{ Category = 'Exchange'; Item = 'Public folders'; Status = if ($publicFolderRows.Count -gt 0) { 'Review' } else { 'Ready' }; Value = $publicFolderRows.Count; Notes = 'Public folders require separate migration planning from mailbox cutover.' }
+        [pscustomobject]@{ Category = 'Domains'; Item = 'Domains with third-party spam-filter review'; Status = $domainSpamStatus; Value = $domainsNeedingSpamReview; Notes = (& $addEvidenceGap 'Heuristic review based on MX, connector, and spam-filter signals.' $domainSpamStatus $domainEvidenceReason) },
+        [pscustomobject]@{ Category = 'Domains'; Item = 'Domains with hybrid/coexistence review'; Status = $domainHybridStatus; Value = $domainsNeedingHybridReview; Notes = (& $addEvidenceGap 'Heuristic review based on hybrid configuration, internal relay, or federated domain signals.' $domainHybridStatus $(if ($domainEvidenceMissing) { $domainEvidence.Reason } else { $exchangeHybridEvidence.Reason })) },
+        [pscustomobject]@{ Category = 'Exchange'; Item = 'Public folders'; Status = $publicFolderStatus; Value = $publicFolderRows.Count; Notes = (& $addEvidenceGap 'Public folders require separate migration planning from mailbox cutover.' $publicFolderStatus $publicFolderEvidence.Reason) }
     )
     $TenantStatsStore['CutoverPrepSummary'] = @($cutoverPrepSummaryRows)
 
@@ -14514,16 +14714,18 @@ function Update-TenantToTenantMigrationExportData {
     Add-TenantToTenantChecklistRow `
         -Category 'Messaging' `
         -Item 'Mail flow connectors' `
-        -Status $(if ($mailFlowConnectorCount -gt 0) { 'Review' } else { 'Ready' }) `
-        -Value ("{0} connector(s)" -f $mailFlowConnectorCount) `
-        -Notes 'Inbound and outbound connectors should be reviewed for coexistence routing, relay dependencies, and cutover-day mail flow changes.' `
+        -Status $connectorStatus `
+        -Value $(if ($connectorStatus -eq 'Needs Data') { 'Mail flow connectors not collected' } else { "{0} connector(s)" -f $mailFlowConnectorCount }) `
+        -Notes (& $addEvidenceGap 'Inbound and outbound connectors should be reviewed for coexistence routing, relay dependencies, and cutover-day mail flow changes.' $connectorStatus $connectorEvidence.Reason) `
         -MigrationAction 'Confirm whether each connector remains required during coexistence, identify who owns it, and document the cutover-day routing change plan.' `
         -SourceWorksheet 'MailFlowConnectors'
 
     $remoteDomainChecklistStatus = if ($remoteDomainsWithAutoForwardEnabled.Count -gt 0) {
         'Review'
     }
-    elseif ($remoteDomainRows.Count -gt 0 -and $remoteDomainsWithForwardingStateMissing.Count -gt 0) {
+    elseif ($remoteDomainRows.Count -eq 0 -or $remoteDomainsWithForwardingStateMissing.Count -gt 0) {
+        # Every tenant has a default remote domain, so zero rows means the settings were
+        # not collected, not that auto-forwarding is off.
         'Needs Data'
     }
     else {
@@ -14531,6 +14733,9 @@ function Update-TenantToTenantMigrationExportData {
     }
     $remoteDomainChecklistValue = if ($remoteDomainsWithAutoForwardEnabled.Count -gt 0) {
         "{0} remote domain(s) allow auto-forwarding" -f $remoteDomainsWithAutoForwardEnabled.Count
+    }
+    elseif ($remoteDomainRows.Count -eq 0) {
+        'Remote domain settings not collected'
     }
     elseif ($remoteDomainChecklistStatus -eq 'Needs Data') {
         "{0} remote domain(s) collected; auto-forwarding state not surfaced for {1}" -f $remoteDomainRows.Count, $remoteDomainsWithForwardingStateMissing.Count
@@ -14703,27 +14908,27 @@ function Update-TenantToTenantMigrationExportData {
     Add-TenantToTenantChecklistRow `
         -Category 'Dependencies' `
         -Item 'Mailboxes with forwarding' `
-        -Status $(if ($mailboxesWithForwarding -gt 0) { 'Review' } else { 'Ready' }) `
-        -Value ("{0} mailbox(es) with forwarding" -f $mailboxesWithForwarding) `
-        -Notes 'Mailbox forwarding needs cutover-day validation because target-side routing, relay, or forwarding rules may change.' `
+        -Status $forwardingStatus `
+        -Value $(if ($forwardingStatus -eq 'Needs Data') { 'Mailbox inventory not collected' } else { "{0} mailbox(es) with forwarding" -f $mailboxesWithForwarding }) `
+        -Notes (& $addEvidenceGap 'Mailbox forwarding needs cutover-day validation because target-side routing, relay, or forwarding rules may change.' $forwardingStatus $mailboxEvidenceReason) `
         -MigrationAction 'Inventory each mailbox forwarding path and decide whether it should be preserved, replaced, or retired after the mailbox move.' `
         -SourceWorksheet 'AllMailboxes'
 
     Add-TenantToTenantChecklistRow `
         -Category 'Dependencies' `
         -Item 'Mailboxes on hold' `
-        -Status $(if ($mailboxesOnHold -gt 0) { 'Review' } else { 'Ready' }) `
-        -Value ("{0} mailbox(es) on hold" -f $mailboxesOnHold) `
-        -Notes 'Hold and retention states can affect move sequencing, validation, and post-cutover compliance review.' `
+        -Status $holdStatus `
+        -Value $holdChecklistValue `
+        -Notes (& $addEvidenceGap $holdNotes $holdStatus $mailboxEvidenceReason) `
         -MigrationAction 'Validate whether held mailboxes stay in migration scope, and coordinate any retention, inactive-mailbox, or legal-hold requirements before scheduling cutover.' `
         -SourceWorksheet 'AllMailboxes'
 
     Add-TenantToTenantChecklistRow `
         -Category 'Messaging' `
         -Item 'Public folders' `
-        -Status $(if ($publicFolderRows.Count -gt 0) { 'Review' } else { 'Ready' }) `
-        -Value ("{0} public folder object(s)" -f $publicFolderRows.Count) `
-        -Notes 'Public folders usually require separate migration tooling, sequencing, or exclusion decisions outside normal mailbox cutover.' `
+        -Status $publicFolderStatus `
+        -Value $(if ($publicFolderStatus -eq 'Needs Data') { 'Public folder inventory not collected' } else { "{0} public folder object(s)" -f $publicFolderRows.Count }) `
+        -Notes (& $addEvidenceGap 'Public folders usually require separate migration tooling, sequencing, or exclusion decisions outside normal mailbox cutover.' $publicFolderStatus $publicFolderEvidence.Reason) `
         -MigrationAction 'Confirm whether public folders remain in migration scope and document the target-state and tooling plan before cutover.' `
         -SourceWorksheet 'PublicFolderDetails'
 
@@ -14731,12 +14936,17 @@ function Update-TenantToTenantMigrationExportData {
     $mailboxesOver100MetricRow = @($bitTitanLicenseSummaryRows | Where-Object { [string]$_.Metric -eq 'Mailboxes over 100 GB' } | Select-Object -First 1) | Select-Object -First 1
     $mailboxesOver50WithDeleted = [int](Convert-ArrayaToNumber -Value (Get-AssessmentExportPropertyValue -Record $mailboxesOver50WithDeletedMetricRow -Names @('Value')) -AsInt64)
     $mailboxesOver100 = [int](Convert-ArrayaToNumber -Value (Get-AssessmentExportPropertyValue -Record $mailboxesOver100MetricRow -Names @('Value')) -AsInt64)
+    # No oversized mailbox found is only meaningful when every mailbox was measured.
+    $licenseEvidenceMetricRow = @($bitTitanLicenseSummaryRows | Where-Object { [string]$_.Metric -eq 'Objects needing license evidence' } | Select-Object -First 1) | Select-Object -First 1
+    $objectsNeedingSizeEvidence = [int](Convert-ArrayaToNumber -Value (Get-AssessmentExportPropertyValue -Record $licenseEvidenceMetricRow -Names @('Value')) -AsInt64)
+    $sizingEvidenceIncomplete = (-not $mailboxEvidenceAvailable) -or ($objectsNeedingSizeEvidence -gt 0)
+    $sizingEvidenceReason = if (-not $mailboxEvidenceAvailable) { $mailboxEvidenceReason } else { '{0} object(s) lack mailbox statistics or archive state.' -f $objectsNeedingSizeEvidence }
     Add-TenantToTenantChecklistRow `
         -Category 'Sizing' `
         -Item 'Oversized mailbox batches' `
-        -Status $(if ($mailboxesOver50WithDeleted -gt 0 -or $mailboxesOver100 -gt 0) { 'Review' } else { 'Ready' }) `
+        -Status $(if ($mailboxesOver50WithDeleted -gt 0 -or $mailboxesOver100 -gt 0) { 'Review' } elseif ($sizingEvidenceIncomplete) { 'Needs Data' } else { 'Ready' }) `
         -Value ("{0} over 50 GB including deleted items; {1} over 100 GB" -f $mailboxesOver50WithDeleted, $mailboxesOver100) `
-        -Notes 'Large mailboxes often need earlier staging, separate waves, or different MigrationWiz licensing assumptions to avoid cutover-day surprises.' `
+        -Notes (& $addEvidenceGap 'Large mailboxes often need earlier staging, separate waves, or different MigrationWiz licensing assumptions to avoid cutover-day surprises.' $(if ($sizingEvidenceIncomplete) { 'Needs Data' } else { 'Ready' }) $sizingEvidenceReason) `
         -MigrationAction 'Review oversized mailboxes, validate batch sizing, and align migration-wave planning and licensing before execution.' `
         -SourceWorksheet 'AllMailboxes'
 
@@ -14745,9 +14955,9 @@ function Update-TenantToTenantMigrationExportData {
     Add-TenantToTenantChecklistRow `
         -Category 'Sizing' `
         -Item 'Oversized archives' `
-        -Status $(if ($archivesOver100 -gt 0) { 'Review' } else { 'Ready' }) `
+        -Status $(if ($archivesOver100 -gt 0) { 'Review' } elseif ($sizingEvidenceIncomplete) { 'Needs Data' } else { 'Ready' }) `
         -Value ("{0} archive(s) over 100 GB" -f $archivesOver100) `
-        -Notes 'Large archives can change licensing expectations, increase migration duration, or require separate move-wave planning.' `
+        -Notes (& $addEvidenceGap 'Large archives can change licensing expectations, increase migration duration, or require separate move-wave planning.' $(if ($sizingEvidenceIncomplete) { 'Needs Data' } else { 'Ready' }) $sizingEvidenceReason) `
         -MigrationAction 'Validate whether oversized archives stay in the same wave as the primary mailbox and confirm the licensing and timing plan for those users.' `
         -SourceWorksheet 'AllMailboxes'
 
@@ -14760,11 +14970,24 @@ function Update-TenantToTenantMigrationExportData {
             ForEach-Object { [int](Convert-ArrayaToNumber -Value (Get-AssessmentExportPropertyValue -Record $_ -Names @('SharedChannelCount')) -AsInt64) } |
             Measure-Object -Sum
     ).Sum
+    # Zero shared channels is only a finding when the Teams and channel inventories exist.
+    $teamsMissingChannelInventory = @(
+        $teamRows | Where-Object { (Get-AssessmentTeamEnrichmentEvidence -TeamRecord $_).ChannelInventoryStatus -eq 'Needs Data' }
+    ).Count
+    $sharedChannelStatus = if ($teamsWithSharedChannels.Count -gt 0) {
+        'Review'
+    }
+    elseif (($teamRows.Count -eq 0 -and $teamsEvidence.State -ne 'Collected') -or $teamsMissingChannelInventory -gt 0) {
+        'Needs Data'
+    }
+    else {
+        'Ready'
+    }
     Add-TenantToTenantChecklistRow `
         -Category 'Collaboration' `
         -Item 'Teams with shared channels' `
-        -Status $(if ($teamsWithSharedChannels.Count -gt 0) { 'Review' } else { 'Ready' }) `
-        -Value ("{0} team(s) with {1} shared channel(s)" -f $teamsWithSharedChannels.Count, $totalSharedChannels) `
+        -Status $sharedChannelStatus `
+        -Value $(if ($sharedChannelStatus -eq 'Needs Data') { 'Teams channel inventory not collected or incomplete' } else { "{0} team(s) with {1} shared channel(s)" -f $teamsWithSharedChannels.Count, $totalSharedChannels }) `
         -Notes 'Shared channels are a manual coexistence and migration review item and should be validated before collaboration cutover planning is finalized.' `
         -MigrationAction 'Identify which teams use shared channels, confirm the target-state approach, and plan any manual remediation needed around those channels.' `
         -SourceWorksheet 'AllTeams'
@@ -14786,11 +15009,42 @@ function Update-TenantToTenantMigrationExportData {
     Add-TenantToTenantChecklistRow `
         -Category 'Collaboration' `
         -Item 'Collaboration sizing gaps' `
-        -Status $(if ($collaborationUnknownTotal -gt 0) { 'Needs Data' } else { 'Ready' }) `
+        -Status $(if ($collaborationUnknownTotal -gt 0 -or $sharePointEvidence.State -ne 'Collected' -or $oneDriveEvidence.State -ne 'Collected') { 'Needs Data' } else { 'Ready' }) `
         -Value ("Teams {0}; SharePoint {1}; OneDrive {2} with storage not surfaced" -f $teamsUnknownStorageCount, $sharePointUnknownStorageCount, $oneDriveUnknownStorageCount) `
         -Notes 'Missing storage visibility can hide large collaboration objects that affect wave design, tooling throughput, or follow-on migration planning.' `
         -MigrationAction 'Backfill missing Teams, SharePoint, or OneDrive sizing where needed before finalizing migration waves and post-mailbox workload sequencing.' `
         -SourceWorksheet 'CollaborationSummary'
+
+    # ---- Evidence coverage ----------------------------------------------------------------
+    # A collector that the profile skipped, or that failed, leaves no rows behind. List the
+    # migration-relevant ones so their absence is read as "not collected" and not as "none".
+    $migrationRelevantCollectorSteps = @(
+        'Users', 'Admins', 'Entra groups', 'Domains', 'Authentication/SSO configuration',
+        'Federation/cross-tenant configuration', 'Conditional Access policies', 'MFA registration details',
+        'License SKUs', 'AD Connect sync details', 'Exchange recipients', 'Exchange mailboxes', 'Exchange groups',
+        'Public folders', 'Exchange hybrid configuration', 'Mail flow rules/connectors',
+        'Third-party spam filtering configuration', 'SMTP relay configuration', 'Unified groups',
+        'SharePoint/OneDrive sites', 'Teams inventory', 'Devices', 'Purview retention/DLP policies'
+    )
+    foreach ($collectorResult in @(Get-AssessmentExportTableArray -TenantStatsStore $TenantStatsStore -Key 'CollectorPlanResults')) {
+        if ($null -eq $collectorResult) { continue }
+        $collectorStatus = [string](Get-AssessmentExportPropertyValue -Record $collectorResult -Names @('Status'))
+        if ($collectorStatus -notin @('Skipped', 'Failed')) { continue }
+
+        $collectorName = [string](Get-AssessmentExportPropertyValue -Record $collectorResult -Names @('Name'))
+        $isMigrationRelevant = @($migrationRelevantCollectorSteps | Where-Object { $collectorName.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
+        if (-not $isMigrationRelevant) { continue }
+
+        $collectorMessage = [string](Get-AssessmentExportPropertyValue -Record $collectorResult -Names @('Message'))
+        Add-TenantToTenantChecklistRow `
+            -Category 'Evidence coverage' `
+            -Item ("Evidence not collected: {0}" -f $collectorName) `
+            -Status 'Needs Data' `
+            -Value $(if ($collectorStatus -eq 'Failed') { 'Collection failed' } else { 'Not collected in this run' }) `
+            -Notes ("{0} The absence of this evidence is not a finding that nothing exists." -f $(if ([string]::IsNullOrWhiteSpace($collectorMessage)) { 'The collector step did not run.' } else { $collectorMessage })) `
+            -MigrationAction 'Collect this evidence with a profile that includes it, or confirm with the customer, before relying on its absence. See docs/t2t-migration-review for the profile scope.' `
+            -SourceWorksheet 'N/A'
+    }
 
     $TenantStatsStore['MigrationReadinessChecklist'] = @($migrationReadinessChecklistRows.ToArray())
 
@@ -17318,21 +17572,16 @@ function Get-TenantOverviewInfo {
             if ($default) { $defaultDomain = if ($default.PSObject.Properties['Name']) { $default.Name } else { $default.Id } }
         }
 
+        # Microsoft Graph exposes Multi-Geo on the organization resource as
+        # isMultipleDataLocationsForServicesEnabled: true, false, or null (not set). Keep the
+        # three values apart; null means "not reported", not "single geography". Graph does
+        # not expose the allowed or central data locations here, so those stay empty.
         $multiGeoEnabled = $null
         $multiGeoAllowed = @()
         $multiGeoCentral = $null
-        if ($org.PSObject.Properties['IsMultipleGeolocationEnabled']) {
-            $multiGeoEnabled = [bool]$org.IsMultipleGeolocationEnabled
-        }
-        if ($org.PSObject.Properties['MultiGeoConfiguration'] -and $org.MultiGeoConfiguration) {
-            $cfg = $org.MultiGeoConfiguration
-            if ($cfg.PSObject.Properties['AllowedDataLocations'] -and $cfg.AllowedDataLocations) {
-                $multiGeoAllowed = @($cfg.AllowedDataLocations)
-                if ($multiGeoAllowed.Count -gt 1) { $multiGeoEnabled = $true }
-            }
-            if ($cfg.PSObject.Properties['PreferredDataLocation'] -and $cfg.PreferredDataLocation) {
-                $multiGeoCentral = $cfg.PreferredDataLocation
-            }
+        $multiGeoFlag = Convert-ArrayaToBoolean -Value (Get-ArrayaObjectValue -Object $org -Names @('isMultipleDataLocationsForServicesEnabled', 'IsMultipleDataLocationsForServicesEnabled'))
+        if ($null -ne $multiGeoFlag) {
+            $multiGeoEnabled = [bool]$multiGeoFlag
         }
 
         $selfServiceAnswer = "Not collected"
@@ -18121,6 +18370,9 @@ function Get-PurviewCompliancePolicies {
             if (-not [string]::IsNullOrWhiteSpace($purviewDiagnosticMessage)) {
                 $message = $purviewDiagnosticMessage
             }
+            foreach ($purviewDatasetKey in @('RetentionPolicies', 'DlpPolicies')) {
+                Set-ArrayaCollectorEvidenceState -TenantStatsHash $script:tenantStatsHash -DatasetKey $purviewDatasetKey -State 'Unavailable' -Reason $message -Collector 'Get-PurviewCompliancePolicies' | Out-Null
+            }
 
             return (New-AssessmentStepResult -Status Skipped -Message $message)
         }
@@ -18195,6 +18447,24 @@ function Get-PurviewCompliancePolicies {
         }
         catch {
             $issues.Add("DLP policy collection failed: $($_.Exception.Message)") | Out-Null
+        }
+
+        foreach ($purviewDataset in @(
+                @{ Key = 'RetentionPolicies'; Collected = $retentionCollected; Pattern = '(?i)retention' },
+                @{ Key = 'DlpPolicies'; Collected = $dlpCollected; Pattern = '(?i)dlp' }
+            )) {
+            $purviewRowCount = $script:tenantStatsHash[$purviewDataset.Key].Count
+            $purviewIssue = @($issues | Where-Object { $_ -match $purviewDataset.Pattern }) | Select-Object -First 1
+            $purviewState = if ($purviewDataset.Collected) {
+                if ($purviewRowCount -gt 0) { 'CompleteWithRecords' } else { 'CompleteEmpty' }
+            }
+            elseif ([string]$purviewIssue -match '(?i)not available|unavailable') {
+                'Unavailable'
+            }
+            else {
+                'Failed'
+            }
+            Set-ArrayaCollectorEvidenceState -TenantStatsHash $script:tenantStatsHash -DatasetKey $purviewDataset.Key -State $purviewState -Reason ([string]$purviewIssue) -Collector 'Get-PurviewCompliancePolicies' | Out-Null
         }
 
         $status = if ($issues.Count -eq 0) {

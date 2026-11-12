@@ -204,16 +204,71 @@ Run with a specific output profile:
 
 ## Output Profiles
 
-| Profile | Scope | Best for |
-| ------- | ----- | -------- |
-| `SolutionsEngineer` | Operator | Default. Standard consultant depth. |
-| `ExecutiveLevel` | Minimum | Leadership summaries. |
-| `Presales` | Minimum | Lighter presales discovery. |
-| `TenantToTenantMigration` | All | Deep migration readiness. |
-| `Geek` | Geek | Detailed engineer troubleshooting. |
-| `Machine` | Automation | JSON-first automation and replay. |
+| Profile | Depth | Collection scope | Best for |
+| ------- | ----- | ---------------- | -------- |
+| `SolutionsEngineer` | Operator | Default: every collector | Default. Standard consultant depth. |
+| `ExecutiveLevel` | Minimum | Default, without recipients, Exchange groups, mail flow, public folders, SMTP relay, and Microsoft 365 Groups | Leadership summaries. |
+| `Presales` | Operator | Presales: migration scoping | Migration scoping, sizing, complexity, and quote readiness. |
+| `TenantToTenantMigration` | All | TenantToTenantCutover: Exchange and collaboration cutover | Mailbox cutover preparation and the cutover pack. Not yet a complete migration assessment. |
+| `Geek` | Geek | Default: every collector | Detailed engineer troubleshooting. |
+| `Machine` | Automation | Default: every collector | JSON-first automation and replay. |
 
-Pass multiple profiles as a comma-separated list. When multiple profiles are supplied, the assessment runs once at the highest required scope.
+Depth is the `ReportingMode` returned by `Get-ArrayaAssessmentOutputProfilePolicy`. Collection scope decides which collectors run. A unit test compares this table with the code.
+
+### What the two migration profiles collect
+
+`Presales` and `TenantToTenantMigration` are separate profiles with different purposes. Neither is a superset of the other today.
+
+| Evidence | `Presales` | `TenantToTenantMigration` |
+| -------- | ---------- | ------------------------- |
+| Mailboxes, sizes, archives, inactive mailboxes | Yes | Yes |
+| Full Access, Send As, and calendar folder permissions | No | Yes (only this profile collects them) |
+| Domains, connectors, remote domains, SMTP relay, public folders, hybrid signals | Yes | Yes |
+| Teams, SharePoint, and OneDrive inventories | Yes, with full SharePoint detail and Microsoft 365 Group mailbox statistics | Yes, without full SharePoint detail or Microsoft 365 Group mailbox statistics |
+| Enterprise applications and SSO | Yes | No |
+| Microsoft 365 Groups inventory | Yes | No |
+| Devices | Yes | No |
+| Entra groups | Yes | No |
+| Administrators, Conditional Access, MFA registration, Purview retention and DLP | No | No |
+| Migration planning registers (decisions, identity mapping, domain dependencies, object disposition, effort, waves) | Workbook and scoping brief | JSON snapshot only |
+| Cutover pack, cutover checklist, delegate worksheets | No | Yes |
+
+When a collector is skipped or fails, the tenant-to-tenant readiness checklist lists it under "Evidence coverage" with status `Needs Data`. Evidence that was not collected is never reported as absent or ready.
+
+`TenantToTenantMigration` does not yet represent all the evidence needed to plan a tenant-to-tenant migration. The gaps and the planned expansion are recorded in [T2T-Migration-Assessment-Coverage.md](docs/t2t-migration-review/T2T-Migration-Assessment-Coverage.md) and [T2T-Migration-Assessment-Backlog.md](docs/t2t-migration-review/T2T-Migration-Assessment-Backlog.md). Until that work lands, run `TenantToTenantMigration` for cutover preparation and a second, separate run of `Presales` or `SolutionsEngineer` for application, group, and device evidence.
+
+### Combining profiles
+
+Pass multiple profiles as a comma-separated list. The assessment then runs once at the highest required depth, with these current limitations:
+
+- The collection scope and the workbook layout reset to `Default`. Profile-specific scopes (`Presales`, `TenantToTenantCutover`) are not applied.
+- When `TenantToTenantMigration` is combined with another profile, the tenant-to-tenant shaping does not run, mailbox and calendar delegate permissions are not collected, and the migration planning registers are not built. The cutover pack is still written, from unshaped data.
+- A combined run can therefore produce less migration evidence than the same profiles run separately.
+
+Run the migration profiles on their own until profile collection is redesigned. The intended rule, tracked in the backlog, is that requesting several profiles never yields less evidence than any one of them alone.
+
+### Migration criteria register
+
+Every run that includes `Presales` or `TenantToTenantMigration`, alone or combined, writes a `MigrationCriteriaRegister` worksheet and the same rows to the JSON snapshot. The criteria come from [migration-evidence-criteria.json](src/config/baseline/migration-evidence-criteria.json), which states for each criterion its owning profile, workloads, whether it is required, the assessment stage it serves (Scoping, Design, Execution; not engagement milestones), its evidence source, when it applies, what happens when evidence is missing, and whether it affects readiness, planning, or reference only.
+
+| Column | Meaning |
+| ------ | ------- |
+| `Profile`, `ContributingProfiles` | Owning profile, and other requested profiles that need the same criterion |
+| `CollectorState` | `CompleteWithRecords`, `CompleteEmpty`, `Partial`, `Failed`, `Unavailable`, `NotRequested`, `Unsupported`, `NotApplicable`, `Unknown`, or `SkippedByProfile` |
+| `EvidenceStatus` | `Ready` only for a complete collector state; otherwise `Partial`, `Failed`, `NeedsData`, or `NotApplicable` |
+| `PresalesClassification` | `PresalesBlocker`, `NeedsData`, `PlanningGap`, or `Nonblocking` |
+| `MigrationTreatment` | Mailbox-level hold and organization-wide retention policy criteria only: `Clear`, `RequiresPreservationPlan`, `RequiresComplianceValidation`, `RequiresLegalDecision`, `BlocksMigration`, or `NotEstablished` |
+| `RequiredDecision`, `DecisionKey`, `BlockerImpact`, `ResolutionEvidence`, `ResponsibleRole` | What is blocked, why it matters, what closes it, and who owns it |
+| `CurrentStatus`, `ActionId`, `Action` | `Blocker`, `Needs Data`, `Needs Input`, `Review`, `Ready`, `Confirmed`, or `Not Applicable`, and one action per distinct condition |
+
+Rules the register applies:
+
+- A `PresalesBlocker` is raised only when required evidence is missing for a decision Presales cannot make without it. Missing optional evidence is shown but never blocks. Evidence that no collector gathers is a `PlanningGap`.
+- Hold evidence and migration treatment are separate. Holds do not make evidence unready, and ready evidence is not clearance. `RequiresLegalDecision` means a legal owner must decide; the assessment never records that decision. `BlocksMigration` is raised only when a mailbox's confirmed migration method is documented as incompatible with its holds.
+- Mailbox-level holds and organization-wide retention policies are separate criteria. Mailbox hold fields come from the Exchange mailbox collection, so a profile that does not collect Purview (Presales, or the cutover collection scope) still establishes them; the organization-wide policy row then shows `SkippedByProfile` and `Needs Data` instead of blocking.
+- A decision key names one decision: every criterion that cites a key states the same required decision, and the catalog fails to load otherwise.
+- Combined profiles merge only criteria with identical meaning, scope, population, period, decision, owner, and closure evidence. The strictest requirement wins. Each criterion is evaluated against its own evidence, so one profile never fills another profile's gap.
+- Skipped and unsupported collectors stay visible.
 
 ## Default Output Location
 
