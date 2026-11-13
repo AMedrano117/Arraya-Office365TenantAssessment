@@ -184,6 +184,38 @@ Describe 'Migration scope reconciliation' {
             @($store.MigrationReadinessChecklist).Count | Should -BeGreaterThan 0
         }
 
+        It 'reports mailboxes over and near 50 GB as User Migration Bundle candidates in the license summary' {
+            $mailboxes = @(
+                [pscustomobject]@{ DisplayName = 'Large user'; PrimarySmtpAddress = 'large@contoso.example'; ExchangeGuid = 'mbx-large'; RecipientTypeDetails = 'UserMailbox'; ArchiveStatus = 'None' }
+                [pscustomobject]@{ DisplayName = 'Near user'; PrimarySmtpAddress = 'near@contoso.example'; ExchangeGuid = 'mbx-near'; RecipientTypeDetails = 'UserMailbox'; ArchiveStatus = 'None' }
+                [pscustomobject]@{ DisplayName = 'Small user'; PrimarySmtpAddress = 'small@contoso.example'; ExchangeGuid = 'mbx-small'; RecipientTypeDetails = 'UserMailbox'; ArchiveStatus = 'None' }
+            )
+            $store = @{
+                MailboxFullDetails  = $mailboxes
+                Users               = @('large', 'near', 'small' | ForEach-Object { [pscustomobject]@{ UserPrincipalName = "$_@contoso.example"; Mail = "$_@contoso.example" } })
+                PrimaryMailboxStats = @(
+                    [pscustomobject]@{ MailboxGuid = 'mbx-large'; TotalItemSizeBytes = [int64](110GB); TotalDeletedItemSizeBytes = [int64](10GB) }
+                    [pscustomobject]@{ MailboxGuid = 'mbx-near'; TotalItemSizeBytes = [int64](44GB); TotalDeletedItemSizeBytes = [int64](3GB) }
+                    [pscustomobject]@{ MailboxGuid = 'mbx-small'; TotalItemSizeBytes = [int64](5GB); TotalDeletedItemSizeBytes = [int64](0) }
+                )
+                ArchiveMailboxStats = @()
+            }
+
+            Update-MigrationScopeExportData -TenantStatsStore $store -ErrorAction Stop
+
+            $summary = @($store.BitTitanLicenseSummary | Where-Object { $_.Section -eq 'UMB candidates' })
+            (@($summary | Where-Object Metric -eq 'UMB candidates over 50 GB')[0]).Value | Should -Be 1
+            (@($summary | Where-Object Metric -eq 'UMB candidates near 50 GB')[0]).Value | Should -Be 1
+            (@($summary | Where-Object Metric -eq 'UMB candidates over 50 GB')[0]).Notes | Should -Match '3 MigrationWiz-Mailbox unit'
+            (@($summary | Where-Object Metric -like 'Mailboxes near 50 GB (45-50 GB*')[0]).Value | Should -Be 1
+            (@($store.BitTitanLicenseSummary | Where-Object Metric -eq 'Mailboxes over 50 GB')[0]).Value | Should -Be 1 -Because 'the existing primary-only threshold row is unchanged'
+
+            $nearRow = @($store.BitTitanLicenseDetail | Where-Object DisplayName -eq 'Near user')[0]
+            $nearRow.SizeBand | Should -Be 'Near 50 GB (45-50 GB)'
+            $nearRow.UmbCandidate | Should -BeTrue
+            (@($store.BitTitanLicenseDetail | Where-Object DisplayName -eq 'Small user')[0]).UmbCandidate | Should -BeFalse
+        }
+
         It 'completes cutover shaping when no mailbox inventory was collected' {
             $store = @{}
 

@@ -2,8 +2,14 @@
     # Single source of truth for every PowerShell module this repository depends on.
     #
     # Version ranges are deliberate: MinimumVersion is the oldest version the assessment has
-    # been validated against, and MaximumVersion pins the major line so an upstream breaking
-    # release cannot silently change collection behaviour on a customer engagement.
+    # been validated against, and MaximumVersion caps the newest major line that has been
+    # reviewed, so an unreviewed breaking release cannot silently change collection behaviour
+    # on a customer engagement. Raise a cap only after reviewing that major version's release
+    # notes against the cmdlets the collectors call.
+    #
+    # Last reviewed 2026-11-12 against the PowerShell Gallery: every module's latest release
+    # is inside its range. MicrosoftTeams 8 (its only breaking change is to
+    # New-CsAutoRecordingTemplate, which no collector calls) and Pester 6 were added.
     #
     # Scopes:
     #   Runtime    - required to execute a tenant assessment
@@ -106,7 +112,7 @@
         @{
             Name           = 'MicrosoftTeams'
             MinimumVersion = '7.6.0'
-            MaximumVersion = '7.99.99'
+            MaximumVersion = '8.99.99'
             Scope          = @('Runtime')
             Reason         = 'Teams policy and configuration collection.'
         },
@@ -129,9 +135,9 @@
         @{
             Name           = 'Pester'
             MinimumVersion = '5.7.1'
-            MaximumVersion = '5.99.99'
+            MaximumVersion = '6.99.99'
             Scope          = @('DevTools')
-            Reason         = 'Test runner. Pester 5 configuration API is required by tools/run-pester.ps1.'
+            Reason         = 'Test runner. tools/run-pester.ps1 uses the configuration API introduced in Pester 5; the suite passes on 5.7.1 and 6.2.0.'
         },
         @{
             Name           = 'PSScriptAnalyzer'

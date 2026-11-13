@@ -1,6 +1,6 @@
 # App Registration Setup
 
-Use this runbook when you want to run the assessment with app-based auth. Certificate auth is the recommended production path. `ClientSecret` remains available as a compatibility mode for Graph-focused automation, but it is not equivalent to the certificate path in this workflow.
+Use this runbook when you want to run the assessment with app-based auth. The assessment app is a single-tenant app registration created in the customer's tenant, one per customer. Certificate auth is the recommended production path. `ClientSecret` remains available as a compatibility mode for Graph-focused automation, but it is not equivalent to the certificate path in this workflow.
 
 ## Automated setup
 
@@ -96,16 +96,14 @@ Exchange Online app-only access must be configured on the app registration. With
 
 Purview retention and DLP collection uses `Connect-IPPSSession` from `ExchangeOnlineManagement`. In certificate mode this requires:
 
-1. The app's service principal exists in the **target tenant** (created when the customer admin grants consent to the app).
+1. The app's service principal exists in the customer tenant. `New-AssessmentAppRegistration.ps1` creates it.
 2. Either workload-scoped read-only Purview RBAC is configured (`LeastPrivilege`) or **Global Reader** is assigned (`GlobalReader`). Do not stack Global Reader with Exchange Administrator.
 
-This is a per-engagement step — it must be done in every customer tenant, not just in the Arraya tenant where the app is registered.
-
-To assign the role in the customer tenant:
+`-AccessModel GlobalReader` assigns Global Reader for you. To assign it manually instead:
 
 1. Sign in to the customer's Entra admin center.
-2. Go to **Enterprise applications** and find the Arraya assessment app.
-3. For the `GlobalReader` model, assign **Global Reader** to the service principal. Do not also assign **Exchange Administrator**.
+2. Go to **Enterprise applications** and find the assessment app.
+3. Assign **Global Reader** to the service principal. Do not also assign **Exchange Administrator**.
 
 `Exchange Administrator` alone does not expose Security & Compliance PowerShell cmdlets to an app-only session. Without a supported Purview role, `Connect-IPPSSession` can accept the certificate while exposing no retention or DLP cmdlets.
 

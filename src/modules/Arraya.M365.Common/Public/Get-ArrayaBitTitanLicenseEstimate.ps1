@@ -50,8 +50,15 @@ function Get-ArrayaBitTitanLicenseEstimate {
         data in the mailbox-license unit paths. Without this switch, group mailboxes remain in
         ObjectLines with their discovered sizes but contribute no automatic license units.
 
+        Mailboxes over the block size, or near it (NearBlockSizeGB up to the block size), are
+        banded on each object line (SizeBand). A bundle-eligible, mailbox-only user mailbox in
+        either band is flagged as a User Migration Bundle candidate (UmbCandidate, with
+        UmbCandidateReason), and LargeMailboxCandidates summarises both bands. Candidates do not
+        change any unit basket; the Solutions Engineer decides.
+
     .OUTPUTS
-        PSCustomObject with ObjectLines, SkuTotals, PathComparison, and Drivers collections.
+        PSCustomObject with ObjectLines, LargeMailboxCandidates, SkuTotals, PathComparison, and
+        Drivers collections.
     #>
     [CmdletBinding()]
     param(
@@ -87,6 +94,8 @@ function Get-ArrayaBitTitanLicenseEstimate {
     $emptyGroupFloorGB = [double](Get-ArrayaObjectValue -Object $Model.Thresholds -Names @('EmptyGroupMailboxFloorGB'))
     $largeMailboxGB = [double](Get-ArrayaObjectValue -Object $Model.Thresholds -Names @('LargeMailboxGB'))
     if ($largeMailboxGB -le 0) { $largeMailboxGB = 50 }
+    $nearBlockSizeGB = [double](Get-ArrayaObjectValue -Object $Model.Thresholds -Names @('NearBlockSizeGB'))
+    if ($nearBlockSizeGB -le 0 -or $nearBlockSizeGB -ge $blockSizeGB) { $nearBlockSizeGB = [math]::Round($blockSizeGB * 0.9, 3) }
 
     $bundleEligibleTypes = @(Get-ArrayaObjectValue -Object $Model.BundleEligibility -Names @('RecipientTypeDetails'))
     if ($bundleEligibleTypes.Count -eq 0) { $bundleEligibleTypes = @('UserMailbox') }
@@ -137,6 +146,69 @@ function Get-ArrayaBitTitanLicenseEstimate {
     }
 
     $allLines = @($objectLines.ToArray())
+
+    # ---- Large-mailbox User Migration Bundle candidates -----------------------------------
+    # A mailbox-only object over the block size consumes two or more MigrationWiz-Mailbox
+    # licenses, and one near the block size can cross it during the project (growth, and
+    # deleted items accumulated across passes). A User Migration Bundle has no per-user data
+    # cap, so a bundle-eligible user mailbox in either band is a UMB candidate. This flags
+    # candidates only: unit baskets are unchanged and the SE makes the commercial decision.
+    $overBandLabel = 'Over {0} GB' -f $blockSizeGB
+    $nearBandLabel = 'Near {0} GB ({1}-{0} GB)' -f $blockSizeGB, $nearBlockSizeGB
+    foreach ($line in $allLines) {
+        $sizeBand = ''
+        if ([string]$line.ObjectType -eq 'Mailbox' -and $null -ne $line.SizeGB) {
+            if ([double]$line.SizeGB -gt $blockSizeGB) { $sizeBand = $overBandLabel }
+            elseif ([double]$line.SizeGB -ge $nearBlockSizeGB) { $sizeBand = $nearBandLabel }
+        }
+
+        $isCandidate = $false
+        $reason = ''
+        if (-not [string]::IsNullOrWhiteSpace($sizeBand)) {
+            if ($line.HasArchive -eq $true) {
+                $reason = ('Already counted as one {0} because it has an archive.' -f $bundleSkuName)
+            }
+            elseif ($null -eq $line.LicenseUnits) {
+                $reason = 'Archive state or sizing evidence is incomplete; confirm before choosing a license.'
+            }
+            elseif ($line.BundleEligible -ne $true) {
+                $reason = ('Not {0}-eligible under the current model (no licensable user behind this mailbox); stays on {1} blocks.' -f $bundleSkuName, $mailboxSkuName)
+            }
+            elseif ($sizeBand -eq $overBandLabel) {
+                $isCandidate = $true
+                $reason = ('Consumes {0} {1} licenses at {2} GB each. One {3} has no per-user data cap.' -f $line.LicenseUnits, $mailboxSkuName, $blockSizeGB, $bundleSkuName)
+            }
+            else {
+                $isCandidate = $true
+                $reason = ('Within {0} GB of the {1} GB block. Growth or deleted items during migration passes can require a second {2} license. One {3} has no per-user data cap.' -f ([math]::Round(($blockSizeGB - [double]$line.SizeGB), 3)), $blockSizeGB, $mailboxSkuName, $bundleSkuName)
+            }
+        }
+
+        $line | Add-Member -NotePropertyName 'SizeBand' -NotePropertyValue $sizeBand -Force
+        $line | Add-Member -NotePropertyName 'UmbCandidate' -NotePropertyValue $isCandidate -Force
+        $line | Add-Member -NotePropertyName 'UmbCandidateReason' -NotePropertyValue $reason -Force
+    }
+
+    $newBandSummary = {
+        param([string]$Band, [string]$Label)
+        $bandLines = @($allLines | Where-Object { $_.SizeBand -eq $Band })
+        $candidateLines = @($bandLines | Where-Object { $_.UmbCandidate -eq $true })
+        [pscustomobject][ordered]@{
+            Band                        = $Label
+            MailboxCount                = $bandLines.Count
+            UmbCandidateCount           = $candidateLines.Count
+            CandidateMailboxLicenseUnits = [int](@($candidateLines | ForEach-Object { [int]$_.LicenseUnits } | Measure-Object -Sum).Sum)
+            AlreadyUmbCount             = @($bandLines | Where-Object { $_.HasArchive -eq $true }).Count
+            NotBundleEligibleCount      = @($bandLines | Where-Object { $_.HasArchive -ne $true -and $null -ne $_.LicenseUnits -and $_.BundleEligible -ne $true }).Count
+            NeedsEvidenceCount          = @($bandLines | Where-Object { $_.HasArchive -ne $true -and $null -eq $_.LicenseUnits }).Count
+            DataGB                      = [math]::Round((@($bandLines | ForEach-Object { [double]$_.SizeGB } | Measure-Object -Sum).Sum), 3)
+        }
+    }
+    $largeMailboxCandidates = @(
+        (& $newBandSummary $overBandLabel $overBandLabel),
+        (& $newBandSummary $nearBandLabel $nearBandLabel)
+    )
+
     $billableLines = @($allLines | Where-Object { $null -ne $_.LicenseUnits })
     $needsDataLines = @($allLines | Where-Object { $_.RecommendedSku -eq 'Needs data' })
     $emptyShellLines = @($allLines | Where-Object { $_.RecommendedSku -eq 'No migration' })
@@ -388,6 +460,8 @@ function Get-ArrayaBitTitanLicenseEstimate {
         [pscustomobject]@{ Driver = 'Total mailbox data (GB)'; Value = $totalDataGB; Notes = 'Primary plus deleted plus archive plus archive deleted.' }
         [pscustomobject]@{ Driver = 'Archive-enabled mailboxes'; Value = $archiveEnabledCount; Notes = ("{0}% of sized objects." -f $archivePercent) }
         [pscustomobject]@{ Driver = ("Mailboxes over {0} GB" -f $largeMailboxGB); Value = $overThresholdCount; Notes = 'Mailbox-only objects can require additional mailbox-license capacity; archive-bearing objects use UMB.' }
+        [pscustomobject]@{ Driver = ('UMB candidates: {0}' -f $overBandLabel); Value = $largeMailboxCandidates[0].UmbCandidateCount; Notes = ('Mailbox-only user mailboxes using {0} {1} unit(s) between them. One {2} each has no per-user data cap. SE commercial decision.' -f $largeMailboxCandidates[0].CandidateMailboxLicenseUnits, $mailboxSkuName, $bundleSkuName) }
+        [pscustomobject]@{ Driver = ('UMB candidates: {0}' -f $nearBandLabel); Value = $largeMailboxCandidates[1].UmbCandidateCount; Notes = ('Mailbox-only user mailboxes on one {0} unit that can cross the block during the project. SE commercial decision.' -f $mailboxSkuName) }
         [pscustomobject]@{ Driver = 'Average mailbox size (GB)'; Value = $averageSizeGB; Notes = 'Across objects with a known size.' }
         [pscustomobject]@{ Driver = 'Largest mailbox (GB)'; Value = $(if ($largestLine) { $largestLine.SizeGB } else { $null }); Notes = $(if ($largestLine) { [string]$largestLine.DisplayName } else { 'No sized objects.' }) }
         [pscustomobject]@{ Driver = 'Objects needing license evidence'; Value = $needsDataLines.Count; Notes = 'Missing mailbox statistics or archive state. Excluded from license totals; treat unit baskets as a floor.' }
@@ -402,6 +476,8 @@ function Get-ArrayaBitTitanLicenseEstimate {
     return [pscustomobject]@{
         ObjectLines     = $allLines
         LicenseMixBreakdown = $licenseMixBreakdown
+        LargeMailboxCandidates = $largeMailboxCandidates
+        NearBlockSizeGB = $nearBlockSizeGB
         SkuTotals       = $skuTotals
         PathComparison  = $pathComparison
         PlanningOptions = $planningOptions
@@ -456,6 +532,7 @@ function Get-ArrayaBitTitanLicenseModel {
         }
         Thresholds = [pscustomobject]@{
             LargeMailboxGB = 50
+            NearBlockSizeGB = 45
             VeryLargeMailboxGB = 100
             LargeArchiveGB = 100
             EmptyGroupMailboxFloorGB = 0

@@ -125,6 +125,21 @@ Describe 'Presales migration scope overview' {
         $script:pipelineSource = Get-Content -LiteralPath $script:pipelinePath -Raw
     }
 
+    It 'calls out User Migration Bundle candidates only when large mailboxes exist' {
+        $withCandidates = @{
+            TenantInfo = [pscustomobject]@{ DisplayName = 'Contoso'; DefaultDomain = 'contoso.example' }
+            BitTitanLicenseSummary = @(
+                [pscustomobject]@{ Section = 'UMB candidates'; Metric = 'UMB candidates over 50 GB'; Value = 3 },
+                [pscustomobject]@{ Section = 'UMB candidates'; Metric = 'UMB candidates near 50 GB'; Value = 4 }
+            )
+        }
+        $content = Export-TestMigrationOverview -Snapshot $withCandidates -OutputPath (Join-Path $TestDrive 'umb-candidates.md')
+        $content | Should -Match 'User Migration Bundle candidates'
+        $content | Should -Match '3 mailbox-only user mailbox\(es\) exceed the 50 GB MigrationWiz-Mailbox block and 4 are near it'
+
+        $script:content | Should -Not -Match 'User Migration Bundle candidates' -Because 'the main fixture has no UMB candidate rows'
+    }
+
     It 'renders a compact source-only overview instead of an interactive decision register' {
         Test-Path $script:outputPath | Should -BeTrue
         $script:content | Should -Match '# Microsoft 365 Migration Scope Overview'

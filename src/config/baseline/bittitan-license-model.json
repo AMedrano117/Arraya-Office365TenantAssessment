@@ -36,10 +36,11 @@
 
   "Thresholds": {
     "LargeMailboxGB": 50,
+    "NearBlockSizeGB": 45,
     "VeryLargeMailboxGB": 100,
     "LargeArchiveGB": 100,
     "EmptyGroupMailboxFloorGB": 0,
-    "Notes": "EmptyGroupMailboxFloorGB: Microsoft 365 Group mailboxes at or below this size are treated as empty shells, reported separately, and excluded from license units. Many groups exist only for their SharePoint site and were never emailed."
+    "Notes": "EmptyGroupMailboxFloorGB: Microsoft 365 Group mailboxes at or below this size are treated as empty shells, reported separately, and excluded from license units. Many groups exist only for their SharePoint site and were never emailed. NearBlockSizeGB: mailbox-only objects from this size up to the MigrationWiz-Mailbox block size are reported as near the block, because growth and deleted items during migration passes can push them into a second license."
   },
 
   "BundleEligibility": {

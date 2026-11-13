@@ -13986,6 +13986,9 @@ function Update-MigrationScopeExportData {
             EstimateStatus = $_.EstimateStatus
             SizingBasis    = $_.SizingBasis
             Notes          = $_.Notes
+            SizeBand       = $_.SizeBand
+            UmbCandidate   = $_.UmbCandidate
+            UmbCandidateReason = $_.UmbCandidateReason
         }
     })
     $TenantStatsStore['BitTitanLicenseMixBreakdown'] = @($estimate.LicenseMixBreakdown)
@@ -14047,6 +14050,16 @@ function Update-MigrationScopeExportData {
     $unknownGroupMailboxEvidence = $reconciliation.UnknownMailboxEvidenceCount
     $inactiveMailboxesWithArchive = @($estimate.ObjectLines | Where-Object { $_.IsInactiveMailbox -eq $true -and $_.HasArchive -eq $true })
 
+    # Large-mailbox UMB candidates use the licensing size (primary + deleted + archive +
+    # archive deleted), not the primary-only size of the 'Mailboxes over 50 GB' threshold row.
+    $overBand = @($estimate.LargeMailboxCandidates)[0]
+    $nearBand = @($estimate.LargeMailboxCandidates)[1]
+    $describeBand = {
+        param($Band)
+        if ($null -eq $Band) { return 'Large-mailbox evidence unavailable.' }
+        ("Licensing size (primary + deleted items + archive). {0} user mailbox(es) are UMB candidates; {1} already use a UMB because of an archive; {2} are not UMB-eligible (no licensable user); {3} need sizing or archive evidence. See SizeBand and UmbCandidate in BitTitanLicenseDetail." -f $Band.UmbCandidateCount, $Band.AlreadyUmbCount, $Band.NotBundleEligibleCount, $Band.NeedsEvidenceCount)
+    }
+
     $bitTitanLicenseSummaryRows = New-Object System.Collections.Generic.List[object]
     foreach ($metricRow in @(
             @{ Section = 'Counts'; Metric = 'Active mailboxes'; Value = $activeMailboxes.Count; Notes = 'Mailbox rows included in migration planning.' },
@@ -14060,6 +14073,10 @@ function Update-MigrationScopeExportData {
             @{ Section = 'Thresholds'; Metric = 'Mailboxes over 100 GB'; Value = $mailboxesOver100.Count; Notes = 'Mailbox primary content only.' },
             @{ Section = 'Thresholds'; Metric = 'Mailboxes over 50 GB including deleted items'; Value = $mailboxesOver50WithDeleted.Count; Notes = 'Mailboxes that cross a license block only once deleted items are counted.' },
             @{ Section = 'Thresholds'; Metric = 'Archives over 100 GB'; Value = $archivesOver100.Count; Notes = 'Archive review threshold.' },
+            @{ Section = 'UMB candidates'; Metric = ("Mailboxes over {0} GB (licensing size)" -f $blockSizeGB); Value = $(if ($overBand) { $overBand.MailboxCount } else { $null }); Notes = (& $describeBand $overBand) },
+            @{ Section = 'UMB candidates'; Metric = ("Mailboxes near {0} GB ({1}-{0} GB, licensing size)" -f $blockSizeGB, $estimate.NearBlockSizeGB); Value = $(if ($nearBand) { $nearBand.MailboxCount } else { $null }); Notes = (& $describeBand $nearBand) },
+            @{ Section = 'UMB candidates'; Metric = ("UMB candidates over {0} GB" -f $blockSizeGB); Value = $(if ($overBand) { $overBand.UmbCandidateCount } else { $null }); Notes = $(if ($overBand) { ("Mailbox-only user mailboxes that use {0} MigrationWiz-Mailbox unit(s) between them, two or more each. One User Migration Bundle per mailbox has no per-user data cap. SE commercial decision; unit baskets are unchanged." -f $overBand.CandidateMailboxLicenseUnits) } else { 'Large-mailbox evidence unavailable.' }) },
+            @{ Section = 'UMB candidates'; Metric = ("UMB candidates near {0} GB" -f $blockSizeGB); Value = $(if ($nearBand) { $nearBand.UmbCandidateCount } else { $null }); Notes = 'Mailbox-only user mailboxes on one MigrationWiz-Mailbox unit today. Growth or deleted items during migration passes can require a second unit; one User Migration Bundle has no per-user data cap. SE commercial decision; unit baskets are unchanged.' },
             @{ Section = 'Data'; Metric = 'Total mailbox data (GB)'; Value = $totalMailboxDataGB; Notes = 'Primary mailbox content only.' },
             @{ Section = 'Data'; Metric = 'Total deleted items (GB)'; Value = $totalDeletedItemsGB; Notes = 'Primary mailbox deleted items only.' },
             @{ Section = 'Data'; Metric = 'Total archive data (GB)'; Value = $totalArchiveDataGB; Notes = 'Archive content only.' },

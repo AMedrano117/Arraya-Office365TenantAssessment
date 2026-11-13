@@ -308,6 +308,7 @@ The workbook only exports columns that carry data. Columns empty for every row i
 - `SharePoint` and `OneDrive` merge the Graph usage reports into the site inventory. Alongside storage they carry `FileCount`, `ActiveFileCount`, `PageViewCount`, `LastActivityDate`, `ActivityState` (Active, Low, Stale, Dormant), `GeoLocation`, `SensitivityLabelId`, `OwnerSource`, and a `MigrationNotes` column flagging dormant content, unresolved owners, sensitivity labels, multi-geo placement, locked or archived sites, quota pressure, and Teams channel sites that cannot migrate independently.
 - `SharePointActivityUserDetail` and `OneDriveActivityUserDetail` hold the per-user Graph activity reports. They come from the reporting endpoints, so they populate even when site inventory falls back to the SharePoint Online module.
 - `AdConnectConfiguration`, `TeamsVoice`, and `AuthenticationConfig` are flattened to `Section`, `Item`, `Value`, `Notes` with one row per underlying record, so SSO applications, calling policies, and sync services are readable instead of collapsed into a single cell.
+- `BitTitanLicenseSummary` has a `UMB candidates` section: mailboxes over 50 GB and near 50 GB (45 to 50 GB by default, set by `NearBlockSizeGB` in `src/config/baseline/bittitan-license-model.json`), measured as primary plus deleted items plus archive. A mailbox-only user mailbox in either band is a User Migration Bundle candidate, because one bundle has no per-user data cap. `BitTitanLicenseDetail` marks each one in `SizeBand`, `UmbCandidate`, and `UmbCandidateReason`. Candidates do not change the unit baskets; the Solutions Engineer decides.
 - `MfaEnrollmentSummary` reports one row per authentication method with a user count and percentage, rather than a single joined breakdown string.
 
 ## How To Read the Results
@@ -360,6 +361,6 @@ This separates environment setup issues from tenant authentication issues.
 
 ## Additional References
 
-- [Repository Quick Start](README.md#quick-start)
+- [Operator walkthrough](README.md)
 - [Customer Execution Checklist](docs/runbooks/customer-execution-checklist.md)
 - [Improvement Plan Rule Taxonomy](docs/runbooks/improvement-plan-rule-taxonomy.md)

@@ -354,6 +354,80 @@ Describe 'Get-ArrayaBitTitanLicenseEstimate' {
         }
     }
 
+    Context 'Large-mailbox User Migration Bundle candidates' {
+        BeforeAll {
+            $script:largeUsers = @(
+                New-TestUser -Upn 'over@contoso.example'
+                New-TestUser -Upn 'near@contoso.example'
+                New-TestUser -Upn 'deleted@contoso.example'
+                New-TestUser -Upn 'small@contoso.example'
+                New-TestUser -Upn 'archived@contoso.example'
+            )
+            $script:largeMailboxes = @(
+                New-TestMailbox -Name 'Over' -Smtp 'over@contoso.example' -SizeGB 120
+                New-TestMailbox -Name 'Near' -Smtp 'near@contoso.example' -SizeGB 47
+                New-TestMailbox -Name 'Near via deleted items' -Smtp 'deleted@contoso.example' -SizeGB 40 -DeletedGB 6
+                New-TestMailbox -Name 'Small' -Smtp 'small@contoso.example' -SizeGB 44.9
+                New-TestMailbox -Name 'Archived' -Smtp 'archived@contoso.example' -SizeGB 60 -ArchiveGB 10 -ArchiveStatus 'Active'
+                New-TestMailbox -Name 'Big shared' -Smtp 'shared@contoso.example' -Type 'SharedMailbox' -SizeGB 75
+            )
+            $script:largeEstimate = Get-ArrayaBitTitanLicenseEstimate -MailboxRows $script:largeMailboxes -UserRows $script:largeUsers
+        }
+
+        It 'flags a bundle-eligible mailbox over the block as a UMB candidate and names the units it uses' {
+            $line = Get-Line -Estimate $script:largeEstimate -DisplayName 'Over'
+            $line.SizeBand | Should -Be 'Over 50 GB'
+            $line.LicenseUnits | Should -Be 3
+            $line.UmbCandidate | Should -BeTrue
+            $line.UmbCandidateReason | Should -Match 'Consumes 3 MigrationWiz-Mailbox licenses'
+        }
+
+        It 'flags mailboxes near the block, measured with deleted items, as UMB candidates' {
+            foreach ($name in @('Near', 'Near via deleted items')) {
+                $line = Get-Line -Estimate $script:largeEstimate -DisplayName $name
+                $line.SizeBand | Should -Be 'Near 50 GB (45-50 GB)' -Because $name
+                $line.LicenseUnits | Should -Be 1
+                $line.UmbCandidate | Should -BeTrue
+                $line.UmbCandidateReason | Should -Match 'second MigrationWiz-Mailbox license'
+            }
+            (Get-Line -Estimate $script:largeEstimate -DisplayName 'Small').SizeBand | Should -BeNullOrEmpty
+        }
+
+        It 'does not flag archive-bearing or non-user mailboxes as candidates, but explains why' {
+            $archived = Get-Line -Estimate $script:largeEstimate -DisplayName 'Archived'
+            $archived.SizeBand | Should -Be 'Over 50 GB'
+            $archived.UmbCandidate | Should -BeFalse
+            $archived.UmbCandidateReason | Should -Match 'Already counted as one User Migration Bundle'
+
+            $shared = Get-Line -Estimate $script:largeEstimate -DisplayName 'Big shared'
+            $shared.UmbCandidate | Should -BeFalse
+            $shared.UmbCandidateReason | Should -Match 'no licensable user'
+        }
+
+        It 'summarises both bands without changing any unit basket' {
+            $over = @($script:largeEstimate.LargeMailboxCandidates)[0]
+            $near = @($script:largeEstimate.LargeMailboxCandidates)[1]
+            $over.MailboxCount | Should -Be 3
+            $over.UmbCandidateCount | Should -Be 1
+            $over.CandidateMailboxLicenseUnits | Should -Be 3
+            $over.AlreadyUmbCount | Should -Be 1
+            $over.NotBundleEligibleCount | Should -Be 1
+            $near.MailboxCount | Should -Be 2
+            $near.UmbCandidateCount | Should -Be 2
+
+            $workloadFit = @($script:largeEstimate.PathComparison | Where-Object Path -eq 'Workload fit')[0]
+            $workloadFit.PrimaryUnits | Should -Be (3 + 1 + 1 + 1 + 2) -Because 'candidates are flagged, not re-priced'
+        }
+
+        It 'reads the near-block threshold from the license model' {
+            $model = Get-ArrayaBitTitanLicenseModel
+            $model.Thresholds.NearBlockSizeGB = 40
+            $estimate = Get-ArrayaBitTitanLicenseEstimate -MailboxRows $script:largeMailboxes -UserRows $script:largeUsers -Model $model
+            (Get-Line -Estimate $estimate -DisplayName 'Small').SizeBand | Should -Be 'Near 50 GB (40-50 GB)'
+            $estimate.NearBlockSizeGB | Should -Be 40
+        }
+    }
+
     Context 'Mailbox-only boundary' {
         It 'exposes no parameter for site or drive rows' {
             # BitTitan migrates mailbox data only. Enforcing that at the signature means the

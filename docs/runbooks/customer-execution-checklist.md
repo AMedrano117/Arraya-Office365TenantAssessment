@@ -5,18 +5,34 @@ Use this checklist before and during a customer assessment engagement.
 ## Before the engagement
 
 - [ ] Confirm the tenant name and primary domain with the customer contact
-- [ ] Confirm the customer contact who will grant consent or provide credentials
+- [ ] Confirm the customer contact who will sign in to create the app registration (Global Administrator, or Application Administrator plus Privileged Role Administrator), or who will provide a delegated account for an interactive run
 - [ ] Confirm the assessment scope (full M365, AD only, migration readiness, or a subset)
 - [ ] Confirm the output profile (`SolutionsEngineer` for most engagements; `TenantToTenantMigration` for migration work)
 - [ ] Confirm the output folder or delivery path for deliverables
 
 ## App registration and auth
 
-- [ ] App registration created in your Arraya Entra tenant (not the customer tenant)
-- [ ] All required Graph permissions granted and admin-consented — see [App Registration Setup](app-registration-setup.md)
-- [ ] Certificate generated, uploaded to the app registration, and installed on the execution machine — see [Certificate Auth Setup](certificate-auth-setup.md)
-- [ ] Cert thumbprint, client ID, and tenant ID recorded for the run command
-- [ ] Exchange app-only access configured on the app registration (required for Exchange collection in certificate mode)
+Skip this section for an interactive (delegated) run. Run the preflight instead (see [Day of the run](#day-of-the-run)).
+
+The assessment app is a **single-tenant app registration in the customer's tenant**. Each customer gets their own app; there is no shared Arraya app.
+
+- [ ] Access model agreed with the customer: `GlobalReader` (complete run, read-only) or `LeastPrivilege` (customer grants workload role groups)
+- [ ] Changes previewed with `-WhatIf`:
+
+```powershell
+.\onboarding\New-AssessmentAppRegistration.ps1 -TenantId '<tenant-guid>' -AccessModel GlobalReader -WhatIf
+```
+
+- [ ] App registration created in the customer tenant, signed in as the customer admin:
+
+```powershell
+.\onboarding\New-AssessmentAppRegistration.ps1 -TenantId '<tenant-guid>' -AccessModel GlobalReader
+```
+
+- [ ] `AppId`, `CertificateThumbprint`, `TenantId`, and `CertificateNotAfter` recorded from the script output
+- [ ] Run from the machine and Windows user that will run the assessment. The script creates a new self-signed certificate in `Cert:\CurrentUser\My` on every run; re-run with `-SkipCertificate` to update permissions without creating another certificate. See [Certificate Auth Setup](certificate-auth-setup.md)
+- [ ] For `LeastPrivilege` only: Exchange and Purview read-only role groups granted to the app's service principal. See [App Registration Setup](app-registration-setup.md)
+- [ ] Optional: Exchange app-only access confirmed with `.\onboarding\Test-ExchangeAppOnlyConnection.ps1`
 
 ## Day of the run
 
@@ -52,10 +68,11 @@ Use this checklist before and during a customer assessment engagement.
 - [ ] Review the engineer pack for any finding anomalies before presenting
 - [ ] Copy `Support\*-AssessmentSnapshot.json` to a safe location for replay or comparison later
 - [ ] Remove any customer data from the execution machine after delivery if required by the engagement agreement
+- [ ] App-based runs: agree with the customer whether to keep the app for follow-up runs. If not, delete the app registration in the customer tenant and remove the certificate from the execution machine (see [After the engagement](../../README.md#10-after-the-engagement))
 
 ## References
 
-- [Repository Quick Start](../../README.md#quick-start)
+- [Operator walkthrough](../../README.md)
 - [RUN.md](../../RUN.md)
 - [App Registration Setup](app-registration-setup.md)
 - [Certificate Auth Setup](certificate-auth-setup.md)

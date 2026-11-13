@@ -364,6 +364,11 @@ function Export-PresalesMigrationScopeQuestionnaireMarkdown {
     $mailboxesOver50 = MetricNumber -InputRows $licenseSummaryRows -MetricNames @('Mailboxes over 50 GB')
     $mailboxesOver100 = MetricNumber -InputRows $licenseSummaryRows -MetricNames @('Mailboxes over 100 GB')
     $archivesOver100 = MetricNumber -InputRows $licenseSummaryRows -MetricNames @('Archives over 100 GB')
+    $umbCandidateRows = @($licenseSummaryRows | Where-Object { (Text (Prop $_ @('Section')) '') -eq 'UMB candidates' })
+    $umbCandidatesOver = @($umbCandidateRows | Where-Object { (Text (Prop $_ @('Metric')) '') -match '^UMB candidates over ' } | Select-Object -First 1)
+    $umbCandidatesNear = @($umbCandidateRows | Where-Object { (Text (Prop $_ @('Metric')) '') -match '^UMB candidates near ' } | Select-Object -First 1)
+    $umbCandidatesOverCount = if ($umbCandidatesOver.Count -gt 0) { Number (Prop $umbCandidatesOver[0] @('Value')) } else { $null }
+    $umbCandidatesNearCount = if ($umbCandidatesNear.Count -gt 0) { Number (Prop $umbCandidatesNear[0] @('Value')) } else { $null }
     $groupMailboxNeedsEvidence = MetricNumber -InputRows $licenseSummaryRows -MetricNames @('Microsoft 365 Group mailboxes needing evidence')
     if ($null -eq $groupMailboxNeedsEvidence -and $groupRows.Count -gt 0) {
         $groupMailboxNeedsEvidence = @($groupRows | Where-Object {
@@ -499,6 +504,11 @@ function Export-PresalesMigrationScopeQuestionnaireMarkdown {
         Add-Callout -Title 'Large mailbox content' `
             -Observation ("{0} mailbox(es) exceed 50 GB, {1} exceed 100 GB, and {2} archive(s) exceed 100 GB." -f (Format-MigrationCount $mailboxesOver50), (Format-MigrationCount $mailboxesOver100), (Format-MigrationCount $archivesOver100)) `
             -Response 'Validate license entitlement, pre-stage duration, and exception batching before the production cutover.'
+    }
+    if (($umbCandidatesOverCount -gt 0) -or ($umbCandidatesNearCount -gt 0)) {
+        Add-Callout -Title 'User Migration Bundle candidates' `
+            -Observation ("{0} mailbox-only user mailbox(es) exceed the 50 GB MigrationWiz-Mailbox block and {1} are near it, measured as primary plus deleted items. A User Migration Bundle has no per-user data cap." -f (Format-MigrationCount $umbCandidatesOverCount), (Format-MigrationCount $umbCandidatesNearCount)) `
+            -Response 'Compare stacked MigrationWiz-Mailbox units with one User Migration Bundle for these mailboxes using current rates. See SizeBand and UmbCandidate in BitTitanLicenseDetail.'
     }
 
     $largestCollaborationRow = @($collaborationRows |

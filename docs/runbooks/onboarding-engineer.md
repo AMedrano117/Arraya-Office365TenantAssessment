@@ -63,7 +63,7 @@ If the run stops reporting that Graph and Exchange Online are on different tenan
 
 ## Next steps
 
-- [Repository Quick Start](../../README.md#quick-start) — how to run your first assessment
+- [Operator walkthrough](../../README.md): how to run your first assessment, from setup to outputs
 - [App Registration Setup](app-registration-setup.md) — set up app-based auth
 - [Certificate Auth Setup](certificate-auth-setup.md) — configure certificate auth
 - [RUN.md](../../RUN.md) — full execution reference
