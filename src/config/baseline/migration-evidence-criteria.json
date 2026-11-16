@@ -570,7 +570,7 @@
       "RequiredDecision": "",
       "DecisionCategory": "IdentityDesign",
       "BlockerImpact": "Groups that control access and licensing are unknown.",
-      "ResolutionEvidence": "A separate run of a profile that collects Entra groups",
+      "ResolutionEvidence": "A completed Entra groups collector step (the GroupInventory worksheet)",
       "ResponsibleRole": "Identity engineer"
     },
     {
@@ -594,8 +594,32 @@
       "RequiredDecision": "Confirm Teams, group, and group-connected site mappings",
       "DecisionCategory": "Scope",
       "BlockerImpact": "Group mailbox and site pairing cannot be planned.",
-      "ResolutionEvidence": "A separate run of a profile that collects Microsoft 365 Groups",
+      "ResolutionEvidence": "A completed Unified groups collector step",
       "ResponsibleRole": "Collaboration engineer"
+    },
+    {
+      "CriterionId": "T2T-EXO-004",
+      "Profile": "TenantToTenantMigration",
+      "SemanticKey": "exchange.mail-contacts",
+      "Criterion": "Mail contacts and mail users",
+      "Workloads": [ "Exchange" ],
+      "Requirement": "Required",
+      "Phase": "Design",
+      "Scope": "Tenant",
+      "Population": "Exchange mail contacts and mail users",
+      "Period": "Current",
+      "Meaning": "External recipients to recreate in the destination, including distribution list members",
+      "Applicability": "Always",
+      "Coverage": "Supported",
+      "Evidence": { "Rule": "Dataset", "Datasets": [ "MailContacts" ], "CollectorSteps": [ "Exchange mail contacts" ] },
+      "MissingEvidenceBehavior": "NeedsData",
+      "Impact": "Planning",
+      "DecisionKey": "",
+      "RequiredDecision": "",
+      "DecisionCategory": "Scope",
+      "BlockerImpact": "Distribution lists cannot be rebuilt with their external members.",
+      "ResolutionEvidence": "A completed Exchange mail contacts collector step (the ContactInventory worksheet)",
+      "ResponsibleRole": "Messaging engineer"
     },
     {
       "CriterionId": "T2T-DEV-001",

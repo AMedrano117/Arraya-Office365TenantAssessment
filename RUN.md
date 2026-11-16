@@ -207,7 +207,7 @@ Run with a specific output profile:
 | Profile | Depth | Collection scope | Best for |
 | ------- | ----- | ---------------- | -------- |
 | `SolutionsEngineer` | Operator | Default: every collector | Default. Standard consultant depth. |
-| `ExecutiveLevel` | Minimum | Default, without recipients, Exchange groups, mail flow, public folders, SMTP relay, and Microsoft 365 Groups | Leadership summaries. |
+| `ExecutiveLevel` | Minimum | Default, without recipients, Exchange groups, mail contacts, mail flow, public folders, SMTP relay, and Microsoft 365 Groups | Leadership summaries. |
 | `Presales` | Operator | Presales: migration scoping | Migration scoping, sizing, complexity, and quote readiness. |
 | `TenantToTenantMigration` | All | TenantToTenantCutover: Exchange and collaboration cutover | Mailbox cutover preparation and the cutover pack. Not yet a complete migration assessment. |
 | `Geek` | Geek | Default: every collector | Detailed engineer troubleshooting. |
@@ -224,18 +224,41 @@ Depth is the `ReportingMode` returned by `Get-ArrayaAssessmentOutputProfilePolic
 | Mailboxes, sizes, archives, inactive mailboxes | Yes | Yes |
 | Full Access, Send As, and calendar folder permissions | No | Yes (only this profile collects them) |
 | Domains, connectors, remote domains, SMTP relay, public folders, hybrid signals | Yes | Yes |
-| Teams, SharePoint, and OneDrive inventories | Yes, with full SharePoint detail and Microsoft 365 Group mailbox statistics | Yes, without full SharePoint detail or Microsoft 365 Group mailbox statistics |
+| Teams, SharePoint, and OneDrive inventories | Yes, with full SharePoint detail and Microsoft 365 Group mailbox statistics | Yes, with Microsoft 365 Group mailbox statistics but without full SharePoint detail |
 | Enterprise applications and SSO | Yes | No |
-| Microsoft 365 Groups inventory | Yes | No |
+| Microsoft 365 Groups inventory | Yes | Yes |
 | Devices | Yes | No |
-| Entra groups | Yes | No |
+| Entra groups (security, Microsoft 365, dynamic, role-assignable, licensing) | Yes | Yes, with member and owner lists for security and Microsoft 365 groups, and group licensing |
+| Exchange groups (distribution lists, mail-enabled security groups, dynamic distribution lists) with member lists and recipient filters | Inventory only, without member lists or recipient filters | Yes |
+| Mail contacts and mail users | No | Yes |
+| Guest users | Yes | Yes |
 | Administrators, Conditional Access, MFA registration, Purview retention and DLP | No | No |
 | Migration planning registers (decisions, identity mapping, domain dependencies, object disposition, effort, waves) | Workbook and scoping brief | JSON snapshot only |
 | Cutover pack, cutover checklist, delegate worksheets | No | Yes |
 
 When a collector is skipped or fails, the tenant-to-tenant readiness checklist lists it under "Evidence coverage" with status `Needs Data`. Evidence that was not collected is never reported as absent or ready.
 
-`TenantToTenantMigration` does not yet represent all the evidence needed to plan a tenant-to-tenant migration. The gaps and the planned expansion are recorded in [T2T-Migration-Assessment-Coverage.md](docs/t2t-migration-review/T2T-Migration-Assessment-Coverage.md) and [T2T-Migration-Assessment-Backlog.md](docs/t2t-migration-review/T2T-Migration-Assessment-Backlog.md). Until that work lands, run `TenantToTenantMigration` for cutover preparation and a second, separate run of `Presales` or `SolutionsEngineer` for application, group, and device evidence.
+The tenant-to-tenant workbook adds four worksheets for recreating groups, contacts, and guests in the destination:
+
+- `GroupInventory`: one row per group, joining the Entra and Exchange records.
+  - Covers security groups, mail-enabled security groups, distribution lists, dynamic distribution lists, and Microsoft 365 groups.
+  - Each row shows whether the group is mail-enabled and how membership is decided: assigned, an Entra membership rule, or an Exchange recipient filter in `MembershipRule`.
+  - `RecreateIn` says where to recreate it: Entra ID, Exchange Online, Microsoft 365, or on-premises AD for synced groups.
+  - `RecreationConsiderations` notes role-assignable, licensing, external-sender, and send-restriction settings.
+  - `TargetDisplayName`, `TargetPrimarySmtpAddress`, and `Wave` are left blank for planning.
+- `GroupMembers`: one row per group member or owner.
+  - Security and Microsoft 365 groups are listed from Microsoft Graph, members and owners, in batches of 20 groups.
+  - Distribution lists and mail-enabled security groups are listed from Exchange, including their mail contacts.
+  - Dynamic group members are the rule's or filter's result at collection time; recreate the rule, not the list.
+  - `GroupInventory.MemberList` shows `Lookup failed` for a group whose list could not be read.
+- `ContactInventory`: mail contacts and mail users.
+  - `MemberOfGroups` names the groups each one belongs to, so it can be created before those groups are populated.
+  - `RecreationConsiderations` flags mail users (sign-in accounts, not contacts) and external addresses in a domain the source tenant owns.
+- `GuestUsers`: guest accounts with home domain, invitation state, and last sign-in, for re-invitation from the destination tenant.
+
+`CutoverPrepSummary`, the readiness checklist, and `MigrationExecutiveSummary` report the group, contact, and guest counts.
+
+`TenantToTenantMigration` does not yet represent all the evidence needed to plan a tenant-to-tenant migration. The gaps and the planned expansion are recorded in [T2T-Migration-Assessment-Coverage.md](docs/t2t-migration-review/T2T-Migration-Assessment-Coverage.md) and [T2T-Migration-Assessment-Backlog.md](docs/t2t-migration-review/T2T-Migration-Assessment-Backlog.md). Until that work lands, run `TenantToTenantMigration` for cutover preparation and a second, separate run of `Presales` or `SolutionsEngineer` for application and device evidence.
 
 ### Combining profiles
 

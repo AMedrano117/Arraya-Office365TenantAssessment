@@ -50,6 +50,7 @@ Export-ModuleMember -Function @(
     'New-ArrayaCollectorStep',
     'New-ArrayaMigrationCriteriaRegister',
     'New-ArrayaTenantSnapshot',
+    'New-ArrayaTenantToTenantIdentityInventory',
     'Resolve-ArrayaMigrationCriteria',
     'Resolve-ArrayaRequestedOutputProfiles',
     'Resolve-ArrayaSnapshotOutputContext',

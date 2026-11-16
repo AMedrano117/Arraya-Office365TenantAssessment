@@ -486,6 +486,7 @@ function Import-AssessmentCollectorModules {
         'Get-AllRecipientDetails',
         'Get-AllExchangeMailboxDetails',
         'Get-ExchangeGroupDetails',
+        'Get-ExchangeMailContactInventory',
         'Get-AllPublicFolderDetails',
         'Get-ExchangeHybridConfiguration',
         'Get-MailFlowRulesandConnectors',
@@ -586,6 +587,7 @@ function Resolve-AssessmentProfileCollectionPlan {
         CollectExchangeMailboxes         = $true
         CollectEmailActivityDetails      = ($GenerateTechnicalHtml -or $GenerateWorkbook -or $GenerateJson)
         CollectExchangeGroups            = $true
+        CollectMailContacts              = $true
         CollectHybridConfiguration       = $true
         CollectMailFlowRulesConnectors   = $true
         CollectPublicFolders             = $true
@@ -619,6 +621,7 @@ function Resolve-AssessmentProfileCollectionPlan {
                 $plan.CollectExchangeRecipients = $false
                 $plan.CollectEmailActivityDetails = $true
                 $plan.CollectExchangeGroups = $false
+                $plan.CollectMailContacts = $false
                 $plan.CollectMailFlowRulesConnectors = $false
                 $plan.CollectPublicFolders = $false
                 $plan.CollectThirdPartySpamFiltering = $false
@@ -643,6 +646,9 @@ function Resolve-AssessmentProfileCollectionPlan {
                 # Collect the inventory; assessment-only compliance scoring stays off.
                 $plan.CollectDevices = $true
 
+                # Contacts are recreated, not migrated, and do not change the estimate.
+                $plan.CollectMailContacts = $false
+
                 # Security posture is an assessment concern, not a scoping one.
                 $plan.CollectAdmins = $false
                 $plan.CollectConditionalAccessPolicies = $false
@@ -665,13 +671,20 @@ function Resolve-AssessmentProfileCollectionPlan {
         $OutputProfile -eq 'TenantToTenantMigration'
     ) {
         $plan.CollectAdmins = $false
-        $plan.CollectEntraGroups = $false
+        # Every security, Microsoft 365, dynamic, role-assignable, and licensing group has to
+        # be recreated in the destination, so the group inventory is cutover evidence, not
+        # posture. The depth policy keeps it to one list call plus batched counts.
+        $plan.CollectEntraGroups = $true
         $plan.CollectAuthenticationConfiguration = $false
         $plan.CollectConditionalAccessPolicies = $false
         $plan.CollectMfaRegistrationDetails = $false
         $plan.CollectEmailActivityDetails = $false
         $plan.CollectTeamsVoiceDetails = $false
-        $plan.CollectUnifiedGroups = $false
+        # Microsoft 365 groups pair a mailbox, a site, and often a Team that move together;
+        # the inventory is one Exchange call and also sizes the group mailboxes.
+        $plan.CollectUnifiedGroups = $true
+        # Mail contacts and mail users are recreated in the destination, not migrated.
+        $plan.CollectMailContacts = $true
         $plan.CollectGovernanceCompliancePolicies = $false
         $plan.CollectDevices = $false
         $plan.CollectSecuritySecureScore = $false
@@ -2730,6 +2743,7 @@ $requiredCollectorCommands = @(
     'Get-AllRecipientDetails',
     'Get-AllExchangeMailboxDetails',
     'Get-ExchangeGroupDetails',
+    'Get-ExchangeMailContactInventory',
     'Get-AllPublicFolderDetails',
     'Get-ExchangeHybridConfiguration',
     'Get-MailFlowRulesandConnectors',
@@ -3145,6 +3159,7 @@ function Get-ArrayaCollectionDepthPolicy {
         CollectEntraGroupMemberCounts   = (-not $isMinimum)
         CollectEntraGroupOwnerCounts    = (-not $isMinimum)
         CollectEntraGroupLicenseChecks  = (-not $isMinimum)
+        CollectEntraGroupMemberLists    = $false
         CollectSsoApplicationDetails    = (-not $isMinimum)
         CollectAuthenticationMethodRows = $true
         CollectSecureScoreMappings      = $true
@@ -3163,16 +3178,24 @@ function Get-ArrayaCollectionDepthPolicy {
     }
 
     if ($CollectionScopePolicy -eq 'TenantToTenantCutover') {
+        # Group recreation needs member and owner counts and which groups assign licenses.
+        # Counts are batched and license assignment is one filtered query; the per-group
+        # detail GET adds nothing the inventory $select does not already return.
         $policy | Add-Member -MemberType NoteProperty -Name CollectEntraGroupDeepDetails -Value $false -Force
-        $policy | Add-Member -MemberType NoteProperty -Name CollectEntraGroupMemberCounts -Value $false -Force
-        $policy | Add-Member -MemberType NoteProperty -Name CollectEntraGroupOwnerCounts -Value $false -Force
-        $policy | Add-Member -MemberType NoteProperty -Name CollectEntraGroupLicenseChecks -Value $false -Force
+        $policy | Add-Member -MemberType NoteProperty -Name CollectEntraGroupMemberCounts -Value $true -Force
+        $policy | Add-Member -MemberType NoteProperty -Name CollectEntraGroupOwnerCounts -Value $true -Force
+        $policy | Add-Member -MemberType NoteProperty -Name CollectEntraGroupLicenseChecks -Value $true -Force
+        # Recreating a group needs who is in it. Exchange lists mail-enabled groups; Graph
+        # lists security and Microsoft 365 group members and owners in batches of 20.
+        $policy | Add-Member -MemberType NoteProperty -Name CollectEntraGroupMemberLists -Value $true -Force
         $policy | Add-Member -MemberType NoteProperty -Name CollectSsoApplicationDetails -Value $false -Force
         $policy | Add-Member -MemberType NoteProperty -Name CollectSecureScoreMappings -Value $false -Force
         $policy | Add-Member -MemberType NoteProperty -Name CollectFullMailboxNormalization -Value $true -Force
         $policy | Add-Member -MemberType NoteProperty -Name CollectMailboxDelegatePermissions -Value $true -Force
         $policy | Add-Member -MemberType NoteProperty -Name CollectMailboxCalendarDelegatePermissions -Value $true -Force
-        $policy | Add-Member -MemberType NoteProperty -Name CollectUnifiedGroupMailboxStats -Value $false -Force
+        # Microsoft 365 group mailboxes move with the cutover, so size them as Presales does.
+        # The statistics prefer the Graph usage report and fall back to Exchange per group.
+        $policy | Add-Member -MemberType NoteProperty -Name CollectUnifiedGroupMailboxStats -Value $true -Force
         $policy | Add-Member -MemberType NoteProperty -Name CollectFullSharePointDetail -Value $false -Force
         $policy | Add-Member -MemberType NoteProperty -Name CollectExtendedGraphEnrichment -Value $false -Force
     }
@@ -6429,6 +6452,7 @@ function New-AssessmentLiveCollectorPlan {
     $steps.Add((New-ArrayaCollectorStep -Name 'Exchange recipients' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectExchangeRecipients) -SkipReason 'Not required for this profile output.' -Produces @('AllRecipients') -ScriptBlock { Get-AllRecipientDetails -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name 'Exchange mailboxes' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectExchangeMailboxes) -Required $true -SkipReason 'Exchange mailbox inventory is disabled for this profile.' -Produces @('AllMailboxes', 'PrimaryMailboxStats', 'InactiveMailboxDetails') -ScriptBlock { Get-AllExchangeMailboxDetails -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name 'Exchange groups' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectExchangeGroups) -SkipReason 'Not required for this profile output.' -Produces @('ExchangeGroups') -ScriptBlock { Get-ExchangeGroupDetails -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
+    $steps.Add((New-ArrayaCollectorStep -Name 'Exchange mail contacts' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectMailContacts) -SkipReason 'Not required for this profile output.' -Produces @('MailContacts') -ScriptBlock { Get-ExchangeMailContactInventory -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name 'Public folders' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectPublicFolders) -SkipReason 'Not required for this profile output.' -Produces @('PublicFolderDetails') -ScriptBlock { Get-AllPublicFolderDetails -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name 'Exchange hybrid configuration' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectHybridConfiguration) -SkipReason 'Exchange hybrid collection is disabled for this profile.' -Produces @('HybridConfiguration') -ScriptBlock { Get-ExchangeHybridConfiguration -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
     $steps.Add((New-ArrayaCollectorStep -Name 'Mail flow rules/connectors' -Section 'Exchange' -Workload 'ExchangeOnline' -Enabled ([bool]$script:ProfileCollectionPlan.CollectMailFlowRulesConnectors) -SkipReason 'Skipped in best-practices-only profile to reduce runtime.' -Produces @('MailFlowRules', 'MailFlowConnectors', 'RemoteDomains') -ScriptBlock { Get-MailFlowRulesandConnectors -detailLevel $reportingMode -Context $script:AssessmentContext })) | Out-Null
@@ -14533,6 +14557,30 @@ function Update-TenantToTenantMigrationExportData {
     }
     $TenantStatsStore['CollaborationSummary'] = @($collaborationSummaryRows.ToArray())
 
+    # Groups and guests do not migrate with mailbox or content moves; each one is recreated
+    # or re-invited in the destination. One row per group joins Entra and Exchange evidence.
+    $identityInventory = New-ArrayaTenantToTenantIdentityInventory -TenantStatsHash $TenantStatsStore
+    $TenantStatsStore['GroupInventory'] = @($identityInventory.GroupInventory)
+    $TenantStatsStore['GuestUsers'] = @($identityInventory.GuestUsers)
+    $TenantStatsStore['GroupMembers'] = @($identityInventory.GroupMembers)
+    $TenantStatsStore['ContactInventory'] = @($identityInventory.ContactInventory)
+    $contactInventoryCount = @($identityInventory.ContactInventory).Count
+    $contactInventoryNotes = 'Mail contacts and mail users do not migrate; recreate them before the distribution lists that contain them. {0} mail contact(s); {1} mail user(s).' -f $identityInventory.MailContactCount, $identityInventory.MailUserCount
+    if ($identityInventory.ContactEvidenceGap) {
+        $contactInventoryNotes += ' Evidence gap: {0}' -f $identityInventory.ContactEvidenceGap
+    }
+    $groupInventoryCount = @($identityInventory.GroupInventory).Count
+    $guestUserCount = @($identityInventory.GuestUsers).Count
+    $groupTypeBreakdown = (@($identityInventory.GroupCountByType.GetEnumerator() | ForEach-Object { '{0} {1}' -f $_.Value, $_.Key }) -join '; ')
+    $groupInventoryNotes = '{0}. {1} mail-enabled; {2} with dynamic membership; {3} synced from on-premises; {4} role-assignable; {5} assigning licenses.' -f $groupTypeBreakdown, $identityInventory.MailEnabledGroupCount, $identityInventory.DynamicGroupCount, $identityInventory.SyncedGroupCount, $identityInventory.RoleAssignableCount, $identityInventory.LicenseGroupCount
+    if ($identityInventory.GroupEvidenceGap) {
+        $groupInventoryNotes += ' Evidence gap: {0}' -f $identityInventory.GroupEvidenceGap
+    }
+    $guestInventoryNotes = 'Guests do not move with a tenant migration; re-invite them in the destination and re-grant their Teams, site, and group access. {0} enabled; {1} with a pending invitation.' -f $identityInventory.EnabledGuestCount, $identityInventory.PendingGuestCount
+    if ($identityInventory.GuestEvidenceGap) {
+        $guestInventoryNotes += ' Evidence gap: {0}' -f $identityInventory.GuestEvidenceGap
+    }
+
     # ---- Evidence states -----------------------------------------------------------------
     # A count of zero supports "Ready" only when the data behind it was collected. The states
     # below come from collector step results, dataset presence, and the collectors' own
@@ -14635,7 +14683,10 @@ function Update-TenantToTenantMigrationExportData {
         [pscustomobject]@{ Category = 'Mail flow'; Item = 'Microsoft 365 SMTP relay connectors'; Status = $smtpRelayConnectorStatus; Value = $smtpRelayConnectorCount; Notes = ("Relay connector evidence={0}. Only enabled OnPremises inbound connectors with sender-IP or TLS-certificate authentication are counted." -f $relayConnectorEvidenceState) },
         [pscustomobject]@{ Category = 'Domains'; Item = 'Domains with third-party spam-filter review'; Status = $domainSpamStatus; Value = $domainsNeedingSpamReview; Notes = (& $addEvidenceGap 'Heuristic review based on MX, connector, and spam-filter signals.' $domainSpamStatus $domainEvidenceReason) },
         [pscustomobject]@{ Category = 'Domains'; Item = 'Domains with hybrid/coexistence review'; Status = $domainHybridStatus; Value = $domainsNeedingHybridReview; Notes = (& $addEvidenceGap 'Heuristic review based on hybrid configuration, internal relay, or federated domain signals.' $domainHybridStatus $(if ($domainEvidenceMissing) { $domainEvidence.Reason } else { $exchangeHybridEvidence.Reason })) },
-        [pscustomobject]@{ Category = 'Exchange'; Item = 'Public folders'; Status = $publicFolderStatus; Value = $publicFolderRows.Count; Notes = (& $addEvidenceGap 'Public folders require separate migration planning from mailbox cutover.' $publicFolderStatus $publicFolderEvidence.Reason) }
+        [pscustomobject]@{ Category = 'Exchange'; Item = 'Public folders'; Status = $publicFolderStatus; Value = $publicFolderRows.Count; Notes = (& $addEvidenceGap 'Public folders require separate migration planning from mailbox cutover.' $publicFolderStatus $publicFolderEvidence.Reason) },
+        [pscustomobject]@{ Category = 'Identity'; Item = 'Groups to recreate'; Status = $identityInventory.GroupStatus; Value = $groupInventoryCount; Notes = $groupInventoryNotes },
+        [pscustomobject]@{ Category = 'Identity'; Item = 'Guest users to re-invite'; Status = $identityInventory.GuestStatus; Value = $guestUserCount; Notes = $guestInventoryNotes },
+        [pscustomobject]@{ Category = 'Exchange'; Item = 'Mail contacts and mail users to recreate'; Status = $identityInventory.ContactStatus; Value = $contactInventoryCount; Notes = $contactInventoryNotes }
     )
     $TenantStatsStore['CutoverPrepSummary'] = @($cutoverPrepSummaryRows)
 
@@ -14978,6 +15029,33 @@ function Update-TenantToTenantMigrationExportData {
         -MigrationAction 'Validate whether oversized archives stay in the same wave as the primary mailbox and confirm the licensing and timing plan for those users.' `
         -SourceWorksheet 'AllMailboxes'
 
+    Add-TenantToTenantChecklistRow `
+        -Category 'Identity' `
+        -Item 'Group recreation' `
+        -Status $identityInventory.GroupStatus `
+        -Value $(if ($identityInventory.GroupStatus -eq 'Needs Data') { 'Group inventory not collected' } else { '{0} group(s): {1}' -f $groupInventoryCount, $groupTypeBreakdown }) `
+        -Notes $groupInventoryNotes `
+        -MigrationAction 'Confirm which groups are in scope, map each to a destination name and address, and recreate them before the users who depend on them move. Rebuild dynamic rules and recipient filters against destination attributes, and create mail-enabled security groups and distribution lists in Exchange Online.' `
+        -SourceWorksheet 'GroupInventory'
+
+    Add-TenantToTenantChecklistRow `
+        -Category 'Identity' `
+        -Item 'Guest re-invitation' `
+        -Status $identityInventory.GuestStatus `
+        -Value $(if ($identityInventory.GuestStatus -eq 'Needs Data') { 'User inventory not collected' } else { '{0} guest user(s)' -f $guestUserCount }) `
+        -Notes $guestInventoryNotes `
+        -MigrationAction 'Decide which guests still need access, re-invite them from the destination tenant, and re-grant their group, Team, and site access after the content moves.' `
+        -SourceWorksheet 'GuestUsers'
+
+    Add-TenantToTenantChecklistRow `
+        -Category 'Messaging' `
+        -Item 'Contact recreation' `
+        -Status $identityInventory.ContactStatus `
+        -Value $(if ($identityInventory.ContactStatus -eq 'Needs Data') { 'Mail contact inventory not collected' } else { '{0} mail contact(s); {1} mail user(s)' -f $identityInventory.MailContactCount, $identityInventory.MailUserCount }) `
+        -Notes $contactInventoryNotes `
+        -MigrationAction 'Confirm which contacts and mail users are still needed, recreate them in the destination before populating the groups that contain them, and review any whose external address is in a domain that is moving.' `
+        -SourceWorksheet 'ContactInventory'
+
     $teamsWithSharedChannels = @(
         $teamRows |
             Where-Object { [int](Convert-ArrayaToNumber -Value (Get-AssessmentExportPropertyValue -Record $_ -Names @('SharedChannelCount')) -AsInt64) -gt 0 }
@@ -15038,7 +15116,7 @@ function Update-TenantToTenantMigrationExportData {
     $migrationRelevantCollectorSteps = @(
         'Users', 'Admins', 'Entra groups', 'Domains', 'Authentication/SSO configuration',
         'Federation/cross-tenant configuration', 'Conditional Access policies', 'MFA registration details',
-        'License SKUs', 'AD Connect sync details', 'Exchange recipients', 'Exchange mailboxes', 'Exchange groups',
+        'License SKUs', 'AD Connect sync details', 'Exchange recipients', 'Exchange mailboxes', 'Exchange groups', 'Exchange mail contacts',
         'Public folders', 'Exchange hybrid configuration', 'Mail flow rules/connectors',
         'Third-party spam filtering configuration', 'SMTP relay configuration', 'Unified groups',
         'SharePoint/OneDrive sites', 'Teams inventory', 'Devices', 'Purview retention/DLP policies'
@@ -15072,6 +15150,9 @@ function Update-TenantToTenantMigrationExportData {
         }).Count
     $migrationExecutiveSummaryRows = @(
         [pscustomobject]@{ Section = 'Tenant'; Metric = 'Enabled member users'; Value = $enabledMemberUsers; Notes = 'Primary wave-planning user population.' },
+        [pscustomobject]@{ Section = 'Identity'; Metric = 'Groups to recreate'; Value = $(if ($identityInventory.GroupStatus -eq 'Needs Data') { 'Not collected' } else { $groupInventoryCount }); Notes = 'Entra and Exchange groups, one row each, in the GroupInventory worksheet.' },
+        [pscustomobject]@{ Section = 'Identity'; Metric = 'Guest users to re-invite'; Value = $(if ($identityInventory.GuestStatus -eq 'Needs Data') { 'Not collected' } else { $guestUserCount }); Notes = 'Guest accounts listed in the GuestUsers worksheet.' },
+        [pscustomobject]@{ Section = 'Messaging'; Metric = 'Mail contacts and mail users to recreate'; Value = $(if ($identityInventory.ContactStatus -eq 'Needs Data') { 'Not collected' } else { $contactInventoryCount }); Notes = 'Listed in the ContactInventory worksheet.' },
         [pscustomobject]@{ Section = 'Messaging'; Metric = 'Recipients'; Value = $recipients.Count; Notes = 'All recipient rows retained in the reduced T2T scope.' },
         [pscustomobject]@{ Section = 'Messaging'; Metric = 'Mailboxes'; Value = $mailboxPlanningRows.Count; Notes = 'Mailbox rows retained for migration planning and cutover prep.' },
         [pscustomobject]@{ Section = 'Messaging'; Metric = 'Grand total data to migrate (GB)'; Value = $grandTotalDataGB; Notes = 'Mailbox + archive + deleted-item content from the BitTitan-style sizing model.' },

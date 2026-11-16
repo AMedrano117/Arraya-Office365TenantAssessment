@@ -72,6 +72,26 @@ All notable changes to this repository are tracked here. The detailed commit led
 - Fixed source-tenant subscription lifecycle dates rendering a day early when the report machine ran west of UTC.
 - Added a `TrustType` fallback for the Presales device join-type breakdown. `DeviceJoinType` is classified during collection, so every snapshot captured before the classification fix records `Unknown` for the whole estate; the brief now derives Entra joined, hybrid joined, and registered from the raw Graph value when the stored classification is missing or `Unknown`, which makes existing snapshots replay correctly instead of reporting no directory dependency.
 - Fixed empty public folders reporting as `Not collected` in the Presales Markdown overview. Exchange returns `0 B (0 bytes)` for an empty folder and the shared size parser recognizes only TB/GB/MB/KB, so a measured zero was presented as a collection gap.
+- Added group and guest recreation evidence to the `TenantToTenantMigration` profile.
+  - The profile now collects Entra groups, with batched member and owner counts and group-based licensing.
+  - New `GroupInventory` worksheet: one row per group, joining Entra and Exchange.
+    - Each row gives the group type, whether it is mail-enabled, its membership type, and its Entra membership rule or Exchange recipient filter.
+    - Each row also says where to recreate the group and what complicates recreation.
+  - New `GroupMembers` worksheet: members and owners of every group.
+    - Security and Microsoft 365 groups are listed from Microsoft Graph in batches, behind a new `CollectEntraGroupMemberLists` depth flag that only the cutover scope turns on.
+    - Mail-enabled groups are listed from Exchange.
+  - New `ContactInventory` worksheet: mail contacts and mail users, with the groups each belongs to and a flag for external addresses in a domain the source owns.
+    - The recipient inventory filters these out, so they come from a new `Get-ExchangeMailContactInventory` collector step, `Exchange mail contacts`.
+    - The step is off for `ExecutiveLevel` and `Presales`.
+  - New `GuestUsers` worksheet: guest home domain, invitation state, and last sign-in.
+  - The profile now also collects the Microsoft 365 Groups inventory and group mailbox statistics, as `Presales` does, so group mailboxes are sized.
+  - New criterion `T2T-EXO-004` covers mail contacts and mail users.
+  - `CutoverPrepSummary`, the readiness checklist, and `MigrationExecutiveSummary` report the counts. Each is `Needs Data` when the collector did not run.
+- Fixed the Exchange group collector:
+  - It now splits the joined `ManagedBy` string, so a group with several owners no longer reports one.
+  - `ModeratedBy` was always blank; it is now filled.
+  - It now records `RecipientFilter`, join and depart restrictions, `GrantSendOnBehalfTo`, and `ExternalDirectoryObjectId`.
+  - It now marks whether membership was expanded, so an unexpanded group no longer reports zero members.
 
 ### Governance, Identity, And Security Collection
 - Expanded MFA registration/enforcement reporting, admin MFA assessments, Conditional Access role expansion, and guest MFA reporting.

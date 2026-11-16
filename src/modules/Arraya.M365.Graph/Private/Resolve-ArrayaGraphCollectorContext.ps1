@@ -20,6 +20,8 @@ function Get-ArrayaGraphCollectionDepthPolicy {
         CollectEntraGroupMemberCounts  = (-not $isMinimum)
         CollectEntraGroupOwnerCounts   = (-not $isMinimum)
         CollectEntraGroupLicenseChecks = (-not $isMinimum)
+        # Member and owner lists are a tenant-to-tenant cutover input, enabled by that scope.
+        CollectEntraGroupMemberLists   = $false
         IsMinimum                      = $isMinimum
         IsOperator                     = $isOperator
         IsCombined                     = $isOperator

@@ -788,7 +788,11 @@ function Export-HashTableToExcel {
             'AdConnectConfiguration'          = @('Section', 'Item', 'Value', 'Notes')
             'HybridConfiguration'             = @('Section', 'Item', 'Value', 'Notes')
             'Domains'                         = @('Name', 'IsDefault', 'IsInitial', 'Verified', 'AuthenticationType', 'SupportedServices', 'MXRecords', 'Office365MailExchanger', 'ThirdPartySpamFilterReview', 'HybridRoutingReview', 'RecipientCount', 'Notes')
-            'Users'                           = @('DisplayName', 'UserPrincipalName', 'Mail', 'AccountEnabled', 'OnPremisesSyncEnabled', 'AssignedLicensesFriendly', 'HasMailbox', 'MailboxPrimarySmtpAddress', 'RecipientTypeDetails', 'TargetUPN', 'TargetPrimarySmtpAddress', 'Wave', 'MigrationState', 'CutoverDate', 'Notes')
+            'Users'                           = @('DisplayName', 'UserPrincipalName', 'Mail', 'UserType', 'AccountEnabled', 'OnPremisesSyncEnabled', 'AssignedLicensesFriendly', 'HasMailbox', 'MailboxPrimarySmtpAddress', 'RecipientTypeDetails', 'TargetUPN', 'TargetPrimarySmtpAddress', 'Wave', 'MigrationState', 'CutoverDate', 'Notes')
+            'GroupInventory'                  = @('DisplayName', 'GroupType', 'MailEnabled', 'SecurityEnabled', 'MembershipType', 'MembershipRule', 'Source', 'RecreateIn', 'PrimarySmtpAddress', 'Alias', 'EmailAddresses', 'HiddenFromAddressListsEnabled', 'RequireSenderAuthenticationEnabled', 'Visibility', 'IsTeam', 'SharePointSiteUrl', 'Owners', 'OwnerCount', 'MemberCount', 'MemberList', 'IsAssignableToRole', 'AssignsLicenses', 'AssignedLicenses', 'RecreationConsiderations', 'InventorySource', 'EntraObjectId', 'TargetDisplayName', 'TargetPrimarySmtpAddress', 'Wave', 'Notes')
+            'GroupMembers'                    = @('GroupDisplayName', 'GroupType', 'GroupPrimarySmtpAddress', 'GroupObjectId', 'Relationship', 'MemberDisplayName', 'MemberAddress', 'MemberType', 'MembershipSource', 'Source')
+            'ContactInventory'                = @('DisplayName', 'ContactType', 'ExternalEmailAddress', 'PrimarySmtpAddress', 'Alias', 'EmailAddresses', 'HiddenFromAddressListsEnabled', 'Source', 'RecreateIn', 'MemberOfGroups', 'RecreationConsiderations', 'TargetDisplayName', 'TargetPrimarySmtpAddress', 'Wave', 'Notes')
+            'GuestUsers'                      = @('DisplayName', 'Mail', 'UserPrincipalName', 'HomeDomain', 'AccountEnabled', 'ExternalUserState', 'CreationType', 'CreatedDateTime', 'LastSignInDateTime', 'CompanyName', 'ReinviteDecision', 'Notes')
             'AllRecipients'                   = @('DisplayName', 'PrimarySmtpAddress', 'RecipientTypeDetails', 'UserPrincipalName', 'WindowsEmailAddress', 'PrimaryDomain', 'EmailAddresses', 'OnMicrosoftAlias', 'OnMicrosoftAliases', 'HiddenFromAddressListsEnabled', 'Notes')
             'AllMailboxes'                    = @('DisplayName', 'UserPrincipalName', 'PrimarySmtpAddress', 'RecipientTypeDetails', 'IsInactiveMailbox', 'OnPremisesSyncEnabled', 'ExchangeGuid', 'ArchiveGuid', 'OnMicrosoftAlias', 'OnMicrosoftAliases', 'LegacyExchangeDn', 'LegacyExchangeDnX500', 'X500Addresses', 'X400Addresses', 'MailboxSizeGB', 'DeletedItemsGB', 'ArchiveStatus', 'ArchiveSizeGB', 'ArchiveDeletedItemsGB', 'TotalDataToMigrateGB', 'BitTitanLicenseType', 'BitTitanLicenseCount', 'ForwardingAddress', 'ForwardingSmtpAddress', 'DeliverToMailboxAndForward', 'LitigationHoldEnabled', 'RetentionPolicy', 'FullAccessDelegateCount', 'SendAsDelegateCount', 'GrantSendOnBehalfToCount', 'CalendarDelegateCount', 'Wave', 'MigrationState', 'CutoverDate', 'Notes')
             'MailboxDelegateAssignments'      = @('MailboxDisplayName', 'MailboxPrimarySmtpAddress', 'MailboxUserPrincipalName', 'RecipientTypeDetails', 'PermissionType', 'Delegate', 'DelegateCountSource', 'CollectionState', 'Wave', 'Notes')
@@ -944,7 +948,7 @@ function Export-HashTableToExcel {
             return 26
         }
 
-        if ($ColumnName -match '^(EmailAddresses|OnMicrosoftAliases|LegacyExchangeDn|LegacyExchangeDnX500|X500Addresses|X400Addresses|Delegate|FullAccessDelegates|SendAsDelegates|GrantSendOnBehalfTo|SmartHosts|SenderDomains|RecipientDomains|Comment|Notes|CollectionStates|SupportedServices|TlsSettings|MXRecords|SharedChannels)$') {
+        if ($ColumnName -match '^(EmailAddresses|OnMicrosoftAliases|LegacyExchangeDn|LegacyExchangeDnX500|X500Addresses|X400Addresses|Delegate|FullAccessDelegates|SendAsDelegates|GrantSendOnBehalfTo|SmartHosts|SenderDomains|RecipientDomains|Comment|Notes|CollectionStates|SupportedServices|TlsSettings|MXRecords|SharedChannels|MembershipRule|RecreationConsiderations|Owners|AssignedLicenses|MemberOfGroups)$') {
             return 34
         }
 
@@ -1127,6 +1131,10 @@ function Export-HashTableToExcel {
         'AdConnectConfiguration',
         'HybridConfiguration',
         'Users',
+        'GuestUsers',
+        'GroupInventory',
+        'GroupMembers',
+        'ContactInventory',
         'AllRecipients',
         'MailboxDelegateAssignments',
         'MailboxCalendarDelegatePermissions',

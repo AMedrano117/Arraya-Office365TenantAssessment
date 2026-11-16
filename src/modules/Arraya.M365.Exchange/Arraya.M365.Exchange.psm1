@@ -61,6 +61,7 @@ Export-ModuleMember -Function @(
     'Get-AllRecipientDetails',
     'Get-ExchangeGroupDetails',
     'Get-ExchangeHybridConfiguration',
+    'Get-ExchangeMailContactInventory',
     'Get-MailFlowRulesandConnectors',
     'Get-SMTPRelayConfiguration',
     'Get-ThirdPartySpamFilteringConfig'

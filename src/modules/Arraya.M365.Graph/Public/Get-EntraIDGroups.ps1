@@ -22,8 +22,11 @@ function Get-EntraIDGroups {
     $collectGroupLicenseChecks = ($depthPolicy.CollectEntraGroupLicenseChecks -eq $true)
     $collectGroupMemberCounts = ($depthPolicy.CollectEntraGroupMemberCounts -eq $true)
     $collectGroupOwnerCounts = ($depthPolicy.CollectEntraGroupOwnerCounts -eq $true)
+    $collectGroupMemberLists = ($depthPolicy.CollectEntraGroupMemberLists -eq $true)
     $groupMemberCountLookup = @{}
     $groupOwnerCountLookup = @{}
+    $groupMemberListLookup = @{}
+    $entraGroupMemberRows = New-Object System.Collections.Generic.List[object]
     $licensedGroupLookupById = @{}
     $licenseSkuLookupById = @{}
     $tenantStatsHash['EntraIDGroups'] = @{}
@@ -157,6 +160,93 @@ function Get-EntraIDGroups {
 
         Write-Log -Type INFO -Message "[Get-EntraIDGroups] Group count prefetch complete. MemberCounts=$($lookups.Members.Count) OwnerCounts=$($lookups.Owners.Count)" -ExportFileLocation $exportDetails
         return $lookups
+    }
+
+    function Test-EntraGroupNeedsGraphMemberList {
+        param($Group)
+        # Exchange expands distribution lists and mail-enabled security groups, including
+        # their mail contacts. Graph lists the rest: security groups that are not
+        # mail-enabled, and Microsoft 365 groups, whose Exchange expansion is skipped when
+        # the unified group inventory is reused.
+        $groupTypes = @($Group.groupTypes)
+        if ($groupTypes -contains 'Unified') { return $true }
+        return ($Group.mailEnabled -ne $true)
+    }
+
+    function ConvertTo-EntraDirectoryObjectRow {
+        param($DirectoryObject)
+        $odataType = [string](Get-ArrayaObjectValue -Object $DirectoryObject -Names @('@odata.type'))
+        $address = [string](Get-ArrayaObjectValue -Object $DirectoryObject -Names @('userPrincipalName', 'mail'))
+        return [pscustomobject]@{
+            Id          = [string](Get-ArrayaObjectValue -Object $DirectoryObject -Names @('id'))
+            DisplayName = [string](Get-ArrayaObjectValue -Object $DirectoryObject -Names @('displayName'))
+            Address     = $address
+            ObjectType  = if ([string]::IsNullOrWhiteSpace($odataType)) { 'Unknown' } else { $odataType -replace '^#microsoft\.graph\.', '' }
+        }
+    }
+
+    function Get-EntraGroupMemberListLookup {
+        param(
+            [Parameter(Mandatory = $true)]
+            [array]$Groups
+        )
+
+        $lookup = @{}
+        $requests = New-Object System.Collections.Generic.List[object]
+        $selectClause = '$select=id,displayName,userPrincipalName,mail&$top=999'
+        foreach ($group in $Groups) {
+            $groupId = [string](Get-ArrayaObjectValue -Object $group -Names @('id'))
+            if ([string]::IsNullOrWhiteSpace($groupId) -or -not (Test-EntraGroupNeedsGraphMemberList -Group $group)) {
+                continue
+            }
+            $lookup[$groupId] = [pscustomobject]@{ Members = $null; Owners = $null }
+            $requests.Add([pscustomobject]@{ id = "lm:$groupId"; method = 'GET'; url = "/groups/$groupId/members?$selectClause" }) | Out-Null
+            $requests.Add([pscustomobject]@{ id = "lo:$groupId"; method = 'GET'; url = "/groups/$groupId/owners?$selectClause" }) | Out-Null
+        }
+        if ($requests.Count -eq 0) {
+            return $lookup
+        }
+
+        Write-Host '    > Entra groups: member and owner lists' -ForegroundColor DarkCyan
+        Write-Log -Type INFO -Message "[Get-EntraIDGroups] Listing members and owners via Graph batch for $($lookup.Count) group(s)." -ExportFileLocation $exportDetails
+        $responses = Invoke-ArrayaGraphCollectionBatch -Requests $requests.ToArray() -GraphAuthType $GraphAuthType -Activity 'Group member and owner lists' -ExportFileLocation $exportDetails -Context $Context
+
+        foreach ($groupId in @($lookup.Keys)) {
+            foreach ($relationship in @('Members', 'Owners')) {
+                $requestId = if ($relationship -eq 'Members') { "lm:$groupId" } else { "lo:$groupId" }
+                $response = if ($responses -and $responses.ContainsKey($requestId)) { $responses[$requestId] } else { $null }
+                $statusCode = 0
+                if ($response) {
+                    try { $statusCode = [int]$response.status } catch { $statusCode = 0 }
+                }
+                if ($statusCode -lt 200 -or $statusCode -ge 300) {
+                    # Left $null so the group reports a failed lookup, not an empty list.
+                    continue
+                }
+
+                $body = $response.body
+                $values = @(Get-ArrayaObjectValue -Object $body -Names @('value') | Where-Object { $null -ne $_ })
+                $nextLink = [string](Get-ArrayaObjectValue -Object $body -Names @('@odata.nextLink'))
+                if (-not [string]::IsNullOrWhiteSpace($nextLink)) {
+                    # More than one page: re-read the full list through the paging helper.
+                    $pathSegment = if ($relationship -eq 'Members') { 'members' } else { 'owners' }
+                    $fullUri = "https://graph.microsoft.com/v1.0/groups/$groupId/${pathSegment}?$selectClause"
+                    try {
+                        $values = @(Invoke-ArrayaGraphCollectionRequest -Uri $fullUri -Activity 'Listing group members' -GraphMode ($GraphAuthType -join '+') -Context $Context -ScriptBlock {
+                                Office365Custom\Get-GraphData -PageSize 999 -Uri $fullUri -Id $groupDetailProgressId -Activity 'Listing group members' -SuppressProgress
+                            } | Where-Object { $null -ne $_ })
+                    }
+                    catch {
+                        Write-Log -Type WARNING -Message "[Get-EntraIDGroups] Paged $pathSegment lookup failed for group $groupId`: $($_.Exception.Message)" -ExportFileLocation $exportDetails
+                        continue
+                    }
+                }
+
+                $lookup[$groupId].$relationship = @($values | ForEach-Object { ConvertTo-EntraDirectoryObjectRow -DirectoryObject $_ })
+            }
+        }
+
+        return $lookup
     }
 
     function Convert-EntraGroupLicenseCollection {
@@ -390,6 +480,38 @@ function Get-EntraIDGroups {
             if ($ownerResult -is [array]) { [int]($ownerResult | Select-Object -First 1) } else { [int]$ownerResult }
         }
 
+        $ownerNames = $null
+        $memberListState = 'NotRequested'
+        if ($collectGroupMemberLists) {
+            if ($groupMemberListLookup.ContainsKey($groupId)) {
+                $listEntry = $groupMemberListLookup[$groupId]
+                $memberListState = if ($null -ne $listEntry.Members -and $null -ne $listEntry.Owners) { 'Collected' } elseif ($null -ne $listEntry.Members -or $null -ne $listEntry.Owners) { 'Partial' } else { 'LookupFailed' }
+                if ($null -ne $listEntry.Owners) {
+                    $ownerNames = (@($listEntry.Owners | ForEach-Object { if ([string]::IsNullOrWhiteSpace($_.Address)) { $_.DisplayName } else { $_.Address } }) -join '; ')
+                }
+                $membershipSource = if ($groupDetails.groupTypes -contains 'DynamicMembership') { 'Computed from membership rule' } else { 'Assigned' }
+                foreach ($relationship in @('Owners', 'Members')) {
+                    foreach ($directoryObject in @($listEntry.$relationship | Where-Object { $null -ne $_ })) {
+                        $entraGroupMemberRows.Add([pscustomobject]@{
+                            GroupId           = $groupId
+                            GroupDisplayName  = $groupDetails.displayName
+                            GroupMail         = $groupDetails.mail
+                            Relationship      = if ($relationship -eq 'Owners') { 'Owner' } else { 'Member' }
+                            MemberId          = $directoryObject.Id
+                            MemberDisplayName = $directoryObject.DisplayName
+                            MemberAddress     = $directoryObject.Address
+                            MemberType        = $directoryObject.ObjectType
+                            MembershipSource  = if ($relationship -eq 'Owners') { 'Assigned' } else { $membershipSource }
+                        }) | Out-Null
+                    }
+                }
+            }
+            else {
+                # Distribution lists and mail-enabled security groups are listed by Exchange.
+                $memberListState = 'ListedByExchange'
+            }
+        }
+
         return [PSCustomObject]@{
             ID                         = $groupDetails.id
             DisplayName                = $groupDetails.displayName
@@ -416,6 +538,8 @@ function Get-EntraIDGroups {
             MemberCount                = $memberCount
             MemberCountSource          = $memberCountSource
             OwnerCount                 = $ownerCount
+            Owners                     = $ownerNames
+            MemberListState            = $memberListState
         }
     }
 
@@ -437,6 +561,9 @@ function Get-EntraIDGroups {
             $countLookups = Get-EntraGroupCountLookups -Groups $groups
             $groupMemberCountLookup = $countLookups.Members
             $groupOwnerCountLookup = $countLookups.Owners
+        }
+        if ($collectGroupMemberLists -and $groups.Count -gt 0) {
+            $groupMemberListLookup = Get-EntraGroupMemberListLookup -Groups $groups
         }
 
         $totalGroups = $groups.Count
@@ -461,6 +588,9 @@ function Get-EntraIDGroups {
         return @()
     }
     finally {
+        if ($collectGroupMemberLists) {
+            $tenantStatsHash['EntraGroupMembers'] = @($entraGroupMemberRows.ToArray())
+        }
         Write-Progress -Activity 'Getting Group Details' -Completed -Id $groupFetchProgressId
         Write-ProgressHelper -Total 1 -Id $groupLoopProgressId -Activity 'Getting Group Details' -Completed
     }

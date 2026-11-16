@@ -18,6 +18,9 @@ function Get-ExchangeGroupDetails {
     $isCombinedDepth = [bool]($depthPolicy.PSObject.Properties['IsCombined'] -and $depthPolicy.IsCombined)
     $collectExchangeGroupMetadataDetails = ($depthPolicy.IsAll -or $depthPolicy.IsGeek)
     $collectExchangeGroupMemberExpansion = ($depthPolicy.IsAll -or $depthPolicy.IsGeek)
+    # Member rows are kept only where membership was actually expanded, so a group that was
+    # not expanded is reported as not collected rather than as empty.
+    $groupMemberRows = New-Object System.Collections.Generic.List[object]
     try {
         $start = Get-Date
         $tenantStatsHash["AllExchangeGroups"] = @{}
@@ -96,6 +99,7 @@ function Get-ExchangeGroupDetails {
                 $groupMembersCount = 0
                 $cachedUnifiedGroup = $null
                 $usedUnifiedGroupCache = $false
+                $membersExpanded = $false
 
                 if (
                     $primarySmtpLookupKey -and
@@ -121,9 +125,13 @@ function Get-ExchangeGroupDetails {
                         }
 
                         if ($collectExchangeGroupMemberExpansion) {
-                            $groupMembers = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue @() -ExportFileLocation $exportDetails -ScriptBlock {
-                                @(Get-DynamicDistributionGroupMember $identity -ErrorAction Stop -ResultSize unlimited -WarningAction SilentlyContinue)
+                            # Wrapped so an empty group is distinguishable from a failed lookup;
+                            # a bare empty array unrolls to $null on return.
+                            $memberResult = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue $null -ExportFileLocation $exportDetails -ScriptBlock {
+                                [pscustomobject]@{ Members = @(Get-DynamicDistributionGroupMember $identity -ErrorAction Stop -ResultSize unlimited -WarningAction SilentlyContinue) }
                             }
+                            $membersExpanded = ($null -ne $memberResult)
+                            $groupMembers = if ($membersExpanded) { @($memberResult.Members | Where-Object { $null -ne $_ }) } else { @() }
                         }
                         else {
                             $groupMembers = @()
@@ -144,9 +152,11 @@ function Get-ExchangeGroupDetails {
                         }
 
                         if ($collectExchangeGroupMemberExpansion) {
-                            $groupMembers = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue @() -ExportFileLocation $exportDetails -ScriptBlock {
-                                @(Get-DistributionGroupMember $identity -ResultSize unlimited -ErrorAction Stop)
+                            $memberResult = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue $null -ExportFileLocation $exportDetails -ScriptBlock {
+                                [pscustomobject]@{ Members = @(Get-DistributionGroupMember $identity -ResultSize unlimited -ErrorAction Stop) }
                             }
+                            $membersExpanded = ($null -ne $memberResult)
+                            $groupMembers = if ($membersExpanded) { @($memberResult.Members | Where-Object { $null -ne $_ }) } else { @() }
                         }
                         else {
                             $groupMembers = @()
@@ -177,9 +187,11 @@ function Get-ExchangeGroupDetails {
                         }
 
                         if ($collectExchangeGroupMemberExpansion -and -not $usedUnifiedGroupCache) {
-                            $groupMembers = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue @() -ExportFileLocation $exportDetails -ScriptBlock {
-                                @(Get-UnifiedGroupLinks -Identity $identity -LinkType Member -ResultSize unlimited -ErrorAction Stop)
+                            $memberResult = Invoke-ArrayaCollectionStepSafe -OperationName "Get-ExchangeGroupDetails members for $PrimarySMTPAddress" -DefaultValue $null -ExportFileLocation $exportDetails -ScriptBlock {
+                                [pscustomobject]@{ Members = @(Get-UnifiedGroupLinks -Identity $identity -LinkType Member -ResultSize unlimited -ErrorAction Stop) }
                             }
+                            $membersExpanded = ($null -ne $memberResult)
+                            $groupMembers = if ($membersExpanded) { @($memberResult.Members | Where-Object { $null -ne $_ }) } else { @() }
                         }
                         else {
                             $groupMembers = @()
@@ -192,11 +204,52 @@ function Get-ExchangeGroupDetails {
                     $metadataReusedFromRecipientCount++
                 }
 
-                #Check Group Owners Size and Get Owners Addresses
-                if ($object.ManagedBy.count -ge 1) {
-                    $groupOwners = $object.ManagedBy
-                    Write-Log -Type DEBUG -Message ("[Get-ExchangeGroupDetails] '{0}' Owners Found for '{1}' '{2}'" -f $object.ManagedBy.count, $object.RecipientTypeDetails, $PrimarySMTPAddress) -ExportFileLocation $exportDetails
-    
+                # Owners. The recipient inventory joins ManagedBy into one comma-separated
+                # string, so a string must be split before counting; counting it directly
+                # reported one owner for any group with owners.
+                $managedByValue = $object.ManagedBy
+                if ($usedUnifiedGroupCache -and $cachedUnifiedGroup.PSObject.Properties['ManagedByDetails'] -and -not [string]::IsNullOrWhiteSpace([string]$cachedUnifiedGroup.ManagedByDetails)) {
+                    $managedByValue = $cachedUnifiedGroup.ManagedByDetails
+                }
+                $groupOwners = @(
+                    foreach ($ownerEntry in @($managedByValue)) {
+                        if ($null -eq $ownerEntry) { continue }
+                        foreach ($ownerName in @(([string]$ownerEntry) -split ',')) {
+                            $trimmedOwner = $ownerName.Trim()
+                            if (-not [string]::IsNullOrWhiteSpace($trimmedOwner)) { $trimmedOwner }
+                        }
+                    }
+                )
+                if ($groupOwners.Count -ge 1) {
+                    Write-Log -Type DEBUG -Message ("[Get-ExchangeGroupDetails] '{0}' Owners Found for '{1}' '{2}'" -f $groupOwners.Count, $object.RecipientTypeDetails, $PrimarySMTPAddress) -ExportFileLocation $exportDetails
+                }
+
+                $memberInventoryStatus = if ($membersExpanded) {
+                    'Collected'
+                }
+                elseif ($groupMembersCount -gt 0) {
+                    'CountOnly'
+                }
+                elseif ($collectExchangeGroupMemberExpansion -and -not $usedUnifiedGroupCache) {
+                    'LookupFailed'
+                }
+                else {
+                    'NotCollected'
+                }
+
+                if ($membersExpanded) {
+                    $membershipSource = if ([string]$object.RecipientTypeDetails -eq 'DynamicDistributionGroup') { 'Computed from recipient filter' } else { 'Assigned' }
+                    foreach ($member in @($groupMembers)) {
+                        $groupMemberRows.Add([pscustomobject]@{
+                            GroupDisplayName           = $object.DisplayName
+                            GroupPrimarySmtpAddress    = [string]$object.PrimarySMTPAddress
+                            GroupRecipientTypeDetails  = [string]$object.RecipientTypeDetails
+                            MemberDisplayName          = [string](Get-ArrayaObjectValue -Object $member -Names @('DisplayName', 'Name'))
+                            MemberPrimarySmtpAddress   = [string](Get-ArrayaObjectValue -Object $member -Names @('PrimarySmtpAddress', 'WindowsLiveID', 'ExternalEmailAddress'))
+                            MemberRecipientTypeDetails = [string](Get-ArrayaObjectValue -Object $member -Names @('RecipientTypeDetails', 'RecipientType'))
+                            MembershipSource           = $membershipSource
+                        }) | Out-Null
+                    }
                 }
                 #Check Group Members Size and Get Group Addresses
                 if ($groupMembers.count -ge 1) {
@@ -211,6 +264,7 @@ function Get-ExchangeGroupDetails {
                 $currentobject = [PSCustomObject]@{
                     DisplayName                              = $object.DisplayName
                     Identity                                 = $identity
+                    ExternalDirectoryObjectId                = $object.ExternalDirectoryObjectId
                     Alias                                    = $object.alias
                     Notes                                    = $object.Notes
                     IsDirSynced                              = $groupDetails.IsDirSynced
@@ -220,10 +274,17 @@ function Get-ExchangeGroupDetails {
                     ResourceProvisioningOptions              = ($groupDetails.ResourceProvisioningOptions -join ",")
                     IsMailboxConfigured                      = $groupDetails.IsMailboxConfigured
                     EmailAddresses                           = $object.EmailAddresses
-                    OwnersCount                              = ($groupOwners | measure-object).count
+                    Owners                                   = ($groupOwners -join '; ')
+                    OwnersCount                              = $groupOwners.Count
                     MembersCount                             = $groupMembersCount
+                    MemberInventoryStatus                    = $memberInventoryStatus
+                    RecipientFilter                          = $groupDetails.RecipientFilter
+                    MemberJoinRestriction                    = $groupDetails.MemberJoinRestriction
+                    MemberDepartRestriction                  = $groupDetails.MemberDepartRestriction
+                    GrantSendOnBehalfTo                      = ($groupDetails.GrantSendOnBehalfTo -join ",")
                     HiddenGroupMembershipEnabled             = ($groupDetails.HiddenGroupMembershipEnabled -join ",")
-                    ModeratedBy                              = ($ModeratedByRecipients -join ",")
+                    ModerationEnabled                        = $groupDetails.ModerationEnabled
+                    ModeratedBy                              = ($groupDetails.ModeratedBy -join ",")
                     RequireSenderAuthenticationEnabled       = $groupDetails.RequireSenderAuthenticationEnabled
                     AcceptMessagesOnlyFrom                   = ($groupDetails.AcceptMessagesOnlyFrom -join ",")
                     AcceptMessagesOnlyFromDLMembers          = ($groupDetails.AcceptMessagesOnlyFromDLMembers -join ",")
@@ -250,6 +311,7 @@ function Get-ExchangeGroupDetails {
         Write-Log -Type ERROR -Message "[Get-ExchangeGroupDetails] An error occurred in running Get-ExchangeGroupDetails function. Exception: $($_.Exception.Message)" -ExportFileLocation $exportDetails -CaptureError -ErrorRecordVar $_
     }
     finally {
+        $tenantStatsHash['ExchangeGroupMembers'] = @($groupMemberRows.ToArray())
         Write-ProgressHelper -Total $exchangeGroupProgressTotal -Id $exchangeGroupProgressId -Activity "Gathering All Exchange Online Group Details" -Completed
     }
     $CompletedTime = (((Get-Date) - $start).ToString('hh\:mm\:ss'))

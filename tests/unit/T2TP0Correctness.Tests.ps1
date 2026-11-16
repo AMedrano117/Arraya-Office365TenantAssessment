@@ -382,7 +382,10 @@ Describe 'T2T P0 correctness' {
             $store = @{ Users = @([pscustomobject]@{ UserPrincipalName = 'avery@contoso.example'; Mail = 'avery@contoso.example'; UserType = 'Member'; AccountEnabled = $true }) }
             Update-TenantToTenantMigrationExportData -TenantStatsStore $store
 
-            @($store['CutoverPrepSummary'] | Where-Object { $_.Status -eq 'Ready' } | ForEach-Object { $_.Item }) | Should -BeNullOrEmpty
+            # The user inventory was collected and holds no guests, so only the guest row may be
+            # Ready; every Exchange-backed row must not be.
+            @($store['CutoverPrepSummary'] | Where-Object { $_.Status -eq 'Ready' } | ForEach-Object { $_.Item }) | Should -Be @('Guest users to re-invite')
+            @($store['CutoverPrepSummary'] | Where-Object { $_.Item -eq 'Groups to recreate' })[0].Status | Should -Be 'Needs Data'
 
             foreach ($item in @(
                     'Mail flow connectors', 'Public folders', 'Mailboxes on hold', 'Mailboxes with forwarding',
@@ -393,6 +396,28 @@ Describe 'T2T P0 correctness' {
                 $row.Count | Should -Be 1 -Because "'$item' has no evidence and must stay visible"
                 $row[0].Status | Should -Be 'Needs Data' -Because "'$item' has no evidence"
             }
+        }
+
+        It 'writes the group and guest recreation inventories and their checklist rows' {
+            $store = @{
+                Users             = @(
+                    [pscustomobject]@{ UserPrincipalName = 'avery@contoso.example'; Mail = 'avery@contoso.example'; UserType = 'Member'; AccountEnabled = $true }
+                    [pscustomobject]@{ UserPrincipalName = 'p1_fabrikam.example#EXT#@contoso.onmicrosoft.example'; Mail = 'p1@fabrikam.example'; UserType = 'Guest'; AccountEnabled = $true }
+                )
+                EntraIDGroups     = @{ 'g-1' = [pscustomobject]@{ ID = 'g-1'; DisplayName = 'Finance Access'; GroupType = 'Security Group'; MembershipType = 'Dynamic Group'; MembershipRule = '(user.department -eq "Finance")'; MailEnabled = $false; SecurityEnabled = $true; Source = 'Cloud' } }
+                AllExchangeGroups = @{ 'all' = [pscustomobject]@{ DisplayName = 'All Staff'; PrimarySMTPAddress = 'all@contoso.example'; RecipientTypeDetails = 'DynamicDistributionGroup'; RecipientFilter = "((RecipientType -eq 'UserMailbox'))" } }
+            }
+            Update-TenantToTenantMigrationExportData -TenantStatsStore $store
+
+            @($store['GroupInventory']).Count | Should -Be 2
+            @($store['GuestUsers']).Count | Should -Be 1
+            $groupRow = @($store['CutoverPrepSummary'] | Where-Object { $_.Item -eq 'Groups to recreate' })[0]
+            $groupRow.Status | Should -Be 'Review'
+            $groupRow.Value | Should -Be 2
+            $groupRow.Notes | Should -Match '2 with dynamic membership'
+            @($store['MigrationReadinessChecklist'] | Where-Object { $_.Item -eq 'Group recreation' })[0].SourceWorksheet | Should -Be 'GroupInventory'
+            @($store['MigrationReadinessChecklist'] | Where-Object { $_.Item -eq 'Guest re-invitation' })[0].Value | Should -Be '1 guest user(s)'
+            @($store['MigrationExecutiveSummary'] | Where-Object { $_.Metric -eq 'Groups to recreate' })[0].Value | Should -Be 2
         }
 
         It 'keeps Ready, and hides the row, for collected-empty connectors and public folders' {
@@ -762,16 +787,28 @@ Describe 'T2T P0 correctness' {
 
         It 'pins the current TenantToTenantMigration contract so documentation cannot drift from it silently' {
             $plan = Get-T2TProfilePlan -ProfileName 'TenantToTenantMigration'
-            foreach ($flag in @('CollectEntraGroups', 'CollectAuthenticationConfiguration', 'CollectConditionalAccessPolicies', 'CollectMfaRegistrationDetails', 'CollectAdmins', 'CollectUnifiedGroups', 'CollectDevices', 'CollectGovernanceCompliancePolicies')) {
+            foreach ($flag in @('CollectAuthenticationConfiguration', 'CollectConditionalAccessPolicies', 'CollectMfaRegistrationDetails', 'CollectAdmins', 'CollectDevices', 'CollectGovernanceCompliancePolicies')) {
                 $plan[$flag] | Should -BeFalse -Because "TenantToTenantMigration.$flag is documented as not collected; update README.md, RUN.md, and this test together when the profile is expanded"
+            }
+            foreach ($flag in @('CollectEntraGroups', 'CollectExchangeGroups', 'CollectUnifiedGroups', 'CollectMailContacts', 'CollectUsers')) {
+                $plan[$flag] | Should -BeTrue -Because "TenantToTenantMigration.$flag feeds the group, guest, and contact recreation inventories"
             }
             $plan.BuildMigrationReadinessTables | Should -BeTrue
 
             $depth = Get-ArrayaCollectionDepthPolicy -ReportingMode 'All' -CollectionScopePolicy 'TenantToTenantCutover'
+            $depth.CollectEntraGroupMemberCounts | Should -BeTrue
+            $depth.CollectEntraGroupOwnerCounts | Should -BeTrue
+            $depth.CollectEntraGroupLicenseChecks | Should -BeTrue
+            $depth.CollectEntraGroupDeepDetails | Should -BeFalse
+            $depth.CollectEntraGroupMemberLists | Should -BeTrue
             $depth.CollectMailboxDelegatePermissions | Should -BeTrue
             $depth.CollectMailboxCalendarDelegatePermissions | Should -BeTrue
             $depth.CollectFullSharePointDetail | Should -BeFalse
-            $depth.CollectUnifiedGroupMailboxStats | Should -BeFalse
+            $depth.CollectUnifiedGroupMailboxStats | Should -BeTrue
+
+            # Only the cutover scope lists group members; other profiles keep counts only.
+            (Get-ArrayaCollectionDepthPolicy -ReportingMode 'Geek' -CollectionScopePolicy 'Default').CollectEntraGroupMemberLists | Should -BeFalse
+            (Get-ArrayaCollectionDepthPolicy -ReportingMode 'Operator' -CollectionScopePolicy 'Presales').CollectEntraGroupMemberLists | Should -BeFalse
         }
 
         It 'collects mailbox delegates only under the tenant-to-tenant scope policy' {

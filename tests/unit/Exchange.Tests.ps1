@@ -21,6 +21,7 @@ Describe 'Arraya.M365.Exchange' {
             'Get-AllRecipientDetails'
             'Get-ExchangeGroupDetails'
             'Get-ExchangeHybridConfiguration'
+            'Get-ExchangeMailContactInventory'
             'Get-GroupMailboxActivityRowForUnifiedGroup'
             'Get-MailFlowRulesandConnectors'
             'Get-SMTPRelayConfiguration'

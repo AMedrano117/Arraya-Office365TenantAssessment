@@ -57,6 +57,7 @@ Describe 'Arraya.M365.Common' {
             'New-ArrayaCollectorStep'
             'New-ArrayaMigrationCriteriaRegister'
             'New-ArrayaTenantSnapshot'
+            'New-ArrayaTenantToTenantIdentityInventory'
             'Resolve-ArrayaMigrationCriteria'
             'Resolve-ArrayaRequestedOutputProfiles'
             'Resolve-ArrayaSnapshotOutputContext'
@@ -1683,6 +1684,11 @@ Describe 'Arraya.M365.Common' {
             HybridConfiguration = @([pscustomobject]@{ IsConfigured = $true })
             TenantToTenantHybridConfiguration = @([pscustomobject]@{ Section = 'Hybrid posture'; Item = 'Hybrid configured'; Value = 'True'; Notes = 'Mail flow connector evidence detected' })
             Users = @([pscustomobject]@{ DisplayName = 'User One'; UserPrincipalName = 'user1@contoso.com'; Mail = 'user1@contoso.com'; AccountEnabled = $true; OnPremisesSyncEnabled = $true; AssignedLicensesFriendly = 'ENTERPRISEPACK'; HasMailbox = $true; MailboxPrimarySmtpAddress = 'user1@contoso.com'; RecipientTypeDetails = 'UserMailbox' })
+            GroupInventory = @([pscustomobject]@{ DisplayName = 'All Staff'; GroupType = 'Dynamic distribution list'; MailEnabled = $true; SecurityEnabled = $false; MembershipType = 'Dynamic (Exchange recipient filter)'; MembershipRule = "(RecipientType -eq 'UserMailbox')"; Source = 'Cloud'; RecreateIn = 'Exchange Online'; PrimarySmtpAddress = 'allstaff@contoso.com' })
+            GuestUsers = @([pscustomobject]@{ DisplayName = 'Guest One'; Mail = 'guest1@fabrikam.example'; UserPrincipalName = 'guest1_fabrikam.example#EXT#@contoso.onmicrosoft.com'; HomeDomain = 'fabrikam.example'; AccountEnabled = $true })
+            ExchangeGroupMembers = @([pscustomobject]@{ GroupDisplayName = 'Sales'; GroupPrimarySmtpAddress = 'sales@contoso.com'; GroupRecipientTypeDetails = 'MailUniversalDistributionGroup'; MemberDisplayName = 'User One'; MemberPrimarySmtpAddress = 'user1@contoso.com'; MemberRecipientTypeDetails = 'UserMailbox'; MembershipSource = 'Assigned' })
+            GroupMembers = @([pscustomobject]@{ GroupDisplayName = 'Sales'; GroupType = 'Distribution list'; GroupPrimarySmtpAddress = 'sales@contoso.com'; Relationship = 'Member'; MemberDisplayName = 'User One'; MemberAddress = 'user1@contoso.com'; MemberType = 'UserMailbox'; MembershipSource = 'Assigned'; Source = 'Exchange Online' })
+            ContactInventory = @([pscustomobject]@{ DisplayName = 'Vendor'; ContactType = 'Mail contact'; ExternalEmailAddress = 'vendor@fabrikam.example'; RecreateIn = 'Exchange Online' })
             AllRecipients = @([pscustomobject]@{ DisplayName = 'User One'; PrimarySmtpAddress = 'user1@contoso.com'; RecipientTypeDetails = 'UserMailbox'; UserPrincipalName = 'user1@contoso.com'; WindowsEmailAddress = 'user1@contoso.com'; PrimaryDomain = 'contoso.com'; EmailAddresses = 'SMTP:user1@contoso.com;smtp:user1@contoso.onmicrosoft.com'; OnMicrosoftAlias = 'user1@contoso.onmicrosoft.com'; OnMicrosoftAliases = 'user1@contoso.onmicrosoft.com'; HiddenFromAddressListsEnabled = $false })
             AllMailboxes = @([pscustomobject]@{ DisplayName = 'Raw User One'; PrimarySmtpAddress = 'raw-user1@contoso.com' })
             MailboxFullDetails = @([pscustomobject]@{
@@ -1737,7 +1743,16 @@ Describe 'Arraya.M365.Common' {
         $hybridSheet[0].Item | Should -Be 'Hybrid configured'
 
         $userSheet = @(Import-Excel -Path $exportPath -WorksheetName 'Users')
-        $userSheet[0].PSObject.Properties.Name | Should -Be @('DisplayName', 'UserPrincipalName', 'Mail', 'AccountEnabled', 'OnPremisesSyncEnabled', 'AssignedLicensesFriendly', 'HasMailbox', 'MailboxPrimarySmtpAddress', 'RecipientTypeDetails', 'TargetUPN', 'TargetPrimarySmtpAddress', 'Wave', 'MigrationState', 'CutoverDate', 'Notes')
+        $userSheet[0].PSObject.Properties.Name | Should -Be @('DisplayName', 'UserPrincipalName', 'Mail', 'UserType', 'AccountEnabled', 'OnPremisesSyncEnabled', 'AssignedLicensesFriendly', 'HasMailbox', 'MailboxPrimarySmtpAddress', 'RecipientTypeDetails', 'TargetUPN', 'TargetPrimarySmtpAddress', 'Wave', 'MigrationState', 'CutoverDate', 'Notes')
+
+        $groupSheet = @(Import-Excel -Path $exportPath -WorksheetName 'GroupInventory')
+        $groupSheet[0].PSObject.Properties.Name | Select-Object -First 8 | Should -Be @('DisplayName', 'GroupType', 'MailEnabled', 'SecurityEnabled', 'MembershipType', 'MembershipRule', 'Source', 'RecreateIn')
+        $groupSheet[0].MembershipRule | Should -Be '(RecipientType -eq ''UserMailbox'')'
+        $guestSheet = @(Import-Excel -Path $exportPath -WorksheetName 'GuestUsers')
+        $guestSheet[0].HomeDomain | Should -Be 'fabrikam.example'
+        @(Import-Excel -Path $exportPath -WorksheetName 'GroupMembers')[0].MemberAddress | Should -Be 'user1@contoso.com'
+        @(Import-Excel -Path $exportPath -WorksheetName 'ContactInventory')[0].ExternalEmailAddress | Should -Be 'vendor@fabrikam.example'
+        $worksheetNames | Should -Not -Contain 'ExchangeGroupMembers' -Because 'the tenant-to-tenant workbook shows the merged GroupMembers sheet'
 
         $mailboxSheet = @(Import-Excel -Path $exportPath -WorksheetName 'AllMailboxes')
         $mailboxSheet[0].PSObject.Properties.Name | Should -Contain 'MailboxSizeGB'
